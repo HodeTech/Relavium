@@ -99,8 +99,10 @@ import {
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
+import { leftoverSetupNote } from '../onboarding/setup-notes.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toCliError } from '../process/errors.js';
 import {
@@ -353,7 +355,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       return nativePrompt.flow.begin();
     },
     end: async () => {
-      finalSetupNote = nativePrompt.ui.getSnapshot().note || undefined;
+      // What the flow left on its card, but not a note that only said what a step was (the first-run sentence, the destination): after an
+      // `Esc` that was the whole notice. The coordinator's own result speaks for a skip.
+      finalSetupNote = leftoverSetupNote(nativePrompt.ui.getSnapshot().note);
       await nativePrompt.flow.end();
     },
   };
@@ -394,6 +398,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let ownedMount: SessionInkMount | undefined;
   let ownedJob: SessionTerminalOwner | undefined;
   let homeInputSealed = false;
+  /** Cancels the wait for room that the automatic first-run setup is in while the terminal is below the minimum (see `onRendererReady`). */
+  let stopWaitingForRoom: (() => void) | undefined;
   let stopHomeInput = (): void => {
     homeInputSealed = true;
     promptFlow.cancel();
@@ -829,7 +835,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             message: 'How would you like to continue?',
             options: [
               ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-              { value: 'once', label: 'Use this model for this invocation only' },
+              { value: 'once', label: 'Use for this invocation only' },
               { value: 'cancel', label: 'Cancel' },
             ],
           });
@@ -865,10 +871,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     });
     let providerRun: Promise<void> | undefined;
-    const openProviders = (mode: 'automatic' | 'explicit'): Promise<void> => {
+    const openProviders = (mode: 'automatic' | 'explicit', intro?: string): Promise<void> => {
       if (providerRun !== undefined) return providerRun;
       const operation = async (): Promise<void> => {
-        const result = await providerSetup.run(mode);
+        const result = await providerSetup.run(mode, intro);
         if (homeInputSealed) return;
         keyless = !sampleProviderSetup(providers).some(
           ({ availability }) => availability.status === 'usable',
@@ -1620,7 +1626,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
         return {
           notice:
-            'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.',
+            'This session belongs to another directory. Open Home there, or use /resume and Tab to browse all directories.',
         };
       const transcript = await prepareRestoredHistory({
         messages: loaded.messages,
@@ -1903,6 +1909,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       stopHomeInput = (): void => {
         if (homeInputSealed) return;
         homeInputSealed = true;
+        stopWaitingForRoom?.();
         promptFlow.cancel();
         rendererActive = false;
         flushVisible = undefined;
@@ -2158,7 +2165,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         providerSetup: {
           initialKeyless: keyless,
-          open: () => openProviders('explicit'),
+          open: (options) => openProviders('explicit', options?.note),
           readKeyless: refreshKeyless,
         },
         onExit: () => {
@@ -2240,6 +2247,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               },
             };
       let automaticSetupStarted = false;
+      let waitingForRoom = false;
+      const openAutomaticSetup = (): void => {
+        automaticSetupStarted = true;
+        const operation = () => openProviders('automatic');
+        const pending =
+          ownership === undefined ? operation() : ownership.surface.work.enter(operation);
+        void pending.catch((cause: unknown) => {
+          ownership?.surface.work.failure(cause);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
+          reject(
+            ownership === undefined
+              ? cause instanceof Error
+                ? cause
+                : new Error('Provider setup failed.')
+              : cause,
+          );
+        });
+      };
       const props: RootAppProps = {
         nativePrompt: nativePrompt.ui,
         inputEnabled: () => !homeInputSealed,
@@ -2248,25 +2273,31 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the screen it came for.
           if (
             !automaticSetupStarted &&
+            !waitingForRoom &&
             !homeInputSealed &&
             deps.onboardingPrompter === undefined &&
             deps.openPermissions !== true
           ) {
-            automaticSetupStarted = true;
-            const operation = () => openProviders('automatic');
-            const pending =
-              ownership === undefined ? operation() : ownership.surface.work.enter(operation);
-            void pending.catch((cause: unknown) => {
-              ownership?.surface.work.failure(cause);
-              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
-              reject(
-                ownership === undefined
-                  ? cause instanceof Error
-                    ? cause
-                    : new Error('Provider setup failed.')
-                  : cause,
-              );
+            if (nativePromptFits(getSize())) {
+              openAutomaticSetup();
+              return;
+            }
+            // Below the minimum the card cannot be shown, and the one first-run offer must not be spent on a message that says "Esc
+            // cancels" (observed: that `Esc` ended the setup for good, and resizing up did not bring it back). It waits for room, with
+            // the offer unspent, and opens once the terminal is large enough (ADR-0146 §6).
+            waitingForRoom = true;
+            const unsubscribe = subscribeResize(() => {
+              if (homeInputSealed) {
+                unsubscribe();
+                return;
+              }
+              if (!nativePromptFits(getSize())) return;
+              unsubscribe();
+              stopWaitingForRoom = undefined;
+              waitingForRoom = false;
+              if (!automaticSetupStarted) openAutomaticSetup();
             });
+            stopWaitingForRoom = unsubscribe;
           }
         },
         onRendererError: (error) => {
@@ -2362,6 +2393,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     ownership?.surface.work.failure(cause);
     throw cause;
   } finally {
+    stopWaitingForRoom?.();
     promptFlow.cancel();
     if (ownership !== undefined) {
       stopHomeInput();

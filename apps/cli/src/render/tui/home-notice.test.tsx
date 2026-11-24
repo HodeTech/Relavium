@@ -123,7 +123,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
         expect(h.frame('doctor:')).toContain('> Saved conversation 0');
-        expect(h.frame('doctor:')).toContain('Connect a provider');
+        expect(h.frame('doctor:')).toContain('No provider key yet · Enter to connect');
         expect(h.frame('doctor:')).toContain('PgUp/PgDn');
         expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);
         // Coalesced page keys reduce against the live page, without submitting or moving Continue focus.
@@ -215,7 +215,6 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
     cols: 80,
     rows: 24,
     keyless: true,
-    errorText: undefined,
     showBanner: false,
     isEmpty: false,
     hasSessions: true,
@@ -231,7 +230,7 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
   }
   expect(new Set(text.join('\n').match(/ROW-\d{3}/gu)).size).toBe(200);
   const remedy =
-    'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.';
+    'This session belongs to another directory. Open Home there, or use /resume and Tab to browse all directories.';
   expect(layoutHomeNotice({ ...options, notice: remedy })?.lines.join('')).toBe(remedy);
 });
 
@@ -241,7 +240,6 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
     cols: 80,
     rows: 24,
     keyless: false,
-    errorText: undefined,
     showBanner: false,
     isEmpty: false,
     hasSessions: false,

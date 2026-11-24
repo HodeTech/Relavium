@@ -66,8 +66,8 @@ describe('keyless Home view', () => {
       />,
     );
     const frame = view.lastFrame() ?? '';
-    expect(frame).toContain('Connect a provider');
-    expect(frame).toContain('Enter to set up');
+    expect(frame).toContain('No provider key yet · Enter to connect · /providers');
+    expect(frame).toContain('Enter to connect a provider');
     expect(frame).not.toContain('↓ Continue');
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     view.unmount();
@@ -143,7 +143,10 @@ describe('the Home hint bar', () => {
   });
 });
 
-/** The keyless line promises `Enter` sets a provider up; while `Enter` does something else first, it must not be on screen. */
+/**
+ * The keyless line is the standing call to action (ADR-0146 §5, MVP-11 Step 2.4): it stays on screen when a live run or a strip row has the
+ * focus, which suppressed it before. What `Enter` does FIRST in those states is said by the hint bar, so the two are asserted together.
+ */
 describe('the keyless line and the other things Enter does first', () => {
   const RUNNING_HOST: RunHostSnapshot = {
     launching: false,
@@ -152,6 +155,7 @@ describe('the keyless line and the other things Enter does first', () => {
   };
   const IDLE_HOST: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
   const PARKED = [{ runId: 'run-0002', kind: 'approval' as const, gates: 1 }];
+  const LINE = 'No provider key yet · Enter to connect · /providers';
   const frameOf = (over: {
     hostedRun?: RunHostSnapshot;
     parkedFocus?: string;
@@ -185,25 +189,38 @@ describe('the keyless line and the other things Enter does first', () => {
     return frame;
   };
 
-  it('is shown with nothing else on offer for Enter', () => {
-    expect(frameOf({})).toContain('Enter to set up');
+  it('is shown with nothing else on offer for Enter, and the hint says Enter connects a provider', () => {
+    const frame = frameOf({});
+    expect(frame).toContain(LINE);
+    expect(frame).toContain('Enter to connect a provider · / commands · Ctrl+C twice to exit');
   });
 
-  it('is not shown while a live run is in the view: Enter shows the run first', () => {
+  it('is shown while a live run is in the view, where the hint bar says Enter shows the run first', () => {
     const frame = frameOf({ hostedRun: RUNNING_HOST });
+    expect(frame).toContain(LINE);
     expect(frame).toContain('Enter shows it');
-    expect(frame).not.toContain('Enter to set up');
-    expect(frame).not.toContain('Connect a provider');
+    expect(frame, 'the idle keyless hint does not claim Enter for the setup here').not.toContain(
+      'Enter to connect a provider',
+    );
   });
 
-  it('is not shown while a parked run is focused: Enter opens its gate first', () => {
+  it('is shown while a parked run is focused, where the hint bar says Enter opens its gate first', () => {
     const frame = frameOf({ parkedFocus: 'run-0002' });
+    expect(frame).toContain(LINE);
     expect(frame).toContain('Enter open the gate');
-    expect(frame).not.toContain('Enter to set up');
+    expect(frame).not.toContain('Enter to connect a provider');
   });
 
-  it('is back once the run has ended and the focus has left the row', () => {
-    expect(frameOf({ hostedRun: IDLE_HOST })).toContain('Enter to set up');
+  it('is shown once the run has ended and the focus has left the row', () => {
+    const frame = frameOf({ hostedRun: IDLE_HOST });
+    expect(frame).toContain(LINE);
+    expect(frame).toContain('Enter to connect a provider · / commands');
+  });
+
+  it('is absent with a key', () => {
+    const frame = frameOf({ keyless: false });
+    expect(frame).not.toContain('No provider key yet');
+    expect(frame).not.toContain('Enter to connect a provider');
   });
 });
 

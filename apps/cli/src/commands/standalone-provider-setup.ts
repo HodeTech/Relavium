@@ -18,6 +18,7 @@ import {
   sampleProviderSetup,
   type ProviderSetupOutcome,
 } from '../home/provider-setup.js';
+import { leftoverSetupNote } from '../onboarding/setup-notes.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -77,7 +78,8 @@ export async function runStandaloneProviderSetup(deps: {
           return setupSignal;
         },
         end: async () => {
-          finalNote = ui.getSnapshot().note;
+          // What the flow left on its card, minus a note that only said what a step was (the first-run sentence, the destination).
+          finalNote = leftoverSetupNote(ui.getSnapshot().note);
           await nativeFlow.end();
         },
       };
@@ -170,7 +172,7 @@ export async function runStandaloneProviderSetup(deps: {
                   message: 'How would you like to continue?',
                   options: [
                     ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-                    { value: 'once', label: 'Use this model for this invocation only' },
+                    { value: 'once', label: 'Use for this invocation only' },
                     { value: 'cancel', label: 'Cancel' },
                   ],
                 });

@@ -27,11 +27,21 @@ function queuedPrompter(
   prompter: ClackOnboardingDeps;
   notes: string[];
   outros: string[];
-  selectCalls: { message: string; initialValue?: string }[];
+  selectCalls: {
+    message: string;
+    initialValue?: string;
+    options: readonly { value: string; label: string; hint?: string }[];
+  }[];
+  passwordCalls: number;
 } {
   const notes: string[] = [];
   const outros: string[] = [];
-  const selectCalls: { message: string; initialValue?: string }[] = [];
+  const selectCalls: {
+    message: string;
+    initialValue?: string;
+    options: readonly { value: string; label: string; hint?: string }[];
+  }[] = [];
+  const counts = { passwords: 0 };
   const prompter: ClackOnboardingDeps = {
     intro: () => undefined,
     outro: (m) => {
@@ -43,15 +53,27 @@ function queuedPrompter(
     select: (opts) => {
       selectCalls.push({
         message: opts.message,
+        options: opts.options,
         ...(opts.initialValue === undefined ? {} : { initialValue: opts.initialValue }),
       });
       return Promise.resolve(selects.shift() ?? CANCEL);
     },
-    password: () => Promise.resolve(passwords.shift() ?? CANCEL),
+    password: () => {
+      counts.passwords += 1;
+      return Promise.resolve(passwords.shift() ?? CANCEL);
+    },
     isCancel: (v): v is symbol => typeof v === 'symbol',
     spinner: () => ({ start: () => undefined, stop: () => undefined }),
   };
-  return { prompter, notes, outros, selectCalls };
+  return {
+    prompter,
+    notes,
+    outros,
+    selectCalls,
+    get passwordCalls() {
+      return counts.passwords;
+    },
+  };
 }
 
 /** A scripted live-validation port draining a queue of outcomes (defaulting to ok when exhausted). */
@@ -426,7 +448,7 @@ describe('runOnboardingWizard', () => {
     expect(retrySelect?.message).toContain('LEAKED-sk-unverified-key'); // detail is surfaced verbatim (already redacted at the seam)
   });
 
-  it("a NETWORK failure → default Continue (offline first-run isn't blocked): stores the key", async () => {
+  it('a NETWORK failure → an explicit "Save it anyway · not verified" still stores the key, but it is never the bare-Enter default', async () => {
     const keychain = memKeychain();
     const s = store();
     const writeDefaultModel = vi.fn();
@@ -444,8 +466,122 @@ describe('runOnboardingWizard', () => {
     });
     expect(keychain.store.get(keychainAccount('gemini'))).toBe('sk-offline-key');
     expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel, 'gemini');
-    // The NETWORK branch pre-highlights 'continue' so a bare Enter saves anyway (an offline first-run isn't blocked).
-    expect(selectCalls[1]?.initialValue).toBe('continue');
+    // ADR-0146 §6: a failed check is not answered by a reflex Enter into an unverified key. The default is the retry of the check.
+    expect(selectCalls[1]?.initialValue).toBe('recheck');
+    expect(selectCalls[1]?.initialValue).not.toBe('continue');
+  });
+
+  // ── The failed-check choices (MVP-11 Step 2.4, ADR-0146 §6) ────────────────────────────────
+  describe('the choices after a failed check', () => {
+    const retryOptions = async (reason: 'network' | 'auth' | 'other') => {
+      const { prompter, selectCalls } = queuedPrompter(['openai', 'skip'], ['sk-x']);
+      await runOnboardingWizard({
+        prompter,
+        store: store(),
+        keychain: memKeychain(),
+        resolver: stubResolver,
+        io,
+        writeDefaultModel: vi.fn(),
+        validate: validateSeq([{ ok: false, detail: 'failed', reason }]),
+      });
+      const call = selectCalls[1];
+      if (call === undefined) throw new Error('the retry prompt was not shown');
+      return call;
+    };
+
+    it('after a network failure: Retry the check (first, initial), Enter a different key, Save it anyway · not verified, Skip setup', async () => {
+      const call = await retryOptions('network');
+      expect(call.options.map((option) => [option.value, option.label])).toEqual([
+        ['recheck', 'Retry the check'],
+        ['retry', 'Enter a different key'],
+        ['continue', 'Save it anyway · not verified'],
+        ['skip', 'Skip setup'],
+      ]);
+      expect(call.initialValue).toBe('recheck');
+    });
+
+    it.each(['auth', 'other'] as const)(
+      'after a %s failure: Enter a different key (first, initial), Save it anyway · not verified, Skip setup; no retry of the check',
+      async (reason) => {
+        const call = await retryOptions(reason);
+        expect(call.options.map((option) => [option.value, option.label])).toEqual([
+          ['retry', 'Enter a different key'],
+          ['continue', 'Save it anyway · not verified'],
+          ['skip', 'Skip setup'],
+        ]);
+        expect(call.initialValue).toBe('retry');
+      },
+    );
+
+    it.each(['network', 'auth', 'other'] as const)(
+      'never pre-selects Save it anyway, and its hint says how to verify later without naming a doctor check that does not exist (%s)',
+      async (reason) => {
+        const call = await retryOptions(reason);
+        expect(call.initialValue).not.toBe('continue');
+        const save = call.options.find((option) => option.value === 'continue');
+        expect(save?.hint).toBe('verify later by opening a chat');
+        expect(JSON.stringify(call.options)).not.toContain('/doctor');
+        // No spelling of the old labels survives anywhere in the prompt.
+        expect(JSON.stringify(call.options)).not.toContain('Enter a new key');
+      },
+    );
+
+    it('Retry the check runs the SAME check with the SAME key: nothing is asked for again, and the key that verifies is the one stored', async () => {
+      const keychain = memKeychain();
+      const checked: string[] = [];
+      const validate = (_id: string, key: string): Promise<ProviderKeyValidation> => {
+        checked.push(key);
+        return Promise.resolve(
+          checked.length === 1
+            ? { ok: false, detail: 'key test failed — timeout (10000ms)', reason: 'network' }
+            : { ok: true, detail: 'key works', reason: 'ok' },
+        );
+      };
+      const prompts = queuedPrompter(['openai', 'recheck'], ['sk-held-key']);
+      await runOnboardingWizard({
+        prompter: prompts.prompter,
+        store: store(),
+        keychain,
+        resolver: stubResolver,
+        io,
+        writeDefaultModel: vi.fn(),
+        validate,
+      });
+      expect(checked, 'checked twice, with the one key').toEqual(['sk-held-key', 'sk-held-key']);
+      expect(prompts.passwordCalls, 'the key was asked for exactly once').toBe(1);
+      expect(keychain.store.get(keychainAccount('openai'))).toBe('sk-held-key');
+      expect(prompts.notes.join('\n')).toContain('Verified and stored');
+    });
+
+    it('Retry the check can be chosen again: a second network failure offers the same choices, and a third check can succeed', async () => {
+      const keychain = memKeychain();
+      const checked: string[] = [];
+      const outcomes: ProviderKeyValidation[] = [
+        { ok: false, detail: 'timeout', reason: 'network' },
+        { ok: false, detail: 'timeout', reason: 'network' },
+        { ok: true, detail: 'key works', reason: 'ok' },
+      ];
+      const prompts = queuedPrompter(['anthropic', 'recheck', 'recheck'], ['sk-held-twice']);
+      await runOnboardingWizard({
+        prompter: prompts.prompter,
+        store: store(),
+        keychain,
+        resolver: stubResolver,
+        io,
+        writeDefaultModel: vi.fn(),
+        validate: (_id, key) => {
+          checked.push(key);
+          return Promise.resolve(outcomes.shift() ?? { ok: true, detail: 'ok', reason: 'ok' });
+        },
+      });
+      expect(checked).toEqual(['sk-held-twice', 'sk-held-twice', 'sk-held-twice']);
+      expect(prompts.passwordCalls).toBe(1);
+      expect(prompts.selectCalls.slice(1).map((call) => call.initialValue)).toEqual([
+        'recheck',
+        'recheck',
+      ]);
+      expect(keychain.store.get(keychainAccount('anthropic'))).toBe('sk-held-twice');
+    });
   });
 
   it('a bad key → RETRY → Esc on the re-prompt: SKIPS, keychain empty', async () => {

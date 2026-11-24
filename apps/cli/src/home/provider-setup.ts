@@ -16,12 +16,15 @@ import {
   KNOWN_PROVIDERS,
   providerKeyAvailability,
   providerKeyAvailabilityMessage,
+  providerKeyEnvVar,
+  providerRowHint,
   type CredentialSurface,
   type ProviderKeyAvailability,
   type ProviderResolver,
 } from '../engine/providers.js';
 import type { StandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
 import { runOnboardingWizard, type OnboardingDeps } from '../onboarding/wizard.js';
+import { setupSkippedNotice } from '../onboarding/setup-notes.js';
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 
 export interface ProviderSetupDeps {
@@ -68,14 +71,23 @@ export function sampleProviderSetup(resolver: ProviderResolver): readonly Observ
 
 /** One coordinator per invocation; the policy and acknowledged state survive Home rebuilds. */
 export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
-  readonly run: (mode: 'automatic' | 'explicit') => Promise<ProviderSetupOutcome>;
+  /**
+   * `intro` is a note for the card itself (the Home passes the reason a typed draft was not kept): shown from the first row of the setup, where
+   * a person who is looking at the setup can read it, and replaced by the notes of the steps that follow.
+   */
+  readonly run: (mode: 'automatic' | 'explicit', intro?: string) => Promise<ProviderSetupOutcome>;
 } {
   let acknowledged = deps.globalConfig?.preferences?.keychain_unavailable_acknowledged === true;
   const isDefault =
     deps.globalConfigIsDefault ?? deps.globalConfigPath === globalConfigPath(deps.home);
   const targetPath = isDefault ? undefined : deps.globalConfigPath;
 
-  async function run(mode: 'automatic' | 'explicit'): Promise<ProviderSetupOutcome> {
+  const surface = deps.credentialSurface ?? 'home';
+
+  async function run(
+    mode: 'automatic' | 'explicit',
+    intro?: string,
+  ): Promise<ProviderSetupOutcome> {
     deps.assertAdmitting();
     let observations = sampleProviderSetup(deps.resolver);
     if (
@@ -86,10 +98,19 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     }
     const firstUsable = !observations.some(({ availability }) => availability.status === 'usable');
     const signal = deps.flow.begin();
+    if (intro !== undefined) deps.flow.note(intro);
     const assertAdmitting = (): void => {
       deps.assertAdmitting();
       signal.throwIfAborted();
     };
+    /**
+     * A first run that ended with no key and no word of its own (`Esc`, `Ctrl+C`, a `Not now`) says that it was skipped and how to come back
+     * (ADR-0146 §6). Every cancel is a skip only when nothing worked before: closing the list of a Home that already has a key skips nothing.
+     */
+    const skipped = (outcome: ProviderSetupOutcome): ProviderSetupOutcome =>
+      firstUsable && outcome.status === 'cancelled' && outcome.notice === undefined
+        ? { ...outcome, notice: setupSkippedNotice(surface) }
+        : outcome;
     const manual = async (id?: ProviderId): Promise<ProviderSetupOutcome> => {
       assertAdmitting();
       let committedNotice: string | undefined;
@@ -187,7 +208,11 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       if (answer === 'manual') return manual(id);
       if (answer !== 'use') {
         deps.policy.defer(id);
-        return { status: 'deferred', changed: false };
+        return {
+          status: 'deferred',
+          changed: false,
+          ...(firstUsable ? { notice: setupSkippedNotice(surface) } : {}),
+        };
       }
       for (;;) {
         try {
@@ -236,21 +261,32 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       }
     }
 
+    /**
+     * The keychain is known to be unavailable, so a key typed now would be checked against the provider and then lost: `Enter a key` is not
+     * offered (ADR-0146 §6). The way to use a key anyway is the environment variable, named once as a variable name, and what `Remember
+     * this` remembers is said where it is offered.
+     */
     async function unavailable(id: ProviderId): Promise<ProviderSetupOutcome> {
       for (;;) {
         const answer = await deps.flow.select({
-          message: 'The OS keychain is unavailable. Choose how to continue.',
+          message:
+            'The OS keychain is unavailable, so a key cannot be stored. ' +
+            `To use one anyway, set ${providerKeyEnvVar(id)} in the environment before starting Relavium.`,
           options: [
             { value: 'retry', label: 'Retry keychain' },
-            { value: 'manual', label: 'Enter a key' },
             ...(!acknowledged
-              ? [{ value: 'ack', label: 'Remember this and continue without a key' }]
+              ? [
+                  {
+                    value: 'ack',
+                    label: 'Remember this and continue without a key',
+                    hint: 'saved in your global config; setup stops opening itself at start',
+                  },
+                ]
               : []),
             { value: 'cancel', label: 'Not now' },
           ],
         });
         if (typeof answer !== 'string' || signal.aborted || answer === 'cancel') return cancelled;
-        if (answer === 'manual') return manual(id);
         if (answer === 'retry') {
           assertAdmitting();
           observations = sampleProviderSetup(deps.resolver);
@@ -301,7 +337,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       }
     }
 
-    try {
+    const attempt = async (): Promise<ProviderSetupOutcome> => {
       let chosen: Observation | undefined;
       if (mode === 'explicit') {
         const selected = await deps.flow.select({
@@ -309,11 +345,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           options: observations.map(({ id, availability }) => ({
             value: id,
             label: KNOWN_PROVIDERS[id].displayName,
-            hint: providerKeyAvailabilityMessage(
-              id,
-              availability,
-              deps.credentialSurface ?? 'home',
-            ),
+            hint: providerRowHint(availability),
           })),
         });
         if (typeof selected !== 'string' || signal.aborted) return cancelled;
@@ -355,7 +387,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
             changed: false,
             notice:
               deps.credentialSurface === 'standalone-chat'
-                ? 'Keychain is unavailable. Restart relavium chat to retry setup.'
+                ? 'Keychain is unavailable. Restart this chat to retry setup.'
                 : 'Keychain is unavailable. Open /providers to retry.',
           };
         return await unavailable(id);
@@ -374,8 +406,11 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         return answer === 'manual' && !signal.aborted ? await manual(id) : cancelled;
       }
       return await manual(mode === 'automatic' ? undefined : id);
+    };
+    try {
+      return skipped(await attempt());
     } catch (err) {
-      if (signal.aborted && err === signal.reason) return cancelled;
+      if (signal.aborted && err === signal.reason) return skipped(cancelled);
       throw err;
     } finally {
       await deps.flow.end();

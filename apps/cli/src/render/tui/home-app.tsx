@@ -105,6 +105,7 @@ export type { HomeChatSession } from './home-controller.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
+import { providerDisplayName } from '../../engine/providers.js';
 
 export interface RootAppProps {
   readonly nativePrompt?: NativePromptUi;
@@ -293,7 +294,12 @@ function ChatRegion(
       {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
       {/* The `/models` reseat picker overlay in a live in-Home chat (ADR-0059) — mounted like the palette. */}
       {props.modelPicker !== undefined && (
-        <ModelPickerView state={props.modelPicker} color={color} nowMs={nowMs} />
+        <ModelPickerView
+          state={props.modelPicker}
+          color={color}
+          nowMs={nowMs}
+          providerName={providerDisplayName}
+        />
       )}
       {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
       {props.effortPicker !== undefined && (
@@ -777,7 +783,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       cols: live.cols,
       rows: live.rows,
       keyless: current.keyless,
-      errorText: current.errorText,
       showBanner: props.showBanner,
       isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
       hasSessions: current.snapshot.recentSessions.length > 0,
@@ -1038,7 +1043,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           }}
           snapshot={state.snapshot}
           editor={state.input}
-          errorText={state.errorText}
           notice={state.notice}
           nowMs={props.nowMs()}
           cols={Number.isFinite(size.cols) ? size.cols : 0}
@@ -1060,7 +1064,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
-        <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
+        <ModelPickerView
+          state={state.modelPicker}
+          color={color}
+          nowMs={props.nowMs()}
+          providerName={providerDisplayName}
+        />
       )}
     </Box>
   );

@@ -615,7 +615,6 @@ describe('`c` on an agent’s detail starts a chat bound to that agent', () => {
     expect(after.nativeActionBusy, 'no native action is left holding the keyboard').toBe(false);
     expect(after.session, 'no chat started').toBeUndefined();
     expect(after.screen, 'the Home stays on the landing').toBeUndefined();
-    expect(after.errorText).toBeUndefined();
     expect(after.pendingMessage).toBe('');
     expect(startChat).toHaveBeenCalledTimes(1);
     // The keyboard really is the prompt's again.
@@ -656,7 +655,6 @@ describe('`c` on an agent’s detail starts a chat bound to that agent', () => {
       { timeout: WAIT_MS },
     );
     expect(JSON.stringify(controller.getSnapshot())).not.toContain('PRIVATE_FAULT_TEXT');
-    expect(controller.getSnapshot().errorText).toBeUndefined();
     expect(controller.getSnapshot().mode).toBe('home');
   });
 

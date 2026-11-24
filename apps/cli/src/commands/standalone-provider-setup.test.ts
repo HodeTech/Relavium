@@ -184,10 +184,7 @@ describe('standalone native provider setup lifecycle', () => {
     const afterSource = f.stdout.frames.length;
     f.stdin.push('\r');
     await until(() =>
-      f.stdout.frames
-        .slice(afterSource)
-        .join('')
-        .includes('Use this model for this invocation only'),
+      f.stdout.frames.slice(afterSource).join('').includes('Use for this invocation only'),
     );
     // Authorizing the named source did not implicitly choose an ephemeral model default.
     expect(f.resolver.keyFor('openai')).toBe(credential);

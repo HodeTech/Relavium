@@ -13,7 +13,9 @@ import {
   providerDisplayName,
   providerHasKey,
   providerKeyEnvVar,
+  providerRowHint,
   validateProviderKey,
+  type ProviderKeyAvailability,
 } from './providers.js';
 import type { FetchLike } from './validated-fetch.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
@@ -153,6 +155,75 @@ describe('providerDisplayName (ADR-0145: a person reads a provider by its name, 
 
   it('covers every known provider id, so a new one cannot read as its id by omission', () => {
     for (const id of KNOWN_PROVIDER_IDS) expect(providerDisplayName(id)).not.toBe(id);
+  });
+});
+
+describe('providerRowHint (MVP-11 Step 2.4: the hint inside the list that connects a provider)', () => {
+  const health = { keychainHealth: 'available' } as const;
+  const standard = (name: 'OPENAI_API_KEY' | 'ANTHROPIC_API_KEY'): ProviderKeyAvailability => ({
+    ...health,
+    status: 'present-standard-not-allowed',
+    source: { kind: 'standard-env', name },
+  });
+
+  it('says what Enter does on a row with no key, an environment key that is not allowed yet, a locked keychain and a custom endpoint', () => {
+    expect(providerRowHint({ ...health, status: 'missing' })).toBe('no key yet · Enter to add one');
+    expect(providerRowHint(standard('ANTHROPIC_API_KEY'))).toBe(
+      'ANTHROPIC_API_KEY is set · Enter to allow it',
+    );
+    expect(providerRowHint({ ...health, status: 'unavailable' })).toBe(
+      'the OS keychain is unavailable · Enter for options',
+    );
+    expect(
+      providerRowHint({
+        ...health,
+        status: 'ineligible-custom-endpoint',
+        source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+      }),
+    ).toBe('custom endpoint · Enter to add a key');
+  });
+
+  it('names the source of a key that works, in the words the selected card repeats', () => {
+    expect(
+      providerRowHint({
+        ...health,
+        status: 'usable',
+        source: { kind: 'keychain', label: 'OS keychain' },
+      }),
+    ).toBe('An API key is available from OS keychain.');
+  });
+
+  it('never points at the screen it is shown on, and never names a provider by its id', () => {
+    const all: ProviderKeyAvailability[] = [
+      { ...health, status: 'missing' },
+      standard('OPENAI_API_KEY'),
+      { ...health, status: 'unavailable' },
+    ];
+    for (const availability of all) {
+      const hint = providerRowHint(availability);
+      expect(hint).not.toContain('/providers');
+      expect(hint).not.toContain('open `');
+      for (const id of KNOWN_PROVIDER_IDS) expect(hint.toLowerCase()).not.toContain(`'${id}'`);
+    }
+  });
+
+  it('keeps every row of the list on one row at 80 columns, so a wrapped row never starts with a stray space', () => {
+    const all: ProviderKeyAvailability[] = [
+      { ...health, status: 'missing' },
+      standard('ANTHROPIC_API_KEY'),
+      { ...health, status: 'unavailable' },
+      {
+        ...health,
+        status: 'ineligible-custom-endpoint',
+        source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+      },
+    ];
+    for (const id of KNOWN_PROVIDER_IDS)
+      for (const availability of all) {
+        // The card draws `❯ <label> — <hint>`.
+        const row = `❯ ${KNOWN_PROVIDERS[id].displayName} — ${providerRowHint(availability)}`;
+        expect(row.length, row).toBeLessThanOrEqual(80);
+      }
   });
 });
 

@@ -61,10 +61,22 @@ describe('native setup recovery names the reachable host action', () => {
           writeDefaultModel,
         });
         const copy = messages.join('\n');
-        expect(copy).toContain(
-          surface === 'home' ? 'Open `/providers`' : 'Restart `relavium chat`',
-        );
-        expect(copy).not.toContain('relavium provider add');
+        // The way back in is the host's own action, in words and not as a shell command (ADR-0122 §6, MVP-11 Step 2.4): the Home has
+        // `/providers`; a stand-alone chat has neither it nor the Home, and says to start the chat again.
+        if (failure === 'skip')
+          expect(copy).toContain(
+            surface === 'home'
+              ? 'Setup skipped · /providers connects a provider any time'
+              : 'Setup skipped · restart this chat to open provider setup any time',
+          );
+        else
+          expect(copy).toContain(
+            surface === 'home'
+              ? 'Open /providers to connect a key'
+              : 'Restart this chat to open provider setup',
+          );
+        expect(copy).not.toContain('relavium');
+        expect(copy).not.toContain('provider add');
         if (surface === 'standalone-chat') expect(copy).not.toContain('/providers');
         expect(copy).not.toContain('3847');
         expect(copy).not.toContain('private store detail');

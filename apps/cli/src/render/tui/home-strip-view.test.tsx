@@ -349,7 +349,6 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
       cols: 80,
       rows: 24,
       keyless: false,
-      errorText: undefined,
       showBanner: false,
       isEmpty: false,
       hasSessions: false,

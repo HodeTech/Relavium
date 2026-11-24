@@ -1112,7 +1112,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe('');
   });
 
-  it('a build failure routes back to Home with the banner (no session)', async () => {
+  it('a build failure routes back to Home with its whole message in the notice and the draft back in the prompt (no session)', async () => {
     const startChat = vi.fn(() => Promise.reject(new Error('no API key for provider')));
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -1125,7 +1125,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().mode).toBe('home');
-    expect(c.getSnapshot().errorText).toBe('no API key for provider');
+    expect(c.getSnapshot().notice).toBe('Couldn’t start the chat: no API key for provider');
+    expect(c.getSnapshot().input.text, 'the draft is back in the prompt (G6)').toBe('hi');
     expect(c.getSnapshot().session).toBeUndefined();
   });
 
@@ -2844,7 +2845,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
   });
 
-  it('a `no-key` model is non-selectable with a hint NAMING the remedy (provider add) (2.5.G)', async () => {
+  it('a `no-key` model is non-selectable with a hint naming the provider by its display name, and no shell command (2.5.G)', async () => {
     const { port, writeDefault } = makeModelsPort({
       entries: [
         pickerEntry({
@@ -2861,8 +2862,43 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
     const hint = c.getSnapshot().modelPicker?.hint ?? '';
-    expect(hint).toContain('openai'); // names the provider
-    expect(hint).toContain('provider set-key'); // and the actionable single-command remedy
+    expect(hint).toContain('OpenAI'); // names the provider the way a person reads it (ADR-0145 §8), not as the id `openai`
+    expect(hint).not.toContain('openai');
+    // No setup port is wired in this fixture, so `/providers` would answer "unavailable": no remedy is named, and never a shell command.
+    expect(hint).not.toContain('/providers');
+    expect(hint).not.toContain('set-key');
+    expect(hint).not.toContain('relavium');
+  });
+
+  it('a `no-key` model names `/providers` as the remedy when the Home has a provider setup to open (ADR-0122 §6)', async () => {
+    const { port } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'x',
+          displayName: 'Model X',
+          provider: 'gemini',
+          available: false,
+          unavailableReason: 'no-key',
+        }),
+      ],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+      providerSetup: { initialKeyless: true, open: () => Promise.resolve() },
+    });
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker?.hint).toBe(
+      'Model X: no key for Google Gemini — open /providers to connect a key',
+    );
   });
 
   it('Esc closes the picker without writing a default', async () => {

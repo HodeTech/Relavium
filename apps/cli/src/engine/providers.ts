@@ -172,6 +172,28 @@ export function providerKeyAvailabilityMessage(
 }
 
 /**
+ * The hint beside a provider's row in the explicit `Providers` list (MVP-11, ADR-0146 §6): what its key is, and what `Enter` does on the row.
+ * It is a hint inside the very list that connects a provider, so it never says to open it (the old hint did: ``open `/providers` to connect
+ * a key``, inside `/providers`), and it names no provider id: the row's own label is the display name. Short enough to stay on one row at 80
+ * columns, which also leaves no wrapped row to start with a stray space.
+ */
+export function providerRowHint(availability: ProviderKeyAvailability): string {
+  switch (availability.status) {
+    case 'present-standard-not-allowed':
+      return `${availability.source.name} is set · Enter to allow it`;
+    case 'ineligible-custom-endpoint':
+      // Short on purpose: choosing the row says why in a note of its own (`${name} cannot be used with the configured custom endpoint`).
+      return 'custom endpoint · Enter to add a key';
+    case 'unavailable':
+      return 'the OS keychain is unavailable · Enter for options';
+    case 'missing':
+      return 'no key yet · Enter to add one';
+    case 'usable':
+      return `An API key is available from ${'name' in availability.source ? availability.source.name : availability.source.label}.`;
+  }
+}
+
+/**
  * The actionable "no key" message: names both ways to provide one, never a key. One source for
  * {@link createProviderResolver}'s `keyFor` and the session pre-flight (MVP-A4), so the user reads the same
  * remedy whichever caught it first.

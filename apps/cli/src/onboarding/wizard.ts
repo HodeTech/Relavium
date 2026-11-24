@@ -11,6 +11,7 @@ import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
   keyHint,
+  providerDisplayName,
   providerHasKey,
   providerKeyEnvVar,
   validateProviderKey,
@@ -22,6 +23,12 @@ import type { CliIo } from '../process/io.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 import { nativePromptIo } from '../process/native-prompt-io.js';
 import { runSessionPrompt } from '../chat/session-prompt.js';
+import {
+  DESTINATION_NOTE_TITLE,
+  FIRST_RUN_NOTE_TITLE,
+  setupSkippedNotice,
+  type SetupSurface,
+} from './setup-notes.js';
 import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 
 /**
@@ -43,9 +50,14 @@ import type { SessionWorkOwner } from '../chat/session-work-owner.js';
  *    key is then stored UNVERIFIED and the note says so (never claiming a verification we didn't do).
  *  - The only key material ever surfaced is {@link keyHint} (the last 4); the redacted probe `detail` is the only
  *    failure text shown. Nothing is written to a file/log/error/report.
- *  - The keychain-unavailable fallback prints the env-var name to set — NEVER the key, and NEVER a plaintext file
- *    (the deliberate "no silent plaintext fallback" of `providerSetKey`).
+ *  - The keychain-unavailable fallback names the env var to set (as a variable name, no shell command) — NEVER the key, and
+ *    NEVER a plaintext file (the deliberate "no silent plaintext fallback" of `providerSetKey`).
  */
+
+/** `an Anthropic`, `a Google Gemini`: the article a sentence needs before a provider's display name (the four known names). */
+function withArticle(name: string): string {
+  return /^[AEIOU]/u.test(name) ? `an ${name}` : `a ${name}`;
+}
 
 /** The narrow slice of `@clack/prompts` the wizard uses — injectable so the flow unit-tests without a TTY. */
 export interface ClackOnboardingDeps {
@@ -254,10 +266,13 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
   assertAdmitting(deps);
   const p = ownedPrompter(deps);
   p.intro('Welcome to Relavium');
-  p.note(
-    'Connect a model provider to start chatting.\nYour key is stored in your OS keychain — never on disk.',
-    'First-run setup',
-  );
+  // The first-run sentence belongs to a genuine first run: replacing or adding a key from `/providers` while another source already works
+  // is not one (`selectStarterDefault` is exactly "no usable source before this setup"). The legacy flow has no such distinction.
+  if (deps.native === undefined || deps.native.selectStarterDefault !== false)
+    p.note(
+      'Connect a model provider to start chatting.\nYour key is stored in your OS keychain — never on disk.',
+      FIRST_RUN_NOTE_TITLE,
+    );
 
   const providerValue =
     deps.initialProvider ??
@@ -273,9 +288,10 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
   // `select` only ever yields a listed option, so narrow to the closed set WITHOUT a cast (mirrors create-prompter).
   const provider = KNOWN_PROVIDER_IDS.find((id) => id === providerValue);
   if (provider === undefined) return skip(p, deps);
+  const displayName = providerDisplayName(provider);
 
   if (deps.native !== undefined)
-    p.note(deps.native.endpointContext(provider), 'Provider destination');
+    p.note(deps.native.endpointContext(provider), DESTINATION_NOTE_TITLE);
   const rawKey = await p.password({
     message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
     validate: requireKey,
@@ -370,7 +386,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
     );
     if (deps.native?.signal.aborted === true) {
       reportCommitted(
-        `Your ${provider} key was stored in the OS keychain. The default model was not saved.`,
+        `Your ${displayName} key was stored in the OS keychain. The default model was not saved.`,
       );
       return;
     }
@@ -379,7 +395,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
     if (deps.native?.signal.aborted === true && err === deps.native.signal.reason) {
       if (keyStored)
         reportCommitted(
-          `Your ${provider} key was stored in the OS keychain, but setup was interrupted. The default model was not saved.`,
+          `Your ${displayName} key was stored in the OS keychain, but setup was interrupted. The default model was not saved.`,
         );
       return;
     }
@@ -402,8 +418,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
       // persist the key to disk.
       p.note(
         `Couldn't reach your OS keychain, so the key was NOT saved.\n` +
-          `Set it in your shell instead, then restart Relavium:\n\n` +
-          `  export ${providerKeyEnvVar(provider)}=<your ${provider} key>`,
+          `To use your ${displayName} key anyway, set ${providerKeyEnvVar(provider)} in the environment before starting Relavium.`,
         'Keychain unavailable',
       );
     } else {
@@ -411,7 +426,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
       // issue resurfaces at the Home, which reads the same store.
       p.note(
         deps.native === undefined
-          ? 'Setup could not be completed. Add a provider anytime with `relavium provider add`.'
+          ? 'Setup could not be completed. Add a provider anytime with /providers.'
           : `Setup could not be completed. ${nativeSetupRemedy(deps.native.surface)}`,
         'Setup failed',
       );
@@ -431,11 +446,11 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
   const storedLine =
     deps.native !== undefined
       ? verified
-        ? `Verified and stored your ${provider} key in the OS keychain.`
-        : `Saved your ${provider} key — it couldn't be verified now. Run /doctor to re-check.`
+        ? `Verified and stored your ${displayName} key in the OS keychain.`
+        : `Saved your ${displayName} key — it couldn't be verified now. Open a chat to check it.`
       : verified
-        ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
-        : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
+        ? `Verified and stored your ${displayName} key (${keyHint(keyToStore)}) in the OS keychain.`
+        : `Saved your ${displayName} key (${keyHint(keyToStore)}) — it couldn't be verified now. Open a chat to check it.`;
   if (deps.native?.selectStarterDefault === false) {
     reportCommitted(
       `${storedLine}\nYour model preference is unchanged. Choose a model with /models.`,
@@ -478,8 +493,8 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
     }
     p.note(
       deps.native === undefined
-        ? `${storedLine}\nPick a ${provider} model with /models to start chatting.`
-        : `${storedLine}\nThe default was not saved. Pick a ${provider} model with /models.`,
+        ? `${storedLine}\nPick ${withArticle(displayName)} model with /models to start chatting.`
+        : `${storedLine}\nThe default was not saved. Pick ${withArticle(displayName)} model with /models.`,
       'Connected',
     );
     if (deps.native !== undefined) return;
@@ -576,6 +591,9 @@ async function validateWithRetry(
       return null;
     }
     if (choice === 'continue') return { keyToStore, verified: false };
+    // 'recheck' (offered after a network failure only): the same check again with the SAME key, which this loop still holds. Nothing is
+    // asked for again, so a poor connection is not answered by pasting a good key twice or by saving it unverified.
+    if (choice === 'recheck') continue;
     // clack's `select` only ever yields a listed value; fail loud if a future option is added without a handler.
     if (choice !== 'retry') throw new Error(`unexpected wizard choice: ${String(choice)}`);
 
@@ -593,51 +611,59 @@ async function validateWithRetry(
 }
 
 /**
- * Build the failed-key retry prompt (the `p.select` payload). The order + the pre-highlighted (bare-Enter) option
- * depend on the CAUSE: a TRANSIENT (`network` — offline / timeout / rate-limit / overloaded) failure defaults to
- * "save it anyway" (don't block an offline first-run); a non-transient failure (a rejected key, a billing/account
- * issue, or an unexpected fault) defaults to "re-enter". `detail` (already key-redacted, and it names the specific
- * reason, e.g. `invalid_api_key`) is the neutral evidence — we do NOT assert "the key is bad" for the non-network
- * case, since a 402/400 may mean billing or a stale test model rather than a wrong key.
+ * Build the failed-key retry prompt (the `p.select` payload). The options and the pre-highlighted (bare-Enter) one depend on the CAUSE, and
+ * a failed check is never answered by a reflex `Enter` into an unverified key (ADR-0146 §6):
+ *
+ * - a TRANSIENT (`network`: offline, a timeout, rate limit, overloaded) failure puts `Retry the check` first and pre-selected: the same key
+ *   is checked again, with nothing to paste, so a poor connection does not push toward saving it unverified;
+ * - any other failure (a rejected key, a billing or account issue, an unexpected fault) puts `Enter a different key` first and
+ *   pre-selected. `detail` (already key-redacted, and it names the specific reason, e.g. `invalid_api_key`) is the neutral evidence: we do
+ *   NOT assert "the key is bad" for the non-network case, since a 402/400 may mean billing or a stale test model rather than a wrong key.
+ *
+ * `Save it anyway · not verified` is never pre-selected and sits last but one, and `Skip setup` is last. Its hint names how to verify later,
+ * which is what is true today: the doctor has no provider-key check yet, so it is not named.
  */
 function buildRetryPrompt(
   isTransient: boolean,
   displayName: string,
   detail: string,
 ): Parameters<ClackOnboardingDeps['select']>[0] {
+  const enterDifferent = { value: 'retry', label: 'Enter a different key' };
+  const saveAnyway = {
+    value: 'continue',
+    label: 'Save it anyway · not verified',
+    hint: 'verify later by opening a chat',
+  };
+  const skipSetup = { value: 'skip', label: 'Skip setup' };
   return {
     message: isTransient
       ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${detail}).`
       : `Couldn't verify your ${displayName} key (${detail}).`,
     options: isTransient
-      ? [
-          { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
-          { value: 'retry', label: 'Enter a different key' },
-          { value: 'skip', label: 'Skip setup' },
-        ]
-      : [
-          { value: 'retry', label: 'Enter a new key' },
-          { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
-          { value: 'skip', label: 'Skip setup' },
-        ],
-    initialValue: isTransient ? 'continue' : 'retry',
+      ? [{ value: 'recheck', label: 'Retry the check' }, enterDifferent, saveAnyway, skipSetup]
+      : [enterDifferent, saveAnyway, skipSetup],
+    initialValue: isTransient ? 'recheck' : 'retry',
   };
 }
 
-/** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */
-function nativeSetupRemedy(surface: 'home' | 'standalone-chat' | undefined): string {
+/** The recovery after a setup that could not finish: a pointer to the way back in, in actions the host has. */
+function nativeSetupRemedy(surface: SetupSurface): string {
   return surface === 'standalone-chat'
-    ? 'Restart `relavium chat` to open provider setup, or run `/doctor` to check your setup.'
-    : 'Open `/providers` to connect a key, or run `/doctor` to check your setup.';
+    ? 'Restart this chat to open provider setup, or run /doctor to check your setup.'
+    : 'Open /providers to connect a key, or run /doctor to check your setup.';
 }
 
+/**
+ * The cancel/skip exit. The native setup says it in one line ({@link setupSkippedNotice}), the same words whichever way the person left; a
+ * cancel (`Esc`, `Ctrl+C`) has already ended the flow, so the host speaks for it with the same line. The legacy flow keeps its own note.
+ */
 function skip(p: ClackOnboardingDeps, deps: OnboardingDeps): void {
-  p.note(
-    deps.native === undefined
-      ? 'Skipped. Add a provider anytime with `relavium provider add`, or run `/doctor` to check your setup.'
-      : `Skipped. ${nativeSetupRemedy(deps.native.surface)}`,
-    'Setup skipped',
-  );
+  if (deps.native === undefined)
+    p.note(
+      'Skipped. Add a provider anytime with /providers, or run /doctor to check your setup.',
+      'Setup skipped',
+    );
+  else p.note(setupSkippedNotice(deps.native.surface));
   p.outro('Starting Relavium.');
 }
 

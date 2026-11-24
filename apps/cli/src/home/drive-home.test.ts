@@ -1699,9 +1699,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('', ENTER); // submit => startChat => the config read throws a ConfigError
     await flush();
 
-    const banner = props.controller.getSnapshot().errorText ?? '';
-    expect(banner.startsWith(`~${sep}.relavium${sep}config.toml: is not valid TOML`)).toBe(true);
+    // The failure is the Home's notice now (it wraps and pages: the one-row line it was cut the remedy off), after one fixed lead-in.
+    const banner = props.controller.getSnapshot().notice ?? '';
+    expect(banner.startsWith('Couldn’t start the chat: ')).toBe(true);
+    expect(banner).toContain(`~${sep}.relavium${sep}config.toml: is not valid TOML`);
     expect(banner, 'the operator home is not in the banner').not.toContain(testHomeDir);
+    expect(props.controller.getSnapshot().input.text, 'the message comes back to the prompt').toBe(
+      'hello',
+    );
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)

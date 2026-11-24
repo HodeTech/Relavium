@@ -359,71 +359,11 @@ const ALLOWANCES: readonly Allowance[] = [
   },
 ];
 
-/** Strings in files this sweep did not own (the maintainer's other task). Delete an entry when its string is fixed; the test fails if it no longer matches. */
-const PENDING_ELSEWHERE: readonly Allowance[] = [
-  {
-    file: 'home/drive-home.tsx',
-    includes: 'use relavium chat resume and Tab',
-    reason:
-      "proposed: 'This session belongs to another directory. Open Home there, or use /resume and Tab to browse all directories.'",
-  },
-  {
-    file: 'home/provider-setup.ts',
-    includes: 'Restart relavium chat to retry setup.',
-    reason:
-      "proposed: 'Restart this chat to retry setup.' (a stand-alone chat), '/providers' on the Home",
-  },
-  {
-    file: 'onboarding/wizard.ts',
-    includes: 'with `relavium provider add`',
-    reason: "proposed: 'Add a provider anytime with /providers'",
-  },
-  {
-    file: 'onboarding/wizard.ts',
-    includes: 'Restart `relavium chat` to open provider setup',
-    reason: "proposed: 'Restart this chat to open provider setup'",
-  },
-  {
-    file: 'render/tui/chat-ink.tsx',
-    includes: '`relavium provider set-key ',
-    reason:
-      "proposed: the surface's own remedy ('open /providers' on the Home, 'restart this chat' in a stand-alone chat)",
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: '`relavium status` shows where a run stands.',
-    reason: "proposed: 'The run history is not available here.'",
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: '`relavium status` shows what the run waits for.',
-    reason:
-      'proposed: the Active tab of /workflows shows what the run waits for; or keep as script-only with a reason',
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: 'No gate to decide here: `relavium status`',
-    reason:
-      "proposed: 'No gate to decide here: open the run in /workflows to see what it waits for'",
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: 'unavailable in this session: `relavium status`',
-    reason: 'proposed: the same words as the line above it',
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: 'Use relavium chat resume.',
-    reason:
-      "proposed: 'Session resume is unavailable here.' (the constant SESSIONS_RESUME_UNAVAILABLE already says it)",
-  },
-  {
-    file: 'render/tui/home-controller.ts',
-    includes: 'run `relavium provider set-key ',
-    reason:
-      "proposed: always 'open /providers to connect a key', or name no remedy when no providerSetup port is wired",
-  },
-];
+/**
+ * Strings in files this sweep did not own, left for the step that did (Step 2.4 fixed the last ones, so the list is empty). A step that
+ * defers a string adds an entry here and deletes it when the string is fixed; the test fails if an entry no longer matches.
+ */
+const PENDING_ELSEWHERE: readonly Allowance[] = [];
 
 /** Which files may call which command builder, and why. */
 const BUILDER_CALLS: Readonly<

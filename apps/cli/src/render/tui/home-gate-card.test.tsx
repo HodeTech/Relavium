@@ -389,7 +389,7 @@ describe('opening the card', () => {
     );
   });
 
-  it('a parked run with no gate to decide opens no card and points at `relavium status`', async () => {
+  it('a parked run with no gate to decide opens no card and points at /workflows, not at a shell command', async () => {
     const m = mount({
       rows: [{ runId: RUN, kind: 'none', gates: 0 }],
       run: { runId: RUN, workflowId: 'wf', gates: [], budgetGates: [], degraded: false },
@@ -404,9 +404,8 @@ describe('opening the card', () => {
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
     expect(m.controller.getSnapshot().notice).toContain('No gate to decide here');
-    expect(m.controller.getSnapshot().notice).toContain(
-      '`relavium status` shows what it waits for',
-    );
+    expect(m.controller.getSnapshot().notice).toContain('see what it waits for in /workflows');
+    expect(m.controller.getSnapshot().notice).not.toContain('relavium status');
     expect(m.controller.getSnapshot().notice).toContain('(run run-0001)');
   });
 

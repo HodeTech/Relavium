@@ -11,9 +11,10 @@ import { colorProps } from './projection.js';
  * (`relavium chat`) and the Home `Prompt`, so both surfaces render the editor identically. Each row is a cyan
  * line: the first prefixed `> `, continuation lines aligned under it with two spaces. EVERY segment (before /
  * the cursor cell / after) passes {@link sanitizeInline} at this display boundary, so a pasted or typed control
- * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block (a terminal
- * attribute, gated on `color` like every other style); without color the underlying char is still rendered,
- * just not highlighted — matching the prior trailing-block behavior.
+ * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block, drawn WHETHER OR NOT
+ * colour is on: "no colour" means colour only (ADR-0145 §5, MVP-11 OD-6), and bold, inverse and underline stay. The
+ * CLI gates colour with its own flag and ink's `inverse` does not read `NO_COLOR`, so the cell is not gated on
+ * `color`; gating it left the prompt with no cursor at all under `NO_COLOR` (observed, MVP-11 step 1 evidence §A).
  *
  * The rows INTENTIONALLY reflow (ink's default `wrap`), unlike the Home strip's read-only `truncate-end` rows:
  * this is a LIVE editor, so the full input + the cursor must always stay visible (a `truncate-end` prompt would
@@ -42,7 +43,7 @@ export function PromptEditor(
           <Text key={rowOffset} {...colorProps(color, 'cyan')}>
             {rowOffset === 0 ? '> ' : '  '}
             {sanitizeInline(row.before)}
-            {row.at !== undefined && (color ? <Text inverse>{cursorCell}</Text> : cursorCell)}
+            {row.at !== undefined && <Text inverse>{cursorCell}</Text>}
             {sanitizeInline(row.after)}
           </Text>
         );

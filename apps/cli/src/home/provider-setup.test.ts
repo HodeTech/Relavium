@@ -302,4 +302,133 @@ describe('provider setup coordinator', () => {
     expect(runOnboardingWizard).toHaveBeenCalled();
     expect(f.messages.join(' ')).not.toContain('unavailable');
   });
+
+  // ── MVP-11 Step 2.4 (ADR-0146 §6): one first screen, no dead end ───────────────────────────────────────────────────────────
+
+  describe('the explicit Providers list', () => {
+    it('says what each row is and what Enter does, by display name, and never points at the screen it is on', async () => {
+      const f = fixture([NATIVE_PROMPT_CANCEL]);
+      await createProviderSetupCoordinator(f.deps).run('explicit');
+      const list = f.messages.filter((message) => message.includes('no key yet'));
+      expect(list).toEqual([
+        'Anthropic no key yet · Enter to add one',
+        'OpenAI no key yet · Enter to add one',
+        'Google Gemini no key yet · Enter to add one',
+        'DeepSeek no key yet · Enter to add one',
+      ]);
+      const text = f.messages.join('\n');
+      expect(text).not.toContain('open `/providers`');
+      expect(text).not.toContain("provider 'anthropic'");
+    });
+
+    it('offers an environment key that was declined with Not now again, and Enter on its row asks for the consent again', async () => {
+      const f = fixture(['defer', 'openai', 'use'], {
+        env: { OPENAI_API_KEY: 'never-display-this' },
+      });
+      const coordinator = createProviderSetupCoordinator(f.deps);
+      expect((await coordinator.run('automatic')).status).toBe('deferred');
+      expect(f.policy.allows('openai', 'OPENAI_API_KEY')).toBe(false);
+      const before = f.messages.length;
+      const explicit = await coordinator.run('explicit');
+      expect(f.messages.slice(before)).toContain(
+        'OpenAI OPENAI_API_KEY is set · Enter to allow it',
+      );
+      expect(
+        f.messages.filter((message) => message.includes('Allow this source?')),
+        'the consent card was asked a second time, from the list',
+      ).toHaveLength(2);
+      expect(explicit.status).toBe('ready');
+      expect(f.policy.allows('openai', 'OPENAI_API_KEY')).toBe(true);
+      expect(f.messages.join(' ')).not.toContain('never-display-this');
+    });
+  });
+
+  describe('a skip says so, and only a first run skips', () => {
+    it.each([
+      ['home' as const, 'Setup skipped · /providers connects a provider any time'],
+      [
+        'standalone-chat' as const,
+        'Setup skipped · restart this chat to open provider setup any time',
+      ],
+    ])(
+      'Esc on the first card of a keyless first run, on %s, leaves the skip line as the notice',
+      async (surface, line) => {
+        const f = fixture([NATIVE_PROMPT_CANCEL], { env: { OPENAI_API_KEY: 'x-secret' } });
+        const result = await createProviderSetupCoordinator({
+          ...f.deps,
+          credentialSurface: surface,
+        }).run('automatic');
+        expect(result).toEqual({ status: 'cancelled', changed: false, notice: line });
+      },
+    );
+
+    it('Not now on the environment key is a skip too', async () => {
+      const f = fixture(['defer'], { env: { OPENAI_API_KEY: 'x-secret' } });
+      const result = await createProviderSetupCoordinator(f.deps).run('automatic');
+      expect(result).toEqual({
+        status: 'deferred',
+        changed: false,
+        notice: 'Setup skipped · /providers connects a provider any time',
+      });
+    });
+
+    it('closing the Providers list while keyless is a skip', async () => {
+      const f = fixture([NATIVE_PROMPT_CANCEL]);
+      expect(await createProviderSetupCoordinator(f.deps).run('explicit')).toEqual({
+        status: 'cancelled',
+        changed: false,
+        notice: 'Setup skipped · /providers connects a provider any time',
+      });
+    });
+
+    it('closing the Providers list of a Home that already has a key skips nothing, and says nothing', async () => {
+      const f = fixture([NATIVE_PROMPT_CANCEL], { env: { RELAVIUM_OPENAI_API_KEY: 'a-key' } });
+      expect(await createProviderSetupCoordinator(f.deps).run('explicit')).toEqual({
+        status: 'cancelled',
+        changed: false,
+      });
+    });
+  });
+
+  describe('a locked keychain is said first', () => {
+    it('offers Retry keychain, the remembered reminder and Not now; no Enter a key (it would be checked and then lost)', async () => {
+      const f = fixture(['cancel'], { keychain: unavailable });
+      await createProviderSetupCoordinator(f.deps).run('automatic');
+      const text = f.messages.join('\n');
+      expect(text).toContain('Retry keychain');
+      expect(text).toContain('Remember this and continue without a key');
+      expect(text).toContain('Not now');
+      expect(text).not.toContain('Enter a key');
+      expect(text).not.toContain('Enter a different key');
+      expect(runOnboardingWizard, 'no key prompt was opened').not.toHaveBeenCalled();
+    });
+
+    it('names the environment variable once, as a variable name, and no shell command; says what Remember saves', async () => {
+      const f = fixture(['cancel'], { keychain: unavailable });
+      await createProviderSetupCoordinator(f.deps).run('automatic');
+      const text = f.messages.join('\n');
+      expect(text.split('RELAVIUM_ANTHROPIC_API_KEY')).toHaveLength(2);
+      expect(text).not.toContain('export');
+      expect(text).not.toContain('relavium provider');
+      expect(text).toContain('saved in your global config');
+    });
+
+    it('leaves out the reminder once it is remembered, and still offers no key entry', async () => {
+      // The list opens first (explicit); picking a provider reaches the keychain step.
+      const f = fixture(['anthropic', 'cancel'], { keychain: unavailable, acknowledged: true });
+      await createProviderSetupCoordinator(f.deps).run('explicit');
+      const text = f.messages.join('\n');
+      expect(text, 'the keychain step was reached').toContain('Retry keychain');
+      expect(text).not.toContain('Remember this');
+      expect(text).not.toContain('Enter a key');
+    });
+  });
+
+  it('shows the intro note on the card from its first row', async () => {
+    const f = fixture([NATIVE_PROMPT_CANCEL]);
+    const notes: string[] = [];
+    const flow = { ...f.deps.flow, note: (message: string) => notes.push(message) };
+    await createProviderSetupCoordinator({ ...f.deps, flow }).run('explicit', 'Why this opened.');
+    expect(notes[0]).toBe('Why this opened.');
+  });
 });

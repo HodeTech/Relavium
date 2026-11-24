@@ -19,7 +19,6 @@ export interface HomeNoticeOptions {
   readonly cols: number;
   readonly rows: number;
   readonly keyless: boolean;
-  readonly errorText: string | undefined;
   readonly showBanner: boolean | undefined;
   readonly isEmpty: boolean;
   readonly hasSessions: boolean;
@@ -99,7 +98,6 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
       homePromptRows(options.editor, options.cols) -
       3 -
       (options.keyless ? 1 : 0) -
-      (options.errorText === undefined ? 0 : 2) -
       (options.reservedRows ?? 0) -
       management,
   );

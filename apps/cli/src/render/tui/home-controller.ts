@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
+import { secretMaskRanges } from '@relavium/llm/scrub-secrets';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import {
@@ -13,6 +14,7 @@ import {
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
+import { providerDisplayName } from '../../engine/providers.js';
 import { ConfigWriteRefusedError } from '../../config/write.js';
 import { createActivePoll, type ActivePoll } from '../../history/active-poll.js';
 import type { ActiveRead } from '../../history/active-source.js';
@@ -189,7 +191,7 @@ import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
 import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
-import { sanitizeInline } from '../sanitize.js';
+import { sanitizeInline, sanitizeUntrusted } from '../sanitize.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -265,7 +267,6 @@ export interface HomeControllerState {
   readonly keyless: boolean;
   readonly nativeActionBusy: boolean;
   readonly snapshot: HomeSnapshot;
-  readonly errorText: string | undefined;
   readonly pendingMessage: string;
   readonly input: EditorState;
   readonly session: HomeChatSession | undefined;
@@ -694,7 +695,8 @@ export interface HomeControllerDeps {
   ) => Promise<HomeChatSession | { readonly notice: string } | undefined>;
   readonly providerSetup?: {
     readonly initialKeyless: boolean;
-    readonly open: () => Promise<void>;
+    /** Open the explicit provider setup. `note` is shown in the setup's own card, where a person who is looking at the setup can read it. */
+    readonly open: (options?: { readonly note?: string }) => Promise<void>;
     /** Sample once when returning to Home after a chat, never during rendering. */
     readonly readKeyless?: () => boolean;
   };
@@ -764,9 +766,15 @@ export interface HomeController {
   readonly teardownActive: () => Promise<void>;
 }
 
+/**
+ * What a draft that looks like a provider key is answered with when there is no key yet (ADR-0146 §6): the draft was cleared, not kept and not
+ * recorded, and the key belongs in the setup that has just opened. Fixed text: it never echoes the draft.
+ */
+export const KEY_SHAPED_DRAFT_NOTICE =
+  'That looked like an API key, so it was not kept. Paste it in the setup that just opened; it is stored in your OS keychain.';
+
 /** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
-const RUN_HISTORY_UNAVAILABLE =
-  'The run history is not available here. `relavium status` shows where a run stands.';
+const RUN_HISTORY_UNAVAILABLE = 'The run history is not available here.';
 
 /** What the landing says when a session resume ends because the person cancelled one of its interactive steps. */
 const RESUME_CANCELLED = 'Resume cancelled.';
@@ -895,7 +903,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     keyless: deps.providerSetup?.initialKeyless ?? false,
     nativeActionBusy: false,
     snapshot: deps.homeStore.read(),
-    errorText: undefined,
     pendingMessage: '',
     input: emptyEditor(),
     session: undefined,
@@ -1527,7 +1534,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     } catch {
       notParked(
         runId,
-        `\`relavium status\` shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
+        `The Active tab of /workflows shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
         back,
         from,
       );
@@ -1549,7 +1556,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else
         notParked(
           runId,
-          `No gate to decide here: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+          `No gate to decide here: see what it waits for in /workflows (run ${sanitizeInline(runId)}).`,
           back,
           from,
         );
@@ -1715,8 +1722,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({
           session: undefined,
           input: emptyEditor(),
-          errorText: undefined, // a stale build-failure banner must not haunt a clean return from a good chat
-          notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
+          notice: undefined, // a stale build-failure notice or /doctor report must not leak into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           ...parkedPatch(), // and a run it left parked, or one answered meanwhile, in the refreshed Attention rows
@@ -1785,7 +1791,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           session: fresh,
           mode: 'chat', // STAY in chat (no bare-Home flash) — the defining difference from endChat
           input: emptyEditor(),
-          errorText: undefined,
           notice: undefined,
           pendingMessage: '',
           palette: undefined,
@@ -1865,7 +1870,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           session: next,
           mode: 'chat', // STAY in chat — the model switched underneath, the conversation continues
           input: emptyEditor(),
-          errorText: undefined,
           notice: undefined,
           pendingMessage: '',
           palette: undefined,
@@ -1971,14 +1975,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     void driveNativeAction(operation, label).catch(failHome);
   };
 
-  const openProviderSetup = (): void => {
+  const openProviderSetup = (options?: {
+    readonly note: string;
+    readonly patch: Partial<HomeControllerState>;
+  }): void => {
     const port = deps.providerSetup;
     if (port === undefined) {
-      set({ notice: 'Provider setup is unavailable in this session.' });
+      // Whatever the caller had to change in the same breath (a draft that is a key is cleared) is still changed: nothing is kept for a
+      // setup that will not open. Its own reason, which says where to paste the key, would be false here, so the notice is this one.
+      set({ ...options?.patch, notice: 'Provider setup is unavailable in this session.' });
       state.session?.store.note('Provider setup is unavailable in this session.');
       return;
     }
-    openNativeAction(() => port.open(), 'Provider setup');
+    openNativeAction(
+      () => port.open(options === undefined ? undefined : { note: options.note }),
+      'Provider setup',
+      options?.patch,
+    );
   };
   const openProjectInit = (): void => {
     const open = deps.initializeProject;
@@ -2052,7 +2065,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (ask === undefined) {
       notParked(
         runId,
-        `Continuing a run is unavailable in this session: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+        `Continuing a run is unavailable in this session: see what it waits for in /workflows (run ${sanitizeInline(runId)}).`,
         back,
         from,
       );
@@ -2229,7 +2242,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
-      const notice = 'Session resume is unavailable here. Use relavium chat resume.';
+      const notice = SESSIONS_RESUME_UNAVAILABLE;
       set({ notice });
       state.session?.store.note(notice);
       return;
@@ -2280,7 +2293,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         mode: 'chat',
         input: emptyEditor(),
         pendingMessage: '',
-        errorText: undefined,
         notice: undefined,
         stripFocus: undefined,
         attachments: [],
@@ -2519,6 +2531,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  /**
+   * `Enter` on a message while there is no provider key (ADR-0146 §6, MVP-11 OD-19): a chat that cannot start is never built. The explicit
+   * provider setup opens and the message STAYS in the prompt, exactly as typed; when the setup closes in any way it is still there and was
+   * not sent (sending it on success would send it to a model the person did not look at). Nothing is recorded in the input history: the
+   * message was not sent.
+   *
+   * The exception is a draft that looks like a provider key (what the secret scrubber would mask). It is never kept and never recorded: the
+   * history database is unencrypted and cannot be deleted, so a pasted key must not survive there or in the prompt. The editor is cleared
+   * in the same state change that opens the setup, and the notice says why and where the key goes.
+   */
+  const connectProviderKeepingDraft = (): void => {
+    if (secretMaskRanges(state.input.text).length === 0) {
+      openProviderSetup();
+      return;
+    }
+    openProviderSetup({
+      note: KEY_SHAPED_DRAFT_NOTICE,
+      patch: { input: emptyEditor(), notice: KEY_SHAPED_DRAFT_NOTICE },
+    });
+  };
+
   const submit = (): void => {
     if (exiting) return;
     const trimmed = state.input.text.trim();
@@ -2529,13 +2562,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     if (managementCommand(trimmed)) return;
+    if (state.keyless) {
+      connectProviderKeepingDraft();
+      return;
+    }
+    // The message as it was typed, before the editor is cleared: a build that fails gives it back (G6).
+    const draft = state.input.text;
     history = recordHistory(history, trimmed); // the message that starts the chat is recallable via Up in it
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
     doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
     set({
       input: emptyEditor(),
-      errorText: undefined,
       notice: undefined,
       pendingMessage: trimmed,
       mode: 'loading',
@@ -2554,10 +2592,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         activateSession(built, () => sendChatLine(built, trimmed, trimmed));
       },
       (err) => {
+        // The message comes back to the prompt and the failure is shown WHOLE, in the notice area that wraps and pages: the one-row line it
+        // used to be cut the remedy off at 80 columns (observed). A draft that looks like a key is not given back (ADR-0146 §6).
+        const restorable = state.input.text === '' && secretMaskRanges(draft).length === 0;
         set({
-          errorText: err instanceof Error ? err.message : String(err),
+          notice: `Couldn’t start the chat: ${sanitizeUntrusted(err instanceof Error ? err.message : String(err))}`,
+          ...(restorable ? { input: editorFromText(draft) } : {}),
           pendingMessage: '',
-          mode: 'home', // route a build failure back to Home with the banner
+          mode: 'home', // route a build failure back to Home
         });
       },
     );
@@ -2584,7 +2626,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({
       screen: undefined,
       ...parkedPatch(),
-      errorText: undefined,
       notice: undefined,
       pendingMessage: '', // there is no typed message to echo while it builds
       mode: 'loading',
@@ -2906,13 +2947,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'blocked': {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
         // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
+        // The remedy is the Home's own: `/providers`. With no setup port wired it would answer that setup is unavailable, so no remedy is named.
         const noKeyRemedy =
-          deps.providerSetup === undefined
-            ? `run \`relavium provider set-key ${step.provider}\``
-            : 'open /providers to connect a key';
+          deps.providerSetup === undefined ? '' : ' — open /providers to connect a key';
         const hint =
           step.reason === 'no-key'
-            ? `${step.displayName}: no key for ${step.provider} — ${noKeyRemedy}`
+            ? `${step.displayName}: no key for ${providerDisplayName(step.provider)}${noKeyRemedy}`
             : `${step.displayName} is not available on your key — pick another`;
         set({ modelPicker: { ...open, hint } });
         break;

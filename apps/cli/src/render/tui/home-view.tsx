@@ -56,8 +56,8 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
  * Every dynamic line is `wrap="truncate-end"` — a long title / slug / message truncates with an ellipsis at the
  * terminal edge rather than soft-wrapping into a second physical row (which would shatter the glanceable strip),
  * mirroring the sibling run TUI. Sessions have a separate directory line. An overdue (expired) gate is escalated yellow → red so the most time-critical
- * item in "Attention required" catches the eye. A build-failure banner is rendered adjacent to the prompt (not
- * at the top) so it stays in view even when a full strip scrolls the header off a short terminal.
+ * item in "Attention required" catches the eye. A chat that could not be built is reported in the notice area (it wraps and pages, so the
+ * whole failure is readable; a one-row line cut the remedy off at 80 columns).
  */
 
 interface HomeViewProps {
@@ -65,8 +65,6 @@ interface HomeViewProps {
   readonly snapshot: HomeSnapshot;
   /** The current prompt editor — text + cursor (owned by the `RootApp`). */
   readonly editor: EditorState;
-  /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
-  readonly errorText?: string | undefined;
   /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
    *  edit/submit. Multi-line + already secret-free (the doctor formatter sanitizes). */
   readonly notice?: string | undefined;
@@ -213,6 +211,8 @@ function homeHint(state: {
   readonly parkedFocusKind: ParkedRunKind | undefined;
   /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
   readonly runCanBeShown: boolean;
+  /** No provider key: `Enter` connects one (and keeps what is typed), so the bar says so wherever `Enter` does nothing else first. */
+  readonly keyless: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
   if (state.focusedRole === 'parked')
@@ -223,7 +223,14 @@ function homeHint(state: {
   // A failed or recent run opens its detail (the run this Home hosts opens its view): read-only either way.
   if (state.focusedRole !== undefined)
     return '↑/↓ select · Enter open the run · Esc return to prompt · Ctrl+C twice to exit';
-  if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+  // Keyless (ADR-0146 §5): `Enter` opens the provider setup and the message stays in the prompt, so the bar says both. A live run keeps
+  // its own hint below, because `Enter` shows the run first.
+  if (!state.emptyDraft)
+    return state.keyless
+      ? 'Enter to connect a provider · your message is kept'
+      : 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+  if (state.keyless && !state.runCanBeShown)
+    return 'Enter to connect a provider · / commands · Ctrl+C twice to exit';
   if (state.runCanBeShown) {
     // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
     const next = runHintNext(state.hasParkedRuns, state.hasRecentSessions);
@@ -237,7 +244,7 @@ function homeHint(state: {
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
+  const { snapshot, editor, notice, nowMs, cols, rows, color, paletteOpen } = props;
   const interruptArmed = props.interruptArmed === true;
   const exitGuard = props.exitGuard;
   const parked = props.parkedRuns ?? NO_PARKED;
@@ -249,13 +256,9 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     focusedRow?.role === 'parked' ? parked.find((row) => row.runId === focusedRow.id) : undefined;
   const runFocused = (runId: string): boolean => focus?.kind === 'run' && focus.id === runId;
   const runCanBeShown = hostedRunCanBeShown(props.hostedRun);
-  // `Enter` at the empty prompt shows a live run, or opens the row of a focused run (a parked run's gate, a failed or recent run's detail),
-  // BEFORE it sets a provider up: while either is on offer the keyless line's own `Enter` would promise what the key does not do, so the
-  // line waits until neither is.
-  const keylessLine =
-    props.keyless === true &&
-    !runCanBeShown &&
-    (focusedRow === undefined || focusedRow.kind === 'session');
+  // The standing call to action stays on screen whatever has the focus (ADR-0146 §5): a live run or a focused row takes `Enter` first, and
+  // the hint bar below says so in those states, but the line is what tells a keyless person there is a way to start at all.
+  const keylessLine = props.keyless === true;
   // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
   const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
@@ -320,7 +323,6 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     cols,
     rows,
     keyless: keylessLine,
-    errorText,
     showBanner: props.showBanner,
     isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
@@ -338,7 +340,6 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const fixedRows =
     (showBanner ? 4 : 1) +
     runRows +
-    (errorText === undefined ? 0 : 2) +
     (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) +
     (isEmpty ? welcomeRows : 1);
   const stripBudget = Math.max(0, rows - reservedBelow - fixedRows);
@@ -548,14 +549,6 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      {errorText !== undefined && (
-        <Box marginTop={1}>
-          <Text {...colorProps(color, 'red')} wrap="truncate-end">
-            couldn’t start the chat: {sanitizeInline(errorText)}
-          </Text>
-        </Box>
-      )}
-
       {noticeLayout !== undefined && (
         // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
         // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
@@ -579,8 +572,8 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       {paletteOpen !== true && exitGuard === undefined && (
         <Box marginTop={1} flexDirection="column">
           {keylessLine && (
-            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-              Connect a provider to start chatting — Enter to set up or /providers.
+            <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+              No provider key yet · Enter to connect · /providers
             </Text>
           )}
           <PromptEditor editor={editor} color={color} />
@@ -596,6 +589,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               hasParkedRuns: parked.length > 0,
               parkedFocusKind: focusedParked?.kind,
               runCanBeShown,
+              keyless: props.keyless === true,
             })}
           </Text>
         </Box>
