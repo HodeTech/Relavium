@@ -336,11 +336,14 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
           },
           delete: (account) => deps.keychain.delete(account),
         };
+  // A key that was checked and answered is CONNECTED; a key the person chose to keep after a failed check is only SAVED: the card and the
+  // Home's notice must not say a connection that was never made (round 2, U3).
+  const committedTitle = verified ? 'Connected' : 'Saved';
   const reportCommitted = (message: string): void => {
     const flow = deps.native?.flow;
     if (flow === undefined) return;
-    if (flow.committedNote !== undefined) flow.committedNote(message, 'Connected');
-    else flow.note(message, 'Connected');
+    if (flow.committedNote !== undefined) flow.committedNote(message, committedTitle);
+    else flow.note(message, committedTitle);
   };
   const store: ProviderStore =
     deps.native === undefined
@@ -443,14 +446,15 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
   const starterModel = KNOWN_PROVIDERS[provider].testModel;
   // Honest copy: a verified key is "Verified and stored"; a consciously-accepted (network/continue-anyway) key is
   // "Saved … couldn't be verified" so the user knows to re-check — never claim verification we didn't do.
+  // The unverified line does not begin with 'Saved' itself: under the `Saved` title it would read `Saved: Saved your ...`.
   const storedLine =
     deps.native !== undefined
       ? verified
         ? `Verified and stored your ${displayName} key in the OS keychain.`
-        : `Saved your ${displayName} key — it couldn't be verified now. Open a chat to check it.`
+        : `Your ${displayName} key is in the OS keychain, but it couldn't be verified now. Open a chat to check it.`
       : verified
         ? `Verified and stored your ${displayName} key (${keyHint(keyToStore)}) in the OS keychain.`
-        : `Saved your ${displayName} key (${keyHint(keyToStore)}) — it couldn't be verified now. Open a chat to check it.`;
+        : `Your ${displayName} key (${keyHint(keyToStore)}) is in the OS keychain, but it couldn't be verified now. Open a chat to check it.`;
   if (deps.native?.selectStarterDefault === false) {
     reportCommitted(
       `${storedLine}\nYour model preference is unchanged. Choose a model with /models.`,
@@ -479,7 +483,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
     assertAdmitting(deps);
     p.note(
       `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
-      'Connected',
+      committedTitle,
     );
   } catch (cause) {
     if (nativeCancelled(deps) && cause === deps.native?.signal.reason) {
@@ -495,7 +499,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
       deps.native === undefined
         ? `${storedLine}\nPick ${withArticle(displayName)} model with /models to start chatting.`
         : `${storedLine}\nThe default was not saved. Pick ${withArticle(displayName)} model with /models.`,
-      'Connected',
+      committedTitle,
     );
     if (deps.native !== undefined) return;
   }
@@ -547,7 +551,9 @@ async function validateWithRetry(
   let keyToStore = key;
   for (;;) {
     assertAdmitting(deps);
-    if (deps.workOwner !== undefined)
+    // The native card shows the check as its busy line, and a `Verification` note would stay on the card above the failure that follows it
+    // (round 2, U3); only the clack path, which has no busy line, announces the check with a note.
+    if (deps.workOwner !== undefined && deps.native === undefined)
       p.note(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`, 'Verification');
     deps.native?.flow.busy(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
     const sp = p.spinner?.();

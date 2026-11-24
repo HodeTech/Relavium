@@ -31,7 +31,7 @@ export interface PaletteViewProps {
 }
 
 /** The words a dim row carries instead of its description: they read without colour (`unavailable · no conversation to clear`). */
-export const UNAVAILABLE_PREFIX = 'unavailable · ';
+const UNAVAILABLE_PREFIX = 'unavailable · ';
 
 /** What the legend says. Step 3 rewrites the legends; the words are today's. */
 const LEGEND = '↑/↓ select · Enter run · Esc cancel';

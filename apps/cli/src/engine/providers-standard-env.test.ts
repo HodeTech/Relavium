@@ -392,7 +392,7 @@ describe('MVP-2 value-free availability and independent keychain health', () => 
       'from the Home (start Relavium without arguments)',
     );
     expect(providerKeyAvailabilityMessage('openai', state, 'standalone-chat')).not.toMatch(
-      /\/providers|restart this chat/u,
+      /\/providers|restart this chat|relavium/u,
     );
     expect(providerKeyAvailabilityMessage('openai', state, 'home-chat')).toContain(
       'go back to the Home (Ctrl+C twice) and use `/providers`',

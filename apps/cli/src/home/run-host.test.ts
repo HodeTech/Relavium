@@ -859,7 +859,11 @@ describe('nothing reaches the Home`s terminal', () => {
   it('writes a taken-over leg`s explanation to the ring, not to a stream', async () => {
     const s = scriptedRig({ terminal: 'paused', durability: 'uncertain' });
     await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
-    expect(s.host.notices.snapshot().join('\n')).toContain('was taken over by another process');
+    const notice = s.host.notices.snapshot().join('\n');
+    expect(notice).toContain('was taken over by another process');
+    // Inside the TUI the run is read in the Home's own browser, never with a shell command (MVP-11 Step 2 review round 2, N2).
+    expect(notice).toContain('read the run in /workflows (History tab) for what actually happened');
+    expect(notice).not.toMatch(/\brelavium\s+[a-z]/u);
     expect(s.homeIo.err()).toBe('');
   });
 });

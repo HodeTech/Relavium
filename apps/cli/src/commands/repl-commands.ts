@@ -86,7 +86,7 @@ export interface ReplCommandContext {
    *  Its notice says the previous conversation is saved and where `/resume` is (`clearedNotice`), and names no id or shell command. */
   readonly clearSession: () => void | Promise<void>;
   /** `/models` (2.5.G S7, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10 · ADR-0059) — open the
-   *  in-tree model picker over the merged live/static catalog. `availableIn: ['home','chat']`, with a surface-specific
+   *  in-tree model picker over the merged live/static catalog. Offered on the bare Home and in a chat, with a surface-specific
    *  accept: the **Home** writes the NEXT session's default model ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)),
    *  and a **live chat** rebinds the running session via a host-side reseat (ADR-0059). The interactive render layer
    *  (the ink `ChatApp` / the in-Home controller) INTERCEPTS a typed/palette `/models` to open the overlay, so this
@@ -127,13 +127,6 @@ export interface ReplArg {
  */
 export type PaletteSurface = 'home' | 'chat' | 'home-chat';
 
-/** The three surfaces, in the order the tests and the docs list them. */
-export const PALETTE_SURFACES: readonly PaletteSurface[] = Object.freeze([
-  'home',
-  'chat',
-  'home-chat',
-]);
-
 /** The groups of a palette: the Home's four and the chat's five. The order a surface draws them in is {@link SURFACE_GROUPS}. */
 export type CommandGroup =
   | 'work'
@@ -150,17 +143,17 @@ export type CommandGroup =
  * on the Home *Work*, *Set up*, *Check*, *End*; in a chat *Model and behaviour*, *Context*, *Inspect*, *Take away*, *End*. Nothing is sorted by
  * name: intent order, with the commands that end something last.
  */
-export const SURFACE_GROUPS: Readonly<Record<PaletteSurface, readonly CommandGroup[]>> =
-  Object.freeze({
-    home: Object.freeze<CommandGroup[]>(['work', 'setup', 'check', 'end']),
-    chat: Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
-    'home-chat': Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
-  });
+const SURFACE_GROUPS: Readonly<Record<PaletteSurface, readonly CommandGroup[]>> = Object.freeze({
+  home: Object.freeze<CommandGroup[]>(['work', 'setup', 'check', 'end']),
+  chat: Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
+  'home-chat': Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
+});
 
 /**
- * What a command does when it is chosen ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §1): a **popup** (a
- * report, a setting or a flow the user asked for), a **screen** (long, browsable content the user works in) or an **instant** (a one-line
- * result with no surface of its own). The registry stores the class of every placement: a command cannot be added without declaring one.
+ * The class of surface a command's result takes ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §1): a
+ * **popup** (a report, a setting or a flow the user asked for), a **screen** (long, browsable content the user works in) or an **instant** (a
+ * one-line result with no surface of its own). The registry stores the class of every placement, so a command cannot be added without
+ * declaring one. **Declared ahead of use (ADR-0145 §1, §7), read by tests until the popup step**: no host chooses a surface by it yet.
  */
 export type SurfaceClass = 'popup' | 'screen' | 'instant';
 
@@ -171,8 +164,9 @@ export type SurfaceClass = 'popup' | 'screen' | 'instant';
  *
  * The context is the one [ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7 names, and the hosts fill all of
  * it. TODAY the availability functions read only `hasSession` (`/clear`) and `hasSavedSessions` (`/resume`); `hasKey` is read by the
- * palette's own lead rule (`buildPaletteEntries`: a keyless Home leads with `/providers`) and by no availability function; `surface` and
- * `turnRunning` are read by none (the hosts fill `turnRunning`; {@link availabilityOf} sets `surface`).
+ * palette's own lead rule (`buildPaletteEntries`: a keyless Home leads with `/providers`) and by no availability function. `surface` and
+ * `turnRunning` are **declared ahead of use (ADR-0145 §1, §7), read by tests until the popup step**: {@link availabilityOf} sets `surface`,
+ * the hosts fill `turnRunning`, and no availability function reads either yet.
  */
 export interface AvailabilityContext {
   readonly surface: PaletteSurface;
@@ -198,6 +192,7 @@ export interface Placement {
   readonly rank: number;
   /** The row's words on this surface (one per surface, because the meaning differs: `/exit` leaves Relavium, ends a chat or goes home). */
   readonly description: string;
+  /** The class of surface the result takes: declared ahead of use (ADR-0145 §1, §7), read by tests until the popup step ({@link SurfaceClass}). */
   readonly surface: SurfaceClass;
   /** Absent ⇒ always available. */
   readonly available?: (ctx: AvailabilityContext) => Availability;
@@ -808,16 +803,20 @@ function freezeDefinition(definition: CommandDefinition): CommandDefinition {
 }
 
 /** The deep-frozen table: one definition per command name, with its placements. */
-export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = Object.freeze(
+const COMMAND_DEFINITIONS: readonly CommandDefinition[] = Object.freeze(
   COMMAND_TABLE.map(freezeDefinition),
 );
 
 /** O(1) lookup of a definition by its slash name (no leading `/`). */
-export const COMMAND_DEFINITIONS_BY_NAME: ReadonlyMap<string, CommandDefinition> = new Map(
+const COMMAND_DEFINITIONS_BY_NAME: ReadonlyMap<string, CommandDefinition> = new Map(
   COMMAND_DEFINITIONS.map((definition) => [definition.name, definition]),
 );
 
-/** The definitions a surface offers, in the order it lists them: by the surface's group order, then by rank. */
+/**
+ * The definitions a surface offers, in the order it lists them: by the surface's group order, then by rank. **The one export of the table that
+ * no production file reads**: `repl-registry.test.ts` and `home-registry-dispatch.test.ts` hold the table to its contract through it (its
+ * placements, its `opener` marker, its order), and the popup step reads the placements' classes from it.
+ */
 export function commandDefinitionsOf(surface: PaletteSurface): readonly CommandDefinition[] {
   return ORDER_BY_SURFACE[surface];
 }

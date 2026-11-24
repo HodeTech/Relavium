@@ -105,6 +105,30 @@ function wrapNoticeLine(line: string, cols: number): string[] {
   return rows;
 }
 
+/** The last notice wrapped, by the text it was bounded to and the columns it was wrapped at: a one-entry cache (see {@link wrappedNotice}). */
+let lastWrapped:
+  | { readonly text: string; readonly cols: number; readonly rows: readonly string[] }
+  | undefined;
+
+/**
+ * Every row of a notice at `cols` columns. The layout is rebuilt on EVERY frame (the spinner, the clock and a blinking cursor each draw one),
+ * and the wrapped rows depend on the text and the width alone, so the last result is kept and a frame that asks for the same text at the same
+ * width gets it back untouched (round 2, U4): wrapping a notice at the cap by display width took about 400 ms on wide characters, once per frame.
+ * One entry, not a table: a notice is on screen alone, and the entry holds at most {@link MAX_HOME_NOTICE_CHARS} characters of text and the rows
+ * made of them. The key is the BOUNDED text, so a longer notice cannot make the cache hold more than the bound.
+ */
+function wrappedNotice(notice: string, cols: number): readonly string[] {
+  const text = boundedNotice(notice);
+  if (lastWrapped !== undefined && lastWrapped.cols === cols && lastWrapped.text === text)
+    return lastWrapped.rows;
+  const rows = text
+    .split('\n')
+    .map(sanitizeInline)
+    .flatMap((line) => wrapNoticeLine(line, cols));
+  lastWrapped = { text, cols, rows };
+  return rows;
+}
+
 /** Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
@@ -127,10 +151,7 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
       (options.reservedRows ?? 0) -
       management,
   );
-  const all = boundedNotice(options.notice)
-    .split('\n')
-    .map(sanitizeInline)
-    .flatMap((line) => wrapNoticeLine(line, options.cols));
+  const all = wrappedNotice(options.notice, options.cols);
   const overflow = all.length > available;
   const pageSize = overflow ? available - 1 : available;
   const maxPage = Math.max(0, Math.ceil(all.length / pageSize) - 1);

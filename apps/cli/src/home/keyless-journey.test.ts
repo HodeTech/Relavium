@@ -15,6 +15,7 @@ import { KEY_SHAPED_DRAFT_NOTICE } from '../render/tui/home-controller.js';
 import { keychainAccount } from '../secrets/keychain.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
+import { SessionHomeLifetime } from './session-home-lifetime.js';
 
 /**
  * THE KEYLESS JOURNEY, through the real Home wiring (MVP-11 Step 2.4, ADR-0146 §6, OD-19): a clean home with no key anywhere, the real
@@ -95,6 +96,7 @@ afterEach(() => {
 function journey(
   startSize: { cols: number; rows: number } = { cols: 80, rows: 24 },
   env: Record<string, string | undefined> = {},
+  overrides: Partial<HomeDeps> = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-keyless-journey-'));
   paths.push(cwd);
@@ -177,10 +179,12 @@ function journey(
     },
     writeControl: () => {},
     exit: () => {},
+    ...overrides,
   };
   const running = driveHome(deps);
   return {
     path,
+    running,
     resizeListeners,
     resize(next: { cols: number; rows: number }): void {
       size = next;
@@ -486,5 +490,118 @@ describe('the keyless journey', () => {
     await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
     await j.end(p);
     expect(j.resizeListeners.size).toBe(0);
+  });
+});
+
+describe('the offer that waited for room is spent by what happened meanwhile (round 2)', () => {
+  it('K4: a provider setup the person opened at the small size spends it, so growing the terminal opens nothing', async () => {
+    const j = journey({ cols: 70, rows: 20 });
+    const p = await j.ready();
+    try {
+      await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+      // The person opens the setup by hand (the palette's `/providers`) and closes it with `Esc`: a provider run, finished.
+      p.controller.handleKey('/', {});
+      type(p, 'providers');
+      p.controller.handleKey('', { return: true });
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      ui(p).input('', { ...key, escape: true });
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect(p.controller.getSnapshot().notice).toBe(SKIP_NOTE);
+      // Room, and the Home is clear: the first-run offer must not open over a person who has already been to the setup.
+      j.resize({ cols: 80, rows: 24 });
+      expect(ui(p).getSnapshot().active, 'no card opened by itself').toBe(false);
+      expect(j.resizeListeners.size, 'and the wait is over: the offer is spent').toBe(0);
+      j.resize({ cols: 100, rows: 30 });
+      expect(ui(p).getSnapshot().active).toBe(false);
+    } finally {
+      await j.end(p);
+    }
+  });
+
+  it('K4: the same for the explicit list opened with Enter on an empty prompt', async () => {
+    const j = journey({ cols: 70, rows: 20 });
+    const p = await j.ready();
+    try {
+      await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+      p.controller.handleKey('', { return: true }); // keyless: the empty Enter opens the explicit setup
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      ui(p).input('', { ...key, escape: true });
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      j.resize({ cols: 80, rows: 24 });
+      expect(ui(p).getSnapshot().active).toBe(false);
+      expect(j.resizeListeners.size).toBe(0);
+    } finally {
+      await j.end(p);
+    }
+  });
+
+  it('Q3: a chat that is building in front of the Home is not a clear Home: the offer waits, unspent', async () => {
+    const stored = new Map([[keychainAccount('anthropic'), 'synthetic-journey-credential-5521']]);
+    let failBuild: () => void = () => undefined;
+    const j = journey(
+      { cols: 70, rows: 20 },
+      {},
+      {
+        keychain: {
+          get: (account) => stored.get(account) ?? null,
+          set: (account, value) => void stored.set(account, value),
+          delete: (account) => stored.delete(account),
+        },
+        // A build that has not finished: the Home is in `loading` until the test fails it, as a build can.
+        buildSession: () =>
+          new Promise((_resolve, reject) => {
+            failBuild = () => reject(new CliError('invalid_invocation', 'synthetic build stop'));
+          }),
+      },
+    );
+    const p = await j.ready();
+    try {
+      await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+      expect(p.controller.getSnapshot().keyless, 'a keyed Home').toBe(false);
+      type(p, 'hello');
+      p.controller.handleKey('', { return: true });
+      await settled(() => expect(p.controller.getSnapshot().mode).toBe('loading'));
+      expect(p.controller.getSnapshot().input.text, 'the editor is empty while it builds').toBe('');
+      j.resize({ cols: 80, rows: 24 });
+      expect(ui(p).getSnapshot().active).toBe(false);
+      expect(
+        j.resizeListeners.size,
+        'the build is in front: the offer waited, unspent',
+      ).toBeGreaterThan(0);
+    } finally {
+      failBuild();
+      await settled(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+      await j.end(p);
+    }
+  });
+
+  it('B4: an owner that stopped admitting before the Home sealed its input is the setup failing, not an exception out of the resize', async () => {
+    let work: { stop: () => void } | undefined;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Preserve the original method and restore its actual receiver with call() below.
+    const execute = SessionHomeLifetime.prototype.execute;
+    // The Home's own work owner is the one that refuses admission here; the Home has not sealed its input yet.
+    const spy = vi.spyOn(SessionHomeLifetime.prototype, 'execute').mockImplementation(function (
+      this: SessionHomeLifetime,
+      body,
+    ) {
+      work = this.surface.work;
+      return execute.call(this, body);
+    });
+    const j = journey({ cols: 70, rows: 20 });
+    try {
+      await j.ready();
+      await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+      expect(work, 'the owner of the Home was captured').toBeDefined();
+      work?.stop();
+      expect(
+        () => j.resize({ cols: 80, rows: 24 }),
+        'no exception out of the terminal emit',
+      ).not.toThrow();
+      await expect(j.running, 'the Home ends, as it does when its owner stops').resolves.toBeTypeOf(
+        'number',
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

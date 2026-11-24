@@ -148,6 +148,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
+import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
   createHatches,
@@ -949,6 +950,7 @@ async function chatCommandBody(
       const doctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           readConfig: () => {
             startingModes.read(built.context.workingDir);
           },
@@ -1435,6 +1437,7 @@ async function chatResumeCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        noticeSurface: chatNoticeSurface(deps.io, deps.global),
         readConfig: () => {
           startingModes.read(built.context.workingDir);
         },
@@ -1977,6 +1980,8 @@ export function createChatLineHandler(
   // answers `requestApproval`, so the mode control uses a reject-immediately prompt (no deadlock). Also drives
   // `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
   const interactive = chatIsInteractive(deps.io, deps.global);
+  /** The wording of every notice this handler composes: the interactive chat's remedies name its own commands, a scripted chat's name the shell's. */
+  const noticeSurface: NoticeSurface = interactive ? 'tui' : 'shell';
 
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
@@ -2067,11 +2072,17 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          // The cwd-relative path. It names no command to run the file (MVP-11 OD-20): this notice is shown inside
-          // the TUI, whose own way to run it (`/run` on the Home) a chat does not offer. Through the notice
+          // The cwd-relative path. Inside the TUI it names no command to run the file (MVP-11 OD-20): the Home's own
+          // way to run it (`/run`) is one a chat does not offer. A plain chat is scripted output on stderr, where the
+          // shell command IS the way to run it (ADR-0122 §6), so it keeps the hint it always had. Through the notice
           // channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
           // the next frame and discarded with the alternate buffer.
-          emitOutput(`exported session to ${sourceLabel(deps.global.cwd, result.path)}`);
+          const exported = `exported session to ${sourceLabel(deps.global.cwd, result.path)}`;
+          emitOutput(
+            interactive
+              ? exported
+              : `${exported} — run it with \`relavium run ${result.workflowId}\``,
+          );
         }
       } catch (err) {
         workOwner?.failure(err);
@@ -2223,7 +2234,7 @@ export function createChatLineHandler(
         const current = store.getSnapshot().reasoningEffort;
         if (offered.length === 0) {
           emitOutput(
-            `reasoning effort: ${effortUnavailableNote(built.agent.model, interactive ? 'tui' : 'shell')}`,
+            `reasoning effort: ${effortUnavailableNote(built.agent.model, noticeSurface)}`,
           );
           return;
         }
@@ -2260,9 +2271,7 @@ export function createChatLineHandler(
       if (!offered.includes(tier)) {
         // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
         // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
-        emitOutput(
-          effortRejectedNote(built.agent.model, tier, offered, interactive ? 'tui' : 'shell'),
-        );
+        emitOutput(effortRejectedNote(built.agent.model, tier, offered, noticeSurface));
         return;
       }
       modeControl.onSetEffort(tier);
@@ -2370,6 +2379,13 @@ export function createChatLineHandler(
   // cognitive-complexity ceiling). Returns after emitting any error/echo through the notice channel — an
   // interactive error belongs in-view (ink), not on stderr behind the live view.
   const handleSlashCommand = async (line: string): Promise<void> => {
+    // A key after a stray `/` (`/sk-ant-...`), or as an argument (`/exit sk-ant-...`), is answered with a fixed sentence BEFORE anything is
+    // echoed, so this one check stands in front of every echo of the line: the unknown-command line below (up to 64 characters of it), the
+    // validators' echo of a token (32), `/trim`'s of its argument (16) and any command's own (round 2, A3, K3).
+    if (looksLikeProviderKey(line)) {
+      emitOutput(KEY_SHAPED_COMMAND_NOTICE);
+      return;
+    }
     // Split the post-slash string into a command name + arg tokens, so `/doctor --deep` dispatches `doctor`
     // with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is rejected), preserving the prior
     // exact-match strictness while admitting declared flags.
@@ -2619,6 +2635,7 @@ async function buildFreshChatWiring(
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    noticeSurface: chatNoticeSurface(deps.io, deps.global),
     readConfig: () => {
       deps.startingModes.read(built.context.workingDir);
     },
@@ -2942,6 +2959,7 @@ async function buildReseatWiring(
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    noticeSurface: chatNoticeSurface(deps.io, deps.global),
     readConfig: () => {
       deps.startingModes.read(resumed.context.workingDir);
     },

@@ -209,8 +209,9 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     async function consent(id: ProviderId, source: string): Promise<ProviderSetupOutcome> {
       const answer = await deps.flow.select({
         message: `${source} is available for ${KNOWN_PROVIDERS[id].displayName}. Allow this source?`,
-        // The card opens on `Not now`: an Enter that was already on its way (a typed message, then Enter, then Enter again) must not grant a
-        // source of credentials. The input guards that make a grant deliberate are Step 6's (ADR-0146 §6); until then the safe answer is first.
+        // The card opens on `Not now`, the LAST row, pre-selected: an Enter that was already on its way (a typed message, then Enter, then Enter
+        // again) must not grant a source of credentials. That is all the protection there is until Step 6 (ADR-0146 §6) adds the input guards:
+        // the arrows wrap, so `Use it` is one `Down` away from the initial row, and a select has no dwell, quiet gap or typing window yet.
         initialValue: 'defer',
         options: [
           { value: 'use', label: 'Use it' },
@@ -261,7 +262,9 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
             message: 'How would you like to continue?',
             options: [
               ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-              { value: 'once', label: 'Use for this invocation only' },
+              // One spelling for the two recovery cards that can follow each other, each naming what it uses: this one the source (the
+              // variable), the starter-default card the model.
+              { value: 'once', label: `Use ${source} for this invocation only` },
               { value: 'cancel', label: 'Cancel' },
             ],
           });
@@ -354,41 +357,71 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       }
     }
 
-    const attempt = async (): Promise<ProviderSetupOutcome> => {
-      let chosen: Observation | undefined;
-      if (mode === 'explicit') {
-        const selected = await deps.flow.select({
-          message: 'Providers',
-          options: observations.map(({ id, availability }) => ({
-            value: id,
-            label: KNOWN_PROVIDERS[id].displayName,
-            hint: providerRowHint(availability),
-          })),
-        });
-        if (typeof selected !== 'string' || signal.aborted) return cancelled;
-        chosen = observations.find(({ id }) => id === selected);
-      } else {
-        chosen = observations.find(
-          ({ id, availability }) =>
-            availability.status === 'present-standard-not-allowed' && !deps.policy.isDeferred(id),
-        );
-        if (
-          chosen === undefined &&
-          observations.some(
-            ({ id, availability }) =>
-              availability.status === 'present-standard-not-allowed' && deps.policy.isDeferred(id),
-          )
-        ) {
-          return { status: 'deferred', changed: false };
-        }
-        chosen ??= observations.find(
-          ({ availability }) => availability.status === 'ineligible-custom-endpoint',
-        );
-        chosen ??= observations.find(({ availability }) => availability.status === 'unavailable');
-        chosen ??= observations[0];
-      }
-      if (chosen === undefined) return cancelled;
-      const { id, availability } = chosen;
+    /** The row the person picked in the explicit list; `undefined` when they closed it, or the row is gone. */
+    const pickFromList = async (): Promise<Observation | undefined> => {
+      const selected = await deps.flow.select({
+        message: 'Providers',
+        options: observations.map(({ id, availability }) => ({
+          value: id,
+          label: KNOWN_PROVIDERS[id].displayName,
+          hint: providerRowHint(availability),
+        })),
+      });
+      if (typeof selected !== 'string' || signal.aborted) return undefined;
+      return observations.find(({ id }) => id === selected);
+    };
+
+    /** An environment source that is present and not yet allowed, by whether the person already said `Not now` to it this process. */
+    const standardSources = (deferred: boolean): Observation[] =>
+      observations.filter(
+        ({ id, availability }) =>
+          availability.status === 'present-standard-not-allowed' &&
+          deps.policy.isDeferred(id) === deferred,
+      );
+
+    /** The row the automatic offer works on: a source awaiting consent, else the first that needs a word said about it, else the first. */
+    const firstNeedingAttention = (): Observation | undefined =>
+      standardSources(false)[0] ??
+      observations.find(
+        ({ availability }) => availability.status === 'ineligible-custom-endpoint',
+      ) ??
+      observations.find(({ availability }) => availability.status === 'unavailable') ??
+      observations[0];
+
+    /** A keychain that is down: the automatic offer of a person who already acknowledged it only says how to retry; any other asks. */
+    const settleKeychainDown = async (id: ProviderId): Promise<ProviderSetupOutcome> => {
+      if (mode === 'automatic' && acknowledged)
+        return {
+          status: 'deferred',
+          changed: false,
+          notice:
+            deps.credentialSurface === 'standalone-chat'
+              ? 'Keychain is unavailable. Restart this chat to retry setup.'
+              : 'Keychain is unavailable. Open /providers to retry.',
+        };
+      return await unavailable(id);
+    };
+
+    /** A key that already works: say so, and offer to replace it. */
+    const settleUsable = async (
+      id: ProviderId,
+      availability: Parameters<typeof providerKeyAvailabilityMessage>[1],
+    ): Promise<ProviderSetupOutcome> => {
+      deps.flow.note(
+        `${KNOWN_PROVIDERS[id].displayName}: ${providerKeyAvailabilityMessage(id, availability, deps.credentialSurface ?? 'home')} ${deps.endpointContext(id)}`,
+      );
+      const answer = await deps.flow.select({
+        message: 'Provider action',
+        options: [
+          ...(keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
+          { value: 'cancel', label: 'Done' },
+        ],
+      });
+      return answer === 'manual' && !signal.aborted ? await manual(id) : cancelled;
+    };
+
+    /** What the setup does for one chosen row, by what its key is. */
+    const settle = async ({ id, availability }: Observation): Promise<ProviderSetupOutcome> => {
       if (availability.status === 'present-standard-not-allowed')
         return await consent(id, availability.source.name);
       if (availability.status === 'ineligible-custom-endpoint') {
@@ -397,32 +430,21 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         );
         return await manual(id);
       }
-      if (availability.status === 'unavailable') {
-        if (mode === 'automatic' && acknowledged)
-          return {
-            status: 'deferred',
-            changed: false,
-            notice:
-              deps.credentialSurface === 'standalone-chat'
-                ? 'Keychain is unavailable. Restart this chat to retry setup.'
-                : 'Keychain is unavailable. Open /providers to retry.',
-          };
-        return await unavailable(id);
-      }
-      if (availability.status === 'usable') {
-        deps.flow.note(
-          `${KNOWN_PROVIDERS[id].displayName}: ${providerKeyAvailabilityMessage(id, availability, deps.credentialSurface ?? 'home')} ${deps.endpointContext(id)}`,
-        );
-        const answer = await deps.flow.select({
-          message: 'Provider action',
-          options: [
-            ...(keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
-            { value: 'cancel', label: 'Done' },
-          ],
-        });
-        return answer === 'manual' && !signal.aborted ? await manual(id) : cancelled;
-      }
+      if (availability.status === 'unavailable') return await settleKeychainDown(id);
+      if (availability.status === 'usable') return await settleUsable(id, availability);
       return await manual(mode === 'automatic' ? undefined : id);
+    };
+
+    const attempt = async (): Promise<ProviderSetupOutcome> => {
+      // The automatic offer has nothing to ask when every source it could consent to was already declined in this process.
+      if (
+        mode === 'automatic' &&
+        standardSources(false).length === 0 &&
+        standardSources(true).length > 0
+      )
+        return { status: 'deferred', changed: false };
+      const chosen = mode === 'explicit' ? await pickFromList() : firstNeedingAttention();
+      return chosen === undefined ? cancelled : await settle(chosen);
     };
     try {
       return skipped(await attempt());

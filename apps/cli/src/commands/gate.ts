@@ -168,7 +168,7 @@ async function resumeGateOwned(
     // consent with the clack prompt and opens `~/.relavium/history.db`, exactly as before the core was shared.
     const resumed = await resumeRun(
       { runId: args.runId, gate: args.gate, secretStdin: args.secretStdin, kind, decision },
-      deps,
+      { ...deps, noticeSurface: 'shell' }, // scripted output: a warning names the shell command that fixes it
       { config, homeDir },
       {
         openDb: (captureClose) =>
@@ -229,6 +229,7 @@ async function resumeGateOwned(
     // and a run that closed already settled is a clean exit-0 no-op.
     return await finishLeg({
       leg: 'resume',
+      noticeSurface: 'shell', // the shell's epilogue names the shell command that reads the run
       runId: args.runId,
       lifetime,
       io: deps.io,

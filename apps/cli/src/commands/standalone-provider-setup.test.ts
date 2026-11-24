@@ -222,12 +222,16 @@ describe('standalone native provider setup lifecycle', () => {
     await until(() => f.text().includes('Allow this source?'));
     await chooseUseIt(f); // the consent opens on `Not now`; this test means `Use it`
     f.stdin.push('\r');
-    await until(() => f.text().includes('Use for this invocation only'));
+    // Two recovery cards in a row, each naming what it uses: the source first (the variable), then the model (round 2, B6).
+    await until(() => f.text().includes('Use OPENAI_API_KEY for this invocation only'));
+    expect(f.text()).not.toContain('Use for this invocation only');
     expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
     const afterSource = f.stdout.frames.length;
     f.stdin.push('\r');
     await until(() =>
-      f.stdout.frames.slice(afterSource).join('').includes('Use for this invocation only'),
+      /Use (?!OPENAI_API_KEY)\S+ for this invocation only/u.test(
+        f.stdout.frames.slice(afterSource).join(''),
+      ),
     );
     // Authorizing the named source did not implicitly choose an ephemeral model default.
     expect(f.resolver.keyFor('openai')).toBe(credential);

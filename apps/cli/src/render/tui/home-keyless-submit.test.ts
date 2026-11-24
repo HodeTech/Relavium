@@ -6,6 +6,7 @@ import {
   createHomeController,
   KEY_SHAPED_DRAFT_NOTICE,
   KEY_SHAPED_LINE_NOTICE,
+  KEY_SHAPED_SEND_NOTICE,
   type HomeChatSession,
   type HomeController,
 } from './home-controller.js';
@@ -234,6 +235,32 @@ describe('a draft that looks like a provider key is never kept and never recorde
     expect(JSON.stringify(f.c.getSnapshot())).not.toContain('journeyfake');
   });
 
+  // The sentence says "in the setup that just opened"; once the setup has closed with nothing to say of its own it is false (round 2, K4).
+  it('takes the sentence down when the setup closes with nothing of its own, and keeps any notice the setup left', async () => {
+    const closed = fixture();
+    closed.c.handlePaste(FAKE_KEY);
+    closed.c.handleKey('', ENTER);
+    expect(closed.c.getSnapshot().notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+    await closed.close(true);
+    expect(closed.c.getSnapshot().notice, 'no setup is open any more').toBeUndefined();
+
+    const skipped = fixture();
+    skipped.c.handlePaste(FAKE_KEY);
+    skipped.c.handleKey('', ENTER);
+    await skipped.close(true, 'Setup skipped · /providers connects a provider any time');
+    expect(skipped.c.getSnapshot().notice).toBe(
+      'Setup skipped · /providers connects a provider any time',
+    );
+
+    // Any OTHER notice survives a close that has nothing to say, as it always did.
+    const other = fixture();
+    other.c.handlePaste('/models');
+    other.c.handleKey('', ENTER);
+    const before = other.c.getSnapshot().notice;
+    other.c.setProviderState(true);
+    expect(other.c.getSnapshot().notice).toBe(before);
+  });
+
   it('a short or ordinary dash-word is not mistaken for a key: the draft is kept', () => {
     const f = fixture();
     type(f.c, 'sk-learn is a library');
@@ -343,19 +370,6 @@ describe('a chat that fails to build for any other reason (G6)', () => {
     expect(f.c.getSnapshot().notice).toBe('Couldn’t start the chat: boom');
   });
 
-  it('does not give a draft that looks like a key back to the prompt, does not record it, and the failure still shows', async () => {
-    const f = fixture({ keyless: false, startChat: () => Promise.reject(new Error('refused')) });
-    f.c.handlePaste(FAKE_KEY);
-    f.c.handleKey('', ENTER);
-    expect(f.c.getSnapshot().historyEntries, 'not recorded while it builds').toEqual([]);
-    await flush();
-    expect(f.c.getSnapshot().input.text).toBe('');
-    expect(f.c.getSnapshot().notice).toBe('Couldn’t start the chat: refused');
-    expect(f.c.getSnapshot().historyEntries, 'nor once the build failed').toEqual([]);
-    f.c.handleKey('', { upArrow: true });
-    expect(f.c.getSnapshot().input.text, 'Up recalls nothing: Enter would have sent it').toBe('');
-  });
-
   it('records an ordinary message that failed to build, so Up still recalls it', async () => {
     const f = fixture({ keyless: false, startChat: () => Promise.reject(new Error('refused')) });
     type(f.c, 'hello');
@@ -399,5 +413,63 @@ describe('a chat that fails to build for any other reason (G6)', () => {
     f.c.handleKey('', ENTER);
     await flush();
     expect(f.c.getSnapshot().notice).not.toContain('journeyfake');
+  });
+});
+
+describe('a draft that looks like a provider key on a keyed Home (round 2, A1)', () => {
+  // A key pasted on a keyed Home used to be shown as the pending message, sent to the model, appended to the transcript and written to
+  // `history.db` unencrypted (round 2, A1). It is refused BEFORE a chat is built, like the keyless Enter, whatever the build would have done.
+  it.each<readonly [string, string]>([['Anthropic', FAKE_KEY], ...OTHER_KEYS])(
+    'refuses a %s key on a keyed Home: no chat is built, nothing reaches processLine, the prompt is empty and no history is written',
+    async (_provider, key) => {
+      const f = fixture({ keyless: false });
+      f.c.handlePaste(key);
+      f.c.handleKey('', ENTER);
+      await flush();
+      const state = f.c.getSnapshot();
+      expect(f.startChat, 'no chat is built for it').not.toHaveBeenCalled();
+      expect(f.lines, 'processLine never receives it').toEqual([]);
+      expect(state.mode, 'no loading echo').toBe('home');
+      expect(state.pendingMessage, 'it is never shown as the pending message').toBe('');
+      expect(state.input.text, 'the editor is cleared').toBe('');
+      expect(state.historyEntries, 'nothing recorded').toEqual([]);
+      expect(state.notice).toBe(KEY_SHAPED_SEND_NOTICE);
+      expect(f.open, 'a keyed Home opens no setup for it').not.toHaveBeenCalled();
+      expect(JSON.stringify(state), 'the key is nowhere in the state').not.toContain('journeyfake');
+      f.c.handleKey('', { upArrow: true });
+      expect(f.c.getSnapshot().input.text, 'Up recalls nothing').toBe('');
+      // The next message that IS sent finds a history that holds only itself: the refused draft was never recorded behind the state.
+      type(f.c, 'hello');
+      f.c.handleKey('', ENTER);
+      await flush();
+      expect(f.c.getSnapshot().historyEntries).toEqual(['hello']);
+    },
+  );
+
+  it('refuses a key inside a sentence or on a later line of the draft, with the same fixed sentence', async () => {
+    for (const draft of [`here is my key ${FAKE_KEY} please use it`, `first line\n${FAKE_KEY}`]) {
+      const f = fixture({ keyless: false });
+      f.c.handlePaste(draft);
+      f.c.handleKey('', ENTER);
+      await flush();
+      expect(f.startChat).not.toHaveBeenCalled();
+      expect(f.c.getSnapshot().notice).toBe(KEY_SHAPED_SEND_NOTICE);
+      expect(f.c.getSnapshot().input.text).toBe('');
+    }
+  });
+
+  it('says it in fixed words that name where keys go and echo nothing of the draft', () => {
+    expect(KEY_SHAPED_SEND_NOTICE).toBe(
+      'That looked like an API key, so it was not sent. Keys are managed with /providers.',
+    );
+  });
+
+  it('still starts the chat for an ordinary message that merely mentions a key format', async () => {
+    const f = fixture({ keyless: false });
+    type(f.c, 'sk-learn is a library');
+    f.c.handleKey('', ENTER);
+    await flush();
+    expect(f.startChat).toHaveBeenCalledTimes(1);
+    expect(f.lines).toEqual(['sk-learn is a library']);
   });
 });

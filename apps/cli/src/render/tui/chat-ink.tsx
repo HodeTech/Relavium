@@ -1762,7 +1762,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       if (step.kind === 'run') {
         applyPalette(undefined);
-        if (step.command !== undefined) submit(`/${step.command.name}`); // reuse the S3a slash dispatch
+        if (step.command !== undefined) {
+          submit(`/${step.command.name}`); // reuse the S3a slash dispatch
+        } else {
+          // No row matched, or none is highlighted (A2): the person typed a line of their own (`/doctor --deep`, `/trim 20`, `/mode plan`, a
+          // misspelling). It goes down the same dispatch a typed line takes, which validates the tokens and answers an unknown word, instead
+          // of the text being dropped when the palette closes (round 2, U1).
+          const typed = paletteNow.state.query.trim();
+          if (typed.length > 0) submit(`/${typed}`);
+        }
         return;
       }
       if (step.kind === 'unavailable') {

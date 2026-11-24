@@ -6,6 +6,7 @@
  * follow-up, see docs/roadmap/deferred-tasks.md).
  */
 
+import { looksLikeProviderKey } from '../provider-key-shape.js';
 import { dropLastCodePoint } from './chat-input.js';
 
 export interface InputHistory {
@@ -19,9 +20,16 @@ export interface InputHistory {
 
 export const EMPTY_HISTORY: InputHistory = { entries: [], navIndex: null, draft: '' };
 
-/** Record a submitted line (skips an empty line and a consecutive duplicate); resets any active navigation. */
+/**
+ * Record a submitted line (skips an empty line and a consecutive duplicate); resets any active navigation.
+ *
+ * **A line that looks like a provider key is never recorded**, on any surface (round 2, A3): this is the one function every prompt records
+ * through, so Up and `Ctrl+R` cannot bring a pasted key back whichever prompt it was typed at. The history is in memory only and is not
+ * written to disk; it is kept clean for the next person at the keyboard (what a SENT message adds to the session transcript, and so to the
+ * unencrypted `history.db`, is a different thing, and the Home's landing refuses a key-shaped draft before it is sent).
+ */
 export function recordHistory(history: InputHistory, line: string): InputHistory {
-  if (line.length === 0) return resetHistoryNav(history);
+  if (line.length === 0 || looksLikeProviderKey(line)) return resetHistoryNav(history);
   const last = history.entries.at(-1);
   const entries = last === line ? history.entries : [...history.entries, line];
   return { entries, navIndex: null, draft: '' };

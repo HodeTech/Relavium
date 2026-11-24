@@ -837,7 +837,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             message: 'How would you like to continue?',
             options: [
               ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-              { value: 'once', label: 'Use for this invocation only' },
+              { value: 'once', label: `Use ${model} for this invocation only` },
               { value: 'cancel', label: 'Cancel' },
             ],
           });
@@ -873,15 +873,27 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     });
     let providerRun: Promise<void> | undefined;
+    /**
+     * The one first-run offer that opens by itself, spent (ADR-0146 §6): it opened, or a provider run of any kind (the explicit list, a
+     * `/providers`, a skip) has finished, so a terminal that grows later does not open it over a person who has already been there.
+     */
+    let automaticSetupStarted = false;
     const openProviders = (mode: 'automatic' | 'explicit', intro?: string): Promise<void> => {
       if (providerRun !== undefined) return providerRun;
       const operation = async (): Promise<void> => {
-        const result = await providerSetup.run(mode, intro);
-        if (homeInputSealed) return;
-        keyless = !sampleProviderSetup(providers).some(
-          ({ availability }) => availability.status === 'usable',
-        );
-        controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
+        // A previous flow's leftover note is not this run's: `run('automatic')` can return `ready` before it ever begins a flow, and `begin`
+        // is the only other place the note is reset (round 2, B5).
+        finalSetupNote = undefined;
+        try {
+          const result = await providerSetup.run(mode, intro);
+          if (homeInputSealed) return;
+          keyless = !sampleProviderSetup(providers).some(
+            ({ availability }) => availability.status === 'usable',
+          );
+          controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
+        } finally {
+          automaticSetupStarted = true; // finished, however it ended: the offer that waited for room is not spent a second time (round 2, K4)
+        }
       };
       const run = operation();
       providerRun = run;
@@ -901,6 +913,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        noticeSurface: 'tui', // the Home is a TTY surface: `/import`, never a shell command
         readConfig: () => {
           startingModes.read(deps.global.cwd);
         },
@@ -1021,6 +1034,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const chatDoctorProbes =
           deps.doctorProbes ??
           assembleDoctorProbes({
+            noticeSurface: 'tui', // the Home-hosted chat is read in the TUI
             readConfig: () => {
               startingModes.read(built.context.workingDir);
             },
@@ -2251,7 +2265,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 if (!homeInputSealed) actualController.handlePaste(text);
               },
             };
-      let automaticSetupStarted = false;
       let waitingForRoom = false;
       /**
        * The first-run setup that opens by itself opens over an empty Home and nothing else (ADR-0146 §6): no chat or build, no draft in the
@@ -2266,59 +2279,73 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           !overlayOwnsKeyboard(homeOverlayFlags(state))
         );
       };
+      /** The setup's failure is the Home's: recorded on its owner and rejecting the Home, as every other setup error does. */
+      const failSetup = (cause: unknown): void => {
+        ownership?.surface.work.failure(cause);
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
+        reject(
+          ownership === undefined
+            ? cause instanceof Error
+              ? cause
+              : new Error('Provider setup failed.')
+            : cause,
+        );
+      };
       const openAutomaticSetup = (): void => {
         automaticSetupStarted = true;
         const operation = () => openProviders('automatic');
-        const pending =
-          ownership === undefined ? operation() : ownership.surface.work.enter(operation);
-        void pending.catch((cause: unknown) => {
-          ownership?.surface.work.failure(cause);
-          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
-          reject(
-            ownership === undefined
-              ? cause instanceof Error
-                ? cause
-                : new Error('Provider setup failed.')
-              : cause,
-          );
+        let pending: Promise<void>;
+        try {
+          // Admission is synchronous: `enter` throws when the owner has stopped admitting before the Home's input was sealed, and this runs
+          // inside a resize listener, where an escaping throw would be an uncaught exception out of the terminal's emit (round 2, B4).
+          pending = ownership === undefined ? operation() : ownership.surface.work.enter(operation);
+        } catch (cause) {
+          if (!homeInputSealed) failSetup(cause);
+          return;
+        }
+        void pending.catch(failSetup);
+      };
+      /**
+       * Whether the first-run offer may open now: it opens once, never while it waits for room, never after the Home began leaving, never over
+       * an injected prompter, and never for a bare `relavium permissions`, which is not a first run: no provider card or key consent may open
+       * on top of the screen it came for.
+       */
+      const mayOfferFirstRunSetup = (): boolean =>
+        !automaticSetupStarted &&
+        !waitingForRoom &&
+        !homeInputSealed &&
+        deps.onboardingPrompter === undefined &&
+        deps.openPermissions !== true;
+      /**
+       * Below the minimum the card cannot be shown, and the one first-run offer must not be spent on a message that says "Esc cancels"
+       * (observed: that `Esc` ended the setup for good, and resizing up did not bring it back). It waits for room, with the offer unspent, and
+       * opens once the terminal is large enough (ADR-0146 §6).
+       */
+      const waitForRoom = (): void => {
+        waitingForRoom = true;
+        const unsubscribe = subscribeResize(() => {
+          if (homeInputSealed) {
+            unsubscribe();
+            return;
+          }
+          if (!nativePromptFits(getSize())) return;
+          // Room, but the Home is not clear: the offer stays unspent and waits for the next resize.
+          if (!homeIsClearForSetup()) return;
+          unsubscribe();
+          stopWaitingForRoom = undefined;
+          waitingForRoom = false;
+          if (!automaticSetupStarted) openAutomaticSetup();
         });
+        stopWaitingForRoom = unsubscribe;
       };
       const props: RootAppProps = {
         nativePrompt: nativePrompt.ui,
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the screen it came for.
-          if (
-            !automaticSetupStarted &&
-            !waitingForRoom &&
-            !homeInputSealed &&
-            deps.onboardingPrompter === undefined &&
-            deps.openPermissions !== true
-          ) {
-            if (nativePromptFits(getSize())) {
-              openAutomaticSetup();
-              return;
-            }
-            // Below the minimum the card cannot be shown, and the one first-run offer must not be spent on a message that says "Esc
-            // cancels" (observed: that `Esc` ended the setup for good, and resizing up did not bring it back). It waits for room, with
-            // the offer unspent, and opens once the terminal is large enough (ADR-0146 §6).
-            waitingForRoom = true;
-            const unsubscribe = subscribeResize(() => {
-              if (homeInputSealed) {
-                unsubscribe();
-                return;
-              }
-              if (!nativePromptFits(getSize())) return;
-              // Room, but the Home is not clear: the offer stays unspent and waits for the next resize.
-              if (!homeIsClearForSetup()) return;
-              unsubscribe();
-              stopWaitingForRoom = undefined;
-              waitingForRoom = false;
-              if (!automaticSetupStarted) openAutomaticSetup();
-            });
-            stopWaitingForRoom = unsubscribe;
-          }
+          if (!mayOfferFirstRunSetup()) return;
+          if (nativePromptFits(getSize())) openAutomaticSetup();
+          else waitForRoom();
         },
         onRendererError: (error) => {
           rendererActive = false;

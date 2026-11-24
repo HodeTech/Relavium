@@ -105,7 +105,7 @@ const SUBMODE: Gates = {
 /**
  * THE TABLE. One row per flag; a flag with no row (or a row with no flag) does not compile.
  *
- * The cells that disagree with their neighbours, and why they are kept (each is also in the extraction's report):
+ * The cells that disagree with their neighbours, and why they are kept (the nine disagreements are the table in `overlay-flags.ts`):
  * - `screen` pauses the strip and the notice paging, but is not a slot gate (a screen REPLACES the slot) and is never open in a chat.
  * - `exitGuard` is a slot gate, a strip gate and an Active-poll gate, but not a scroll, pointer or interrupt one (it is routed first).
  * - `nativePrompt` closes the pointer, the scroll keys, the mouse capture, the rows and the custody, and does NOT pause the strip
@@ -211,6 +211,47 @@ describe('each flag, set alone, closes exactly the gates of its row', () => {
       }
     }
     expect(observed(everything)).toEqual(expected);
+  });
+});
+
+/**
+ * The flags `pasteFlagsFrom` does NOT read, each with the reason: the paste is decided before the overlay gate by its host, so a new flag has
+ * to say either that it is read there or that it is decided before. A flag in neither place fails the test below instead of silently letting a
+ * paste into the composer.
+ */
+const DECIDED_BEFORE_PASTE: Readonly<Partial<Record<keyof OverlayFlags, string>>> = {
+  screen:
+    'a screen owns every key, and no paste reaches the prompt behind it (the Home drops it before the gate)',
+  exitGuard: 'the exit-guard card answers a paste as a key it ignores, before the gate',
+  nativePrompt: 'the native prompt channel takes the paste into its own field, before the gate',
+  nativeActionBusy:
+    'every key and paste is dropped while a native action is in flight, before the gate',
+  question: 'an open `ask_user` question takes the paste into its own field, before the gate',
+  checkpoint: 'a continue-checkpoint card drops a paste: it answers by key only, before the gate',
+};
+
+describe('every flag is read by the paste gate or decided before it (a new overlay cannot forget it)', () => {
+  const kinds = Object.keys(NO_OVERLAYS) as (keyof OverlayFlags)[];
+  const readByPaste = (kind: keyof OverlayFlags): boolean => {
+    const base = Object.values(pasteFlagsFrom(NO_OVERLAYS));
+    const set = Object.values(pasteFlagsFrom({ ...NO_OVERLAYS, [kind]: true }));
+    return set.some((value, index) => value !== base[index]);
+  };
+
+  it.each(kinds)('%s', (kind) => {
+    const read = readByPaste(kind);
+    const reason = DECIDED_BEFORE_PASTE[kind];
+    expect(
+      read !== (reason !== undefined),
+      read
+        ? `${kind} is read by pasteFlagsFrom, so it is not in DECIDED_BEFORE_PASTE`
+        : `${kind} is not read by pasteFlagsFrom: say in DECIDED_BEFORE_PASTE why a paste is decided before it`,
+    ).toBe(true);
+    if (reason !== undefined) expect(reason.length).toBeGreaterThan(10);
+  });
+
+  it('lists no flag the record does not have', () => {
+    for (const kind of Object.keys(DECIDED_BEFORE_PASTE)) expect(kinds).toContain(kind);
   });
 });
 

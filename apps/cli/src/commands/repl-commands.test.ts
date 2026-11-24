@@ -172,7 +172,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('a command the Home opens has no handler to run: the flattened view refuses a call, and calls no capability', () => {
     // `opener: 'home'` commands are opened from the Home controller's table, never run over a session's context (ADR-0145 §7); a route that
-    // reached one by mistake used to do nothing, silently. The five words below are exactly the Home's own that the Home palette lists.
+    // reached one by mistake used to do nothing, silently. The seven words below are exactly the Home's own that the Home palette lists.
     const spy = spyContext();
     for (const name of ['providers', 'init', 'import', 'pricing', 'run', 'agents', 'resume']) {
       const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);

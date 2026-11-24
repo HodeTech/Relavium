@@ -72,7 +72,7 @@ export function buildPaletteEntries(
 
 /**
  * The entries that end a session or spend tokens. Inside a tier of a typed query they come after the others ({@link filterPaletteEntries}),
- * and a typed query that is not exactly one of their names never HIGHLIGHTS one while another row can act ({@link bestMatchIndex}).
+ * and a typed query that is not the start of one of their names never HIGHLIGHTS one ({@link bestMatchIndex}).
  */
 const LAST_IN_TIER: ReadonlySet<string> = new Set(['clear', 'cancel', 'compact', 'exit']);
 
@@ -90,7 +90,7 @@ function matchTier(entry: PaletteEntry, q: string): number | undefined {
 }
 
 /** Whether the name an entry carries is exactly what was typed (case-insensitively, whitespace around it ignored). */
-export function isExactNameMatch(entry: PaletteEntry, query: string): boolean {
+function isExactNameMatch(entry: PaletteEntry, query: string): boolean {
   return entry.command.name.toLowerCase() === query.trim().toLowerCase();
 }
 
@@ -122,16 +122,45 @@ export function filterPaletteEntries(
 }
 
 /**
- * The highlighted row after a typed query (ADR-0145 §7.6: a short query does not land on `/clear`, `/cancel`, `/compact` or `/exit`).
- * Reordering inside a tier is not enough (`/e` has `/exit` alone in its tier, `/res` reaches `/clear` through its description), so the
- * choice is made here: a typed EXACT name wins even when it is dim, so `Enter` explains it instead of running something else; otherwise the
- * first row that can act and does not end a session or spend tokens; and only when every row that can act is one of those, the first of them.
+ * The commands whose row is never highlighted for a query that is not the start of their NAME: the ones that end a session or spend tokens
+ * ({@link LAST_IN_TIER}) and `trim`, which drops the older messages for good. A description match is not a start of a name: `/res` reaches
+ * `/clear` through its description, `/su` reaches `/compact`, `/ini` and `/sa` reach `/trim`, and `Enter` on a highlight is a run.
+ */
+const NEEDS_ITS_NAME: ReadonlySet<string> = new Set([...LAST_IN_TIER, 'trim']);
+
+/** The index {@link bestMatchIndex} answers when no row may be highlighted: `Enter` then answers as it does for a query that matches nothing. */
+export const NO_HIGHLIGHT = -1;
+
+/**
+ * The highlighted row after a typed query (ADR-0145 §7.6, round 2 A2: a short query does not land on `/clear`, `/cancel`, `/compact`, `/exit`
+ * or `/trim`). Reordering inside a tier is not enough (`/e` has `/exit` alone in its tier, `/res` reaches `/clear` through its description),
+ * so the choice is made here, in this order:
+ *
+ *  1. a typed EXACT name wins even when it is dim, so `Enter` explains it instead of running something else;
+ *  2. the first row that can act and is not one of {@link NEEDS_ITS_NAME};
+ *  3. when every row that can act is one of those: the first whose NAME the query starts (`/exi`, `/cle`, `/tri`); and when none is, NO row
+ *     is highlighted ({@link NO_HIGHLIGHT}): `Enter` answers as it does for a query that matches nothing, and the typed line is dispatched,
+ *     not dropped;
+ *  4. when no row can act, the first row a query may land on, which only explains itself.
+ *
+ * Never a row of the end-and-spend set because its DESCRIPTION held the query.
  */
 export function bestMatchIndex(rows: readonly PaletteEntry[], query: string): number {
   const first = rows[0];
   if (first !== undefined && isExactNameMatch(first, query)) return 0;
-  const safe = rows.findIndex((entry) => entry.enabled && !LAST_IN_TIER.has(entry.command.name));
-  return safe >= 0 ? safe : firstEnabledIndex(rows);
+  if (rows.length === 0) return 0;
+  const typed = query.trim().toLowerCase();
+  const startsName = (entry: PaletteEntry): boolean =>
+    entry.command.name.toLowerCase().startsWith(typed);
+  const mayHighlight = (entry: PaletteEntry): boolean =>
+    !NEEDS_ITS_NAME.has(entry.command.name) || startsName(entry);
+  const safe = rows.findIndex((entry) => entry.enabled && !NEEDS_ITS_NAME.has(entry.command.name));
+  if (safe >= 0) return safe;
+  const named = rows.findIndex((entry) => entry.enabled && startsName(entry));
+  if (named >= 0) return named;
+  if (rows.some((entry) => entry.enabled)) return NO_HIGHLIGHT;
+  const explaining = rows.findIndex(mayHighlight);
+  return explaining >= 0 ? explaining : NO_HIGHLIGHT;
 }
 
 /** The index of the first row that can act, or `0` when none can (an all-dim list still has a highlighted row, which only explains itself). */

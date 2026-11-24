@@ -594,7 +594,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               parkedFocusKind: focusedParked?.kind,
               runCanBeShown,
               keyless: props.keyless === true,
-              slashDraft: editor.text.startsWith('/'),
+              slashDraft: editor.text.trimStart().startsWith('/'), // dispatch trims, so a line with blanks before its slash is a command too
             })}
           </Text>
         </Box>

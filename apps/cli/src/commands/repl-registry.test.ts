@@ -5,22 +5,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   availabilityOf,
-  COMMAND_DEFINITIONS,
-  COMMAND_DEFINITIONS_BY_NAME,
   commandDefinitionsOf,
   commandsOf,
   formatReplHelp,
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   homeOnlyPointer,
-  PALETTE_SURFACES,
   placementOf,
   replCommandList,
   REPL_COMMANDS,
   REPL_COMMANDS_BY_NAME,
-  SURFACE_GROUPS,
   unavailableNotice,
   type CommandDefinition,
+  type CommandGroup,
   type PaletteSurface,
   type SurfaceClass,
 } from './repl-commands.js';
@@ -94,6 +91,38 @@ const HOME_CHAT_ORDER = [
 const names = (commands: readonly { readonly name: string }[]): string[] =>
   commands.map((command) => command.name);
 
+/** The three surfaces. A `Record` over the type makes a surface added to it a compile error here, not a surface the tests forget. */
+const SURFACE_SET: Readonly<Record<PaletteSurface, true>> = {
+  home: true,
+  chat: true,
+  'home-chat': true,
+};
+const PALETTE_SURFACES = Object.keys(SURFACE_SET) as readonly PaletteSurface[];
+
+/** Every definition the table holds, once: the union of what the three surfaces offer (the table itself is not exported: nothing but tests reads it). */
+const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
+  ...new Map(
+    PALETTE_SURFACES.flatMap((surface) => commandDefinitionsOf(surface)).map(
+      (definition) => [definition.name, definition] as const,
+    ),
+  ).values(),
+];
+
+/** A definition by its slash name. */
+const DEFINITION_BY_NAME: ReadonlyMap<string, CommandDefinition> = new Map(
+  COMMAND_DEFINITIONS.map((definition) => [definition.name, definition]),
+);
+
+/** The groups of a surface in the order its commands list them, each once: read off the surface's own order, so a group that is not the surface's would show. */
+const groupsOf = (surface: PaletteSurface): CommandGroup[] => [
+  ...new Set(
+    commandDefinitionsOf(surface).flatMap((definition) => {
+      const group = definition.placements[surface]?.group;
+      return group === undefined ? [] : [group];
+    }),
+  ),
+];
+
 /** What each placement is when it is chosen (ADR-0145 §1; MVP-11 Appendix A as refined). `chat` covers the Home-hosted chat as well. */
 const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceClass>>>> = {
   help: { home: 'screen', chat: 'popup' },
@@ -127,8 +156,8 @@ const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceCl
 
 /**
  * The popup placements whose popup is NOT BUILT YET: every `popup` today, because Step 4 builds the popup host (MVP-11 §6). A popup placement
- * is in exactly one of two places: this list, or {@link POPUP_OPENERS}. A new popup placement is in neither and fails until it is built or
- * listed here; a built popup leaves this list for the openers (a placement in both fails, so an entry cannot outlive its popup). A command on
+ * is in exactly one of two places: this list, or {@link POPUP_MODULES}. A new popup placement is in neither and fails until it is built or
+ * listed here; a built popup leaves this list for the modules (a placement in both fails, so an entry cannot outlive its popup). A command on
  * the list has an increment that owes it ({@link BUILT_BY}).
  */
 const POPUP_NOT_BUILT_YET: readonly string[] = [
@@ -167,10 +196,10 @@ const POPUP_NOT_BUILT_YET: readonly string[] = [
 ];
 
 /**
- * The popup placements that HAVE an opener: `surface:name` to the module (relative to `apps/cli/src`) that opens the popup. Empty until the
+ * The popup placements that ARE BUILT: `surface:name` to the module (relative to `apps/cli/src`) that implements the popup. Empty until the
  * popup host exists (Step 4a); the first popup built moves its placements here from {@link POPUP_NOT_BUILT_YET}. The module has to exist.
  */
-const POPUP_OPENERS: Readonly<Record<string, string>> = {};
+const POPUP_MODULES: Readonly<Record<string, string>> = {};
 
 /** The increment of MVP-11 Step 4 (or Step 5b) that builds each command's popup (`docs/roadmap/phases/mvp-11.md`, Step 4 and Appendix A). */
 const BUILT_BY: Readonly<Record<string, '4b' | '4c' | '4d' | '5b'>> = {
@@ -201,7 +230,6 @@ describe('the command table: one definition per name, with the fields every comm
   it('has one definition per name, each with the fields of a definition', () => {
     const all = names(COMMAND_DEFINITIONS);
     expect(new Set(all).size, 'a name appears once').toBe(all.length);
-    expect(COMMAND_DEFINITIONS_BY_NAME.size).toBe(all.length);
     for (const definition of COMMAND_DEFINITIONS) {
       const at = `/${definition.name}`;
       expect(definition.name, at).toMatch(/^[a-z]+$/u);
@@ -226,10 +254,9 @@ describe('the command table: one definition per name, with the fields every comm
           (PALETTE_SURFACES as readonly string[]).includes(surface),
           `${at}: a known surface`,
         ).toBe(true);
-        expect(
-          SURFACE_GROUPS[surface as PaletteSurface],
-          `${at}: group ${placement.group}`,
-        ).toContain(placement.group);
+        expect(groupsOf(surface as PaletteSurface), `${at}: group ${placement.group}`).toContain(
+          placement.group,
+        );
         expect(Number.isInteger(placement.rank), `${at}: rank`).toBe(true);
         expect(placement.description.length, `${at}: description`).toBeGreaterThan(0);
         expect(placement.description, `${at}: one line`).not.toMatch(/[\r\n]/u);
@@ -251,16 +278,16 @@ describe('the command table: one definition per name, with the fields every comm
   });
 
   it('keeps each surface’s groups in the surface’s own order', () => {
-    expect(SURFACE_GROUPS.home).toEqual(['work', 'setup', 'check', 'end']);
-    expect(SURFACE_GROUPS.chat).toEqual(['model', 'context', 'inspect', 'takeaway', 'end']);
-    expect(SURFACE_GROUPS['home-chat']).toEqual(SURFACE_GROUPS.chat);
+    expect(groupsOf('home')).toEqual(['work', 'setup', 'check', 'end']);
+    expect(groupsOf('chat')).toEqual(['model', 'context', 'inspect', 'takeaway', 'end']);
+    expect(groupsOf('home-chat')).toEqual(groupsOf('chat'));
+    // Each group is one run of the list: it is never split, and the groups never go back (a group not of the surface would sort first).
     for (const surface of PALETTE_SURFACES) {
-      const indexes = commandDefinitionsOf(surface).map((definition) =>
-        SURFACE_GROUPS[surface].indexOf(definition.placements[surface]?.group ?? 'end'),
+      const sequence = commandDefinitionsOf(surface).map(
+        (definition) => definition.placements[surface]?.group,
       );
-      expect(indexes, `${surface}: the groups never go back`).toEqual(
-        [...indexes].sort((a, b) => a - b),
-      );
+      const runs = sequence.filter((group, index) => group !== sequence[index - 1]);
+      expect(runs, `${surface}: every group is one run`).toEqual(groupsOf(surface));
     }
   });
 });
@@ -361,19 +388,19 @@ describe('the surface classes are declared data (ADR-0145 §1)', () => {
       ),
     );
 
-  it('every popup placement is built (it has an opener) or is named as not built yet, and never both or neither', () => {
+  it('every popup placement is built (it has a module) or is named as not built yet, and never both or neither', () => {
     const popups = popupPlacements();
-    const opened = Object.keys(POPUP_OPENERS);
+    const built = Object.keys(POPUP_MODULES);
     expect(
-      popups.filter((key) => !POPUP_NOT_BUILT_YET.includes(key) && !opened.includes(key)),
+      popups.filter((key) => !POPUP_NOT_BUILT_YET.includes(key) && !built.includes(key)),
       'a popup that is neither built nor listed: build it or list it with its increment',
     ).toEqual([]);
     expect(
-      POPUP_NOT_BUILT_YET.filter((key) => opened.includes(key)),
+      POPUP_NOT_BUILT_YET.filter((key) => built.includes(key)),
       'a popup that is built and still listed as not built',
     ).toEqual([]);
     expect(
-      [...POPUP_NOT_BUILT_YET, ...opened].filter((key) => !popups.includes(key)),
+      [...POPUP_NOT_BUILT_YET, ...built].filter((key) => !popups.includes(key)),
       'a stale entry: the placement is gone or is no longer a popup',
     ).toEqual([]);
     expect(new Set(POPUP_NOT_BUILT_YET).size, 'a placement is listed once').toBe(
@@ -392,11 +419,11 @@ describe('the surface classes are declared data (ADR-0145 §1)', () => {
     );
   });
 
-  it('a popup that has an opener names a module that exists', () => {
-    for (const [key, module] of Object.entries(POPUP_OPENERS))
+  it('a popup that is built names a module that exists', () => {
+    for (const [key, module] of Object.entries(POPUP_MODULES))
       expect(
         existsSync(fileURLToPath(new URL(`../${module}`, import.meta.url))),
-        `${key} is opened by ${module}`,
+        `${key} is implemented by ${module}`,
       ).toBe(true);
   });
 });
@@ -435,7 +462,7 @@ describe('what a surface says (ADR-0145 §7.4, §8)', () => {
 
   it('a name shared by the Home and a chat is one definition with a placement each, and the words may differ', () => {
     for (const name of ['workflows', 'permissions', 'help']) {
-      const definition = COMMAND_DEFINITIONS_BY_NAME.get(name);
+      const definition = DEFINITION_BY_NAME.get(name);
       expect(definition?.placements.home, `/${name} on the Home`).toBeDefined();
       expect(definition?.placements.chat, `/${name} in a chat`).toBeDefined();
       expect(definition?.placements['home-chat'], `/${name} in the Home's chat`).toBeDefined();
@@ -627,8 +654,8 @@ describe('the exports that were arrays are derived from the one table', () => {
   });
 
   it('freezes the table, its placements and the derived lists', () => {
-    const exit: CommandDefinition | undefined = COMMAND_DEFINITIONS_BY_NAME.get('exit');
-    expect(Object.isFrozen(COMMAND_DEFINITIONS)).toBe(true);
+    const exit: CommandDefinition | undefined = DEFINITION_BY_NAME.get('exit');
+    expect(COMMAND_DEFINITIONS.every((definition) => Object.isFrozen(definition))).toBe(true);
     expect(Object.isFrozen(exit)).toBe(true);
     expect(Object.isFrozen(exit?.placements)).toBe(true);
     expect(Object.isFrozen(exit?.placements.home)).toBe(true);

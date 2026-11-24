@@ -350,7 +350,8 @@ describe('the keyless Home hint bar by what the draft is', () => {
     expect(frameOf('hello')).toContain('Enter to connect a provider · your message is kept');
   });
 
-  it.each(['/clear', '/doctor --deep', '/'])(
+  // `submit` trims the draft before it reads it, so a command line with blanks before its slash runs, and the hint must say so (round 2, U2).
+  it.each(['/clear', '/doctor --deep', '/', '  /clear', ' /doctor --deep'])(
     'does not promise it for the command line %j: Enter runs the command, so the hint is the plain one',
     (text) => {
       const frame = frameOf(text);

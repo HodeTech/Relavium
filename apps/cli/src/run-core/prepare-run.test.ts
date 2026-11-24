@@ -150,7 +150,13 @@ function rig() {
   const prepare = (request: PrepareRunRequest): Promise<PreparedRun> =>
     prepareRun(
       request,
-      { io: io.io, global: { cwd: root, configPath: undefined }, home: root, ...services },
+      {
+        io: io.io,
+        noticeSurface: 'shell',
+        global: { cwd: root, configPath: undefined },
+        home: root,
+        ...services,
+      },
       ports,
       lifetime,
       resources,

@@ -309,7 +309,7 @@ describe('a row that continues a line starts with its word, not with the wrap’
     ]);
   });
 
-  it('keeps a space the wrap leaves at the END of a row, and the indent of the first row of a line', () => {
+  it('keeps the indent of the first row of a line, and no continuation row starts with a space', () => {
     const rows = linesOf('  indented line that wraps here');
     expect(rows[0]?.startsWith('  indented')).toBe(true);
     expect(rows.slice(1).every((row) => !row.startsWith(' '))).toBe(true);
@@ -318,5 +318,44 @@ describe('a row that continues a line starts with its word, not with the wrap’
   it('applies to every logical line, and never removes a character that is not whitespace', () => {
     const rows = linesOf(`${'b'.repeat(20)} first\n${'c'.repeat(20)} second`);
     expect(rows).toEqual(['b'.repeat(20), 'first', 'c'.repeat(20), 'second']);
+  });
+
+  // Round 2, Q2: three mutants of the wrap survived the suite.
+  it('keeps a blank line inside a notice as a row of its own', () => {
+    expect(linesOf('a\n\nb')).toEqual(['a', '', 'b']);
+    expect(linesOf('first\n\n\nlast')).toEqual(['first', '', '', 'last']);
+  });
+
+  it('moves a double-width glyph that does not fit the last column to the next row, and loses none', () => {
+    // 19 columns of ASCII leave one column, which a two-column glyph cannot use.
+    expect(linesOf(`${'a'.repeat(19)}漢字 tail`)).toEqual(['a'.repeat(19), '漢字 tail']);
+    expect(linesOf('漢 abc 漢字漢字漢字漢字漢字漢字漢字').join('')).toContain(
+      '漢字漢字漢字漢字漢字漢字漢字',
+    );
+  });
+
+  it('shows a glyph wider than the row as one `?` and wraps the rest of the line as it is, never cutting a surrogate pair', () => {
+    const narrow = layoutHomeNotice({
+      ...options,
+      cols: 1,
+      notice: '\u{20000}\u{20000}',
+    })?.lines;
+    expect(narrow).toEqual(['?', '?']);
+    for (const row of narrow ?? []) expect(row).not.toMatch(/[\ud800-\udfff]/u);
+  });
+
+  it('wraps a very long unbroken word at the width, every row full', () => {
+    const rows = linesOf('x'.repeat(205));
+    expect(rows).toHaveLength(11);
+    expect(rows.slice(0, 10).every((row) => row === 'x'.repeat(20))).toBe(true);
+    expect(rows[10]).toBe('xxxxx');
+  });
+
+  it('fills a row by the columns its text takes, not by the code units: combining marks are zero columns wide', () => {
+    // Ten letters with a combining acute are 20 code units and 10 columns: one row of ten columns, and not two of five.
+    const decomposed = 'e\u0301'.repeat(10);
+    expect(layoutHomeNotice({ ...options, cols: 10, notice: decomposed })?.lines).toEqual([
+      decomposed,
+    ]);
   });
 });

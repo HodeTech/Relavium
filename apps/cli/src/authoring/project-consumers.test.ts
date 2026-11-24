@@ -219,6 +219,7 @@ describe('project consumers never use global artifacts as project state', () => 
     const report = await runDoctorChecks(
       false,
       assembleDoctorProbes({
+        noticeSurface: 'tui',
         cwd,
         resolver: { resolveProvider: () => undefined, keyFor: () => '' },
         keychain: { get: () => null, set: () => {}, delete: () => false },

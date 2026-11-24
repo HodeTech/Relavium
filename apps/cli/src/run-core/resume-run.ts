@@ -61,6 +61,7 @@ import {
   type NativeProcessController,
 } from '../process/native-process-owner.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { RunLifetime } from './run-lifetime.js';
@@ -199,6 +200,8 @@ export const MEDIA_RESUME_REFUSALS = Object.freeze({
 /** The injectable services a resume uses. Every member is the one `GateCommandDeps` already carries. */
 export interface ResumeRunDeps {
   readonly io: CliIo;
+  /** Where the warnings a leg writes to {@link io} are READ: the shell names shell commands, a hosted leg names the Home's actions. REQUIRED (see `PrepareRunDeps`). */
+  readonly noticeSurface: NoticeSurface;
   readonly global: Pick<GlobalOptions, 'cwd'>;
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
   readonly providers?: ProviderResolver;
@@ -619,12 +622,13 @@ async function buildResumeEngine(
     onEffortWithheld: onceEffortNotice(
       lifetime.notification((note: string) => deps.io.writeErr(`warning: ${note}\n`)),
     ),
+    noticeSurface: deps.noticeSurface,
     // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
     // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
     onUnpriced: lifetime.notification(
       (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) =>
         deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
+          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities, deps.noticeSurface)}\n`,
         ),
     ),
     // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its

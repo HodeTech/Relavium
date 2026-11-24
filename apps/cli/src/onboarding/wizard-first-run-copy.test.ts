@@ -4,6 +4,8 @@ import { createClient, createProviderStore, runMigrations } from '@relavium/db';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderKeyValidation } from '../engine/providers.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import type { CliIo } from '../process/io.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { KeychainUnavailableError } from '../secrets/keychain.js';
@@ -76,6 +78,8 @@ async function run(options: {
   readonly answers: readonly string[];
   readonly keychainSet?: () => void;
   readonly defaultResult?: OnboardingDefaultResult | Error;
+  /** The wizard runs under a work owner, as the Home runs it: the check is then announced, and that announcement is what is under test. */
+  readonly owned?: boolean;
 }): Promise<Run> {
   const client = createClient(':memory:');
   runMigrations(client.db);
@@ -92,7 +96,16 @@ async function run(options: {
         ? Promise.reject(options.defaultResult)
         : Promise.resolve(options.defaultResult ?? { kind: 'saved', durability: 'confirmed' }),
     );
+    const workOwner =
+      options.owned === true
+        ? new InvocationWorkOwner(
+            invocationFixture().invocation,
+            { kind: 'command' },
+            { cancel: () => {}, cleanup: () => Promise.resolve() },
+          )
+        : undefined;
     const running = runOnboardingWizard({
+      ...(workOwner === undefined ? {} : { workOwner }),
       ...(options.initialProvider === undefined
         ? {}
         : { initialProvider: options.initialProvider }),
@@ -236,8 +249,39 @@ describe('a provider is named the way a person reads it', () => {
     });
     const text = result.notes.join('\n');
     expect(text).toContain(
-      "Saved your OpenAI key — it couldn't be verified now. Open a chat to check it.",
+      "Saved: Your OpenAI key is in the OS keychain, but it couldn't be verified now. Open a chat to check it.",
     );
     expect(text).not.toContain('Run /doctor');
+  });
+
+  // Round 2, U3: a key kept after a failed check was saved, not connected, and the card must not say a connection that was never made.
+  it('an unverified key is `Saved`, never `Connected`, on the card and in what the Home keeps as its notice', async () => {
+    const result = await run({
+      initialProvider: 'anthropic',
+      validation: NETWORK,
+      answers: ['continue'],
+    });
+    expect(result.finalNote.startsWith('Saved: ')).toBe(true);
+    expect(result.notes.join('\n')).not.toContain('Connected');
+    expect(result.finalNote).not.toContain('Saved: Saved');
+  });
+
+  it('a verified key stays `Connected`', async () => {
+    const result = await run({ initialProvider: 'anthropic', validation: OK, answers: [] });
+    expect(result.finalNote.startsWith('Connected: Verified and stored your Anthropic key')).toBe(
+      true,
+    );
+    expect(result.notes.join('\n')).not.toContain('Saved:');
+  });
+
+  it('shows no stale `Verification` label above the failure of a check (an owned Home run)', async () => {
+    const result = await run({
+      initialProvider: 'anthropic',
+      validation: NETWORK,
+      answers: ['skip'],
+      owned: true,
+    });
+    expect(result.notes.join('\n')).not.toContain('Verification');
+    expect(result.notes.join('\n')).not.toContain('Checking your Anthropic key');
   });
 });

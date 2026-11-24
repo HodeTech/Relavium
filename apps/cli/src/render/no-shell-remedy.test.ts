@@ -105,11 +105,6 @@ const SHELL_ONLY_FILES: readonly ShellOnly[] = [
   },
   { file: 'program.ts', reason: 'the shell `--help` text' },
   {
-    file: 'run-core/',
-    reason:
-      'the shell `run` / `gate` / `budget resume` legs: their stderr lines name the shell commands',
-  },
-  {
     file: 'process/errors.ts',
     reason:
       "the shell's stderr mapping; its one `relavium logs` sentence answers an unreadable run event log, which only the shell's history readers raise",
@@ -175,7 +170,7 @@ const ALLOWANCES: readonly Allowance[] = [
     file: 'chat/effort-notice.ts',
     includes: '`relavium models pricing ',
     reason:
-      "the `shell` wording of `unpricedModelNote` (printed by `relavium run`/`gate`); the chat passes 'tui' and names /pricing",
+      "the `shell` wording of `unpricedModelNote`, which a caller chooses: the shell's `run`/`gate` and a plain chat pass 'shell', the Home, its hosted legs and the interactive chat pass 'tui' and name /pricing",
   },
   {
     file: 'commands/models-pricing.ts',
@@ -357,6 +352,12 @@ const ALLOWANCES: readonly Allowance[] = [
     includes: 'start a new `relavium chat` instead',
     reason:
       '`/clear` typed on the plain / `--json` driver, which has no screen to swap (ADR-0049); the interactive chat never reaches it',
+  },
+  {
+    file: 'commands/chat.ts',
+    includes: ' — run it with `relavium run ',
+    reason:
+      "the /export notice of a plain or `--json`-less piped chat: scripted output on stderr, where the shell command is the way to run the file; the interactive chat's notice (`interactive`) names none (OD-20)",
   },
   {
     file: 'commands/chat.ts',

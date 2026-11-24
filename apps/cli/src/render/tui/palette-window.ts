@@ -66,27 +66,30 @@ type ListLine =
   | { readonly kind: 'gap' }
   | { readonly kind: 'marker'; readonly side: 'before' | 'after'; readonly hidden: number };
 
-/** The lines in LIST order: the first entry first. */
-function listLines(
+/** Every entry in LIST order, with a blank row before each entry of `kept`. */
+function entriesWithGaps(total: number, kept: ReadonlySet<number>): ListLine[] {
+  const lines: ListLine[] = [];
+  for (let index = 0; index < total; index += 1) {
+    if (kept.has(index)) lines.push({ kind: 'gap' });
+    lines.push({ kind: 'entry', index });
+  }
+  return lines;
+}
+
+/**
+ * Every entry fits: the gaps are drawn when they ALL fit in the `spare` rows left, and not at all otherwise (never some of them). `spare` is
+ * `undefined` when the palette is not bounded, which draws every gap.
+ */
+function fittingLines(
   total: number,
-  selected: number,
-  maxRows: number | undefined,
-  groupStarts: readonly boolean[],
+  gaps: readonly number[],
+  spare: number | undefined,
 ): readonly ListLine[] {
-  const gaps = gapPositions(groupStarts, total);
-  const withGaps = (kept: ReadonlySet<number>): ListLine[] => {
-    const lines: ListLine[] = [];
-    for (let index = 0; index < total; index += 1) {
-      if (kept.has(index)) lines.push({ kind: 'gap' });
-      lines.push({ kind: 'entry', index });
-    }
-    return lines;
-  };
-  if (maxRows === undefined) return withGaps(new Set(gaps));
-  const spare = Math.trunc(maxRows) - PALETTE_CHROME_ROWS - total;
-  // Every entry fits: the gaps are drawn when they ALL fit in the spare rows, and not at all otherwise (never some of them).
-  if (spare >= 0) return withGaps(new Set(spare >= gaps.length ? gaps : []));
-  const room = Math.max(1, Math.trunc(maxRows) - PALETTE_CHROME_ROWS);
+  return entriesWithGaps(total, new Set(spare === undefined || spare >= gaps.length ? gaps : []));
+}
+
+/** Not every entry fits: a window of `room` rows around `selected`, with a marker at each end that hides entries, and no gaps. */
+function windowedLines(total: number, selected: number, room: number): readonly ListLine[] {
   const cursor = Math.max(0, Math.min(selected, total - 1));
   const { start, end } = windowBody(total, cursor, room);
   const marked = end - start >= MARKED_WINDOW;
@@ -99,6 +102,20 @@ function listLines(
     else lines.push({ kind: 'entry', index });
   }
   return lines;
+}
+
+/** The lines in LIST order: the first entry first. */
+function listLines(
+  total: number,
+  selected: number,
+  maxRows: number | undefined,
+  groupStarts: readonly boolean[],
+): readonly ListLine[] {
+  const gaps = gapPositions(groupStarts, total);
+  if (maxRows === undefined) return fittingLines(total, gaps, undefined);
+  const spare = Math.trunc(maxRows) - PALETTE_CHROME_ROWS - total;
+  if (spare >= 0) return fittingLines(total, gaps, spare);
+  return windowedLines(total, selected, Math.max(1, Math.trunc(maxRows) - PALETTE_CHROME_ROWS));
 }
 
 /**

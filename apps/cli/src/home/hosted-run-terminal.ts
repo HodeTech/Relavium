@@ -5,7 +5,7 @@ import { outcomeToExitCode, type RunOutcome } from '../commands/drive.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { WorkflowSafetyExit } from '../process/exit-observations.js';
 import { displayRunId, relaviumRunCommand } from '../render/run-command-text.js';
-import type { LegKind } from '../run-core/finish-leg.js';
+import { READ_RUN_IN_HOME, type LegKind } from '../run-core/finish-leg.js';
 
 /**
  * How a hosted leg ended, as the Home shows it
@@ -72,9 +72,6 @@ export interface HostedRunTerminal {
 
 // The one rule lives in `render/run-command-text.ts`, shared with the shell's epilogue and the final summary; the cards import it from here.
 export { displayRunId, relaviumRunCommand };
-
-/** Where the Home's card says a run is read: its own browser, on the tab where a finished run is listed. */
-const READ_RUN_IN_HOME = 'the run in /workflows (History tab)';
 
 /**
  * A remedy that says where the run is read, in the two forms it is shown in: the card names the Home's `/workflows`, and the line

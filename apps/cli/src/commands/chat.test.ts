@@ -2431,11 +2431,11 @@ describe('chatCommand', () => {
         expect(err()).not.toContain('exported session to');
         expect(`${err()}${out()}`).not.toContain('run it with');
       } else {
-        // The notice is the path alone: it names no shell command (OD-20, ADR-0122 §6 inside the TUI).
+        // The plain driver is scripted output on stderr: it keeps the hint that names the shell command that runs the file (ADR-0122 §6;
+        // the interactive chat's notice is the path alone, OD-20). MVP-11 Step 2 review round 2, N3.
         expect(err()).toContain(
-          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')}`,
+          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
         );
-        expect(err()).not.toContain('relavium run');
       }
     },
   );
@@ -2587,10 +2587,10 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, { ...d, drive: probingDrive });
 
     expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
+    // The plain driver keeps the shell hint (scripted output, ADR-0122 §6); the interactive chat's notice is the path alone (OD-20).
     expect(err()).toContain(
-      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')}`,
+      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')} — run it with \`relavium run hello\``,
     );
-    expect(err()).not.toContain('relavium run'); // OD-20: no shell command in the notice
     expect(statusAfterExport).toBe('active'); // /export left the live row untouched (NOT 'exported')
     expect(store.loadFull(sessionId)?.messages).toHaveLength(4); // both turns persisted — REPL continued
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // /exit's terminal

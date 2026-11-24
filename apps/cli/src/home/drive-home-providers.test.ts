@@ -308,8 +308,19 @@ describe('driveHome native provider setup', () => {
         rmSync(f.path);
         symlinkSync(original, f.path);
         f.announce(p);
+        const labelOf = async (value: string): Promise<string | undefined> => {
+          await vi.waitFor(() =>
+            expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
+          );
+          return ui.getSnapshot().options.find((option) => option.value === value)?.label;
+        };
         await choose('use');
+        // Two recovery cards in a row, each saying what it uses (round 2, B6): the source's variable, then the model.
+        expect(await labelOf('once')).toBe('Use OPENAI_API_KEY for this invocation only');
         await choose('once'); // separate source authority
+        expect(await labelOf('once')).toBe(
+          `Use ${KNOWN_PROVIDERS.openai.testModel} for this invocation only`,
+        );
         await choose('once'); // separate invocation model
         await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
         rmSync(f.path);

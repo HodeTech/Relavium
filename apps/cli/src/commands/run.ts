@@ -151,7 +151,7 @@ async function runOwned(
     // for stdio consent with the clack prompt, exactly as before the core was shared.
     const prepared = await prepareRun(
       { workflow: args.workflow, rawInputs },
-      deps,
+      { ...deps, noticeSurface: 'shell' }, // scripted output: a warning names the shell command that fixes it
       {
         secretInputs: (def) => readRunSecrets(args, deps, def, lifetime),
         consentGate: (homeDir) =>
@@ -199,6 +199,7 @@ async function runOwned(
     // taken-over run says. This is a `start` leg, so a takeover is said on stderr after the sweeps.
     return await finishLeg({
       leg: 'start',
+      noticeSurface: 'shell', // the shell's epilogue names the shell command that reads the run
       runId: handle.runId,
       lifetime,
       io: deps.io,

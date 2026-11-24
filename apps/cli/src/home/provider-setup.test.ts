@@ -162,6 +162,9 @@ describe('provider setup coordinator', () => {
     expect(outcome.notice).toContain('invocation only');
     expect(f.policy.allows('openai', 'OPENAI_API_KEY')).toBe(true);
     expect(f.messages.join(' ')).not.toContain('secret');
+    // The recovery card says what it uses (round 2, B6): the variable of the source, never a bare 'Use for this invocation only'.
+    expect(f.messages.join('\n')).toContain('Use OPENAI_API_KEY for this invocation only');
+    expect(f.messages.join('\n')).not.toContain('Use for this invocation only');
   });
 
   it('does not grant after a failed write followed by cancel', async () => {

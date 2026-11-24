@@ -213,7 +213,7 @@ async function runList(deps: ModelsCommandDeps): Promise<ExitCode> {
     if (failed.length > 0) {
       const names = failed.map((p) => p.provider).join(', ');
       deps.io.writeOut(
-        `Model refresh failed for ${names}; showing no models — run \`relavium models refresh\` or check \`relavium doctor\`.\n`,
+        `Model refresh failed for ${names}; showing no models — run \`relavium models refresh\`, or use /doctor in a chat (\`relavium chat\`) to check the connection.\n`,
       );
       return EXIT_CODES.success;
     }

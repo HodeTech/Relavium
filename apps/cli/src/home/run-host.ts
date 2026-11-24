@@ -899,6 +899,7 @@ export class RunHost {
     try {
       await finishLeg({
         leg: leg.kind,
+        noticeSurface: 'tui', // the line a taken-over leg writes becomes a notice in the Home
         runId: acquired.runId,
         lifetime: leg.lifetime,
         io,
@@ -1052,6 +1053,8 @@ export class RunHost {
       },
       {
         io,
+        // Every line a leg writes becomes a notice inside the TUI: its remedies name the Home's actions, never a shell command.
+        noticeSurface: 'tui',
         global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
         // The same home a resume loads from, never the OS's: the host is always handed one.
         home: this.#homeDir,
@@ -1103,7 +1106,7 @@ export class RunHost {
             kind: request.kind,
             decision: request.decision,
           },
-      { io, global: { cwd: this.#projectRoot }, ...this.#services },
+      { io, noticeSurface: 'tui', global: { cwd: this.#projectRoot }, ...this.#services },
       { config: host.config, homeDir: host.homeDir },
       {
         openDb: () => ({ db: this.#db, close: () => undefined }),

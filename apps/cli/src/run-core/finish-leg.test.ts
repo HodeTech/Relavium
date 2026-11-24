@@ -136,6 +136,7 @@ function harness(
     readonly remainingMs?: number | undefined;
     readonly json?: boolean;
     readonly runId?: string;
+    readonly noticeSurface?: FinishLegInput['noticeSurface'];
   } = {},
 ): Harness {
   const captured = captureIo();
@@ -147,6 +148,7 @@ function harness(
     finish: () =>
       finishLeg({
         leg,
+        noticeSurface: options.noticeSurface ?? 'shell',
         runId: options.runId ?? RUN_ID,
         lifetime: {
           invocation: { registry: { budget: budgetOf(options.remainingMs) } },
@@ -321,6 +323,16 @@ describe('finishLeg — a run another process took over', () => {
     expect(run.out()).toBe('');
   });
 
+  it('a start leg hosted in the TUI names the Home’s run browser, and no shell command (N2, MVP-11 OD-20)', async () => {
+    const run = harness('start', 'paused', { handle: FENCED(), noticeSurface: 'tui' });
+    expect(await run.finish()).toBe(EXIT_CODES.runOwnedElsewhere);
+    expect(run.err()).toBe(
+      `run ${RUN_ID} was taken over by another process; this one stopped without recording an outcome — read the run in /workflows (History tab) for what actually happened\n`,
+    );
+    expect(run.err()).not.toContain('relavium');
+    expect(run.out()).toBe('');
+  });
+
   it('a resume leg refuses with run_owned_elsewhere instead, and says nothing itself', async () => {
     const run = harness('resume', 'paused', { handle: FENCED() });
     const refusal = await refusalOf(run.finish);
@@ -481,7 +493,7 @@ describe('the resume port hands a host the masked slot names', () => {
         try {
           await resumeRun(
             { runId, kind: 'human', secretStdin: true, decision: inputDecision({}) },
-            { io, global: { cwd: root } },
+            { io, noticeSurface: 'shell', global: { cwd: root } },
             { config, homeDir },
             {
               openDb: () => ({ db: client.db, close: () => undefined }),

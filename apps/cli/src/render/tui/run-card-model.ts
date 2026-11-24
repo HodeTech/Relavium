@@ -43,6 +43,7 @@ import {
 } from '../../home/run-gates.js';
 import type { HostedLaunch, HostedResumeRequest, RunHost } from '../../home/run-host.js';
 import { CliError } from '../../process/errors.js';
+import { INVISIBLE_CHARS } from '../invisible-chars.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
 import {
@@ -537,14 +538,6 @@ export interface RunCardProjectionInput {
 
 /** Host glyphs and card-drawing characters, none of which an author's text may carry (`HOST_GLYPH` of the ask-user tool, widened). */
 const HOST_GLYPHS = /[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu;
-/**
- * Code points that draw nothing, so a chord can hide behind them: the format characters (zero-width, bidi marks, joiners, the soft
- * hyphen) and every other default-ignorable one (variation selectors, the combining grapheme joiner, the Hangul fillers, the
- * Mongolian free variation selectors, the tag characters). An emoji variation selector goes with them, so an emoji in an author's
- * message may draw in its text form: the card accepts that.
- */
-const INVISIBLE_CHARS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
-
 /**
  * The letters of `ctrl` and `control`, each with the Cyrillic and Greek letters that read as it (capital and small). They are
  * spelled into the chord word below and nowhere else, so ordinary Cyrillic or Greek prose is never rewritten or matched: only a word

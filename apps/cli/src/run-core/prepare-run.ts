@@ -55,6 +55,7 @@ import { nativeProcessesForInvocation } from '../process/native-process-owner.js
 import type { GlobalOptions } from '../process/options.js';
 import { storageBoundaryError } from '../process/owned-storage.js';
 import { sourceLabel } from '../process/source-label.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import type { RunResources } from './run-resources.js';
@@ -120,6 +121,12 @@ export interface PrepareRunRequest {
 /** The injectable services a start uses. Every member is the one `RunCommandDeps` already carries. */
 export interface PrepareRunDeps {
   readonly io: CliIo;
+  /**
+   * Where the warnings a leg writes to {@link io} are READ: the shell (`relavium run`) names shell commands, the Home's hosted leg turns
+   * every line into a notice inside the TUI and names its own actions ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
+   * §6, MVP-11 OD-20). REQUIRED, so a host that forgets it fails the typecheck instead of printing a command that does not exist there.
+   */
+  readonly noticeSurface: NoticeSurface;
   readonly global: Pick<GlobalOptions, 'cwd' | 'configPath'>;
   /**
    * The operator home the configuration is loaded from (`~/.relavium` lives under it). Absent, the OS home: that is what the shell uses.
@@ -489,13 +496,14 @@ export async function prepareRun(
   const onUnpriced = lifetime.notification(
     (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]): void =>
       deps.io.writeErr(
-        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
+        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities, deps.noticeSurface)}\n`,
       ),
   );
   const baseOptions: BuildEngineOptions = {
     providers,
     toolEnv,
     onEffortWithheld,
+    noticeSurface: deps.noticeSurface,
     onUnpriced,
     ...mcpOption,
   };

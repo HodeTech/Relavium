@@ -124,12 +124,6 @@ export function shouldOpenPalette(
   return !running && bufferLength === 0 && char === '/' && key.ctrl !== true && key.meta !== true;
 }
 
-/** Clamp an index into `[0, count - 1]` (or `0` when the filtered list is empty). */
-export function clampIndex(index: number, count: number): number {
-  if (count <= 0) return 0;
-  return Math.max(0, Math.min(index, count - 1));
-}
-
 /**
  * The result of folding one keystroke: keep the palette open with new state (and the rows that state reads), run the highlighted command,
  * say why the highlighted one cannot run (the palette stays open), or close.

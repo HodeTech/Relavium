@@ -721,7 +721,12 @@ workflow:
     try {
       await prepareRun(
         { workflow: path, rawInputs: {} },
-        { io: r.io, global: { cwd: root, configPath: undefined }, buildEngine: build },
+        {
+          io: r.io,
+          noticeSurface: 'tui',
+          global: { cwd: root, configPath: undefined },
+          buildEngine: build,
+        },
         { secretInputs: () => Promise.resolve({}), consentGate: () => PASS_CONSENT },
         r.lifetime,
         resources,

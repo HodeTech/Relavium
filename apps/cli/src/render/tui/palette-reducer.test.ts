@@ -8,7 +8,6 @@ import {
   type PaletteEntry,
 } from './palette-entries.js';
 import {
-  clampIndex,
   foldPaletteKey,
   openPalette,
   reducePaletteKey,
@@ -288,14 +287,6 @@ describe('shouldOpenPalette', () => {
   });
 });
 
-describe('clampIndex', () => {
-  it('clamps into [0, count-1], or 0 when empty', () => {
-    expect(clampIndex(5, 3)).toBe(2);
-    expect(clampIndex(-1, 3)).toBe(0);
-    expect(clampIndex(0, 0)).toBe(0);
-  });
-});
-
 /** Open a palette over `entries` (`down` unless said): ONE value, its state and the rows it reads. */
 function opened(entries: readonly PaletteEntry[], layout: PaletteLayout = 'down'): OpenPalette {
   return openPalette(entries, layout);
@@ -486,13 +477,12 @@ describe('stepPalette', () => {
       expect(typed(surface, query)).toBe(query);
     });
 
-    it('when every row that can act is one of them, the first of those is highlighted', () => {
+    it('when every row that can act is one of them, one is highlighted only when the query starts its NAME', () => {
       expect(typed('chat', 'can'), 'only /cancel matches').toBe('cancel');
-      expect(
-        typed('chat', 'res'),
-        'a stand-alone chat has no /resume: /clear and /cancel are all there is',
-      ).toBe('clear');
       expect(typed('home', 'exi'), 'only /exit matches').toBe('exit');
+      // Round 2 (A2): `/res` reached `/clear` through its description in a stand-alone chat, which has no `/resume`. A description is not a
+      // name: nothing is highlighted and `Enter` answers as it does for a query that matches nothing (`palette-highlight.test.ts`).
+      expect(typed('chat', 'res'), 'a stand-alone chat has no /resume').toBeUndefined();
     });
 
     /** Type `query` into a palette over `list` and read the highlighted row's name. */

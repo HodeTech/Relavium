@@ -172,7 +172,7 @@ export async function runStandaloneProviderSetup(deps: {
                   message: 'How would you like to continue?',
                   options: [
                     ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-                    { value: 'once', label: 'Use for this invocation only' },
+                    { value: 'once', label: `Use ${model} for this invocation only` },
                     { value: 'cancel', label: 'Cancel' },
                   ],
                 });

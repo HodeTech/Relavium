@@ -14,7 +14,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  COMMAND_DEFINITIONS,
   commandDefinitionsOf,
   REPL_COMMANDS_BY_NAME,
   unavailableNotice,
@@ -288,9 +287,15 @@ describe('a word of the Home, with an argument, is refused with its own sentence
 
 describe('a word that is a chat’s is not the Home’s (the table has no entry for it)', () => {
   const HOME = new Set(commandDefinitionsOf('home').map((definition) => definition.name));
-  const CHAT_ONLY = COMMAND_DEFINITIONS.map((definition) => definition.name).filter(
-    (name) => !HOME.has(name),
-  );
+  // The table is not exported: every definition is offered on the Home, in a chat or in the Home's chat, so the names of the two chats are
+  // the chat's words, and the ones the Home does not offer are the chat-only ones.
+  const CHAT_ONLY = [
+    ...new Set(
+      (['chat', 'home-chat'] as const).flatMap((surface) =>
+        commandDefinitionsOf(surface).map((definition) => definition.name),
+      ),
+    ),
+  ].filter((name) => !HOME.has(name));
 
   it('has chat-only commands to check', () => {
     expect(CHAT_ONLY).toContain('cost');

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { type PaletteSurface } from '../../commands/repl-commands.js';
 import {
+  bestMatchIndex,
   buildPaletteEntries,
   filterPaletteEntries,
   firstEnabledIndex,
-  isExactNameMatch,
   lastEnabledIndex,
   type PaletteEntry,
 } from './palette-entries.js';
@@ -239,12 +239,11 @@ describe('filterPaletteEntries ranks a typed query (ADR-0145 §7.6)', () => {
     expect(first?.reason).toBe('no conversation to clear');
   });
 
-  it('names an exact match without regard to case or the whitespace around it', () => {
-    const exit = home.find((entry) => entry.command.name === 'exit');
-    expect(exit).toBeDefined();
-    if (exit === undefined) return;
-    expect(isExactNameMatch(exit, 'EXIT')).toBe(true);
-    expect(isExactNameMatch(exit, ' exit ')).toBe(true);
-    expect(isExactNameMatch(exit, 'exi')).toBe(false);
+  it('names an exact match without regard to case or the whitespace around it: the highlight lands on it', () => {
+    const dimClear = filterPaletteEntries(home, 'clear');
+    expect(
+      dimClear[bestMatchIndex(dimClear, ' CLEAR ')]?.command.name,
+      'a dim exact name explains itself',
+    ).toBe('clear');
   });
 });

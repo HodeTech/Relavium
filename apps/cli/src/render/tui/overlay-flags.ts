@@ -120,7 +120,22 @@ const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
 /**
  * The table: for each flag, the gates it closes (besides owning the keyboard, which every flag does). A flag with no row, or a row with no
  * flag, does not compile. The cards close the pointer and nothing else here because their own host answers every key and `pasteFlagsFrom`
- * carries the paste half; the cells that look odd are the history this module preserves and the report of the extraction lists.
+ * carries the paste half.
+ *
+ * The cells that look odd are the nine places where the hand-written lists disagreed, which this module PRESERVES (a unified cell is a
+ * behaviour change and belongs to its own increment). Each is pinned by `overlay-flags.test.ts`:
+ *
+ * | # | Gate | Where the lists disagreed |
+ * |---|------|---------------------------|
+ * | 1 | `screenSlot` | a screen is not one: it REPLACES the slot (`openHelp` checks on its own), and it is never open in a chat |
+ * | 2 | `screenSlot` | `nativeActionBusy` is not one: three of the slot's five callers check the flag themselves |
+ * | 3 | `stripPause` | `nativePrompt` does not pause the strip, though `nativeActionBusy`, which is set with it, does |
+ * | 4 | `pointer` | the cards close it, but `approval` does not: it is always paired with `review` |
+ * | 5 | `scrollKeys` | the submodes close it, the cards do not: their own host answers every key |
+ * | 6 | `mouseCapture` | only a native prompt and a busy native action release it; an open submode does not (toggling reporting would be churn) |
+ * | 7 | `interrupt` | the exit card and the cards are not interrupt gates (routed first); `effortPicker` is one only while a chat is live |
+ * | 8 | `landingPromptHidden`, `pageNotice` | of the submodes only the palette and the model picker, the two that open on the landing |
+ * | 9 | paste (`pasteFlagsFrom`) | read for the six submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
  */
 const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   palette: [...SUBMODE, ...ON_THE_LANDING],
@@ -177,7 +192,7 @@ function closes(flags: OverlayFlags, gate: Gate): boolean {
   return CLOSERS[gate].some((kind) => flags[kind]);
 }
 
-/** Whether anything owns the keyboard: every flag does, and one added later is covered with no edit here. No site asks for the whole set today. */
+/** Whether anything owns the keyboard: every flag does, and one added later is covered with no edit here. The Home's first-run offer asks (`homeIsClearForSetup`, `drive-home.tsx`). */
 export function overlayOwnsKeyboard(flags: OverlayFlags): boolean {
   return KINDS.some((kind) => flags[kind]);
 }

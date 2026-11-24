@@ -773,6 +773,14 @@ export const KEY_SHAPED_DRAFT_NOTICE =
   'That looked like an API key, so it was not kept. Choose a provider in the setup that just opened and paste it there.';
 
 /**
+ * What a draft that looks like a provider key is answered with when a key already exists (ADR-0146 §6, round 2 A1): Enter on it would build a
+ * chat and send it, and a sent message enters the session TRANSCRIPT, which `history.db` keeps unencrypted. So nothing is sent, built or
+ * recorded: the editor is cleared and this fixed sentence says where keys are managed. It never echoes the draft.
+ */
+export const KEY_SHAPED_SEND_NOTICE =
+  'That looked like an API key, so it was not sent. Keys are managed with /providers.';
+
+/**
  * What a slash-led line that looks like a provider key is answered with (a key pasted after a stray `/`): no setup opens for it, so the
  * sentence names where a key goes instead. Fixed text; the line is cleared and never echoed (the unknown-command notice would have shown
  * up to 64 of its characters).
@@ -2632,9 +2640,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * not sent (sending it on success would send it to a model the person did not look at). Nothing is recorded in the input history: the
    * message was not sent.
    *
-   * The exception is a draft that looks like a provider key ({@link looksLikeProviderKey}: the four providers' formats). It is never kept and never recorded: the
-   * history database is unencrypted and cannot be deleted, so a pasted key must not survive there or in the prompt. The editor is cleared
-   * in the same state change that opens the setup, and the notice says why and where the key goes.
+   * The exception is a draft that looks like a provider key ({@link looksLikeProviderKey}). It is never kept and never recorded, so a pasted
+   * key does not stay in the prompt or reach the input history's Up and `Ctrl+R` recall (which is in memory only; it is kept clean for the next
+   * person at the keyboard). The editor is cleared in the same state change that opens the setup, and the notice says why and where the key
+   * goes. The keyed landing refuses the same draft before a chat is built ({@link submit}).
    */
   const connectProviderKeepingDraft = (): void => {
     if (!looksLikeProviderKey(state.input.text)) {
@@ -2663,10 +2672,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     // The message as it was typed, before the editor is cleared: a build that fails gives it back (G6).
     const draft = state.input.text;
-    // The message that starts the chat is recallable via Up in it, unless it looks like a provider key: the history is an unencrypted database
-    // that cannot be deleted from, and a build that then fails does not give such a draft back, so Up must not either (ADR-0146 §6).
-    const keyShaped = looksLikeProviderKey(draft);
-    if (!keyShaped) history = recordHistory(history, trimmed);
+    // A draft that looks like a provider key is not a message, with a key or without one (ADR-0146 §6, round 2 A1). It is refused BEFORE a chat
+    // is built: sent, it would show as the pending message, reach the model and enter the session transcript (`history.db`, unencrypted and
+    // not deletable from). Nothing is built, sent or recorded; the editor is cleared and a fixed sentence says where keys go.
+    if (looksLikeProviderKey(draft)) {
+      set({ input: emptyEditor(), notice: KEY_SHAPED_SEND_NOTICE });
+      return;
+    }
+    // The message that starts the chat is recallable via Up in it (the input history is in memory only).
+    history = recordHistory(history, trimmed);
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
     doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
@@ -2691,8 +2705,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       (err) => {
         // The message comes back to the prompt and the failure is shown WHOLE, in the notice area that wraps and pages: the one-row line it
-        // used to be cut the remedy off at 80 columns (observed). A draft that looks like a key is not given back (ADR-0146 §6).
-        const restorable = state.input.text === '' && !keyShaped;
+        // used to be cut the remedy off at 80 columns (observed). A draft that looks like a key never gets here: it was refused above.
+        const restorable = state.input.text === '';
         set({
           notice: `Couldn’t start the chat: ${failureLine(err)}`,
           ...(restorable ? { input: editorFromText(draft) } : {}),
@@ -3325,6 +3339,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             buildPaletteEntries('home-chat', {
               hasSession: true,
               hasKey: true,
+              // Filled for the context's contract (ADR-0145 §7): declared ahead of use, read by tests until the popup step. No availability
+              // function reads it yet, and the palette cannot open while a turn runs (`shouldOpenPalette`), so it is false in practice.
               turnRunning: active.store.getSnapshot().state.status === 'running',
             }),
             'up',
@@ -3379,12 +3395,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ palette: undefined });
         if (step.command !== undefined) {
           chooseCommand(step.command, active);
-        } else if (active === undefined && open.state.query.trim().length > 0) {
-          // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling,
-          // a sentence), and it is answered as the same line pasted is (ADR-0140 §3): by `managementCommand`, which a submitted line goes
-          // through first, so `/run extra` says `/run accepts no arguments` here as it does for a paste, not that `/run` is unknown. It starts
-          // with a slash, so it is a command line and is always answered: it never starts a chat.
-          managementCommand(`/${open.state.query.trim()}`);
+        } else if (open.state.query.trim().length > 0) {
+          // `Enter` on a query that matches no row, or on which no row is highlighted (A2): the person typed a line of their own (`/help`, a
+          // misspelling, `/doctor --deep`, `/trim 20`, a sentence), and it is answered as the same line pasted is (ADR-0140 §3): by
+          // `managementCommand`, which a submitted line goes through first, so `/run extra` says `/run accepts no arguments` here as it does
+          // for a paste, not that `/run` is unknown. It starts with a slash, so it is a command line and is always answered: it never starts
+          // a chat. In a chat the Home does not answer is the chat's own: the line goes down to its dispatch, which validates the tokens and
+          // answers an unknown word (round 2, U1), instead of the text being dropped when the palette closes.
+          const line = `/${open.state.query.trim()}`;
+          if (!managementCommand(line) && active !== undefined) sendChatLine(active, line, line);
         }
         return;
       case 'state':
@@ -4140,7 +4159,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     setProviderState(keyless, notice) {
       if (!exiting) {
-        set({ keyless, ...(notice === undefined ? {} : { notice }) });
+        // The sentence that said what the setup was for ('...in the setup that just opened') is false once it has closed with nothing of its
+        // own to say, so it goes (round 2, K4); any other notice stays, as it did.
+        const spent = notice === undefined && state.notice === KEY_SHAPED_DRAFT_NOTICE;
+        set({
+          keyless,
+          ...(notice === undefined ? (spent ? { notice: undefined } : {}) : { notice }),
+        });
         if (notice !== undefined) state.session?.store.note(notice);
       }
     },
