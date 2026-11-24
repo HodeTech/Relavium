@@ -1,21 +1,11 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import {
-  accessSync,
-  closeSync,
-  constants,
-  fchmodSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  realpathSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
+import { accessSync, constants, mkdirSync, realpathSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
 import { findOnPath } from '../engine/find-on-path.js';
+import { AppendTargetRefusedError, appendToOwnerOnlyFile } from '../engine/owner-only-append.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 
@@ -873,42 +863,32 @@ export async function namedProgram(
   }
 }
 
+/** The sentence the append's refusal of a link, or of a path that cannot be inspected, carries. */
+const REFUSED_LINK_OR_UNINSPECTABLE =
+  'the remembered-command file cannot be inspected or is a symbolic link; refusing to write';
+
 /**
  * One record, one write, with a LEADING newline (a process killed mid-append leaves a partial last line with no terminator, and
  * appending straight onto it would weld two records into one corrupt line, which the fail-closed fold would turn into "no
- * grants" for the whole machine). The file is created with the owner-only mode from its FIRST byte, opened without following a
- * symlink and without blocking where the platform allows, and checked on the descriptor to be a regular file, so a path swapped
- * for a link or a FIFO after the read is neither written through nor waited on.
+ * grants" for the whole machine). The check by path here refuses a link or a path that cannot be inspected before anything is
+ * opened; the append itself is the CLI's shared single-descriptor one ({@link appendToOwnerOnlyFile}): the file is created with the
+ * owner-only mode from its FIRST byte, opened without following a symlink and without blocking where the platform allows, and checked
+ * on the descriptor to be a regular file, so a path swapped for a link or a FIFO after the read is neither written through nor waited
+ * on. Its refusals keep this store's own sentences.
  */
 function appendLine(path: string, record: object): void {
   mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE });
   const seen = statState(path);
-  if (seen === 'error' || seen?.isSymbolicLink() === true) {
-    throw new Error(
-      'the remembered-command file cannot be inspected or is a symbolic link; refusing to write',
-    );
-  }
-  const fd = openSync(
-    path,
-    constants.O_WRONLY |
-      constants.O_APPEND |
-      constants.O_CREAT |
-      (constants.O_NOFOLLOW ?? 0) |
-      (constants.O_NONBLOCK ?? 0),
-    FILE_MODE,
-  );
+  if (seen === 'error' || seen?.isSymbolicLink() === true)
+    throw new Error(REFUSED_LINK_OR_UNINSPECTABLE);
   try {
-    if (!fstatSync(fd).isFile())
-      throw new Error('the remembered-command file is not a regular file');
-    const data = Buffer.from(`\n${stringifyJsonLine(record)}\n`, 'utf8');
-    let written = 0;
-    while (written < data.length) written += writeSync(fd, data, written);
-    try {
-      fchmodSync(fd, FILE_MODE);
-    } catch {
-      // Windows, or a file we do not own: the guard there is the per-user profile ACL (ADR-0050).
-    }
-  } finally {
-    closeSync(fd);
+    appendToOwnerOnlyFile(path, `\n${stringifyJsonLine(record)}\n`, FILE_MODE);
+  } catch (error) {
+    if (!(error instanceof AppendTargetRefusedError)) throw error;
+    throw new Error(
+      error.reason === 'symlink'
+        ? REFUSED_LINK_OR_UNINSPECTABLE
+        : 'the remembered-command file is not a regular file',
+    );
   }
 }

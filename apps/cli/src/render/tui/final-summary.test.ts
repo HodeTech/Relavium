@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { renderFinalSummary } from './final-summary.js';
@@ -151,6 +151,109 @@ describe('renderFinalSummary', () => {
     );
     // Before any event the summary has no id to offer.
     expect(renderFinalSummary(reduceAll([]))).not.toContain('run id');
+  });
+
+  describe('a run id the shell would not take as one word is never put in a copyable command (PR #102 review)', () => {
+    const HOSTILE = [
+      ['a space', 'run-1 x'],
+      ['a semicolon', 'run-1;touch x'],
+      ['a backtick', 'run-1`touch x`'],
+      ['a command substitution', 'run-1$(touch x)'],
+      ['a newline', 'run-1\ntouch x'],
+      ['a leading dash', '-rf'],
+    ] as const;
+    const stateFor = (runId: string, tail: readonly Partial<RunEvent>[]): RunViewState =>
+      reduceAll([
+        {
+          type: 'run:started',
+          runId,
+          timestamp: TS,
+          sequenceNumber: 1,
+          workflowId: '00000000-0000-4000-8000-000000000001',
+          inputs: {},
+          executionMode: 'local',
+        },
+        ...tail.map(
+          (event, index): RunEvent =>
+            RunEventSchema.parse({
+              runId,
+              timestamp: TS,
+              sequenceNumber: index + 2,
+              ...event,
+            }),
+        ),
+      ]);
+    /** Every `relavium` command text between backticks in the lines the continuation wrote. */
+    const commandsIn = (out: string): string[] =>
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('  run id'))
+        .flatMap((line) => [...line.matchAll(/`([^`]*)`/gu)].map((match) => match[1] ?? ''));
+
+    it.each(HOSTILE)(
+      'writes no command that carries an id with %s, and still names the id in prose',
+      (_name, id) => {
+        const humanPaused = stateFor(id, [
+          {
+            type: 'human_gate:paused',
+            nodeId: 'approve',
+            gateId: 'approve-1',
+            gateType: 'approval',
+            message: 'approve?',
+          },
+          { type: 'run:paused', pendingGateCount: 1, gateIds: ['approve-1'] },
+        ]);
+        const ended = stateFor(id, [
+          {
+            type: 'run:completed',
+            outputs: {},
+            durationMs: 1,
+            totalTokensUsed: { input: 0, output: 0 },
+            totalCostMicrocents: 0,
+          },
+        ]);
+        const mediaOnly = stateFor(id, [
+          {
+            type: 'run:paused',
+            pendingGateCount: 0,
+            gateIds: [],
+            pendingMediaJobNodeIds: ['render'],
+          },
+        ]);
+        const out = [ended, humanPaused, mediaOnly].map(renderFinalSummary).join('');
+        // The commands that were written are the bare ones: no id, so nothing a shell could split.
+        expect(commandsIn(out).sort()).toEqual([
+          'relavium gate',
+          'relavium logs',
+          'relavium status',
+        ]);
+        // No line carries the raw tail of the hostile id after a command word, and no control character survives.
+        expect(out).not.toMatch(/relavium (?:logs|status|gate) [^`]*(?:touch|-rf)/u);
+        // eslint-disable-next-line no-control-regex -- the assertion is that no control survives
+        expect(out.replaceAll('\n', '')).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u);
+        // The id is still told, in prose, with no backtick a person could copy as a command.
+        const proseLines = out.split('\n').filter((line) => line.startsWith('  run id'));
+        expect(proseLines.length).toBeGreaterThan(0);
+        for (const line of proseLines) expect(line).not.toMatch(/run id [^—]*`/u);
+      },
+    );
+
+    it('keeps the exact commands for ids the shell takes as one word, a UUID among them', () => {
+      for (const id of ['run-1', '3f2b8e9c-6a1d-4f7e-9b0a-1c2d3e4f5a6b', 'run_1.2:3']) {
+        const ended = stateFor(id, [
+          {
+            type: 'run:completed',
+            outputs: {},
+            durationMs: 1,
+            totalTokensUsed: { input: 0, output: 0 },
+            totalCostMicrocents: 0,
+          },
+        ]);
+        expect(renderFinalSummary(ended)).toContain(
+          `  run id ${id} — replay with \`relavium logs ${id}\``,
+        );
+      }
+    });
   });
 
   it('points each outcome at the command that accepts it: logs, gate, budget resume or status (MVP-A2)', () => {

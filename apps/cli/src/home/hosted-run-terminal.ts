@@ -76,11 +76,12 @@ export function displayRunId(runId: string): string {
 }
 
 /**
- * The command that reads a run, written as text the person may copy: `relavium logs <id>` or `relavium status <id>` for an id that is
- * shell-inert, and for any other id the bare command with the id in prose, so a card never offers a command line that carries
- * a hostile id (a copied `relavium logs x; rm -rf ~` would run it).
+ * The command that reads or continues a run, written as text the person may copy: `relavium logs <id>`, `relavium status <id>` or
+ * `relavium gate <id>` for an id that is shell-inert, and for any other id the bare command with the id in prose, so a card never offers
+ * a command line that carries a hostile id (a copied `relavium logs x; rm -rf ~` would run it). The one definition of that check: the
+ * final summary the terminal prints after a run uses this too (PR #102 review).
  */
-export function relaviumRunCommand(command: 'logs' | 'status', runId: string): string {
+export function relaviumRunCommand(command: 'logs' | 'status' | 'gate', runId: string): string {
   return SHELL_INERT_ID.test(runId)
     ? `\`relavium ${command} ${runId}\``
     : `\`relavium ${command}\` (for run ${displayRunId(runId)})`;

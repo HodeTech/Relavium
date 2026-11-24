@@ -4,6 +4,7 @@ import type { GateDecision, HumanGatePausedEvent, RunEvent } from '@relavium/sha
 
 import type { BudgetPromptContext } from '../gate/budget.js';
 import { pendingParkDisplays, type PendingBudgetGate } from '../gate/pending.js';
+import { keysetCursorOf, type KeysetCursor } from '../history/keyset-cursor.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /**
@@ -229,7 +230,7 @@ export function readProjectRunGates(
 ): ProjectRunGates {
   const maxRuns = Math.min(Math.max(1, options?.maxRuns ?? RUN_GATES_MAX_RUNS), RUN_GATES_MAX_RUNS);
   const scan: GatesScan = { runs: [], degradedRunIds: [], truncated: false };
-  let before: { readonly createdAt: number; readonly id: string } | undefined;
+  let before: KeysetCursor | undefined;
   // One row more than the call may keep is enough to know it was truncated: a Home that shows eight parked runs reads nine summaries, not a chunk.
   const limit = Math.min(RUN_GATES_CHUNK, maxRuns + 1);
   for (;;) {
@@ -240,9 +241,15 @@ export function readProjectRunGates(
       ...(before === undefined ? {} : { before }),
     });
     foldPage(scan, reader, page, projectRoot, maxRuns);
-    const last = page.at(-1);
-    if (scan.truncated || page.length < limit || last === undefined) break;
-    before = { createdAt: Date.parse(last.createdAt), id: last.id };
+    if (scan.truncated || page.length < limit) break;
+    // The one derivation the browsers share: a last row whose time does not parse has no keyset position, and the store refuses such a
+    // cursor with `invalid_cursor`, which would take the whole Attention list down for one damaged row. A FULL page that cannot be
+    // continued from may have runs after it, so the read ends and says it was cut, never that it saw every parked run.
+    before = keysetCursorOf(page.at(-1));
+    if (before === undefined) {
+      scan.truncated = true;
+      break;
+    }
   }
   return { runs: scan.runs, degradedRunIds: scan.degradedRunIds, truncated: scan.truncated };
 }

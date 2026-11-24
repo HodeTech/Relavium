@@ -217,6 +217,7 @@ function detailRead(
       nodeId: 'build',
     })),
     eventsComplete: true,
+    stepsComplete: true,
     skippedRows: 0,
   };
 }
@@ -485,6 +486,18 @@ describe('the run detail says what it could not read, and keeps what identifies 
       .filter((line) => /Outbox unreadable|Only the first|newer version/u.test(line.text))
       .map((line) => line.kind);
     expect(kinds).toEqual(['notice', 'notice', 'notice']);
+  });
+
+  it('says the node table is the first 5000 steps when the attempt rows were cut, as one notice row, and says nothing for a list read whole (PR #102 review: P3)', () => {
+    const cut = opened({ ...detailRead(), stepsComplete: false });
+    const row = 'Only the first 5000 steps were read: the node table may be partial.';
+    expect(cut.text()).toContain(row);
+    expect(cut.lines().filter((line) => line.includes('Only the first'))).toHaveLength(1);
+    const kinds = tabHostLines(cut.state, { columns: 80, terminalRows: 24 })
+      .filter((line) => line.text.includes('Only the first'))
+      .map((line) => line.kind);
+    expect(kinds).toEqual(['notice']);
+    expect(opened(detailRead()).text()).not.toContain('steps were read');
   });
 
   it('says `1 row was` for one skipped row, and draws none of the three notices for a log read whole', () => {

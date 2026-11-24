@@ -11,6 +11,7 @@ import {
   createRunHistoryReader,
   runEvents,
   runMigrations,
+  RunHistoryReadError,
   type DbClient,
   type RunHistoryReader,
   type RunSummaryRecord,
@@ -371,6 +372,46 @@ describe('chunks of at most 200', () => {
     const { read, pages } = scriptedReader(450);
     readProjectRunGates(read, HERE, { maxRuns: 450 });
     expect(pages.every((page) => page.limit <= RUN_GATES_CHUNK)).toBe(true);
+  });
+
+  it('ends the read, cut, on a full page whose last row has no usable position, instead of handing the store a cursor it refuses (PR #102 review)', () => {
+    const { read, pages } = scriptedReader(450);
+    // The store's own rule: a `before` whose time is not a safe integer is `invalid_cursor`, which would take the Attention list down.
+    const strict: RunGatesReader = {
+      ...read,
+      listRunSummaries: (opts) => {
+        if (opts.before !== undefined && !Number.isSafeInteger(opts.before.createdAt))
+          throw new RunHistoryReadError(
+            'invalid_cursor',
+            'before must be a (createdAt, id) position',
+          );
+        const page = read.listRunSummaries(opts);
+        // The last row of the first full page carries a time that does not parse.
+        const last = page.at(-1);
+        return opts.before === undefined && last !== undefined
+          ? [...page.slice(0, -1), { ...last, createdAt: 'not a time' }]
+          : page;
+      },
+    };
+    const result = readProjectRunGates(strict, HERE);
+    expect(result.runs, 'every run of the page it could read').toHaveLength(RUN_GATES_CHUNK);
+    expect(result.truncated, 'it was cut, and says so').toBe(true);
+    expect(pages, 'one page, and no second read from a position the store refuses').toHaveLength(1);
+  });
+
+  it('continues from a usable position as before: the cursor is the last row`s time and id', () => {
+    const { read, pages } = scriptedReader(250);
+    const seen: (number | undefined)[] = [];
+    const spying: RunGatesReader = {
+      ...read,
+      listRunSummaries: (opts) => {
+        seen.push(opts.before?.createdAt);
+        return read.listRunSummaries(opts);
+      },
+    };
+    expect(readProjectRunGates(spying, HERE).runs).toHaveLength(250);
+    expect(pages.map((page) => page.before)).toEqual([undefined, 'run-00199']);
+    expect(seen).toEqual([undefined, T0 - 199]);
   });
 
   it('is not truncated by a project that parks exactly the bound', () => {

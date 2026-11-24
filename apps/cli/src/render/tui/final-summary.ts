@@ -8,6 +8,7 @@ import {
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
 import { resumeCommandBase } from '../../gate/budget.js';
+import { displayRunId, relaviumRunCommand } from '../../home/hosted-run-terminal.js';
 import { formatRunOutputs } from '../run-outputs.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 
@@ -109,9 +110,13 @@ export function renderFinalSummary(state: RunViewState): string {
  * kind; `relavium status` reads the whole log and prints the command for each one.
  */
 function continuationLines(state: RunViewState, runId: string): string[] {
-  const id = sanitizeInline(runId);
+  // The id in prose has no backtick, and a command that carries it is written only for an id the shell takes as one plain word
+  // (`relaviumRunCommand`, the Home's own check): a run id comes from a stream or a database row, and a copied `relavium logs x; rm -rf ~`
+  // would run its tail. A real id is a UUID, which passes both unchanged.
+  const id = displayRunId(runId);
+  const status = relaviumRunCommand('status', runId);
   if (state.summary?.outcome !== 'paused') {
-    return [`  run id ${id} — replay with \`relavium logs ${id}\``];
+    return [`  run id ${id} — replay with ${relaviumRunCommand('logs', runId)}`];
   }
   const parked = state.summary.pausedGateIds ?? [];
   const budgetGates = new Set(
@@ -122,23 +127,23 @@ function continuationLines(state: RunViewState, runId: string): string[] {
   );
   const lines: string[] = [];
   if (parked.some((gateId) => humanGates.has(gateId))) {
-    lines.push(`  run id ${id} — resume with \`relavium gate ${id}\``);
+    lines.push(`  run id ${id} — resume with ${relaviumRunCommand('gate', runId)}`);
   }
   for (const gateId of parked.filter((parkedId) => budgetGates.has(parkedId))) {
     // The same shell-inert check the plain renderer and `status` apply before printing a copyable command.
     const command = resumeCommandBase('budget', runId, gateId);
     lines.push(
       command === undefined
-        ? `  run id ${id} — a budget gate is waiting: \`relavium status ${id}\` shows how to approve or abort it`
-        : `  run id ${id} — approve or abort the budget gate with \`${command}\` (\`relavium status ${id}\` shows the amount)`,
+        ? `  run id ${id} — a budget gate is waiting: ${status} shows how to approve or abort it`
+        : `  run id ${id} — approve or abort the budget gate with \`${command}\` (${status} shows the amount)`,
     );
   }
   if (parked.some((gateId) => !humanGates.has(gateId) && !budgetGates.has(gateId))) {
     lines.push(
-      `  run id ${id} — \`relavium status ${id}\` shows each gate it is parked on and the command that continues it`,
+      `  run id ${id} — ${status} shows each gate it is parked on and the command that continues it`,
     );
   } else if (lines.length === 0) {
-    lines.push(`  run id ${id} — check it with \`relavium status ${id}\``);
+    lines.push(`  run id ${id} — check it with ${status}`);
   }
   return lines;
 }

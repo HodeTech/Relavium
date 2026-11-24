@@ -20,6 +20,7 @@ import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
 import { sanitizeInline } from '../sanitize.js';
 import type { StatusColor } from './format.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
+import { boundedNotice } from './home-notice.js';
 import type { HostedLegState } from './interrupt-keymap.js';
 import { LEGEND_SEPARATOR, legend, type LegendItem } from './legend.js';
 import { HOSTED_RUN_EXIT_GRACE_MS } from './tui-constants.js';
@@ -187,7 +188,9 @@ function noticeRows(
   );
   const clean: string[] = [];
   for (const raw of notices) {
-    const line = sanitizeInline(raw).trim();
+    // Bounded BEFORE it is sanitized and clipped: `clipLine` measures the whole line's width first, and a notice is whatever a caller
+    // was handed (the same unbounded text the Home's own notice is bounded for, `MAX_HOME_NOTICE_CHARS`).
+    const line = sanitizeInline(boundedNotice(raw)).trim();
     if (line !== '') clean.push(clipLine(line, room));
   }
   const rows = clean.slice(-RUN_SCREEN_NOTICE_ROWS);

@@ -18,7 +18,12 @@ import { formatDuration } from './format.js';
 import { NOT_RECORDED, NO_MESSAGE_RECORDED, NO_NODE_RECORDED, SKIPPED } from '../absence.js';
 import { scrubbedBounded, shortRunId, type NodeRow } from '../../history/run-detail-model.js';
 import type { NodeDetailLoad } from '../../history/node-detail-source.js';
-import type { DetailEvent, RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
+import {
+  RUN_DETAIL_MAX_STEPS,
+  type DetailEvent,
+  type RunDetailLoad,
+  type RunDetailRead,
+} from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
 import { legend, type LegendItem } from './legend.js';
 import {
@@ -1022,6 +1027,12 @@ function noteLines(read: RunDetailRead): DetailLine[] {
     });
     lines.push({ kind: 'notice', left: HISTORY_PARTIAL_REMEDY });
   }
+  // The attempt rows are cut at the store's bound, so the node table is the first of them, in execution order.
+  if (!read.stepsComplete)
+    lines.push({
+      kind: 'notice',
+      left: `Only the first ${String(RUN_DETAIL_MAX_STEPS)} steps were read: the node table may be partial.`,
+    });
   if (read.skippedRows > 0)
     lines.push({
       kind: 'notice',

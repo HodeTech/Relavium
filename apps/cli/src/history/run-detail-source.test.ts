@@ -19,6 +19,7 @@ import { FIXTURE_RUN_IDS, FIXTURE_SNAPSHOT, seedFixtureRuns } from './node-run-f
 import {
   RUN_DETAIL_EVENT_PAGE,
   RUN_DETAIL_MAX_PAGES,
+  RUN_DETAIL_MAX_STEPS,
   createRunDetailLoader,
   pageRunEvents,
   readRunDetail,
@@ -137,6 +138,40 @@ describe('the read is bounded by two numbers the reference and the page both nam
     expect(RUN_DETAIL_MAX_PAGES).toBe(20);
     expect(RUN_DETAIL_EVENT_PAGE).toBe(1000);
     expect(RUN_DETAIL_MAX_PAGES * RUN_DETAIL_EVENT_PAGE).toBe(20_000);
+  });
+});
+
+describe('a list of attempt rows as long as the store reads is a cut one (PR #102 review: P3)', () => {
+  /** The run's own attempt rows, repeated to `length`: what a store that cut a longer list at its bound would return. */
+  const stepsOf = (
+    runId: string,
+    length: number,
+  ): ReturnType<RunHistoryReader['listStepSummaries']> => {
+    const own = reader.listStepSummaries(runId);
+    return Array.from({ length }, (_, index) => {
+      const row = own[index % own.length];
+      if (row === undefined) throw new Error('the run has attempt rows');
+      return row;
+    });
+  };
+
+  it('is complete below the bound, and is not complete at exactly the bound, where the list may have been cut', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-steps', state: 'completed', atMs: T0 });
+    expect(RUN_DETAIL_MAX_STEPS).toBe(5000);
+    const read = (length: number) =>
+      ready(
+        readRunDetail({
+          reader: { ...reader, listStepSummaries: () => stepsOf('run-steps', length) },
+          runId: 'run-steps',
+          terminalHeld: false,
+        }),
+      );
+    expect(read(RUN_DETAIL_MAX_STEPS - 1).stepsComplete).toBe(true);
+    expect(read(RUN_DETAIL_MAX_STEPS).stepsComplete).toBe(false);
+    // The real reader of a short run is whole.
+    expect(
+      ready(readRunDetail({ reader, runId: 'run-steps', terminalHeld: false })).stepsComplete,
+    ).toBe(true);
   });
 });
 

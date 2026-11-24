@@ -1,5 +1,5 @@
 import type { RunHistoryReader } from '@relavium/db';
-import { MAX_RUN_TAIL_EVENTS } from '@relavium/db';
+import { MAX_RUN_STEP_SUMMARIES, MAX_RUN_TAIL_EVENTS } from '@relavium/db';
 import type { RunEvent, RunStatus } from '@relavium/shared';
 
 import { readPerRunOrDegrade } from './per-run-read.js';
@@ -30,6 +30,8 @@ import { readSnapshotNodes } from './snapshot-nodes.js';
 
 /** Events per page of the log read; the most one `loadRunEventsAfter` call returns. */
 export const RUN_DETAIL_EVENT_PAGE = MAX_RUN_TAIL_EVENTS;
+/** The most attempt rows one detail reads: the store's own read bound, so a list this long may be a part of the run's. */
+export const RUN_DETAIL_MAX_STEPS = MAX_RUN_STEP_SUMMARIES;
 /** The most pages one detail reads: 20,000 events. A log longer than that is read as far as it, and flagged. */
 export const RUN_DETAIL_MAX_PAGES = 20;
 
@@ -54,6 +56,11 @@ export interface RunDetailRead {
   readonly events: readonly DetailEvent[];
   /** `false` when the log is longer than the pages read: the figures cover the first part of it. */
   readonly eventsComplete: boolean;
+  /**
+   * `false` when the attempt rows are cut at the store's read bound: a list of exactly {@link MAX_RUN_STEP_SUMMARIES} rows is the only
+   * list that may be a part of the run's (PR #102 review: P3), so the node table covers the first rows in execution order, not all.
+   */
+  readonly stepsComplete: boolean;
   /** Rows a NEWER binary wrote, counted once each. */
   readonly skippedRows: number;
 }
@@ -177,6 +184,7 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
       heldUnread: input.heldUnread === true && !finished && !terminalHeld,
       events: log.events.map(detailEventOf),
       eventsComplete: log.complete,
+      stepsComplete: steps.length < RUN_DETAIL_MAX_STEPS,
       skippedRows: log.skipped,
     },
   };

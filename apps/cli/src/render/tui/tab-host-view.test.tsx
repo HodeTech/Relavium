@@ -432,6 +432,7 @@ const nodeHost = (): TabHostState => {
     heldUnread: false,
     events: [],
     eventsComplete: true,
+    stepsComplete: true,
     skippedRows: 0,
   };
   const node = openNodeTab(run.id, row, {

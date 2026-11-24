@@ -57,8 +57,11 @@ export interface HomeNoticeLayout {
  */
 export const MAX_HOME_NOTICE_CHARS = 32_768;
 
-/** `notice`, or its first {@link MAX_HOME_NOTICE_CHARS} characters and a `…` when it is longer; a surrogate pair is never cut in two. */
-function boundedNotice(notice: string): string {
+/**
+ * `notice`, or its first {@link MAX_HOME_NOTICE_CHARS} characters and a `…` when it is longer; a surrogate pair is never cut in two.
+ * Exported for the run view's notice rows, which sanitize and clip an unbounded line by the same cost class (PR #102 review).
+ */
+export function boundedNotice(notice: string): string {
   if (notice.length <= MAX_HOME_NOTICE_CHARS) return notice;
   const last = notice.charCodeAt(MAX_HOME_NOTICE_CHARS - 1);
   const end = last >= 0xd800 && last <= 0xdbff ? MAX_HOME_NOTICE_CHARS - 1 : MAX_HOME_NOTICE_CHARS;

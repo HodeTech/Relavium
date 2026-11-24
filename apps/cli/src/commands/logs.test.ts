@@ -1,5 +1,6 @@
 import {
   createClient,
+  createRunHistoryReader,
   createRunHistoryStore,
   runEvents,
   runMigrations,
@@ -1649,8 +1650,14 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
           type: 'test:never_a_real_event',
         })),
       };
-      // A short page (no events) ends the read, as the real tail read does at the end of a log.
-      const history = readHistory({ loadRunEventsAfter: () => page }, 'f1');
+      // A call that scans nothing past its cursor ends the read, as the real tail read does at the end of a log.
+      const history = readHistory(
+        {
+          loadRunEventsAfter: (_runId, afterSeq) =>
+            afterSeq < 0 ? page : { events: [], scannedThroughSeq: afterSeq, skipped: [] },
+        },
+        'f1',
+      );
       expect(history.skipped).toHaveLength(skippedRows);
       expect(history.scannedThroughSeq).toBe(skippedRows - 1);
       expect(history.events).toEqual([]);
@@ -1687,12 +1694,61 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
         },
         'f1',
       );
-      expect(cursors).toEqual([-1, 999]);
+      // The short second page is not the end: the call after it, from cursor 1001, scans nothing, and that ends the read.
+      expect(cursors).toEqual([-1, 999, 1001]);
       expect(history.events.map((e) => e.sequenceNumber)).toEqual(
         Array.from({ length: 1001 }, (_, index) => index),
       );
       expect(history.skipped.map((row) => row.sequenceNumber)).toEqual([500, 1001]);
       expect(history.scannedThroughSeq).toBe(1001);
+    });
+
+    it('keeps reading after a short page that stopped at the scan cap, and ends only on a call that scans nothing (PR #102 review: P3)', () => {
+      const event = (sequenceNumber: number): RunEvent => ({
+        type: 'run:cancelled',
+        runId: 'f1',
+        timestamp: '2026-11-22T10:00:00.000Z',
+        sequenceNumber,
+      });
+      // The real reader's capped answers: an EMPTY page that scanned a cap's worth of rows a newer binary wrote, then a
+      // short page with the only readable event, then the call that scans nothing.
+      const cap = 50_000;
+      const pages = [
+        {
+          events: [],
+          scannedThroughSeq: cap - 1,
+          skipped: [{ sequenceNumber: 7, type: 'future' }],
+        },
+        { events: [event(cap)], scannedThroughSeq: cap, skipped: [] },
+      ];
+      const cursors: number[] = [];
+      let call = 0;
+      const history = readHistory(
+        {
+          loadRunEventsAfter: (_runId, afterSeq) => {
+            cursors.push(afterSeq);
+            return pages[call++] ?? { events: [], scannedThroughSeq: afterSeq, skipped: [] };
+          },
+        },
+        'f1',
+      );
+      expect(cursors).toEqual([-1, cap - 1, cap]);
+      expect(history.events.map((e) => e.sequenceNumber)).toEqual([cap]);
+      expect(history.skipped.map((row) => row.sequenceNumber)).toEqual([7]);
+      expect(history.scannedThroughSeq).toBe(cap);
+    });
+
+    it('reads past a real reader stopped at its scan cap: no readable event after the cap is lost (PR #102 review: P3)', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' }); // seq 0 to 2
+      for (let seq = 3; seq <= 12; seq++) insertFutureRow('f1', seq); // ten rows only a newer binary can read
+      await appender('f1', 13)(COMPLETED);
+      // A cap of 4 rows: the first call stops inside the unreadable run, with a short page and readable rows still ahead.
+      const history = readHistory(createRunHistoryReader(db, { tailScanRows: 4 }), 'f1');
+      expect(history.events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 13]);
+      expect(history.skipped.map((row) => row.sequenceNumber)).toEqual([
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      ]);
+      expect(history.scannedThroughSeq).toBe(13);
     });
   });
 

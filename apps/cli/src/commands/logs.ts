@@ -303,9 +303,11 @@ export function readHistory(
     // 125,000 of them, and a log full of rows a newer binary wrote can skip that many.
     for (const event of page.events) events.push(event);
     for (const row of page.skipped) skipped.push(row);
+    // The log ends on a call that scans NOTHING past its cursor, never on a short page: the tail read stops at its
+    // scan cap too (`MAX_RUN_TAIL_SCAN_ROWS`, PR #102 review), and a log whose rows are mostly a newer binary's
+    // returns a short page, even an empty one, with readable rows still after it. The same rule `pageRunEvents` ends on.
+    if (page.scannedThroughSeq <= scannedThroughSeq) return { events, skipped, scannedThroughSeq };
     scannedThroughSeq = page.scannedThroughSeq;
-    // The tail read holds out for a full page while readable rows remain, so a short page is the end of the log.
-    if (page.events.length < MAX_RUN_TAIL_EVENTS) return { events, skipped, scannedThroughSeq };
   }
 }
 
