@@ -410,9 +410,13 @@ The file is created `0600` inside a `0700` directory, and a **symlink at that pa
 written through. An append is **one descriptor**: the file is opened once, without following a link and without
 waiting on a FIFO, the descriptor is checked to be a regular file, and the write and the `0600` mode both go to that
 same descriptor (`appendToOwnerOnlyFile`), so a link or a special file swapped in after a check is neither written
-through nor waited on. A **read** refuses the same things: a link, a FIFO or other file that is not regular, a
-directory, and a file over 4 MiB read as *no grants* (the fail-closed fold below) rather than being followed, waited on
-or read whole into memory.
+through nor waited on. The descriptor must also name **exactly one hard link**: a hard link planted at the path is no
+symbolic link and passes the regular-file check, so the append and the `0600` mode change would land in the file the
+other name belongs to, and it is refused (`the MCP consent store has more than one hard link; refusing to write to it`).
+A file this CLI creates has one name. A **read** refuses a link, a FIFO or other file that is not regular, a
+directory, and a file over 4 MiB: each reads as *no grants* (the fail-closed fold below) rather than being followed,
+waited on or read whole into memory. A read through a hard link still works, on purpose: it writes nothing and echoes
+nothing of the file.
 
 | Line | Shape |
 |------|-------|
@@ -420,13 +424,24 @@ or read whole into memory.
 | revocation | `{"v":1,"revoked":"v1:…","revokedAt":"<ISO-8601>"}` |
 
 `command`, `args`, `envNames` and `cwd` are **comparison metadata for the prompt only** — never inputs to the
-digest — and are length-bounded on write. `envNames` carries names, never values: no credential is written.
+digest — and are length-bounded on write: first each string to 512 characters and each list to 64 entries, then the
+whole serialized line to **16 KiB**, by keeping fewer entries and shorter strings until it fits (the 512-character
+bound alone allows a line of about 400 KB once control characters are escaped, which is not one bounded record). Only
+that metadata is ever trimmed: the `digest` is the identity and is never touched, so a grant is never refused for being
+wordy. `envNames` carries names, never values: no credential is written.
+
+The log is also bounded as a whole. A record, a grant or a revocation, that would take the file past the **4 MiB** a read
+accepts is **refused when it is written**, not appended and then never read: the approval is not recorded and the
+run fails closed with `the MCP consent store is full; delete it or move it aside to start a new one`. An honest log is
+thousands of lines under this bound, so reaching it means a planted or runaway file, and the recovery step is the one the
+refusal names.
 
 A reader folds the file in order, a revocation removing an earlier grant. **Any unparseable line fails the
 whole fold closed** — the store reads as *no grants* and every server is asked about again — because a
 truncated final line may be a revocation, and a reader that skipped it would resurrect revoked trust. The fold
 failure is reported, never silent: a user re-approving everything is owed the reason. The warning names the file as
-`~/.relavium/mcp-consent.ndjson`, never by its absolute path, and a consent that could not be recorded names it the
+`~/.relavium/mcp-consent.ndjson`, never by its absolute path, and ends with the way out (`Delete the file or move it
+aside to start a new grant log.`); a consent that could not be recorded names it the
 same way with a fixed reason (permission denied, no space left, read-only file system, or the store's own refusal),
 not the file system's message.
 
