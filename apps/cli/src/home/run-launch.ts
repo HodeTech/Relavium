@@ -718,7 +718,7 @@ function commandsClause(def: WorkflowDefinition, granted: ReadonlySet<string>): 
 function processToolsClause(granted: ReadonlySet<string>): string | undefined {
   const names = [...granted]
     .filter((tool) => tool !== 'run_command' && TOOL_POLICY.get(tool)?.spawnsProcess === true)
-    .sort();
+    .sort((a, b) => a.localeCompare(b, 'en'));
   return names.length === 0 ? undefined : `start processes (${names.join(', ')})`;
 }
 

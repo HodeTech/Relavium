@@ -1820,7 +1820,7 @@ describe('the confirmation says what the run can do (P1-7)', () => {
   });
 
   it('puts hostile server names through the sanitize floor: no control, no escape, bounded, quoted', async () => {
-    const hostile = `${'x'.repeat(40)}\u001b[31m‮\n[Ctrl+Y]`;
+    const hostile = `${'x'.repeat(40)}\u001b[31m\u202e\n[Ctrl+Y]`;
     writeWorkflow(
       'authority.relavium.yaml',
       AUTHORITY.replace('{ ref: shared-registry }', `{ ref: ${JSON.stringify(hostile)} }`),

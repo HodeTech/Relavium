@@ -57,9 +57,9 @@ const prompter = (): CreatePrompter => ({ gather: () => Promise.resolve(SPEC) })
 
 /** Whatever a terminal would act on: ESC, the other C0/C1 controls, and the bidirectional overrides and isolates. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_ACTIVE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/u;
+const TERMINAL_ACTIVE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u;
 /** A directory name that carries a colour escape, a title-change introducer and a right-to-left override. */
-const HOSTILE = 'evil\u001b[31m\u001b]0;pwned\u0007‮gpj';
+const HOSTILE = 'evil\u001b[31m\u001b]0;pwned\u0007\u202egpj';
 
 let root = '';
 let project = '';
