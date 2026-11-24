@@ -1,13 +1,14 @@
 import {
   agentSessions,
   createClient,
+  createRunHistoryReader,
   runMigrations,
   runs,
   sessionMessages,
   type DbClient,
 } from '@relavium/db';
 import { asc, desc, eq, isNull, type SQL } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * 2.5.I S5 — query-shape perf budgets for the CLI's hot read paths (the 2.5.B Home "recent sessions/runs"
@@ -75,7 +76,7 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
    */
   function expectIndexServedNoFilesort(
     plan: string[],
-    table: 'agent_sessions' | 'runs' | 'session_messages', // closed union — no computed/metachar table names
+    table: 'agent_sessions' | 'runs' | 'session_messages' | 'run_events' | 'step_executions', // closed union — no computed/metachar table names
     indexName: string,
   ): void {
     const joined = plan.join('\n');
@@ -119,5 +120,124 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
       .where(filter)
       .orderBy(asc(sessionMessages.sequenceNumber));
     expectIndexServedNoFilesort(planFor(query), 'session_messages', 'idx_session_messages_seq');
+  });
+
+  // --- the reads the Home's management browsers add (ADR-0140 §4, MVP-8 step 1) ---------------------------
+  // These plan the statement the REAL reader issues, not a mirror of it: a mirrored query can drift from the
+  // store's and keep passing. The reader runs against the empty migrated database with `prepare` observed, and
+  // each captured statement is planned as issued (its `?` placeholders bound to NULL — EXPLAIN ignores values).
+
+  /** The SQL a real reader call prepares, in order. */
+  function issuedSql(read: () => unknown): string[] {
+    const spy = vi.spyOn(client.sqlite, 'prepare');
+    try {
+      read();
+      return spy.mock.calls.map(([source]) => source);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /** The `EXPLAIN QUERY PLAN` detail lines of one statement exactly as the reader prepared it. */
+  function planOfIssued(sqlText: string): string[] {
+    const placeholders = sqlText.match(/\?/gu)?.length ?? 0;
+    const rows = client.sqlite
+      .prepare(`EXPLAIN QUERY PLAN ${sqlText}`)
+      .all(...Array.from({ length: placeholders }, () => null));
+    return rows.map(detailOf);
+  }
+
+  /** The single statement a reader call issues, planned. */
+  function planOfRead(read: () => unknown): string[] {
+    const statements = issuedSql(read);
+    expect(statements).toHaveLength(1);
+    return planOfIssued(statements[0] ?? '');
+  }
+
+  it('listRunSummaries (the History page) is served off idx_runs_created with no filesort, first page and keyset page', () => {
+    const reader = createRunHistoryReader(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => reader.listRunSummaries({ limit: 20 })),
+      'runs',
+      'idx_runs_created',
+    );
+    // The keyset cursor must not turn the page into a scan-and-sort.
+    expectIndexServedNoFilesort(
+      planOfRead(() =>
+        reader.listRunSummaries({ limit: 20, before: { createdAt: 1_000, id: 'run-1' } }),
+      ),
+      'runs',
+      'idx_runs_created',
+    );
+  });
+
+  it('listRunSummaries scoped to a project is served off idx_runs_project_created with no filesort', () => {
+    const reader = createRunHistoryReader(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => reader.listRunSummaries({ limit: 20, projectRoot: '/work/p1' })),
+      'runs',
+      'idx_runs_project_created',
+    );
+    expectIndexServedNoFilesort(
+      planOfRead(() =>
+        reader.listRunSummaries({
+          limit: 20,
+          projectRoot: '/work/p1',
+          before: { createdAt: 1_000, id: 'run-1' },
+        }),
+      ),
+      'runs',
+      'idx_runs_project_created',
+    );
+    // A status filter inside a project rides the same index with a residual filter; if this ever needs a second
+    // index, this is the plan that says so (ADR-0140 §4).
+    expectIndexServedNoFilesort(
+      planOfRead(() =>
+        reader.listRunSummaries({ limit: 20, projectRoot: '/work/p1', status: 'failed' }),
+      ),
+      'runs',
+      'idx_runs_project_created',
+    );
+  });
+
+  it('listRunSummaries filtered by status alone sorts only the last ORDER BY term, never the whole page', () => {
+    // The known bound, pinned so it cannot quietly get worse: `idx_runs_status` is (status, created_at DESC), so
+    // the `id DESC` tiebreak costs a sort WITHIN a run of equal `created_at` (SQLite's "LAST TERM"), as the
+    // existing `listRuns({ status })` path documents. A full-page sort here would mean the index stopped serving.
+    const reader = createRunHistoryReader(client.db);
+    const plan = planOfRead(() => reader.listRunSummaries({ limit: 20, status: 'failed' })).join(
+      '\n',
+    );
+    expect(plan).toContain('idx_runs_status (status=?)');
+    expect(plan).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/u);
+    expect(plan).not.toMatch(/SCAN runs(?! USING)/u);
+  });
+
+  it('loadRunEventsAfter (the poll tail) is a keyset range read on idx_run_events_run_seq', () => {
+    const reader = createRunHistoryReader(client.db);
+    const plan = planOfRead(() => reader.loadRunEventsAfter('run-1', 41, 50));
+    expectIndexServedNoFilesort(plan, 'run_events', 'idx_run_events_run_seq');
+    expect(plan.join('\n')).toContain('seq>?'); // the cursor bounds the scan, it is not a filter after a full range
+  });
+
+  it('loadRunLeases is a primary-key lookup, not a scan', () => {
+    const reader = createRunHistoryReader(client.db);
+    const plan = planOfRead(() => reader.loadRunLeases(['run-1', 'run-2', 'run-3']));
+    expect(plan.join('\n')).toContain('USING INDEX sqlite_autoindex_run_leases_1 (run_id=?)');
+    expect(plan.join('\n')).not.toMatch(/SCAN run_leases/u);
+  });
+
+  it('listStepSummaries and loadStepDetail are served off the step_executions indexes', () => {
+    const reader = createRunHistoryReader(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => reader.listStepSummaries('run-1')),
+      'step_executions',
+      'idx_step_exec_run',
+    );
+    expectIndexServedNoFilesort(
+      planOfRead(() => reader.loadStepDetail('run-1', 'node-1', 1)),
+      'step_executions',
+      'idx_step_exec_run_node',
+    );
   });
 });

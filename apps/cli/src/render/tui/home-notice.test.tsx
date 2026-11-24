@@ -5,7 +5,7 @@ import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { createHomeController } from './home-controller.js';
 import { RootApp } from './home-app.js';
-import { layoutHomeNotice } from './home-notice.js';
+import { MAX_HOME_NOTICE_CHARS, layoutHomeNotice } from './home-notice.js';
 
 const snapshot: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
@@ -119,9 +119,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
         expect(h.frame('doctor:')).toContain('wired tools');
         h.input.push('\x1b[B');
-        await vi.waitFor(() =>
-          expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'),
-        );
+        await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
         expect(h.frame('doctor:')).toContain('> Saved conversation 0');
@@ -154,7 +152,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       h.resize(80, 24);
       await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
       h.input.push('\x1b[B');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'));
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       // Enter arrives before React can paint the resize: admission must read actual geometry.
       h.resize(40, 24);
       h.input.push('\r');
@@ -165,13 +163,13 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       expect(h.startChat).not.toHaveBeenCalled();
       expect(h.controller.getSnapshot().input.text).toBe('');
       h.input.push('\x1b');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBeUndefined());
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBeUndefined());
       h.resize(80, 24);
       await vi.waitFor(() =>
         expect(h.frame('Saved conversation')).not.toContain('Terminal too small'),
       );
       h.input.push('\x1b[B');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'));
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       h.input.push('\r');
       await vi.waitFor(() => expect(h.resumeChat).toHaveBeenCalledWith('saved-0'));
     } finally {
@@ -235,4 +233,57 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
   const remedy =
     'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.';
   expect(layoutHomeNotice({ ...options, notice: remedy })?.lines.join('')).toBe(remedy);
+});
+
+describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had no caller bound)', () => {
+  const options = {
+    editor: { text: '', cursor: 0 },
+    cols: 80,
+    rows: 24,
+    keyless: false,
+    errorText: undefined,
+    showBanner: false,
+    isEmpty: false,
+    hasSessions: false,
+  };
+
+  /** Every page's lines, in order, and how many pages there are. */
+  function pagesOf(notice: string): { readonly text: string; readonly pages: number } {
+    const first = layoutHomeNotice({ ...options, notice });
+    if (first === undefined) throw new Error('Missing report');
+    const lines: string[] = [];
+    for (let page = 0; page <= first.maxPage; page++) {
+      lines.push(...(layoutHomeNotice({ ...options, notice, page })?.lines ?? []));
+    }
+    return { text: lines.join(''), pages: first.maxPage + 1 };
+  }
+
+  it('lays out megabytes of notice as its first pages and a closing ellipsis, not as every row of it', () => {
+    const { text, pages } = pagesOf('word '.repeat(500_000)); // 2.5 million characters
+    // Counted, not timed: the characters that reach the wrap are the bound plus the ellipsis (and a space the wrap swallows).
+    expect(text.replace(/\s/gu, '').length).toBeLessThanOrEqual(MAX_HOME_NOTICE_CHARS + 1);
+    expect(text.endsWith('…')).toBe(true);
+    expect(pages).toBeLessThan(MAX_HOME_NOTICE_CHARS / 80);
+  });
+
+  it('shows a notice of exactly the bound whole and marks one character more as cut', () => {
+    const exact = 'x'.repeat(MAX_HOME_NOTICE_CHARS);
+    expect(pagesOf(exact).text).toBe(exact);
+    const over = pagesOf(`${exact}y`).text;
+    expect(over.endsWith('…')).toBe(true);
+    expect(over).not.toContain('y');
+  });
+
+  it('never cuts a surrogate pair in two at the bound', () => {
+    const notice = `${'a'.repeat(MAX_HOME_NOTICE_CHARS - 1)}\u{1F600}b`; // the pair straddles the bound
+    const { text } = pagesOf(notice);
+    expect(text).not.toMatch(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u,
+    );
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('keeps a notice that is not over the bound exactly as it was', () => {
+    expect(pagesOf('Open Home there.').text).toBe('Open Home there.');
+  });
 });

@@ -2,6 +2,7 @@ import {
   RelaviumError,
   AppendConflictError,
   CorruptRunEventError,
+  isCorruptRunEventError,
   LeaseFencedError,
   parseStoredRunEvent,
   RunAlreadyTerminalError,
@@ -13,7 +14,19 @@ import {
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -145,6 +158,102 @@ export interface StepRecord {
   readonly costMicrocents: number;
 }
 
+/**
+ * A run row projected for a PAGE of a list (the Home's History browser, ADR-0140 §2): everything a list row
+ * shows and nothing a row of a list must not carry. It excludes `workflow_definition_snapshot`, `input_json`,
+ * `output_json` and `error_json` — the four columns that can be large or secret-derived — and the query that
+ * produces it never selects them (a plan-level test asserts it). `projectRoot` is present when the run recorded
+ * one, because a list that can widen to every project has to say whose run a row is.
+ */
+export interface RunSummaryRecord extends RunRecord {
+  /** `runs.project_root` — the directory the run was started in; absent for a run that never recorded one. */
+  readonly projectRoot?: string;
+}
+
+/**
+ * One run in full: the {@link RunSummaryRecord} plus the run's two result documents. The JSON is returned AS
+ * STORED (text), exactly like {@link RunResumeSnapshot.inputJson}: the engine masked secrets at the write
+ * boundary (ADR-0050), this read is pass-through, and a consumer parses it and renders it only through the
+ * bounded, scrubbed renderer. **Each document is size-gated in SQL**: the statement returns the text only when
+ * the stored document is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes (UTF-8), so a larger one never
+ * enters JavaScript; the record then carries `null` for the text and the document's byte length, and the caller
+ * refuses it with its own fixed text. For each document, `*Json` and `*ByteLength` are both `null` when the run
+ * has none; both are set when the text is returned; and a `null` text with a number is the over-bound case.
+ * Neither `input_json` (the run's inputs are secret-adjacent, ADR-0113, and no surface shows them) nor the
+ * frozen workflow snapshot is read here; the snapshot is read by {@link loadRunSnapshot}, which the resume path
+ * already owns.
+ */
+export interface RunDetailRecord extends RunSummaryRecord {
+  /** `runs.output_json` as stored; `null` when the run has none yet, or when it exceeds the bound (see `outputByteLength`). */
+  readonly outputJson: string | null;
+  /** The UTF-8 byte length of `runs.output_json`; `null` when the column is NULL. */
+  readonly outputByteLength: number | null;
+  /** `runs.error_json` as stored; `null` when the run did not fail, or when it exceeds the bound (see `errorByteLength`). */
+  readonly errorJson: string | null;
+  /** The UTF-8 byte length of `runs.error_json`; `null` when the column is NULL. */
+  readonly errorByteLength: number | null;
+}
+
+/**
+ * One node ATTEMPT as a row of the run-detail node table (ADR-0140 §2) — {@link StepRecord} plus the token
+ * counts the table shows. No `input_json`, `output_json` or `error_json`: those belong to
+ * {@link StepDetailRecord}, one attempt at a time.
+ */
+export interface StepSummaryRecord extends StepRecord {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+/**
+ * One node attempt with its output and error — the node-detail page. `outputJson` and `errorJson` are returned
+ * AS STORED and **size-gated in SQL**, under the same contract as {@link RunDetailRecord}: the text only when the
+ * stored document is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes, otherwise `null` with the byte length
+ * in `outputByteLength` / `errorByteLength` (both `null` when the column is NULL). `cachedTokens` is carried
+ * because the column exists, and is always `0` today: nothing writes `step_executions.cached_tokens`
+ * (database-schema.md).
+ */
+export interface StepDetailRecord extends StepSummaryRecord {
+  readonly cachedTokens: number;
+  /** `step_executions.output_json`; `null` until the attempt completes, or when it exceeds the bound. */
+  readonly outputJson: string | null;
+  /** The UTF-8 byte length of `step_executions.output_json`; `null` when the column is NULL. */
+  readonly outputByteLength: number | null;
+  /** `step_executions.error_json`; `null` unless the attempt failed, or when it exceeds the bound. */
+  readonly errorJson: string | null;
+  /** The UTF-8 byte length of `step_executions.error_json`; `null` when the column is NULL. */
+  readonly errorByteLength: number | null;
+}
+
+/** The ownership facts {@link RunHistoryReader.loadRunLeases} returns for one run; liveness is the CALLER's to judge. */
+export interface RunLeaseSummary {
+  readonly ownerId: string;
+  readonly generation: number;
+  /** Epoch ms. The reader holds no clock, so it states the expiry and does not state a verdict. */
+  readonly expiresAt: number;
+}
+
+/** One page of a run's event log read by {@link RunHistoryReader.loadRunEventsAfter}. */
+export interface RunEventTail {
+  /** The readable events after the cursor, in `seq` order — at most the requested `limit`. */
+  readonly events: RunEvent[];
+  /**
+   * The highest `seq` this call scanned, INCLUDING rows it skipped. A caller advances its cursor to this value,
+   * never to the last event's `sequenceNumber`: a log whose tail is a row of a newer type has a high-water mark
+   * above its last readable event, and a cursor parked on the event would re-read that row forever. Equals the
+   * `afterSeq` that was passed when nothing was scanned, so a cursor never moves backwards.
+   */
+  readonly scannedThroughSeq: number;
+  /** Rows a NEWER binary wrote, counted exactly as {@link RunHistoryReader.loadRunEventLog} counts them. */
+  readonly skipped: readonly SkippedRunEvent[];
+}
+
+/**
+ * One run's entry in a {@link RunHistoryReader.loadRunStateEventsForRuns} answer: its state-bearing events, or the
+ * mark that a stored row of THIS run could not be read. The mark carries no detail on purpose — it is the
+ * batched twin of the {@link CorruptRunEventError} the per-run read throws, and a listing names the run, not the row.
+ */
+export type RunStateEventsRead = { readonly events: RunEvent[] } | { readonly corrupt: true };
+
 /** The latest run for one workflow (joined by slug) — the `relavium list` last-run-status overlay. */
 export interface WorkflowRunSummary {
   readonly slug: string;
@@ -238,6 +347,94 @@ export function isUnreadableRunEventLogError(value: unknown): value is Unreadabl
   return value instanceof Error && 'code' in value && value.code === 'unreadable_run_event_log';
 }
 
+/** Why a bounded read refused its arguments — narrow on this, never on the message. */
+export type RunHistoryReadErrorCode =
+  /** A `limit` that is not a finite positive integer, or is above the read's own maximum where it refuses one. */
+  | 'invalid_limit'
+  /** A keyset cursor (`before`, `afterSeq`) that is not a safe integer position. */
+  | 'invalid_cursor'
+  /** More run ids than the read's cap ({@link MAX_RUN_LEASE_IDS}, {@link MAX_RUN_STATE_EVENT_BATCH_IDS}) in one `IN` lookup. */
+  | 'too_many_run_ids';
+
+/**
+ * A bounded read refused its ARGUMENTS (ADR-0140 §4): the paging reads are called from the render path, where a
+ * silent `LIMIT 0` empty page would read as data loss and an unbounded one as a hang. Content-free: the message
+ * names the rule, never the value that broke it.
+ */
+export class RunHistoryReadError extends RelaviumError {
+  readonly code: RunHistoryReadErrorCode;
+  constructor(code: RunHistoryReadErrorCode, message: string) {
+    super(message);
+    this.name = 'RunHistoryReadError';
+    this.code = code;
+  }
+}
+
+/** Narrow an unknown thrown value to {@link RunHistoryReadError} by its own discriminants (bundling-safe). */
+export function isRunHistoryReadError(value: unknown): value is RunHistoryReadError {
+  return value instanceof Error && value.name === 'RunHistoryReadError' && 'code' in value;
+}
+
+/** The most rows one {@link RunHistoryReader.listRunSummaries} page returns; a larger `limit` is refused, not clamped. */
+export const MAX_RUN_SUMMARY_PAGE = 200;
+/** The most events one {@link RunHistoryReader.loadRunEventsAfter} call returns; a larger `limit` is clamped to it. */
+export const MAX_RUN_TAIL_EVENTS = 1000;
+/** The most run ids one {@link RunHistoryReader.loadRunLeases} call accepts; more is refused, not truncated. */
+export const MAX_RUN_LEASE_IDS = 200;
+/** The most run ids one {@link RunHistoryReader.loadRunStateEventsForRuns} call accepts; more is refused, not truncated. */
+export const MAX_RUN_STATE_EVENT_BATCH_IDS = 200;
+/** The most run ids one {@link RunHistoryReader.loadRunSummariesByIds} call accepts; more is refused, not truncated. */
+export const MAX_RUN_SUMMARY_IDS = 200;
+/**
+ * The largest stored result document (`output_json` or `error_json`) the detail reads hand back as text: 1 MiB of
+ * UTF-8. The bound is applied inside the SELECT, so a larger document never reaches JavaScript.
+ */
+export const MAX_RUN_DETAIL_DOCUMENT_BYTES = 1_048_576;
+/** Rows the tail read pulls from SQLite per statement while it looks for `limit` readable events. */
+const RUN_TAIL_BATCH_ROWS = 256;
+/**
+ * The most rows ONE {@link RunHistoryReader.loadRunEventsAfter} call scans, readable or not (PR #102 review: P3). The
+ * call stops at `limit` events, and a log made of readable rows never reaches this; it is the backstop for a log that
+ * is mostly rows THIS binary skips (a newer binary's types), which count toward no `limit` and would otherwise be read
+ * to the end of the table in one call, holding every one of them in `skipped`. The engine's own dispatch ceiling keeps a
+ * run's durable events to a few thousand rows in practice, so this is far above any log a current writer produces.
+ */
+export const MAX_RUN_TAIL_SCAN_ROWS = 50_000;
+/**
+ * The most attempt rows {@link RunHistoryReader.listStepSummaries} returns for one run (PR #102 review: P3). A run's
+ * attempt rows are bounded at the WRITER, not by the workflow schema: the engine refuses a run's
+ * `ADMISSION_CEILINGS.nodeDispatchesPerRun` (500) -th dispatch, a count the checkpoint carries across a resume, and a
+ * dispatch is what opens an attempt row. This is ten times that, a read-side backstop for a log no current engine
+ * wrote: a result of EXACTLY this length means the run may have more, and is the only case in which the list is cut.
+ */
+export const MAX_RUN_STEP_SUMMARIES = 5000;
+
+/** A finite positive integer; anything else is refused (never read as "unbounded" or as an empty page). */
+function positiveIntegerLimit(limit: number): number {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new RunHistoryReadError('invalid_limit', 'limit must be a finite positive integer');
+  }
+  return limit;
+}
+
+/** A finite positive integer, clamped to `max`; anything else is refused (never read as "unbounded"). */
+function boundedLimit(limit: number, max: number): number {
+  return Math.min(positiveIntegerLimit(limit), max);
+}
+
+/**
+ * A finite positive integer no larger than `max`. A caller asking for more than a page holds is refused rather
+ * than silently handed a shorter one: a clamp reads as "the list ended" when it did not, the same reason
+ * {@link RunHistoryReader.loadRunLeases} refuses an over-cap id list instead of truncating it.
+ */
+function refusedAboveLimit(limit: number, max: number): number {
+  const wanted = positiveIntegerLimit(limit);
+  if (wanted > max) {
+    throw new RunHistoryReadError('invalid_limit', `limit is at most ${max}`);
+  }
+  return wanted;
+}
+
 /**
  * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
@@ -312,6 +509,19 @@ export interface RunHistoryReader {
    *  detection consults. Every stored row is validated before genuine streaming events are excluded from
    *  the returned gate/checkpoint fold. NOT for `logs`/resume, which need every event. */
   loadRunStateEvents: (runId: string) => RunEvent[];
+  /**
+   * {@link loadRunStateEvents} for several runs in ONE statement — the listing surfaces' (`gate list`, `status`)
+   * answer to a read per run. Every requested id has exactly one entry, in request order with a repeated id
+   * collapsed: `{ events }` (empty for a run with no events) or `{ corrupt: true }`. A run whose stored row fails
+   * validation is marked corrupt and the others are unaffected, which is the per-run isolation the per-run read
+   * gave a caller that caught {@link CorruptRunEventError} around each call. Rows are validated before streaming
+   * events are excluded, exactly as in {@link loadRunStateEvents}, so the events of a healthy run are the
+   * same ones that read returns. Keyed by run id alone (no soft-delete re-check). Ids are bound parameters.
+   *
+   * @throws {RunHistoryReadError} `too_many_run_ids` for more than {@link MAX_RUN_STATE_EVENT_BATCH_IDS} ids (a
+   *   refusal, never a truncation); the caller chunks.
+   */
+  loadRunStateEventsForRuns: (runIds: readonly string[]) => ReadonlyMap<string, RunStateEventsRead>;
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
   /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
@@ -323,6 +533,76 @@ export interface RunHistoryReader {
    *  the workflow UUID). Soft-deleted workflows are excluded; bounded by the id set — an indexed primary-key
    *  `id IN (...)` lookup, never a scan. An empty input returns an empty map without touching the db. */
   loadWorkflowSlugs: (ids: readonly string[]) => Map<string, string>;
+  /**
+   * One keyset page of runs, newest first by `(created_at DESC, id DESC)`, soft-deleted excluded — the Home's
+   * History browser (ADR-0140 §2, §4). `before` is the cursor: the page holds the rows strictly AFTER
+   * `(createdAt, id)` in that order, so two runs sharing a `created_at` are neither repeated nor skipped across
+   * a page boundary. `limit` must be a finite positive integer no larger than {@link MAX_RUN_SUMMARY_PAGE};
+   * anything else, a larger limit included, is a {@link RunHistoryReadError} (`invalid_limit`), never a silent
+   * clamp that would read as the end of the list. The statement selects summary columns only — never the
+   * frozen snapshot or a JSON document — and `projectRoot` / `workflowId` / `status` are filters on the same
+   * ordering. Unfiltered and project-scoped pages are index-served with no filesort
+   * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts).
+   * The existing {@link listRuns} and its callers are unchanged.
+   */
+  listRunSummaries: (opts: {
+    readonly limit: number;
+    readonly before?: { readonly createdAt: number; readonly id: string };
+    readonly status?: RunStatus;
+    readonly projectRoot?: string;
+    readonly workflowId?: string;
+  }) => RunSummaryRecord[];
+  /**
+   * The summaries of the runs with these ids, by primary key (the Home's pinned runs, ADR-0140 §5): a map from run id to
+   * its {@link RunSummaryRecord}, soft-deleted runs excluded. An id that names no run is ABSENT from the map, not an
+   * error, so a pin whose run is gone reads as a missing entry the caller can show and remove. At most
+   * {@link MAX_RUN_SUMMARY_IDS} ids; more is a {@link RunHistoryReadError} (`too_many_run_ids`), never a truncation,
+   * and an empty input issues no query. The statement selects summary columns only, like {@link listRunSummaries}.
+   */
+  loadRunSummariesByIds: (runIds: readonly string[]) => ReadonlyMap<string, RunSummaryRecord>;
+  /**
+   * One run with its output and error JSON as stored, each size-gated in SQL at {@link MAX_RUN_DETAIL_DOCUMENT_BYTES}
+   * (soft-deleted excluded), or `undefined`. It never reads `input_json` or the frozen snapshot.
+   */
+  loadRunDetail: (runId: string) => RunDetailRecord | undefined;
+  /**
+   * A run's node attempts in execution order, one row per attempt, without an input, output or error column —
+   * the node table. Keyed by `runId` alone (the caller validates the run first), like {@link loadStepExecutions}.
+   * At most {@link MAX_RUN_STEP_SUMMARIES} rows, the first ones in execution order: a run's attempts are bounded at the
+   * writer (see that constant), so the cut is never made on a log this engine wrote, and a result of exactly that
+   * length is the signal that it was made.
+   */
+  listStepSummaries: (runId: string) => StepSummaryRecord[];
+  /**
+   * One node attempt's output, error (each size-gated in SQL like {@link loadRunDetail}) and token columns, looked
+   * up by `idx_step_exec_run_node`; or `undefined`.
+   */
+  loadStepDetail: (
+    runId: string,
+    nodeId: string,
+    attemptNumber: number,
+  ) => StepDetailRecord | undefined;
+  /**
+   * The events AFTER `afterSeq` (`run_id = ? AND seq > ?`, in `seq` order) — the poll tail of ADR-0140 §2 and
+   * `logs --follow`. Reads through the same row reader as {@link loadRunEventLog}: a row a NEWER binary wrote is
+   * skipped and counted, a damaged row throws {@link CorruptRunEventError}. It keeps scanning until it holds
+   * `limit` events, the log ends, or it has scanned {@link MAX_RUN_TAIL_SCAN_ROWS} rows, so it does not return an
+   * empty page while readable rows remain within that many rows of the cursor. The caller advances its cursor to
+   * `scannedThroughSeq`, never to the last event. A caller that must read to the END of the log continues until a call
+   * scans nothing past the cursor (`scannedThroughSeq` equal to the `afterSeq` it passed): a page shorter than `limit`
+   * is the end of the log only when it stopped short of the scan cap, which a log of readable rows never reaches.
+   * `limit` is validated and clamped to {@link MAX_RUN_TAIL_EVENTS}; `afterSeq` must be a safe integer (`-1` reads
+   * from the start). Keyed by `runId` alone, like {@link loadRunEvents}.
+   */
+  loadRunEventsAfter: (runId: string, afterSeq: number, limit: number) => RunEventTail;
+  /**
+   * The lease rows that exist for the given runs, by primary key — a run with no lease is absent from the map.
+   * At most {@link MAX_RUN_LEASE_IDS} ids; more is a {@link RunHistoryReadError}, not a truncation. The reader
+   * states each lease's expiry and leaves the liveness verdict to the caller's clock.
+   */
+  loadRunLeases: (runIds: readonly string[]) => ReadonlyMap<string, RunLeaseSummary>;
+  /** {@link loadLatestRunPerWorkflow} restricted to runs whose `project_root` is `projectRoot`. */
+  loadLatestRunPerWorkflowInProject: (projectRoot: string) => WorkflowRunSummary[];
 }
 
 /**
@@ -435,6 +715,18 @@ const STREAMING_EVENT_TYPES = new Set([
 const RUN_LEVEL_COST_NODE_ID = '';
 
 /**
+ * The compile-time exhaustiveness proof for {@link RunHistoryStore}'s `applyDerived` switch: a `RunEvent` type
+ * with no `case` leaves `value` typed as that member, which is not assignable to `never`, so the file stops
+ * compiling. At runtime it is unreachable (`persistEvent` parses the event against the closed union first), so
+ * reaching it is a defect in this file, and it fails loudly rather than dropping an event.
+ */
+function assertNever(value: never): never {
+  const seen: unknown = value;
+  const type = typeof seen === 'object' && seen !== null && 'type' in seen ? seen.type : undefined;
+  throw new Error(`unhandled run event type: ${typeof type === 'string' ? type : 'unknown'}`);
+}
+
+/**
  * The one place a stored `run_events` row becomes a {@link RunEvent} — the read boundary ADR-0074 §5 asks for.
  *
  * Three outcomes, and the whole design is in keeping them apart:
@@ -479,6 +771,59 @@ function readEventLog(
     events.push(event);
   }
   return { events, skipped };
+}
+
+/**
+ * The batched twin of {@link readEventLog} with `streamingIncluded: false`: ONE statement for every requested run,
+ * ordered by `(run_id, seq)`, then split back into one entry per run.
+ *
+ * The split and the catch are the whole point. Rows of different runs interleave in no order but the sort, so the
+ * per-row `run_id` decides which run a row belongs to; and a row that fails validation condemns only ITS run
+ * (the per-run read threw for that run alone), so the catch sits around one row and the loop moves on. Every
+ * row still goes through {@link readStoredEventRow} BEFORE a streaming event is excluded, so a corrupted
+ * discriminator cannot hide a durable suspension here any more than in {@link readEventLog}.
+ *
+ * Only a {@link CorruptRunEventError} is absorbed; any other throw is a fault of the read itself and propagates.
+ */
+function readStateEventsForRuns(
+  db: Db,
+  runIds: readonly string[],
+): ReadonlyMap<string, RunStateEventsRead> {
+  const distinct = [...new Set(runIds)];
+  if (distinct.length === 0) return new Map();
+  const rows = db
+    .select({
+      runId: runEvents.runId,
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runEvents)
+    .where(inArray(runEvents.runId, distinct))
+    .orderBy(asc(runEvents.runId), asc(runEvents.seq))
+    .all();
+
+  const eventsByRun = new Map<string, RunEvent[]>(distinct.map((id) => [id, []]));
+  const corruptRuns = new Set<string>();
+  for (const row of rows) {
+    if (corruptRuns.has(row.runId)) continue;
+    const bucket = eventsByRun.get(row.runId);
+    if (bucket === undefined) continue; // unreachable: the statement only selects the requested ids
+    try {
+      const event = readStoredEventRow(row.runId, row);
+      if (event === undefined || STREAMING_EVENT_TYPES.has(event.type)) continue;
+      bucket.push(event);
+    } catch (cause) {
+      if (!isCorruptRunEventError(cause)) throw cause;
+      corruptRuns.add(row.runId);
+    }
+  }
+  return new Map(
+    distinct.map((id): [string, RunStateEventsRead] => [
+      id,
+      corruptRuns.has(id) ? { corrupt: true } : { events: eventsByRun.get(id) ?? [] },
+    ]),
+  );
 }
 
 /** The shared row parser for ordinary log reads and ordered interruption discovery. */
@@ -595,7 +940,8 @@ function projectionMismatch(
   return undefined;
 }
 
-function fromRunRow(row: RunRow): RunRecord {
+/** Takes the summary columns and nothing else, so a list read that never selected a blob can use it. */
+function fromRunRow(row: RunSummaryRow): RunRecord {
   return {
     id: row.id,
     workflowId: row.workflowId,
@@ -609,6 +955,57 @@ function fromRunRow(row: RunRow): RunRecord {
     totalCostMicrocents: row.totalCostMicrocents,
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
+  };
+}
+
+/**
+ * The UTF-8 byte length of a stored text document, computed by SQLite. `CAST(... AS BLOB)` is what makes it BYTES:
+ * `length()` of TEXT counts characters and stops at the first NUL, which would let a multi-byte document past a
+ * byte bound. `NULL` for a NULL column. The value is read inside SQLite; the document does not reach JavaScript.
+ */
+function documentByteLength(column: AnyColumn): SQL<number | null> {
+  return sql<number | null>`length(CAST(${column} AS BLOB))`;
+}
+
+/**
+ * A stored text document, returned only when it is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes: the size
+ * gate of the detail reads, written as one SQL expression so a larger document is never selected into JavaScript
+ * (an over-bound document yields `NULL`, as does a NULL column; {@link documentByteLength} tells them apart). The
+ * byte-length expression is spelled out here again, not composed, so the statement reads the same for both.
+ */
+function gatedDocument(column: AnyColumn): SQL<string | null> {
+  return sql<
+    string | null
+  >`CASE WHEN length(CAST(${column} AS BLOB)) <= ${sql.raw(String(MAX_RUN_DETAIL_DOCUMENT_BYTES))} THEN ${column} END`;
+}
+
+/**
+ * The columns of a run LIST row — the one place the summary projection is spelled out. Naming each column (never
+ * `select()`) is what keeps the frozen snapshot and the three JSON documents out of every list statement, and a
+ * unit test asserts the emitted SQL names none of them.
+ */
+const runSummaryColumns = {
+  id: runs.id,
+  workflowId: runs.workflowId,
+  projectRoot: runs.projectRoot,
+  status: runs.status,
+  executionMode: runs.executionMode,
+  triggerType: runs.triggerType,
+  startedAt: runs.startedAt,
+  completedAt: runs.completedAt,
+  totalInputTokens: runs.totalInputTokens,
+  totalOutputTokens: runs.totalOutputTokens,
+  totalCostMicrocents: runs.totalCostMicrocents,
+  createdAt: runs.createdAt,
+  updatedAt: runs.updatedAt,
+} as const;
+
+type RunSummaryRow = Pick<RunRow, keyof typeof runSummaryColumns>;
+
+function fromRunSummaryRow(row: RunSummaryRow): RunSummaryRecord {
+  return {
+    ...fromRunRow(row),
+    ...(row.projectRoot === null ? {} : { projectRoot: row.projectRoot }),
   };
 }
 
@@ -945,23 +1342,53 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
-      default:
-        // node:skipped / media_job:submitted / run:timeout / budget:estimate_committed (+ any future durable
-        // event): captured in run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node
-        // has no nodeType on its event, so it gets no step_executions row — the run_events log records the skip.)
-        //
-        // `budget:estimate_committed` is named explicitly because it is the one MONEY event routed here, and
-        // that routing IS ADR-0074's central negative guarantee: a conservative commitment is an ESTIMATE, so it
-        // must never reach `runs.total_cost_microcents` or `run_costs`. Folding it into either would present an
-        // upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`. Falling
-        // through here is what keeps that true — asserted, not assumed, in this package's tests.
-        //
-        // Its realized twin `cost:attempt_settled` (ADR-0076) does the OPPOSITE and has its own arm above. Note
-        // what that means for anyone adding the next durable type: this `default` is not an exhaustiveness
-        // guard. `RunEvent` has no `assertNever` anywhere in the repo, so a new money event added without an
-        // arm lands here silently — a `run_events` row, no derived write, no compile error, no failing test.
-        // Decide deliberately which side of this line a new type belongs on.
+      // **Exhaustive by construction (ADR-0140 §4).** Every `RunEvent` type is named below, so a new durable type
+      // added to the union without a decision here fails to COMPILE (the `assertNever` at the end). The previous
+      // bare `default` swallowed a new money event silently: a `run_events` row, no derived write, no compile
+      // error, no failing test. Each no-op arm says why it writes nothing; add the next type to the side of the
+      // line it belongs on, deliberately.
+      case 'agent:token':
+      case 'agent:reasoning':
+      case 'agent:tool_call':
+      case 'agent:tool_result':
+        // The streamed firehose goes through the bus, never `persistEvent`; a stored one is log-only.
         return;
+      case 'agent:approval_requested':
+      case 'agent:file_patch_proposed':
+        // A display-only prompt or proposal for a human; it changes no run, step or money row.
+        return;
+      case 'cost:updated':
+        // A streamed running total, never durable; the money of record is `node:completed` and
+        // `cost:attempt_settled` above, so folding this too would count it twice.
+        return;
+      case 'node:skipped':
+        // A skipped node has no `nodeType` on its event, so it gets no `step_executions` row; `run_events` records
+        // the skip and a reader derives it from there (ADR-0140 §2).
+        return;
+      case 'media_job:submitted':
+        // The job record a resume re-attaches to; no money is realized until the node's own terminal folds it.
+        return;
+      case 'run:timeout':
+        // An advisory carrying elapsed and limit; the run's terminal event is what changes `runs`.
+        return;
+      case 'budget:warning':
+        // An advisory threshold crossing; the pause itself arrives as `budget:paused` above.
+        return;
+      case 'budget:estimate_committed':
+        // The one MONEY event routed to a no-op, and that routing IS ADR-0074's central negative guarantee: a
+        // conservative commitment is an ESTIMATE, so it must never reach `runs.total_cost_microcents` or
+        // `run_costs`. Folding it into either would present an upper bound as an invoice and break ADR-0070's
+        // `SUM(run_costs) == runs.total_cost_microcents`. Asserted, not assumed, in this package's tests. Its
+        // realized twin `cost:attempt_settled` (ADR-0076) does the OPPOSITE and has its own arm above.
+        return;
+      case 'cost:coverage_started':
+      case 'cost:usage_pending':
+      case 'cost:usage_disposition':
+        // ADR-0104 coverage accounting (is a figure complete?), folded by the coverage reader from `run_events`;
+        // none of them realizes money, so none may write a total.
+        return;
+      default:
+        return assertNever(event);
     }
   };
 
@@ -1262,7 +1689,12 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
  * from a plain db handle (mirroring the standalone {@link loadRunSnapshot}). All methods are synchronous
  * (better-sqlite3) and validate at the row↔domain boundary, like the writer mappers above.
  */
-export function createRunHistoryReader(db: Db): RunHistoryReader {
+export function createRunHistoryReader(
+  db: Db,
+  /** Test seam: a smaller scan cap than {@link MAX_RUN_TAIL_SCAN_ROWS}, so a cap-sized log need not be built. */
+  options: { readonly tailScanRows?: number } = {},
+): RunHistoryReader {
+  const tailScanRows = Math.max(1, Math.trunc(options.tailScanRows ?? MAX_RUN_TAIL_SCAN_ROWS));
   return {
     listRuns: (opts) => {
       // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs (same
@@ -1366,6 +1798,16 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       // this binary cannot read also cannot describe a gate this binary knows how to render.
       readEventLog(db, runId, { streamingIncluded: false }).events,
 
+    loadRunStateEventsForRuns: (runIds) => {
+      if (runIds.length > MAX_RUN_STATE_EVENT_BATCH_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_STATE_EVENT_BATCH_IDS} run ids per state-event batch`,
+        );
+      }
+      return readStateEventsForRuns(db, runIds);
+    },
+
     listActiveRuns: () =>
       db
         .select()
@@ -1412,6 +1854,276 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .all();
       return new Map(rows.map((r) => [r.id, r.slug]));
     },
+
+    listRunSummaries: (opts) => {
+      const limit = refusedAboveLimit(opts.limit, MAX_RUN_SUMMARY_PAGE);
+      const before = opts.before;
+      if (
+        before !== undefined &&
+        (!Number.isSafeInteger(before.createdAt) ||
+          typeof before.id !== 'string' ||
+          before.id.length === 0)
+      ) {
+        throw new RunHistoryReadError(
+          'invalid_cursor',
+          'before must be a (createdAt, id) position',
+        );
+      }
+      return db
+        .select(runSummaryColumns)
+        .from(runs)
+        .where(
+          and(
+            isNull(runs.deletedAt),
+            opts.status === undefined ? undefined : eq(runs.status, opts.status),
+            opts.projectRoot === undefined ? undefined : eq(runs.projectRoot, opts.projectRoot),
+            opts.workflowId === undefined ? undefined : eq(runs.workflowId, opts.workflowId),
+            // The keyset predicate: strictly AFTER the cursor in `(created_at DESC, id DESC)` order, which is
+            // strictly BEFORE it numerically. The row-value form keeps the second term (`id`) as a tiebreak
+            // WITHIN one `created_at`, so rows that share a millisecond straddle a page boundary exactly once.
+            before === undefined
+              ? undefined
+              : sql`(${runs.createdAt}, ${runs.id}) < (${before.createdAt}, ${before.id})`,
+          ),
+        )
+        .orderBy(desc(runs.createdAt), desc(runs.id))
+        .limit(limit)
+        .all()
+        .map(fromRunSummaryRow);
+    },
+
+    loadRunSummariesByIds: (runIds) => {
+      if (runIds.length > MAX_RUN_SUMMARY_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_SUMMARY_IDS} run ids per summary lookup`,
+        );
+      }
+      if (runIds.length === 0) return new Map(); // no query for an empty set
+      const rows = db
+        .select(runSummaryColumns)
+        .from(runs)
+        .where(and(inArray(runs.id, [...runIds]), isNull(runs.deletedAt)))
+        .all();
+      return new Map(
+        rows.map((row): [string, RunSummaryRecord] => [row.id, fromRunSummaryRow(row)]),
+      );
+    },
+
+    loadRunDetail: (runId) => {
+      const row = db
+        .select({
+          ...runSummaryColumns,
+          // The two documents are gated IN the statement (`gatedDocument`): the text leaves SQLite only when it
+          // is within the bound. `input_json` is not selected at all.
+          outputJson: gatedDocument(runs.outputJson),
+          outputByteLength: documentByteLength(runs.outputJson),
+          errorJson: gatedDocument(runs.errorJson),
+          errorByteLength: documentByteLength(runs.errorJson),
+        })
+        .from(runs)
+        .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+        .get();
+      return row === undefined
+        ? undefined
+        : {
+            ...fromRunSummaryRow(row),
+            outputJson: row.outputJson,
+            outputByteLength: row.outputByteLength,
+            errorJson: row.errorJson,
+            errorByteLength: row.errorByteLength,
+          };
+    },
+
+    listStepSummaries: (runId) =>
+      db
+        .select({
+          nodeId: stepExecutions.nodeId,
+          nodeType: stepExecutions.nodeType,
+          status: stepExecutions.status,
+          attemptNumber: stepExecutions.attemptNumber,
+          startedAt: stepExecutions.startedAt,
+          completedAt: stepExecutions.completedAt,
+          durationMs: stepExecutions.durationMs,
+          costMicrocents: stepExecutions.costMicrocents,
+          inputTokens: stepExecutions.inputTokens,
+          outputTokens: stepExecutions.outputTokens,
+        })
+        .from(stepExecutions)
+        .where(eq(stepExecutions.runId, runId))
+        // The same execution order as `loadStepExecutions`: `created_at`, then insertion order.
+        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+        .limit(MAX_RUN_STEP_SUMMARIES)
+        .all()
+        .map(fromStepSummaryRow),
+
+    loadStepDetail: (runId, nodeId, attemptNumber) => {
+      const row = db
+        .select({
+          nodeId: stepExecutions.nodeId,
+          nodeType: stepExecutions.nodeType,
+          status: stepExecutions.status,
+          attemptNumber: stepExecutions.attemptNumber,
+          startedAt: stepExecutions.startedAt,
+          completedAt: stepExecutions.completedAt,
+          durationMs: stepExecutions.durationMs,
+          costMicrocents: stepExecutions.costMicrocents,
+          inputTokens: stepExecutions.inputTokens,
+          outputTokens: stepExecutions.outputTokens,
+          cachedTokens: stepExecutions.cachedTokens,
+          outputJson: gatedDocument(stepExecutions.outputJson),
+          outputByteLength: documentByteLength(stepExecutions.outputJson),
+          errorJson: gatedDocument(stepExecutions.errorJson),
+          errorByteLength: documentByteLength(stepExecutions.errorJson),
+        })
+        .from(stepExecutions)
+        // `stepMatch` is the same (run, node, attempt) predicate the writer's arms update by, which is what
+        // `idx_step_exec_run_node` is keyed on.
+        .where(stepMatch(runId, nodeId, attemptNumber))
+        // A re-dispatched node can leave two rows for one (run, node, attempt): the page shows the latest one,
+        // so the order is pinned to the newest insert rather than whatever the index returns first.
+        .orderBy(sql`rowid DESC`)
+        .get();
+      return row === undefined
+        ? undefined
+        : {
+            ...fromStepSummaryRow(row),
+            cachedTokens: row.cachedTokens,
+            outputJson: row.outputJson,
+            outputByteLength: row.outputByteLength,
+            errorJson: row.errorJson,
+            errorByteLength: row.errorByteLength,
+          };
+    },
+
+    loadRunEventsAfter: (runId, afterSeq, limit) => {
+      const wanted = boundedLimit(limit, MAX_RUN_TAIL_EVENTS);
+      if (!Number.isSafeInteger(afterSeq)) {
+        throw new RunHistoryReadError('invalid_cursor', 'afterSeq must be a safe integer');
+      }
+      const events: RunEvent[] = [];
+      const skipped: SkippedRunEvent[] = [];
+      let scannedThroughSeq = afterSeq;
+      let scanned = 0;
+      for (;;) {
+        // The last statement asks for no more than the scan cap has left, so the cap is exact, not a batch late.
+        const batch = Math.min(RUN_TAIL_BATCH_ROWS, tailScanRows - scanned);
+        const rows = db
+          .select({
+            seq: runEvents.seq,
+            eventType: runEvents.eventType,
+            payloadJson: runEvents.payloadJson,
+          })
+          .from(runEvents)
+          .where(and(eq(runEvents.runId, runId), gt(runEvents.seq, scannedThroughSeq)))
+          .orderBy(asc(runEvents.seq))
+          .limit(batch)
+          .all();
+        for (const row of rows) {
+          scanned += 1;
+          // The shared row reader: an unknown `type` is a newer binary's row (skipped, never an error), a damaged
+          // row throws `CorruptRunEventError` — the same two outcomes `loadRunEventLog` has.
+          const event = readStoredEventRow(runId, row);
+          // The cursor moves over a skipped row too. Moving it only over readable events would park a caller on
+          // the last event of a log whose tail a newer binary wrote, and it would re-read that tail forever.
+          scannedThroughSeq = row.seq;
+          if (event === undefined) skipped.push({ sequenceNumber: row.seq, type: row.eventType });
+          else events.push(event);
+          if (events.length >= wanted) return { events, scannedThroughSeq, skipped };
+        }
+        // The end of the log (a short batch), or the scan cap: either way the caller's cursor is `scannedThroughSeq`.
+        if (rows.length < batch || scanned >= tailScanRows) {
+          return { events, scannedThroughSeq, skipped };
+        }
+      }
+    },
+
+    loadRunLeases: (runIds) => {
+      if (runIds.length > MAX_RUN_LEASE_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_LEASE_IDS} run ids per lease lookup`,
+        );
+      }
+      if (runIds.length === 0) return new Map(); // no query for an empty set
+      const rows = db
+        .select({
+          runId: runLeases.runId,
+          ownerId: runLeases.ownerId,
+          generation: runLeases.generation,
+          expiresAt: runLeases.expiresAt,
+        })
+        .from(runLeases)
+        .where(inArray(runLeases.runId, [...runIds]))
+        .all();
+      return new Map(
+        rows.map((row): [string, RunLeaseSummary] => [
+          row.runId,
+          { ownerId: row.ownerId, generation: row.generation, expiresAt: row.expiresAt },
+        ]),
+      );
+    },
+
+    loadLatestRunPerWorkflowInProject: (projectRoot) => {
+      // The project-scoped twin of `loadLatestRunPerWorkflow`, kept as its own statement so that overlay's text
+      // stays untouched: the same ranking (newest `created_at`, `id` as the tiebreak) over this project's runs.
+      // The window CTE selects the SUMMARY columns only (ADR-0140 §4: a list read never selects a blob). A
+      // `getTableColumns(runs)` here would push every run's frozen snapshot and JSON documents through the
+      // row-number sort, only to drop them from the result.
+      const ranked = db.$with('ranked').as(
+        db
+          .select({
+            ...runSummaryColumns,
+            slug: workflows.slug,
+            rn: sql<number>`row_number() over (partition by ${runs.workflowId} order by ${runs.createdAt} desc, ${runs.id} desc)`.as(
+              'rn',
+            ),
+          })
+          .from(runs)
+          .innerJoin(workflows, eq(runs.workflowId, workflows.id))
+          .where(
+            and(
+              eq(runs.projectRoot, projectRoot),
+              isNull(runs.deletedAt),
+              isNull(workflows.deletedAt),
+            ),
+          ),
+      );
+      return db
+        .with(ranked)
+        .select()
+        .from(ranked)
+        .where(eq(ranked.rn, 1))
+        .all()
+        .map((row): WorkflowRunSummary => ({ slug: row.slug, lastRun: fromRunRow(row) }));
+    },
+  };
+}
+
+/** The shared step-attempt projection of the summary and detail reads (timestamps to ISO, nulls absent). */
+function fromStepSummaryRow(r: {
+  readonly nodeId: string;
+  readonly nodeType: string;
+  readonly status: StepExecutionRow['status'];
+  readonly attemptNumber: number;
+  readonly startedAt: number | null;
+  readonly completedAt: number | null;
+  readonly durationMs: number | null;
+  readonly costMicrocents: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}): StepSummaryRecord {
+  return {
+    nodeId: r.nodeId,
+    nodeType: r.nodeType,
+    status: r.status,
+    attemptNumber: r.attemptNumber,
+    ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
+    ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
+    ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
+    costMicrocents: r.costMicrocents,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
   };
 }
 

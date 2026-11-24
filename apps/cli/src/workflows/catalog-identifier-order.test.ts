@@ -16,6 +16,7 @@ describe('disk catalog identifier ordering', () => {
   for (const kind of ['workflows', 'agents'] satisfies CatalogKind[]) {
     it(`[CATALOG-IDENTIFIERS] ${kind} orders invalid mixed-case fallback stems alongside valid kebab IDs`, () => {
       const project = mkdtempSync(join(tmpdir(), 'relavium-catalog-order-'));
+      const home = mkdtempSync(join(tmpdir(), 'relavium-catalog-order-home-'));
       const configDir = join(project, '.relavium');
       const dir = join(configDir, kind);
       mkdirSync(dir, { recursive: true });
@@ -27,7 +28,12 @@ describe('disk catalog identifier ordering', () => {
             id === 'Z' || id === 'a_b' ? 'id: synthetic-invalid-private-value\n' : valid(kind, id);
           writeFileSync(join(dir, `${id}.yaml`), body, 'utf8');
         }
-        const entries = discoverCatalog({ projectConfigDir: configDir, cwd: project, kind });
+        const entries = discoverCatalog({
+          projectConfigDir: configDir,
+          cwd: project,
+          homeDir: home,
+          kind,
+        });
         expect(
           entries.map(({ slug }) => slug),
           '[CATALOG-ORDINAL] actual disk discovery sorts fallback and authored identifiers together',
@@ -52,6 +58,7 @@ describe('disk catalog identifier ordering', () => {
         }
       } finally {
         rmSync(project, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
       }
     });
   }

@@ -24,6 +24,8 @@ import { isWordCodePoint } from './unicode-word.js';
 
 const LIVE_SOURCE_LIMIT = 4_000;
 const TAIL_CONTEXT = 64;
+/** How much of a fence's info string the highlighter keeps when the live window clips or drops the label (ADR-0144). */
+const HIGHLIGHT_INFO_LIMIT = 64;
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 function sourceTail(source: string, limit = LIVE_SOURCE_LIMIT): string {
@@ -3233,7 +3235,10 @@ export class MarkdownStream {
         source: completeTail(block.source),
         text: completeTail(block.text),
         ...(block.info
-          ? { info: completeTail(block.info, Math.max(0, LIVE_SOURCE_LIMIT - block.text.length)) }
+          ? {
+              info: completeTail(block.info, Math.max(0, LIVE_SOURCE_LIMIT - block.text.length)),
+              highlightInfo: block.info.slice(0, HIGHLIGHT_INFO_LIMIT),
+            }
           : {}),
         ...(block.prefix ? { prefix: completeTail(block.prefix) } : {}),
         ...(block.continuation ? { continuation: completeTail(block.continuation) } : {}),
@@ -3515,7 +3520,8 @@ export class MarkdownStream {
         cutOffset >= this.sourceLength - this.lineLength
       )
         blocks.push(literal(pending));
-      else if (this.pendingTable) blocks.push(literal(pending));
+      // A pending table is table source, so its wrapped lines start at their text, as the finished table's do (ADR-0143).
+      else if (this.pendingTable) blocks.push({ ...literal(pending), tableSource: true });
       else if (pendingFence) {
         const cut = this.pendingSize > LIVE_SOURCE_LIMIT;
         const opening = pendingFence;
@@ -3571,6 +3577,7 @@ export class MarkdownStream {
                   source: pending,
                   text: body,
                   info: '',
+                  highlightInfo: opening.info.slice(0, HIGHLIGHT_INFO_LIMIT),
                 } satisfies MarkdownBlock,
               ]
             : parseMarkdown(pending);

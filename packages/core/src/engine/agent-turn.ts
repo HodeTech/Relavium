@@ -73,7 +73,12 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { canonicalJson, RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
+import {
+  canonicalJson,
+  RelaviumError,
+  SessionToolHistoryEntrySchema,
+  TOOL_ACTIVITY_UNKNOWN_TOOL_ID,
+} from '@relavium/shared';
 
 import { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDeniedByUserError, ToolDispatchError } from '../tools/errors.js';
@@ -295,6 +300,28 @@ export interface AgentTurnParams {
    * session path had no backpressure at all rather than advisory backpressure.
    */
   readonly whenReady?: () => Promise<void>;
+  /**
+   * The run's elapsed-milliseconds clock — the engine's own (the one its bus timestamps come from), so a measurement
+   * and the events around it share a clock. The turn reads it before and after each `registry.dispatch` and puts the
+   * difference on the `agent:tool_result` as `durationMs` — on a successful dispatch, and on a dispatch that RAN and
+   * threw (an `execution_failed` the model is told about); a refusal decided before the tool ran (an unknown tool,
+   * invalid arguments, a grant, policy or user denial) carries none. That is where the node's durable `toolActivity`
+   * takes a call's duration from (ADR-0140 §4). Optional: absent (a session turn, a test double), or a reading that
+   * throws or is not a finite number, means the result carries NO duration — a measurement never fails a dispatch and
+   * is never replaced by a guess. The measured span is the registry's whole dispatch, including any wait inside it for
+   * a per-tool approval.
+   */
+  readonly elapsedMs?: () => number;
+  /**
+   * Called once for EVERY tool call the turn attempts, BEFORE the turn decides anything about it (a call that is
+   * then refused, denied or never answered is still announced) and before the registry is entered, with the id the
+   * call is attributed to: a REGISTERED tool's id, or the fixed `unknown_tool` for a name the registry does not have
+   * — never the model's own text (the same attribution the call and result events carry). The node's durable
+   * `toolActivity` records a call from here, not from the `agent:tool_call` event, because that event is emitted only
+   * after the dispatch returns: a call still running when its node is cut by a deadline would otherwise leave no
+   * trace (ADR-0140 §4). Optional; a hook that throws is ignored — it is observation, and never fails a dispatch.
+   */
+  readonly onToolStart?: (toolId: string) => void;
   /** Cooperative cancellation — threaded into every seam call (via the request) and tool dispatch. */
   readonly signal: AbortSignalLike;
   /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
@@ -1127,17 +1154,22 @@ function sessionToolHistoryEntry(
 function toolFailureMessage(
   err: unknown,
   call: ToolCallPart,
+  toolId: string,
   params: AgentTurnParams,
   model: string,
   attemptNumber: number,
+  /** The measured span of a dispatch that RAN and threw; `undefined` for a refusal or when nothing was measured. */
+  durationMs: number | undefined,
 ): LlmMessage {
   // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before dispatch).
   // Announce the attempted call with a REDACTED (empty) input — never the raw model args — then classify.
+  // `toolId` is the id the failure is attributed to: a registered tool's, or the fixed `unknown_tool` — never the
+  // model's own text for a name that is not registered (it would otherwise reach the node's durable `toolActivity`).
   emitToolOutcome(params, {
     type: 'agent:tool_call',
     nodeId: params.nodeId,
     model,
-    toolId: call.name,
+    toolId,
     toolInput: {},
     attemptNumber,
   });
@@ -1148,9 +1180,10 @@ function toolFailureMessage(
     emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
-      toolId: call.name,
+      toolId,
       success: false,
       outputSummary: text,
+      ...(durationMs === undefined ? {} : { durationMs }),
       attemptNumber,
     });
     return {
@@ -1237,6 +1270,75 @@ function toolHostEntryFailure(error: unknown): { readonly error: unknown } | und
 }
 
 /**
+ * The id a FAILED dispatch is attributed to — in the session history and on the `agent:tool_call` /
+ * `agent:tool_result` events alike: the id the registry's error names (or the call's own name when it names none)
+ * when that is a REGISTERED tool and the failure is not itself "unknown tool"; otherwise the fixed `unknown_tool`.
+ * Text a model chose for a name that is not registered is never an id, so it cannot reach a durable record, and an
+ * unregistered name is therefore never echoed by this function whatever characters it is made of.
+ */
+function attributedToolId(err: unknown, call: ToolCallPart, registry: ToolRegistry): string {
+  return err instanceof ToolDispatchError &&
+    err.code !== 'unknown_tool' &&
+    registry.has(err.toolId ?? call.name)
+    ? (err.toolId ?? call.name)
+    : TOOL_ACTIVITY_UNKNOWN_TOOL_ID;
+}
+
+/**
+ * The id a tool call is attributed to BEFORE the registry is asked anything: its own name when that is a registered
+ * tool, else the fixed `unknown_tool`. It is the id every later event of the call carries (the registry's `def.id`
+ * IS the name it matched, and {@link attributedToolId} names the same tool on a refusal), so the node's trace pairs
+ * the call announced here with its result.
+ */
+function startedToolId(call: ToolCallPart, registry: ToolRegistry): string {
+  return registry.has(call.name) ? call.name : TOOL_ACTIVITY_UNKNOWN_TOOL_ID;
+}
+
+/** Announce an attempted call to the host's start hook; the hook is observation and never fails a dispatch. */
+function announceToolStart(params: AgentTurnParams, call: ToolCallPart): void {
+  if (params.onToolStart === undefined) return;
+  try {
+    params.onToolStart(startedToolId(call, params.registry));
+  } catch {
+    // The hook feeds a trace; a fault in it must not turn a tool call into a failed one.
+  }
+}
+
+/**
+ * Whether a failed dispatch RAN: the registry handed the call to the tool and the tool threw (`execution_failed`).
+ * Every other failure is a refusal decided before the tool ran — an unknown tool, invalid arguments, a grant, policy
+ * or user denial, a missing capability, a held effect identity — and has no span worth reporting. A failure that
+ * ends the turn never emits a result, so only the first kind reaches an `agent:tool_result` at all.
+ */
+function dispatchRanAndThrew(err: unknown): boolean {
+  return err instanceof ToolDispatchError && err.code === 'execution_failed';
+}
+
+/**
+ * Read the injected clock without letting the reading fail a dispatch: a throw, or a value that is not a finite
+ * number, is "no reading".
+ */
+function readElapsedMs(params: AgentTurnParams): number | undefined {
+  if (params.elapsedMs === undefined) return undefined;
+  try {
+    const reading = params.elapsedMs();
+    return Number.isFinite(reading) ? reading : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The whole milliseconds between two readings (never negative), or `undefined` when either reading is missing. */
+function measuredDurationMs(
+  startedAtMs: number | undefined,
+  finishedAtMs: number | undefined,
+): number | undefined {
+  return startedAtMs === undefined || finishedAtMs === undefined
+    ? undefined
+    : Math.max(0, Math.trunc(finishedAtMs - startedAtMs));
+}
+
+/**
  * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
  * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
  * (`unknown_tool` / `invalid_args`) is converted to an `isError` tool result fed back for the model
@@ -1287,6 +1389,10 @@ async function dispatchToolCalls(
     throwIfAborted(params.signal);
     const id = params.sessionToolCallId?.(slotBase + slot);
     let outcome: ToolDispatchOutcome;
+    let dispatchStartedAtMs: number | undefined;
+    // Announced BEFORE any decision about the call, so a call that is refused, denied, or still running when its node
+    // is cut is on the node's trace; the events below come later (and a fatal failure emits no result at all).
+    announceToolStart(params, call);
     try {
       const repeatKey = invocationKey(call);
       if (repeatKey !== undefined && denied.has(repeatKey)) {
@@ -1297,6 +1403,9 @@ async function dispatchToolCalls(
           { repeated: true },
         );
       }
+      // The span the node's `toolActivity` records for this call: the registry's whole dispatch. Both events below
+      // are emitted AFTER it returns, so no clock read at emit time could see it.
+      dispatchStartedAtMs = readElapsedMs(params);
       outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         // Prepared/standalone context data cannot grant execution-local lifetime authority.
@@ -1313,6 +1422,11 @@ async function dispatchToolCalls(
     } catch (err) {
       const hostFailure = toolHostEntryFailure(err);
       if (hostFailure !== undefined) throw hostFailure.error;
+      // A dispatch that ran and threw is measured on the same clock as a successful one, read FIRST so the span does not
+      // include the bookkeeping below; a refusal (decided before the tool ran, or before the registry was entered) is not.
+      const failedDurationMs = dispatchRanAndThrew(err)
+        ? measuredDurationMs(dispatchStartedAtMs, readElapsedMs(params))
+        : undefined;
       // Remember a refusal the user decided, so an identical repeat is refused without asking again.
       if (
         err instanceof ToolDeniedByUserError &&
@@ -1323,16 +1437,19 @@ async function dispatchToolCalls(
         const refusedKey = invocationKey(call);
         if (refusedKey !== undefined) denied.add(refusedKey);
       }
-      const name =
-        err instanceof ToolDispatchError &&
-        err.code !== 'unknown_tool' &&
-        params.registry.has(err.toolId ?? call.name)
-          ? (err.toolId ?? call.name)
-          : 'unknown_tool';
+      const name = attributedToolId(err, call, params.registry);
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
       let failure: LlmMessage;
       try {
-        failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+        failure = toolFailureMessage(
+          err,
+          call,
+          name,
+          params,
+          getModel(),
+          attemptNumber,
+          failedDurationMs,
+        );
       } catch (fatal) {
         // ADR-0119: a fatal tool failure ends the turn, but the call DID dispatch. Record it before the throw so a
         // retained interrupted turn lists it — `cancelled` ("execution state unknown") for a call in flight when the
@@ -1379,6 +1496,7 @@ async function dispatchToolCalls(
       continue;
     }
     succeeded += 1;
+    const durationMs = measuredDurationMs(dispatchStartedAtMs, readElapsedMs(params));
     // ADR-0119: the call has run, so it is recorded BEFORE any event is emitted. A sink that throws on the events
     // below must not leave an executed call out of a retained turn's history, which would tell the next request that
     // no tool call was recorded for a turn in which one ran.
@@ -1424,6 +1542,7 @@ async function dispatchToolCalls(
       toolId: outcome.events.result.toolId,
       success: outcome.events.result.success,
       outputSummary: outcome.events.result.outputSummary,
+      ...(durationMs === undefined ? {} : { durationMs }),
       attemptNumber,
     });
   }

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReasoningEffort } from '@relavium/shared';
@@ -5,11 +7,14 @@ import type { ReasoningEffort } from '@relavium/shared';
 import {
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
-  REPL_COMMANDS,
+  REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import { ConfigWriteRefusedError } from '../../config/write.js';
+import { createActivePoll, type ActivePoll } from '../../history/active-poll.js';
+import type { ActiveRead } from '../../history/active-source.js';
+import type { ChangeToken } from '../../history/change-probe.js';
 import {
   canControlEffort,
   foldEffortPickerKey,
@@ -17,22 +22,66 @@ import {
   type EffortPickerState,
 } from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import { HOME_HELP_COMMANDS } from './help-sheet.js';
+import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
+import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
 import {
-  disarmPermissionsSheet,
-  sheetCanArm,
-  type PermissionsSheetState,
-} from './permissions-sheet.js';
+  agentChatSheet,
+  permissionsChatSheet,
+  permissionsSheetOf,
+  type ChatSheetState,
+} from './chat-sheet.js';
+import type { BoundAgentView } from '../../chat/bound-agent-view.js';
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
+  PERMISSIONS_UNREADABLE,
 } from './permissions-sheet-port.js';
+import {
+  disarmTabHost,
+  enterHistoryAtDetail,
+  enterTab,
+  foldTabHostKey,
+  freshTabMemory,
+  tabHostMemory,
+  withActiveFailure,
+  withActiveNote,
+  withActiveRead,
+  withDefinedNote,
+  withHistoryLoad,
+  withHistoryLoadFailure,
+  withSessionsNote,
+  type TabEntry,
+  type TabHostState,
+  type TabId,
+  type TabMemory,
+} from './tab-host.js';
+import type { HistoryPort } from './tab-host-history.js';
+import type { PinPort } from './tab-host-pin.js';
+import { SESSIONS_RESUME_UNAVAILABLE, type SessionsPort } from './tab-host-sessions.js';
+import type { DefinedPort } from './tab-host-workflows.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
+import {
+  agentStartNotice,
+  agentStartReasonOf,
+  type HomeAgentRequest,
+} from '../../home/agent-start.js';
+import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import type {
+  HostedLaunch,
+  HostedLegEnd,
+  HostedResumeRequest,
+  RunHost,
+  RunHostSnapshot,
+} from '../../home/run-host.js';
+import { cardGatesOf, isMediaOnlyPark, type RunGates } from '../../home/run-gates.js';
+import type { RunNotices } from '../../home/run-notices.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
   applyEditorAction,
@@ -61,9 +110,15 @@ import type { TranscriptEntry } from './session-view-model.js';
 import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
+  decideExit,
   isInterruptKey,
+  pressExitGuardKey,
   pressInterrupt,
   pressOtherKey,
+  pressRunViewInterrupt,
+  pressRunViewKey,
+  pressTabHostInterrupt,
+  type HostedLegState,
   type InterruptContext,
   type InterruptState,
 } from './interrupt-keymap.js';
@@ -99,8 +154,30 @@ import {
   type PaletteKey,
   type PaletteState,
 } from './palette-reducer.js';
-import { FORCE_TEARDOWN_MS } from './tui-constants.js';
+import {
+  FORCE_TEARDOWN_MS,
+  HOSTED_RUN_EXIT_GRACE_MS,
+  HOSTED_RUN_POLL_MS,
+} from './tui-constants.js';
+import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
+import { stripRefreshPaused } from './strip-pause.js';
+import { createStripBackoff } from './strip-backoff.js';
+import {
+  focusFor,
+  resolveFocus,
+  stepFocus,
+  stripRows,
+  type StripFocus,
+  type StripRow,
+} from './strip-focus.js';
+import type { RunStore } from './run-store.js';
+import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
+import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
+import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
+import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
+import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
+import { sanitizeInline } from '../sanitize.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -139,6 +216,10 @@ export interface HomeChatSession {
   /** The `/permissions` sheet's port (ADR-0137 §2): a typed or palette-selected bare `/permissions` opens the sheet over this chat.
    *  Absent ⇒ the command is dispatched and says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
+  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): a typed or palette-selected bare `/agent` opens the read-only sheet over this chat, from the definition the session holds (a reseat
+   *  builds a new session, so it is the provider and model the chat runs on now). Absent ⇒ the command is dispatched and prints a notice. */
+  readonly boundAgent?: () => BoundAgentView;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
@@ -171,7 +252,6 @@ export interface HomeControllerState {
   readonly mode: HomeMode;
   readonly keyless: boolean;
   readonly nativeActionBusy: boolean;
-  readonly continueSessionId: string | undefined;
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
@@ -217,13 +297,170 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
-  /** The open `/permissions` sheet (ADR-0137 §2, §3) — `undefined` ⇒ closed. In a live in-Home chat with a wired port it shows both lists;
-   *  on the bare Home it shows the project's only. A keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can
-   *  arrive while it is open. */
-  readonly permissionsSheet: PermissionsSheetState | undefined;
+  /** The open docked sheet of a live in-Home chat — `undefined` ⇒ closed. ONE slot for every sheet a chat has, a union by kind
+   *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists) and `/agent` (ADR-0140 §3, the bound agent, read-only). A
+   *  keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
+   *  sheets cannot be open at once. The bare Home's `/permissions` is not this: it is the Permissions tab of the tab host, a kind of
+   *  {@link HomeControllerState.screen} (ADR-0140 §3). */
+  readonly chatSheet: ChatSheetState | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
   readonly interruptArmed: boolean;
+  /** The run host's snapshot, as of the last read (ADR-0139 §3): the strip's `▶` row and the exit-guard card show it. `undefined`
+   *  with no host wired. It is re-read when a native action ends, while a leg is live, and when the Home is asked to end. */
+  readonly hostedRun: RunHostSnapshot | undefined;
+  /** The exit-guard card (ADR-0139 §6): `confirm` asks whether to leave with a run executing, `stopping` waits (bounded) for the
+   *  confirmed cancel to settle. `undefined` ⇒ closed. While it is open it owns every key and every paste. */
+  readonly exitGuard: ExitGuardPhase | undefined;
+  /**
+   * The one screen in front of the landing, or `undefined` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §1). One slot, one open function ({@link HomeController.openScreen}), one key route, one interrupt context, one paste gate and one
+   * reset ({@link HomeController.closeScreen}): the six overlays above are not moved into it, and are never open while it is.
+   */
+  readonly screen: HomeScreen | undefined;
+  /**
+   * This project's parked runs, one row each ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §7): what
+   * the landing's Attention rows show. Re-read when the landing is shown again and when the run host's state changes; empty with no
+   * {@link HomeControllerDeps.gateCards}.
+   */
+  readonly parkedRuns: readonly ParkedRunRow[];
+  /**
+   * The strip row the person has moved onto with `↓` at the empty prompt, or `undefined` for none ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §6). It names the row by its identity (the run id or the session id, `strip-focus.ts`), so a read that moves the row never moves the
+   * focus off it; `Enter` does what the row's kind says (a parked run's card, a failed or recent run's detail, a session's resume).
+   */
+  readonly stripFocus: StripFocus | undefined;
+  /** The Home can open a gate card (a port is wired): the run view of a parked run then offers `Enter`. */
+  readonly gateCards: boolean;
+}
+
+/**
+ * What a screen of the slot is told when it opens. `run-view` (MVP-8 step 3), `tab-host` (step 4) and `help` (step 5, the landing's
+ * `/help` sheet, which is told nothing) are the kinds so far; each has its own props, and the opener and the readers switch on `kind`.
+ */
+export interface RunViewProps {
+  /** The run the view shows: the run host's snapshot is read for exactly this run, never for whichever one executes. */
+  readonly runId: string;
+  /** The leg's live output (the `RunApp` projection's store); absent when nothing feeds this Home. */
+  readonly store?: RunStore | undefined;
+  /**
+   * Where `Esc` returns to: `landing` (the default) closes the screen, `tab-host` puts the tab host back on the tab and row it was on
+   * (ADR-0140 §1). Only a view opened from the tab host says `tab-host`; `Ctrl+C` closes the whole screen either way.
+   */
+  readonly from?: ScreenOrigin | undefined;
+}
+
+/** Where a screen was opened from, and so where its `Esc` returns to. */
+export type ScreenOrigin = 'landing' | 'tab-host';
+
+/** What the tab host is told when it opens: the tab to show. Every tab remembers its own position while the screen lives. */
+export interface TabHostProps {
+  readonly tab: TabId;
+}
+
+/** The run view of one run, with the notice ring as it was last read (re-read while a leg is live). */
+export interface RunViewScreen {
+  readonly kind: 'run-view';
+  readonly runId: string;
+  /** Where `Esc` returns to ({@link RunViewProps.from}). */
+  readonly from: ScreenOrigin;
+  readonly store: RunStore | undefined;
+  /** The host's notice ring, then {@link RunViewScreen.note} when there is one: the view shows the newest rows. */
+  readonly notices: readonly string[];
+  /**
+   * What the view itself has to say: why a gate card could not open from it. It is the newest notice row, and it goes with the screen
+   * (the view offers `Enter` again, and the key line says it will try again).
+   */
+  readonly note?: string | undefined;
+}
+
+/**
+ * The gate or budget card of a parked run, in front of the landing or of the run view it was opened from
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4). `Esc` and `Ctrl+C` close it and decide nothing; the
+ * view paints it from `card`'s own snapshots.
+ */
+export interface GateCardScreen {
+  readonly kind: 'gate-card';
+  readonly runId: string;
+  readonly card: RunCard;
+  /** Where closing the card returns to. */
+  readonly back: 'landing' | 'run-view';
+  /** Where the screen the card came from (a view, or the card itself from a browser) returns to, once the card is closed. */
+  readonly from: ScreenOrigin;
+  /** A card has no live output and no notice ring: both read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
+/**
+ * The tab host of the management browsers ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §1, §3): the strip of tabs and the tab in front, as the pure model of `tab-host.ts` holds them. It owns every key while it is open and
+ * drops a paste; closing it (`Esc`, `Ctrl+C`) returns to the landing, or ends a bare `relavium permissions`.
+ */
+export interface TabHostScreen {
+  readonly kind: 'tab-host';
+  readonly host: TabHostState;
+  /** A tab host has no run, no live output and no notice ring: all three read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly runId?: undefined;
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
+/**
+ * The landing's `/help` sheet ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §3): the commands the Home answers to and the keys of the landing, drawn by `help-sheet.ts`. It has nothing to remember, so the kind
+ * carries nothing; `Esc` and `Ctrl+C` close it, every other key does nothing and a paste is dropped.
+ */
+export interface HelpScreen {
+  readonly kind: 'help';
+  /** A sheet has no run, no live output and no notice ring: all three read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly runId?: undefined;
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
+/** The slot's contents. */
+export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen | HelpScreen;
+
+/**
+ * What the Active tab reads and is told by ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §2): a change token to compare, one asynchronous read of the runs that are not finished, and whether the database is gone. `driveHome`
+ * wires the real ones over its own connection; nothing here writes.
+ */
+export interface HomeActivePort {
+  /** The change token now (`PRAGMA data_version` and the in-process generation). May throw for a closed database. */
+  readonly token: () => ChangeToken;
+  /** One read of the Active tab's runs. Called only while the tab is in front, when the token moved, and never twice at once. */
+  readonly read: () => Promise<ActiveRead>;
+  /** The database is closed: the poll reads nothing more. Asked before every read. */
+  readonly isClosed: () => boolean;
+}
+
+/**
+ * What the strip's idle refresh asks ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §6): the change token to compare, and whether the database is gone. It is the Active tab's own probe, so a tick that finds the token where
+ * the last read left it reads nothing; `driveHome` wires the real one over its own connection.
+ */
+export interface HomeStripPort {
+  /** The change token now (`PRAGMA data_version`, the in-process generation and the hosted run). May throw for a closed database. */
+  readonly token: () => ChangeToken;
+  /** The database is closed: the tick reads nothing more. Asked before every read. */
+  readonly isClosed: () => boolean;
+}
+
+/**
+ * What the Home needs to show and answer the gates of the runs parked in its project: the reads, the answer and the numbers the
+ * card's chord guard runs on. `driveHome` wires the real ones (`readParkedRuns`, `readRunGates`, `createGateResumer` over the run host).
+ */
+export interface HomeGateCardsPort {
+  /** The project's parked runs, one row each. May throw; the Home then keeps the rows it has. */
+  readonly list: () => readonly ParkedRunRow[];
+  /** One run's open gates from its log now, or `undefined` when it is not parked in this project. */
+  readonly read: (runId: string) => RunGates | undefined;
+  /** Answer one gate: the run host's `resume` with the native flow around it (`createGateResumer`). */
+  readonly resume: (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch>;
+  /** The guard's numbers (default the product's own); `0` switches a layer off. A test uses it. */
+  readonly guard?: ApprovalGuard | undefined;
 }
 
 /**
@@ -262,8 +499,17 @@ export interface HomeModelsPort {
 }
 
 export interface HomeControllerDeps {
-  /** Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject. */
-  readonly startChat: () => Promise<HomeChatSession>;
+  /**
+   * Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject.
+   *
+   * With no argument it binds the built-in agent. With `agent` (the `/agents` detail's `c`, ADR-0140 §3) it binds that agent of the project:
+   * `agent.path` is the catalog's own path of the file the detail showed (read through the agents port), never text a person typed, and
+   * `agent.listed` is the definition the detail was drawn from. The host reads the file once through the catalog's hardened read, refuses
+   * it unless it is still that definition, and binds what it read through the session build `relavium chat --agent` uses, so its tool grant
+   * and the consent for the MCP servers it declares are that path's, and every tool call still asks. A rejection is shown as a fixed
+   * sentence, never as the error's own words.
+   */
+  readonly startChat: (agent?: HomeAgentRequest) => Promise<HomeChatSession>;
   /** Reseat the in-Home chat onto a NEW model (ADR-0059) — reload + resume the current session's transcript under the
    *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat).
    *
@@ -297,11 +543,114 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
-  /** The bare Home's `/permissions` sheet port (ADR-0137 §3): the project's remembered commands only, there being no chat. Absent ⇒
-   *  the Home has no sheet to open (a test may omit it); a live chat's own port is `HomeChatSession.permissions`. */
+  /** The bare Home's permissions port (ADR-0137 §3, ADR-0140 §3): the project's remembered commands only, there being no chat, and the
+   *  repository's allowlist, read again every time the Permissions tab is entered. Absent ⇒ the Home has no tab to open (a test may omit
+   *  it); a live chat's own port, for its docked sheet, is `HomeChatSession.permissions`. */
   readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
+  /**
+   * Launch a workflow from the Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): the
+   * picker, the form and the confirmation, all on the native prompt channel, then the host's start. It resolves with the notice the
+   * Home shows; it holds the native action for as long as the flow is open, so no key reaches the composer meanwhile. A Home command
+   * only: a live chat never reaches it (the typed `/run` is routed here only with no session, and the chat palette does not list it).
+   * Absent ⇒ `/run` says it is unavailable. With a `slug` the picker is skipped (the Defined tab's `r`), and with the catalog `path` the
+   * row was listed from the flow refuses a slug whose file is another one by then.
+   */
+  readonly launchRun?: (slug?: string, path?: string) => Promise<string>;
+  /**
+   * The Defined tab's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2): read again every time the tab is entered. Absent ⇒ the tab says it cannot list, and a typed `/workflows` at the Home says the
+   * workflows are not available.
+   */
+  readonly defined?: DefinedPort | undefined;
+  /**
+   * The History tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2): the finished runs a page at a time, the pinned runs, each run's cost read lazily, and one run's detail. Read when the tab is
+   * entered and as its keys ask; absent ⇒ the tab says it cannot be read.
+   */
+  readonly history?: HistoryPort | undefined;
+  /**
+   * What `p` pins and unpins through, on the Defined and the History tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §5). Absent ⇒ `p` says pinning is unavailable.
+   */
+  readonly pins?: PinPort | undefined;
+  /**
+   * The `/agents` strip's Defined tab: the project's agent catalog, read again every time the tab is entered ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §3). Absent ⇒ a typed `/agents` says the agents are not available here.
+   */
+  readonly agents?: AgentsPort | undefined;
+  /**
+   * The `/agents` strip's Sessions tab: this project's saved conversations, the list the `/resume` picker offers, read again every time the
+   * tab is entered. `Enter` on a row resumes it through {@link HomeControllerDeps.resumeChat}. Absent ⇒ the tab says it cannot list.
+   */
+  readonly sessions?: SessionsPort | undefined;
+  /**
+   * The Defined tab's export card: prepare the export of one catalog workflow, show where it would be written, and write it only on a
+   * Yes. It resolves with the sentence the tab shows; it holds the native action while the card is open. Absent ⇒ `x` says export is
+   * unavailable.
+   */
+  readonly exportDefined?: ((slug: string) => Promise<string>) | undefined;
+  /**
+   * `/import` at the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §9): ask for a path, show what the import would write, and write the file only on a Yes. It resolves with the sentence the landing shows;
+   * it holds the native action while the card is open. A Home word: with a chat in front the typed line is the chat's. Absent ⇒ `/import`
+   * says import is unavailable in this session.
+   */
+  readonly importDefined?: (() => Promise<string>) | undefined;
+  /**
+   * `/pricing` at the landing (ADR-0140 §9): the form that sets or clears the operator's own price for a model, and the card that records it
+   * only on a Yes. It resolves with the sentence the landing shows; it holds the native action while the form is open. A Home word, as
+   * `/import` is. Absent ⇒ `/pricing` says model pricing is not available here.
+   */
+  readonly pricing?: (() => Promise<string>) | undefined;
+  /**
+   * The Active tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2). The Home polls them only while that tab is in front and no card or exit question is up, every 1.5 seconds and only when the
+   * change token moved. Absent ⇒ the tab says it cannot be read.
+   */
+  readonly active?: HomeActivePort | undefined;
+  /**
+   * The strip's idle refresh ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §6): every {@link STRIP_REFRESH_MS} the Home looks at the change token, and re-reads the strip's rows only when it moved. The tick is
+   * paused while a screen, a card, an overlay or the help sheet is in front, while a chat or its build is, and below 80×24, and it leaves no
+   * timer behind when the Home ends. Absent ⇒ the strip is read when the Home opens and when a chat or a screen returns, as it always was.
+   */
+  readonly strip?: HomeStripPort | undefined;
+  /**
+   * The Home's workflow-run host, as far as leaving the Home needs it ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
+   * §3, §6): `snapshot` says whether a leg is executing or cancelling, `cancel` requests the cooperative stop, and `close` is the Home's
+   * teardown of the host. With a leg live, every way to end the Home asks first, and a confirmed exit cancels the leg and waits for it
+   * for at most {@link HomeControllerDeps.exitGraceMs}. Absent ⇒ no run can exist and the Home leaves at once, as it always did.
+   */
+  readonly hostedRuns?: Pick<RunHost, 'snapshot' | 'cancel' | 'close'> & {
+    /** The host's notice ring ([ADR-0139] §3): the run view shows its newest rows. Absent ⇒ the view has none. */
+    readonly notices?: Pick<RunNotices, 'snapshot'> | undefined;
+  };
+  /** The live output of a hosted run, for the run view to mount (`RunApp`); absent ⇒ the view says it has none. */
+  readonly runStore?: ((runId: string) => RunStore | undefined) | undefined;
+  /** The gate and budget cards of this project's parked runs; absent ⇒ no Attention rows and no card. */
+  readonly gateCards?: HomeGateCardsPort | undefined;
+  /**
+   * `Enter` on a parked run that waits on media jobs and nothing else ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
+   * §3, the 2026-11-23 amendment note): ask, on the native prompt channel, whether to continue the run here (a Yes/No whose default is No), and
+   * on a Yes start the run host's media resume. It resolves with the sentence the Home shows, or `undefined` when nothing happened (a No,
+   * `Esc`); it holds the native action for as long as the question is open. Absent ⇒ such a run says it cannot be continued here.
+   */
+  readonly continueMedia?: ((runId: string) => Promise<string | undefined>) | undefined;
+  /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
+  readonly exitGraceMs?: number;
+  /**
+   * The Home's one chord history ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4): the gate
+   * and budget cards and the exit guard stamp and read the same lockout the MCP consent card does, so a key held down through one answer
+   * cannot answer the next card on auto-repeat. Default: one of its own, which the consent card (built elsewhere) then does not share.
+   */
+  readonly chordHistory?: ChordHistory | undefined;
+  /**
+   * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
+   * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
+   */
+  readonly schedule?: (callback: () => void, delayMs: number) => () => void;
   readonly pickSession?: () => Promise<string | undefined>;
   readonly resumeChat?: (
     sessionId: string,
@@ -314,6 +663,9 @@ export interface HomeControllerDeps {
   };
 }
 
+/** A key as the Home's one input owner forwards it: the landing's, the chat's and the palette's flags together. */
+export type HomeKeyEvent = HomeKey & ChatKey & PaletteKey;
+
 export interface HomeController {
   // Declared as function PROPERTIES (not methods) so a `useSyncExternalStore(c.subscribe, c.getSnapshot)`
   // unbound reference is sound (no `this`) — matching the chat store's read surface.
@@ -321,7 +673,7 @@ export interface HomeController {
   readonly getSnapshot: () => HomeControllerState;
   readonly setProviderState: (keyless: boolean, notice?: string) => void;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
-  readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
+  readonly handleKey: (input: string, key: HomeKeyEvent) => void;
   /** A key the host consumed before the controller (an open card takes every key): it still ends the armed interrupt state, so
    *  `Ctrl+C`, a key, `Ctrl+C` is two first presses and never an exit (ADR-0115 §1). */
   readonly disarmInterrupt: () => void;
@@ -333,25 +685,178 @@ export interface HomeController {
    *  or a mid-turn/build/`!`-shell/submit state is active. Paste never reaches the key reducers. */
   readonly handlePaste: (text: string) => void;
   /** The terminal's size, told by the host whenever it changes: the permissions sheet needs it to know whether it can show a
-   *  withdrawal's question (ADR-0137 §2). Until it is told, the sheet assumes a terminal that can. */
+   *  withdrawal's question (ADR-0137 §2), and the strip's idle tick reads nothing below 80×24 (ADR-0140 §6). Until it is told, both
+   *  assume a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
   /**
-   * Open the `/permissions` sheet as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3): the sheet
-   * opens at once and, when the person closes it, the Home ends with success instead of staying open behind it. If the sheet cannot
-   * open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
+   * Open the tab host on the Permissions tab as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   * ADR-0140 §1): the screen opens at once and, when the person closes it, the Home ends with success instead of staying open behind it.
+   * If it cannot open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
    */
   readonly openPermissionsAsCommand: () => void;
+  /**
+   * Put a screen in front of the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §1).
+   * It replaces whatever the slot held, and returns whether it opened: it refuses while the Home is not the landing (a chat or its
+   * build), an overlay is open, the exit-guard card is up or the Home is ending. The screen then owns every key, and no paste reaches
+   * the prompt behind it.
+   */
+  readonly openScreen: {
+    (kind: 'run-view', props: RunViewProps): boolean;
+    (kind: 'tab-host', props: TabHostProps): boolean;
+    (kind: 'help'): boolean;
+  };
+  /**
+   * Close the screen, if one is open, and drop the interrupt state it armed and what the tab host remembers of its tabs: the one reset
+   * of the slot. Reopening the tab host afterwards starts every tab at its top.
+   */
+  readonly closeScreen: () => void;
+  /**
+   * The host's evidence that a gate card's exact snapshot is on screen, measured and flushed at 80×24 (`createGateCardFrame`). A card
+   * takes an affirmative chord only while this says so; with none bound, or `undefined`, it never does. `RootApp` binds it on mount.
+   */
+  readonly bindGateCardFrame: (
+    visible: ((snapshot: RunCardSnapshot) => boolean) | undefined,
+  ) => void;
+  /**
+   * The host's evidence that the landing's exact state (the exit-guard card among it) is on screen, measured and flushed at 80×24. The
+   * exit guard's `Ctrl+Y` cancels a run for good, so it counts only while this says so; with none bound it never does. `RootApp` binds it
+   * on mount.
+   */
+  readonly bindHomeFrame: (visible: ((state: HomeControllerState) => boolean) | undefined) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
 
+/** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
+const RUN_HISTORY_UNAVAILABLE =
+  'The run history is not available here. `relavium status` shows where a run stands.';
+
+/** What the landing says when a session resume ends because the person cancelled one of its interactive steps. */
+const RESUME_CANCELLED = 'Resume cancelled.';
+
+/** What `Enter` says on a focused row the strip no longer lists: nothing was opened. */
+const STRIP_ROW_GONE = 'That row is no longer on the strip. Nothing was opened.';
+
+/** How often the strip looks at the change token while the landing is in front (ADR-0140 §6). */
+export const STRIP_REFRESH_MS = 5000;
+
+/** What one tick of the strip's refresh reads: the aggregation and the parked rows, taken together. */
+interface StripRead {
+  readonly snapshot: HomeSnapshot;
+  readonly parked: readonly ParkedRunRow[];
+}
+
+const NO_NOTICES: readonly string[] = Object.freeze([]);
+const NO_PARKED: readonly ParkedRunRow[] = Object.freeze([]);
+/**
+ * What a slash word is, for the landing (ADR-0140 §3): `/` and lower-case letters and hyphens, as the commands are named. An unknown one
+ * is named in the notice as it is; any other line that starts with a slash (`/Users/x/file.txt`, `/Zzzz`) is answered too, and is shown by
+ * {@link shownLine} instead.
+ */
+const LANDING_WORD = /^\/[a-z][a-z-]*$/u;
+/** The longest a typed line is shown in a notice that names it: the chat's own bound (`unknown command '...'`). */
+const SHOWN_LINE_MAX = 64;
+/**
+ * `line` as a notice may name it, as the chat names a line it does not know: every character outside printable ASCII is a `?`, so a crafted
+ * line cannot smuggle a terminal control sequence into the landing, and no more than {@link SHOWN_LINE_MAX} characters are kept.
+ */
+const shownLine = (line: string): string =>
+  line.replace(/[^\x20-\x7e]/gu, '?').slice(0, SHOWN_LINE_MAX);
+
+/** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
+function readParkedRows(
+  port: HomeGateCardsPort | undefined,
+  previous: readonly ParkedRunRow[],
+): readonly ParkedRunRow[] {
+  if (port === undefined) return previous;
+  try {
+    return port.list();
+  } catch {
+    return previous;
+  }
+}
+
+/**
+ * The strip tick's read of the parked runs: the port's rows, or `previous` with no port. UNLIKE {@link readParkedRows} a failed read
+ * throws, so the tick's read fails as a whole: the rows already drawn stay (nothing is applied, and nothing empty replaces them), the
+ * poll does not count the read as applied (the next attempt reads again without a token move), and the strip's backoff slows the retries.
+ */
+function readParkedRowsOrThrow(
+  port: HomeGateCardsPort | undefined,
+  previous: readonly ParkedRunRow[],
+): readonly ParkedRunRow[] {
+  return port === undefined ? previous : port.list();
+}
+
+/**
+ * `rows` without the run a leg is executing now. A resumed leg is read at its start boundary, while the log still says the run is paused:
+ * the run is not waiting on anyone while a leg answers it, so its own Attention row must not read as parked (or take the `↓` focus) until
+ * that leg ends and the log is read again. Returns `rows` itself when nothing is taken out.
+ */
+function withoutExecutingRun(
+  rows: readonly ParkedRunRow[],
+  snapshot: RunHostSnapshot | undefined,
+): readonly ParkedRunRow[] {
+  const running = snapshot?.active?.runId;
+  if (running === undefined || !rows.some((row) => row.runId === running)) return rows;
+  return rows.filter((row) => row.runId !== running);
+}
+
+function sameParkedRows(a: readonly ParkedRunRow[], b: readonly ParkedRunRow[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((row, index) => {
+      const other = b[index];
+      return (
+        row.runId === other?.runId &&
+        row.kind === other.kind &&
+        row.gates === other.gates &&
+        row.workflow === other.workflow &&
+        row.expiresAt === other.expiresAt
+      );
+    })
+  );
+}
+
+/**
+ * What changed in a run host's snapshot, as one string: the controller publishes a new snapshot only when this differs, so the
+ * recurring read never repaints an unchanged Home. No leg and no earlier end read as the empty string, the same as no host.
+ */
+function hostedKey(snapshot: RunHostSnapshot | undefined): string {
+  if (snapshot === undefined) return '';
+  const active =
+    snapshot.active === undefined
+      ? ''
+      : `${snapshot.active.leg}:${snapshot.active.runId ?? ''}:${snapshot.active.cancelling}`;
+  const last =
+    snapshot.last === undefined
+      ? ''
+      : `${snapshot.last.leg}:${snapshot.last.runId}:${snapshot.last.terminal.disposition}`;
+  return !snapshot.launching && active === '' && last === ''
+    ? ''
+    : `${snapshot.launching}|${active}|${last}`;
+}
+
+/** Whether a leg started or ended between two reads of the run host: a different liveness, or a different last end (by identity). */
+function legBoundary(now: RunHostSnapshot, before: RunHostSnapshot | undefined): boolean {
+  return hostedRunIsLive(now) !== hostedRunIsLive(before) || now.last !== before?.last;
+}
+
 export function createHomeController(deps: HomeControllerDeps): HomeController {
   const listeners = new Set<() => void>();
+  // The strip's change token as it is BEFORE the first read of the strip (the state below reads it), so the idle tick compares with a
+  // token that cannot be newer than what the Home shows.
+  const stripSeed = ((): ChangeToken | undefined => {
+    try {
+      return deps.strip?.token();
+    } catch {
+      return undefined; // a closed database: the poll then reads at once and reports it
+    }
+  })();
   let state: HomeControllerState = {
     mode: 'home',
     keyless: deps.providerSetup?.initialKeyless ?? false,
     nativeActionBusy: false,
-    continueSessionId: undefined,
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
@@ -369,14 +874,31 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     noticeRevision: 0,
     modelPicker: undefined,
     effortPicker: undefined,
-    permissionsSheet: undefined,
+    chatSheet: undefined,
     interruptArmed: false,
+    hostedRun: undefined,
+    exitGuard: undefined,
+    screen: undefined,
+    parkedRuns: readParkedRows(deps.gateCards, NO_PARKED),
+    stripFocus: undefined,
+    gateCards: deps.gateCards !== undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
   let history: InputHistory = EMPTY_HISTORY;
   /** The terminal's size as the host last told it ({@link HomeController.setTerminalSize}); `undefined` until it has. */
   let terminal: { readonly columns: number; readonly rows: number } | undefined;
+  // The Active tab's poll (ADR-0140 §2): created the first time the tab is in front, started and cancelled by `syncActivePoll` as the
+  // screen changes, and cancelled with the Home's other timers when it ends. `lastActiveRead` is what a re-entered tab is shown at once.
+  let activePoll: ActivePoll | undefined;
+  // The strip's idle refresh (ADR-0140 §6): one poll for the life of the Home, created below once everything it asks about exists.
+  let stripPoll: ActivePoll | undefined;
+  // Set when the strip's idle refresh drops the focused strip row because another terminal removed it: the first `Enter` after it is ignored
+  // once (the person's `Enter` was meant for that row), and any other key, and any screen that opens or closes, ends it. It is a flag of
+  // the landing's key handling, not something a screen draws.
+  let focusJustDropped = false;
+  let activePollRunning = false;
+  let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
   let exiting = false; // permanent stop seals deferred business results as well as database reads
   const isCurrentChat = (active: HomeChatSession): boolean =>
@@ -478,23 +1000,113 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mentionOpen: state.mention !== undefined,
       modelPickerOpen: state.modelPicker !== undefined,
       effortPickerOpen: state.effortPicker !== undefined,
-      permissionsSheetOpen: state.permissionsSheet !== undefined,
+      chatSheetOpen: state.chatSheet !== undefined,
       approvalPending:
         state.session?.store.getSnapshot().approval !== undefined ||
         state.session?.store.getSnapshot().review !== undefined,
     });
+  /** The landing is what the person is looking at: the bare Home, with no screen or card in front of it. */
+  const landingInFront = (): boolean => state.mode === 'home' && state.screen === undefined;
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
+    const before = state;
     state = { ...state, ...patch, noticeRevision };
+    // The strip's focus is the identity of a row (`strip-focus.ts`): whenever the rows are replaced it is resolved on the new ones, so it
+    // follows its row, moves to the nearest one when the row is gone, and is never left naming nothing.
+    if (!('stripFocus' in patch) && ('snapshot' in patch || 'parkedRuns' in patch)) {
+      const stripFocus = resolveFocus(
+        stripRows(state.parkedRuns, state.snapshot),
+        state.stripFocus,
+      );
+      if (stripFocus !== state.stripFocus) state = { ...state, stripFocus };
+    }
+    // A screen or a card that opens or closes ends the swallowed `Enter` (see `focusJustDropped`): the first key after the landing comes
+    // back is the landing's own.
+    if (before.screen !== state.screen) focusJustDropped = false;
+    syncActivePoll();
     notify();
+    // The landing is back from a screen: the strip is read again now rather than at the next tick (ADR-0140 §6).
+    if (before.screen !== undefined && state.screen === undefined) stripPoll?.refresh();
   };
+  // ---- The Active tab's poll (ADR-0140 §2) -----------------------------------------------------------------------------------
+  // It runs while, and only while, the tab host is in front on the Active tab: a gate card, a run view, the landing and the end of the
+  // Home all take the screen away, and `set` (the one place state changes) cancels the poll with it. It is read-only and holds no card.
+  function activeTabInFront(): boolean {
+    const screen = state.screen;
+    return (
+      !exiting &&
+      deps.active !== undefined &&
+      screen?.kind === 'tab-host' &&
+      screen.host.active !== undefined
+    );
+  }
+  /**
+   * No read while the exit question is up, a native question or form holds the keyboard (a card is open: ADR-0140 §2), or the terminal is below
+   * the floor (the tab then shows only its one line).
+   */
+  const activePollPaused = (): boolean =>
+    state.exitGuard !== undefined ||
+    state.nativeActionBusy ||
+    (terminal !== undefined &&
+      !sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }));
+  const onActiveRead = (read: ActiveRead): void => {
+    lastActiveRead = read;
+    const screen = state.screen;
+    if (exiting || screen?.kind !== 'tab-host') return;
+    const host = withActiveRead(screen.host, read);
+    if (host === screen.host) return;
+    tabMemory = tabHostMemory(host);
+    set({ screen: { kind: 'tab-host', host } });
+  };
+  const onActiveFailure = (): void => {
+    const screen = state.screen;
+    if (exiting || screen?.kind !== 'tab-host') return;
+    const host = withActiveFailure(screen.host);
+    if (host !== screen.host) set({ screen: { kind: 'tab-host', host } });
+  };
+  function syncActivePoll(): void {
+    const port = deps.active;
+    if (port === undefined) return;
+    if (!activeTabInFront()) {
+      if (activePollRunning) {
+        activePollRunning = false;
+        activePoll?.cancel();
+      }
+      return;
+    }
+    if (activePollRunning) return;
+    activePollRunning = true;
+    // A timer or promise callback has no input handler around it to route a listener's failure, so it is routed here.
+    activePoll ??= createActivePoll<ActiveRead>({
+      schedule: (callback, delayMs) => schedule(callback, delayMs),
+      now: () => interruptNow(),
+      token: port.token,
+      read: port.read,
+      apply: (read) => {
+        try {
+          onActiveRead(read);
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      paused: activePollPaused,
+      isClosed: port.isClosed,
+      onError: () => {
+        try {
+          onActiveFailure();
+        } catch (error) {
+          failHome(error);
+        }
+      },
+    });
+    activePoll.start();
+  }
 
-  // A bare `relavium permissions` opens the sheet as the run's whole job: closing it ends the run (ADR-0137 §3).
-  let permissionsIsTheCommand = false;
   const exitHome = (): void => {
     if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
     exiting = true;
     stopInterruptTimer();
+    stopHostedTimers();
     deps.onExit();
   };
 
@@ -502,7 +1114,565 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (exiting) return; // an exit/error already settled `driveHome` — drop this late failure
     exiting = true;
     stopInterruptTimer();
+    stopHostedTimers();
     deps.onError(err);
+  };
+
+  // ---- Leaving the Home while a hosted run executes (ADR-0139 §6) -------------------------------------------------------------
+  // `requestExit` is the ONE way the Home ends: `/exit`, the second `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the
+  // loading bail-out and a closed `relavium permissions` sheet all call it, and `exitHome` is reached only from here. With no leg
+  // executing or cancelling it leaves as it always did. With one, it opens the exit-guard card: `Ctrl+Y` cancels the run and waits for
+  // it to settle for at most the grace window, then abandons it, runs the host's teardown and leaves; `Esc`, `Ctrl+C` and `Ctrl+N`
+  // stay (ADR-0122 §7.4: a confirmation treats both interrupt keys as cancel). Cancelling a run cannot be undone, so nothing but an
+  // exact `Ctrl+Y` at the open card does it.
+  const schedule =
+    deps.schedule ??
+    ((callback: () => void, delayMs: number): (() => void) => {
+      const timer = setTimeout(callback, delayMs);
+      timer.unref();
+      return () => clearTimeout(timer);
+    });
+  const exitGraceMs = deps.exitGraceMs ?? HOSTED_RUN_EXIT_GRACE_MS;
+  let cancelHostedPoll: (() => void) | undefined;
+  let cancelExitGrace: (() => void) | undefined;
+  const stopHostedTimers = (): void => {
+    activePollRunning = false;
+    activePoll?.cancel(); // the Active tab's poll is a timer too: the Home ending, or a signal, leaves nothing scheduled
+    stripPoll?.cancel(); // and so is the strip's idle refresh
+    cancelHostedPoll?.();
+    cancelHostedPoll = undefined;
+    cancelExitGrace?.();
+    cancelExitGrace = undefined;
+  };
+  const hostedLeg = (snapshot: RunHostSnapshot): HostedLegState => {
+    if (snapshot.active !== undefined)
+      return snapshot.active.cancelling ? 'cancelling' : 'executing';
+    return hostedRunIsLive(snapshot) ? 'executing' : 'none';
+  };
+  /** Leave for good: the grace ran out (`abandoned`) or the run settled. An abandoned leg is torn down by the host's own close. */
+  const finishExit = (abandoned: boolean): void => {
+    stopHostedTimers();
+    if (abandoned) {
+      try {
+        void deps.hostedRuns?.close().catch(() => undefined);
+      } catch {
+        // The Home's own teardown joins the very same close; a host that cannot start it must not keep the Home open.
+      }
+    }
+    exitHome();
+  };
+  /** The run host's notice ring as it is now (oldest first); empty with no host or no ring. */
+  const readNotices = (): readonly string[] => deps.hostedRuns?.notices?.snapshot() ?? NO_NOTICES;
+  /** The ring as it is now, with the view's own note last (the newest row). */
+  const noticesWith = (note: string | undefined): readonly string[] => {
+    const ring = readNotices();
+    return note === undefined ? ring : [...ring, note];
+  };
+  /** `screen` with the notice ring as it is now: the same object when nothing changed, so an idle read never repaints. */
+  const withFreshNotices = (screen: HomeScreen): HomeScreen => {
+    if (screen.kind !== 'run-view') return screen; // a card has no notice ring
+    const notices = noticesWith(screen.note);
+    return notices.length === screen.notices.length &&
+      notices.every((line, index) => line === screen.notices[index])
+      ? screen
+      : { ...screen, notices };
+  };
+  /**
+   * The parked runs as the log says now, as a patch for `set`: empty when nothing changed (so an unchanged strip is never repainted).
+   * Read when the landing is shown again and when the run host's state changes.
+   * The run a leg is executing is never one of them. With `reread` false the rows already held are only filtered again (no database page):
+   * the engine naming a leg's run is not a change of the log, but it is when the run stops being parked.
+   */
+  const parkedPatch = (
+    reread = true,
+    hosted: RunHostSnapshot | undefined = deps.hostedRuns?.snapshot(),
+  ): Partial<HomeControllerState> => {
+    if (deps.gateCards === undefined) return {};
+    const read = withoutExecutingRun(
+      reread ? readParkedRows(deps.gateCards, state.parkedRuns) : state.parkedRuns,
+      hosted,
+    );
+    const parkedRuns = sameParkedRows(read, state.parkedRuns) ? state.parkedRuns : read;
+    // The focus is resolved on the new rows by `set`: it follows its row, and moves to the nearest one when the run is no longer parked.
+    return parkedRuns === state.parkedRuns ? {} : { parkedRuns };
+  };
+  // The leg end this Home has already looked at, by identity: the one place that tells a chat about a leg's end reads it once, whoever read
+  // the host first (a card, a screen, the exit guard), and a chat that opens after an end is told nothing about it (the strip is its news).
+  let seenLegEnd: HostedLegEnd | undefined = deps.hostedRuns?.snapshot().last;
+  /**
+   * A leg ended (parked, finished or failed) while a chat is in front: the chat's transcript says so once, since no card and no strip row
+   * can take the keyboard from it (ADR-0139 §3, ADR-0140 §8). The run view is on the landing and never open behind a chat, and when it is
+   * showing that very run the view is the news; a chat being torn down is told nothing.
+   */
+  const announceLegEnd = (end: HostedLegEnd): void => {
+    const chat = state.mode === 'chat' ? state.session : undefined;
+    if (chat === undefined || tearingDown === chat) return;
+    if (state.screen?.kind === 'run-view' && state.screen.runId === end.runId) return;
+    const row = state.parkedRuns.find((parked) => parked.runId === end.runId);
+    const line = hostedEndNotice({ runId: end.runId, disposition: end.terminal.disposition }, row);
+    if (line !== undefined) chat.store.note(line);
+  };
+  /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
+  const refreshHostedRun = (): void => {
+    const host = deps.hostedRuns;
+    if (exiting || host === undefined) return;
+    const snapshot = host.snapshot();
+    const hostedChanged = hostedKey(snapshot) !== hostedKey(state.hostedRun);
+    const screen = state.screen === undefined ? undefined : withFreshNotices(state.screen);
+    const screenChanged = screen !== state.screen;
+    // A leg that started or ended changes which runs are parked: the Attention rows follow it. A cancel request, the run's id arriving or the
+    // launch latch flipping change nothing in the log, so they read nothing (the read is a database page per project).
+    const parked = hostedChanged
+      ? parkedPatch(legBoundary(snapshot, state.hostedRun), snapshot)
+      : {};
+    if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen, ...parked });
+    else if (hostedChanged) set({ hostedRun: snapshot, ...parked });
+    else if (screenChanged) set({ screen });
+    if (snapshot.last !== undefined && snapshot.last !== seenLegEnd) {
+      seenLegEnd = snapshot.last;
+      announceLegEnd(snapshot.last);
+    }
+    if (hostedLeg(snapshot) !== 'none') watchHostedRun();
+    else if (state.exitGuard === 'stopping') finishExit(false);
+  };
+  const watchHostedRun = (): void => {
+    if (exiting || cancelHostedPoll !== undefined) return;
+    cancelHostedPoll = schedule(() => {
+      cancelHostedPoll = undefined;
+      // A timer callback has no input handler around it to route a listener's failure, so it is routed here.
+      try {
+        refreshHostedRun();
+      } catch (error) {
+        failHome(error);
+      }
+    }, HOSTED_RUN_POLL_MS);
+  };
+  const requestExit = (): void => {
+    if (exiting || state.exitGuard !== undefined) return;
+    const snapshot = deps.hostedRuns?.snapshot();
+    if (snapshot === undefined || decideExit(hostedLeg(snapshot)) === 'exit') {
+      exitHome();
+      return;
+    }
+    set({
+      exitGuard: 'confirm',
+      hostedRun: snapshot,
+      palette: undefined,
+      stripFocus: undefined,
+    });
+    watchHostedRun(); // the card names the run's state, so it follows it until the card is closed
+  };
+  const confirmExit = (): void => {
+    set({ exitGuard: 'stopping' });
+    try {
+      deps.hostedRuns?.cancel();
+    } catch (cause) {
+      deps.workOwner?.failure(cause);
+      finishExit(true);
+      return;
+    }
+    cancelExitGrace = schedule(() => {
+      cancelExitGrace = undefined;
+      finishExit(true);
+    }, exitGraceMs);
+    refreshHostedRun(); // nothing live ⇒ the exit ends here, before the grace could matter
+  };
+  // ---- The screen slot (ADR-0140 §1) and the run view's ladder (ADR-0139 §5) -------------------------------------------------
+  // One slot holds the screen in front of the landing. It is opened in one place and closed in one place, and each takes the
+  // interrupt state with it: a window a screen armed must not carry over to whatever replaces it or to the landing behind it.
+  const overlayOpen = (): boolean =>
+    state.palette !== undefined ||
+    state.modelPicker !== undefined ||
+    state.chatSheet !== undefined ||
+    state.search !== undefined ||
+    state.mention !== undefined ||
+    state.effortPicker !== undefined;
+  /** Whether the slot may take a screen now: the Home is the landing, with no overlay, no exit-guard card and no ending. */
+  const slotAdmits = (): boolean =>
+    !exiting && state.exitGuard === undefined && state.mode === 'home' && !overlayOpen();
+  /** The ONE place a screen enters the slot: the interrupt state is dropped, and the strip and the screen read one host snapshot. */
+  const putScreen = (screen: HomeScreen, extra: Partial<HomeControllerState> = {}): void => {
+    disarmInterrupt();
+    const snapshot = deps.hostedRuns?.snapshot();
+    const hosted =
+      snapshot !== undefined && hostedKey(snapshot) !== hostedKey(state.hostedRun)
+        ? { hostedRun: snapshot }
+        : {};
+    // A focus on a run stays through the screen it opened (the way back lands on the row), a focus on a session does not.
+    set({
+      screen,
+      ...(state.stripFocus?.kind === 'session' ? { stripFocus: undefined } : {}),
+      ...hosted,
+      ...extra,
+    });
+    // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
+    if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
+  };
+  const runViewScreen = (
+    runId: string,
+    store: RunStore | undefined,
+    from: ScreenOrigin,
+  ): RunViewScreen => ({
+    kind: 'run-view',
+    runId,
+    from,
+    store,
+    notices: readNotices(),
+  });
+  // What the tab host remembers of its tabs (ADR-0140 §1): the tab it is on and where each tab's cursor stands. It outlives the tab host's
+  // screen object, because a run view opened from the tab host replaces that screen in the one slot and `Esc` must bring it back as it was;
+  // and it dies with the screen, in `closeScreen`, so a tab host opened again starts every tab at its top.
+  let tabMemory: TabMemory = freshTabMemory();
+  // A bare `relavium permissions` opens the tab host as the run's whole job: closing it ends the run (ADR-0137 §3, ADR-0140 §1).
+  let tabHostIsTheCommand = false;
+  /** What entering the Active tab starts from: the last read this Home kept, or `undefined` when nothing feeds the tab. */
+  const activeEntry = (): { readonly last: ActiveRead | undefined } | undefined =>
+    deps.active === undefined ? undefined : { last: lastActiveRead };
+  /** What entering a tab reads from, as it is now. */
+  const tabEntry = (): TabEntry => ({
+    port: deps.permissions,
+    defined: deps.defined,
+    active: activeEntry(),
+    history: deps.history,
+    pins: deps.pins,
+    agents: deps.agents,
+    sessions: deps.sessions,
+    now: interruptNow(),
+  });
+  /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
+  const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
+    const host = enterTab(memory, memory.tab, tabEntry());
+    // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
+    // a typed `/workflows` asked for, and the other tabs are one key away.
+    return host.unreadable && host.tab === 'permissions' ? undefined : { kind: 'tab-host', host };
+  };
+  const openTabHost = (tab: TabId): boolean => {
+    if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
+    const screen = tabHostScreen({ ...tabMemory, tab });
+    // The port could not be read: nothing opens, and the Home says why where the person who asked is looking.
+    if (screen === undefined) {
+      set({ notice: PERMISSIONS_UNREADABLE });
+      return false;
+    }
+    tabMemory = tabHostMemory(screen.host);
+    putScreen(screen);
+    return true;
+  };
+  /** The tab host back in front after a screen opened from it is left with `Esc`: the tab and the row it came from, read again. */
+  const reopenTabHost = (): void => {
+    const screen = tabHostScreen(tabMemory);
+    if (screen === undefined) {
+      // The permissions cannot be read on the way back: the tab host is gone, and the reason is said where the person is looking. As
+      // `leaveTabHost` does for a fault with a note, a bare command then keeps the Home open with the note instead of ending silently.
+      leaveTabHost(PERMISSIONS_UNREADABLE);
+      return;
+    }
+    putScreen(screen, parkedPatch());
+  };
+  /** The landing's `/help` sheet (ADR-0140 §3): it opens from the landing only, like the browsers, and tells the screen nothing. */
+  const openHelp = (): boolean => {
+    // A screen already in the slot is never replaced by the help sheet: a gate card would lose its dispose.
+    if (state.screen !== undefined || !slotAdmits() || state.submitBusy || state.nativeActionBusy)
+      return false;
+    tabMemory = freshTabMemory(); // nothing a tab host remembered is kept for a screen that cannot come back to it
+    putScreen({ kind: 'help' });
+    return true;
+  };
+  function openScreen(kind: 'run-view', props: RunViewProps): boolean;
+  function openScreen(kind: 'tab-host', props: TabHostProps): boolean;
+  function openScreen(kind: 'help'): boolean;
+  function openScreen(
+    kind: 'run-view' | 'tab-host' | 'help',
+    props?: RunViewProps | TabHostProps,
+  ): boolean {
+    if (kind === 'help') return openHelp();
+    if (props === undefined) return false;
+    if (kind === 'tab-host') return 'tab' in props && openTabHost(props.tab);
+    if (!('runId' in props) || !slotAdmits()) return false;
+    const from = props.from ?? 'landing';
+    // What a tab host remembers is only kept for a screen that can come back to it.
+    if (from !== 'tab-host') tabMemory = freshTabMemory();
+    putScreen(runViewScreen(props.runId, props.store, from));
+    return true;
+  }
+  const closeScreen = (): void => {
+    const screen = state.screen;
+    if (screen === undefined) return;
+    if (screen.kind === 'gate-card') screen.card.dispose();
+    tabMemory = freshTabMemory(); // the tab host's life ends with the screen (ADR-0140 §1)
+    // A bare `relavium permissions` is the tab host as the command's whole job. A screen that is closed here is the whole chain leaving (the
+    // tab host through `leaveTabHost`, which has cleared the flag and asked for the exit itself; or a card's `Ctrl+C`, or a run view's
+    // close, opened from the tab host: the one slot closes and the tab host goes with them), so the flag is read before it is cleared and
+    // the command ends with the screen by any way out. A flag left set made an `Esc` on a later `/workflows` leave the Home.
+    const asCommand = tabHostIsTheCommand;
+    tabHostIsTheCommand = false;
+    disarmInterrupt();
+    if (asCommand) {
+      // The exit guard may hold the Home open (a leg is live): the screen is closed behind its card, as `leaveTabHost` closes it.
+      requestExit();
+      if (exiting) return; // the last frame such a run leaves is the screen's, not a Home prompt
+    }
+    // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
+    set({ screen: undefined, ...parkedPatch() });
+  };
+  /** The run view's second `Ctrl+C`: ask the host for the cooperative cancel and publish that the leg is now cancelling. */
+  const cancelHostedRun = (): void => {
+    try {
+      deps.hostedRuns?.cancel();
+    } catch (cause) {
+      deps.workOwner?.failure(cause);
+    }
+    refreshHostedRun();
+  };
+  /**
+   * Put the run view of the leg that is executing in front (a leg the person just started, or came back to); `false` when none is. A
+   * view opened from the tab host returns to it with `Esc`, on the tab and the row it came from.
+   */
+  const openRunView = (from: ScreenOrigin = 'landing'): boolean => {
+    const runId = deps.hostedRuns?.snapshot().active?.runId;
+    if (runId === undefined) return false;
+    return openScreen('run-view', { runId, store: deps.runStore?.(runId), from });
+  };
+  /** `Esc` on a run view: back to the tab host it was opened from, else out of the screen. */
+  const leaveRunView = (screen: RunViewScreen): void => {
+    if (screen.from === 'tab-host') reopenTabHost();
+    else closeScreen();
+  };
+
+  // ---- The gate and budget cards (ADR-0139 §4) -------------------------------------------------------------------------------
+  // A card is a screen of the slot, opened from an Attention row (`Enter` on the row `↓` moved onto) or from the run view of a run that
+  // ended parked (`Enter`). It reads the run's gates from its log at that moment and holds them; it never re-reads them, because a
+  // re-read after an answer would find the gate still pending (the next leg has not claimed it yet) and offer it a second time. An answer
+  // that arrives after another process decided the gate is answered by the host with what the log holds, and the card says so.
+  let gateCardVisible: ((snapshot: RunCardSnapshot) => boolean) | undefined;
+  /** The one chord history of every card this controller opens and of the exit guard (see {@link HomeControllerDeps.chordHistory}). */
+  const chordHistory = deps.chordHistory ?? createChordHistory();
+  let homeFrameVisible: ((state: HomeControllerState) => boolean) | undefined;
+  /** One refresh after an answer went out: the strip shows the leg it started, and the rows follow the run's state. */
+  const afterAnswer = (): void => {
+    if (exiting) return;
+    try {
+      refreshHostedRun();
+    } catch (error) {
+      failHome(error);
+    }
+  };
+  const answerGate = (request: Omit<HostedResumeRequest, 'secrets'>): Promise<HostedLaunch> => {
+    const port = deps.gateCards;
+    if (port === undefined) return Promise.reject(new Error('no gate cards are wired'));
+    const reply = port.resume(request);
+    afterAnswer(); // the host latched its launch synchronously: the strip shows `starting` from here
+    return reply.finally(afterAnswer);
+  };
+  /**
+   * A card could not open, and `text` says why. From the run view the reason is the view's own note row (the landing's notice is not on
+   * screen there), and from the landing it is the landing's notice: either way it is where the person who pressed `Enter` is looking. The
+   * row is one line that a narrow terminal clips, so every sentence puts the reason and the remedy first and the run id last: a clip then
+   * takes the tail of an id, never the remedy.
+   */
+  const notParked = (
+    runId: string,
+    text: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin = 'landing',
+  ): void => {
+    const screen = state.screen;
+    if (back === 'run-view' && screen?.kind === 'run-view' && screen.runId === runId) {
+      set({ screen: { ...screen, notices: noticesWith(text), note: text }, ...parkedPatch() });
+      return;
+    }
+    // Asked for from the Active tab: the tab's own message row is where the person who pressed `Enter` is looking.
+    if (from === 'tab-host' && screen?.kind === 'tab-host' && screen.host.active !== undefined) {
+      const host = withActiveNote(screen.host, text);
+      tabMemory = tabHostMemory(host);
+      set({ screen: { kind: 'tab-host', host }, ...parkedPatch() });
+      return;
+    }
+    set({ notice: text, ...parkedPatch() });
+  };
+  const openGateCard = (
+    runId: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin = 'landing',
+  ): boolean => {
+    const port = deps.gateCards;
+    if (port === undefined || !slotAdmits()) return false;
+    let run: RunGates | undefined;
+    try {
+      run = port.read(runId);
+    } catch {
+      notParked(
+        runId,
+        `\`relavium status\` shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
+        back,
+        from,
+      );
+      return false;
+    }
+    if (run === undefined) {
+      notParked(
+        runId,
+        `Not parked in this directory any more: run ${sanitizeInline(runId)}.`,
+        back,
+        from,
+      );
+      return false;
+    }
+    const gates = cardGatesOf(run);
+    if (gates.length === 0) {
+      // A run parked on media jobs alone has nothing to decide, and something to continue: it is asked about, never opened as a card.
+      if (isMediaOnlyPark(run)) askToContinueMedia(run.runId, back, from);
+      else
+        notParked(
+          runId,
+          `No gate to decide here: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+          back,
+          from,
+        );
+      return false;
+    }
+    const card = createRunCard({
+      runId: run.runId,
+      gates,
+      resume: answerGate,
+      ...(deps.now === undefined ? {} : { now: deps.now }),
+      ...(port.guard === undefined ? {} : { guard: port.guard }),
+      history: chordHistory,
+      painted: (snapshot) => gateCardVisible?.(snapshot) === true,
+    });
+    // The Attention rows are read again as the card opens: what put the person here may be a moment old.
+    putScreen({ kind: 'gate-card', runId: run.runId, card, back, from }, parkedPatch());
+    return true;
+  };
+  /** `Esc` and `Ctrl+C` on a card: it closes and decides nothing; the run view it came from, if any, is back in front. */
+  const closeGateCard = (screen: GateCardScreen): void => {
+    screen.card.dispose();
+    disarmInterrupt();
+    if (screen.back === 'run-view') {
+      set({
+        screen: runViewScreen(screen.runId, deps.runStore?.(screen.runId), screen.from),
+        ...parkedPatch(),
+      });
+      return;
+    }
+    if (screen.from === 'tab-host') {
+      reopenTabHost();
+      return;
+    }
+    set({ screen: undefined, ...parkedPatch() });
+  };
+  /** Whether the run view of `runId` shows a run that ended parked, and a card can open for it. */
+  const viewOffersGate = (runId: string): boolean => {
+    if (deps.gateCards === undefined) return false;
+    const snapshot = deps.hostedRuns?.snapshot() ?? state.hostedRun;
+    return (
+      runScreenPhase(runId, snapshot) === 'settled' &&
+      snapshot?.last?.terminal.disposition === 'paused'
+    );
+  };
+  /** A key at a screen. `Esc` closes a run view and a card, and decides nothing; a card takes only its chords and `↑`/`↓`. */
+  const routeScreenKey = (screen: HomeScreen, input: string, key: HomeKeyEvent): void => {
+    switch (screen.kind) {
+      case 'run-view':
+        if (pressRunViewKey(key) === 'leave') leaveRunView(screen);
+        else if (key.return === true && viewOffersGate(screen.runId))
+          openGateCard(screen.runId, 'run-view', screen.from);
+        return;
+      case 'gate-card':
+        if (key.escape === true) closeGateCard(screen);
+        else screen.card.input(input, key);
+        return;
+      case 'tab-host':
+        routeTabHostKey(screen, input, key);
+        return;
+      case 'help':
+        // The sheet owns every key and answers to `Esc` alone (`Ctrl+C` is the interrupt keymap's, before this): every other key does nothing.
+        if (key.escape === true) closeScreen();
+        return;
+    }
+  };
+  /**
+   * The tab host closes: the screen with it, and the run with it when this tab host is a bare `relavium permissions`. The last frame such
+   * a run leaves (the scrollback of the inline renderer) is the screen's, not a Home prompt, so the closed state is never published on
+   * the way out; unless the screen closed because of a fault (`note`): then the Home stays with the note, so that it can be read.
+   */
+  const leaveTabHost = (note?: string): void => {
+    const asCommand = tabHostIsTheCommand;
+    tabHostIsTheCommand = false; // the command is over either way: a tab host opened later is an ordinary one
+    if (asCommand && note === undefined) {
+      requestExit();
+      // The exit guard may have held the Home open (a leg is live): the screen it was closed from must not stay open behind the card.
+      if (!exiting) closeScreen();
+      return;
+    }
+    closeScreen();
+    if (note !== undefined) set({ notice: note });
+  };
+  /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
+  const routeTabHostKey = (screen: TabHostScreen, input: string, key: HomeKeyEvent): void => {
+    const step = foldTabHostKey(screen.host, input, key, {
+      port: deps.permissions,
+      defined: deps.defined,
+      active: activeEntry(),
+      history: deps.history,
+      pins: deps.pins,
+      agents: deps.agents,
+      sessions: deps.sessions,
+      canArm:
+        terminal === undefined ||
+        sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
+      now: interruptNow(),
+    });
+    if (step.kind === 'close') {
+      leaveTabHost(step.note);
+      return;
+    }
+    // `Enter` on a conversation of the Sessions tab: the screen closes and the resume begins in ONE state change (`resumeFromSessions`).
+    if (step.kind === 'resume') {
+      resumeFromSessions(step.sessionId, step.state);
+      return;
+    }
+    // `c` on an agent's detail: the screen closes and the chat bound to that agent begins in ONE state change (`startAgentChat`).
+    if (step.kind === 'chat') {
+      startAgentChat(step.agent);
+      return;
+    }
+    tabMemory = tabHostMemory(step.state);
+    if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
+    // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
+    if (step.kind === 'run') openDefinedRun(step.slug, step.path);
+    else if (step.kind === 'export') openDefinedExport(step.slug);
+    // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
+    else if (step.kind === 'open-view') openActiveView(step.runId);
+    else if (step.kind === 'open-gate') openGateCard(step.runId, 'landing', 'tab-host');
+    // A request of the History tab: its detail waits on the load (the tab says so), which lands only if the person is still waiting for it.
+    else if (step.kind === 'open-detail') openHistoryDetail(step.runId);
+  };
+
+  // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
+  // while a card the person just answered still holds the lockout (a key held down through that answer repeats onto this one). Dwell,
+  // quiet gap and typeahead are the answer cards' layers for text that may be typed; this card is opened by a key and read before it is
+  // answered, so the two that tell a held or unseen key from a deliberate one are the whole guard.
+  const exitGuardChord = createChordGuard({
+    now: deps.now ?? ((): number => performance.now()),
+    guard: {
+      ...resolveApprovalGuard(deps.gateCards?.guard),
+      settleMs: 0,
+      quietMs: 0,
+      typeaheadMs: 0,
+    },
+    history: chordHistory,
+  });
+  const routeExitGuardKey = (phase: ExitGuardPhase, input: string, key: HomeKeyEvent): void => {
+    disarmInterrupt(); // any key at the card ends the armed interrupt state (ADR-0115 §1)
+    const stamp = exitGuardChord.stamp();
+    if (phase === 'stopping') return; // the wait is bounded and cannot be taken back: no key changes it
+    const answer = pressExitGuardKey(input, key);
+    if (answer === 'confirm') {
+      if (exitGuardChord.decide(stamp, 'allow', homeFrameVisible?.(state) === true) === undefined)
+        return; // refused: the card is still open and nothing is decided
+      confirmExit();
+    } else if (answer === 'stay') set({ exitGuard: undefined });
   };
 
   const endChat = (ended: HomeChatSession): void => {
@@ -525,13 +1695,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
+          ...parkedPatch(), // and a run it left parked, or one answered meanwhile, in the refreshed Attention rows
           keyless: deps.providerSetup?.readKeyless?.() ?? state.keyless,
           mode: 'home',
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
-          permissionsSheet: undefined, // and the `/permissions` sheet: a chat's own is gone with the chat, and the Home's is closed on a return
+          chatSheet: undefined, // and the chat's docked sheet (`/permissions`, `/agent`): it is gone with the chat, and with a reseat or a `/clear`
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -598,7 +1769,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          permissionsSheet: undefined,
+          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -678,7 +1849,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          permissionsSheet: undefined,
+          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -746,20 +1917,33 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     } catch (err) {
       if (work !== undefined && nativeInFlight === work) nativeInFlight = undefined;
       deps.workOwner?.failure(err);
-      if (!exiting)
+      if (!exiting) {
         set({
           nativeActionBusy: false,
           notice: `${label} could not be ${work === undefined ? 'opened' : 'completed'}.`,
         });
+        refreshHostedRun(); // an action that failed late may still have started a leg
+      }
       return;
     }
     if (nativeInFlight === work) nativeInFlight = undefined;
-    if (!exiting) set({ nativeActionBusy: false });
+    if (!exiting) {
+      set({ nativeActionBusy: false });
+      refreshHostedRun(); // the action may have started a leg: the strip shows it from here
+    }
   };
 
-  const openNativeAction = (operation: () => Promise<void>, label: string): void => {
+  /**
+   * Start a native action: the keyboard is the flow's from here on. `patch` is published in the SAME state change as the busy mark, for a
+   * caller whose own change must not be seen on its own (the Sessions tab's resume: the screen leaves as the resume begins).
+   */
+  const openNativeAction = (
+    operation: () => Promise<void>,
+    label: string,
+    patch: Partial<HomeControllerState> = {},
+  ): void => {
     if (exiting || state.nativeActionBusy) return;
-    set({ nativeActionBusy: true, palette: undefined });
+    set({ nativeActionBusy: true, palette: undefined, ...patch });
     void driveNativeAction(operation, label).catch(failHome);
   };
 
@@ -788,7 +1972,237 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Project initialization');
   };
 
-  const openResume = (selectedId?: string): void => {
+  /**
+   * Whether the launch that has just returned STARTED a run, told by the leg it left behind; `before` is the host's snapshot taken before the
+   * launch began. The run this Home hosts is another one than it was before, and the host was not already starting one then: a leg that is
+   * still acquiring its run (a resume) has no run id yet, so the id it gets while this launch is refused would read as a run THIS launch
+   * started. A refusal (another leg already executes or starts) or a cancel leaves that other leg as it was, and its view is not what the
+   * launch asked for. `/run` and `r` on a Defined row both ask here, so the two cannot drift.
+   */
+  const launchStartedRun = (before: RunHostSnapshot | undefined): boolean => {
+    const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
+    return (
+      before?.launching !== true &&
+      hostedAfter !== undefined &&
+      hostedAfter !== before?.active?.runId
+    );
+  };
+
+  /**
+   * `/run`: the launch flow. A run that started is shown at once (`Esc` leaves it running and `Enter` on the empty prompt comes back); a
+   * launch that was refused or left opens no view, and its notice stays on the landing, where the person who typed it is looking: the view of
+   * ANOTHER run that executes at the time is not what `/run` asked for ({@link launchStartedRun}).
+   */
+  const openRunLaunch = (): void => {
+    const launch = deps.launchRun;
+    if (launch === undefined) {
+      set({ notice: 'Running a workflow is unavailable in this session.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const before = deps.hostedRuns?.snapshot();
+      const notice = await launch();
+      if (exiting) return;
+      set({ notice, ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
+      if (launchStartedRun(before)) openRunView();
+    }, 'Run workflow');
+  };
+
+  /**
+   * `Enter` on a run parked on media jobs alone, from a strip row, the Active tab or the run view of a leg that ended parked
+   * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, the 2026-11-23 amendment note): the native
+   * question whether to continue it here. It is a question, never an action: a No or `Esc` leaves the run parked and says nothing, and only
+   * a Yes asks the host for the media resume. The sentence the question resolves with (a leg that started, or the host's own refusal, such
+   * as another leg already executing) is shown where the person who pressed `Enter` is looking ({@link notParked}), and a leg that started
+   * is shown at once, as `/run` shows one ({@link launchStartedRun}); `Esc` then returns to where the key was pressed.
+   *
+   * A run this Home executes right now is never offered: its leg has parked but not finished stopping, so there is nothing to continue and
+   * its view is the answer. With no port wired the run says so instead of a dead end.
+   */
+  const askToContinueMedia = (
+    runId: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin,
+  ): void => {
+    const ask = deps.continueMedia;
+    if (ask === undefined) {
+      notParked(
+        runId,
+        `Continuing a run is unavailable in this session: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+        back,
+        from,
+      );
+      return;
+    }
+    if (deps.hostedRuns?.snapshot().active?.runId === runId) {
+      if (back === 'run-view' || !openRunView(from))
+        notParked(runId, `This Home is still running run ${sanitizeInline(runId)}.`, back, from);
+      return;
+    }
+    openNativeAction(async () => {
+      const before = deps.hostedRuns?.snapshot();
+      const notice = await ask(runId);
+      if (exiting) return;
+      if (notice !== undefined) notParked(runId, notice, back, from);
+      if (launchStartedRun(before)) openRunView(from);
+    }, 'Continue run');
+  };
+
+  /**
+   * A sentence for the person who is looking at the Defined tab: the tab's message row, which the next key drops. With another screen in
+   * front (or none) it is the landing's notice, which is where such a person would look.
+   */
+  const noteOnDefinedTab = (text: string): void => {
+    const screen = state.screen;
+    if (screen?.kind !== 'tab-host' || screen.host.defined === undefined) {
+      set({ notice: text });
+      return;
+    }
+    set({ screen: { kind: 'tab-host', host: withDefinedNote(screen.host, text) } });
+  };
+
+  /**
+   * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
+   * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
+   * refused or left says so on the tab. A run STARTED is told by {@link launchStartedRun}, as `/run` tells it: a refusal leaves another
+   * leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
+   */
+  const openDefinedRun = (slug: string, path: string): void => {
+    const launch = deps.launchRun;
+    if (launch === undefined) {
+      noteOnDefinedTab('Running a workflow is unavailable in this session.');
+      return;
+    }
+    openNativeAction(async () => {
+      const before = deps.hostedRuns?.snapshot();
+      const notice = await launch(slug, path);
+      if (exiting) return;
+      set({ notice, ...parkedPatch() });
+      if (!launchStartedRun(before) || !openRunView('tab-host')) noteOnDefinedTab(notice);
+    }, 'Run workflow');
+  };
+
+  /** `x` on a Defined row: the export card. What it writes, it writes only on a Yes, and the tab says what happened. */
+  const openDefinedExport = (slug: string): void => {
+    const exportDefined = deps.exportDefined;
+    if (exportDefined === undefined) {
+      noteOnDefinedTab('Export is unavailable in this session.');
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await exportDefined(slug);
+      if (!exiting) noteOnDefinedTab(notice);
+    }, 'Export');
+  };
+
+  /**
+   * `/import` at the landing: the import card. Typed and chosen from the palette it is this one function, so the two cannot drift. What the
+   * card writes, it writes only on a Yes; the sentence it resolves with is the landing's notice, which is where the person who typed it looks.
+   */
+  const openImportCard = (): void => {
+    const importDefined = deps.importDefined;
+    if (importDefined === undefined) {
+      set({ notice: 'Import is unavailable in this session.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await importDefined();
+      if (!exiting) set({ notice });
+    }, 'Import');
+  };
+
+  /** `/pricing` at the landing: the model pricing form and its card, opened as {@link openImportCard} is. */
+  const openPricingCard = (): void => {
+    const pricing = deps.pricing;
+    if (pricing === undefined) {
+      set({ notice: 'Model pricing is not available here.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await pricing();
+      if (!exiting) set({ notice });
+    }, 'Model pricing');
+  };
+
+  /** A sentence for the person who is looking at the Active tab: its message row, which the next key drops. */
+  const noteOnActiveTab = (text: string): void => {
+    const screen = state.screen;
+    if (screen?.kind !== 'tab-host' || screen.host.active === undefined) {
+      set({ notice: text });
+      return;
+    }
+    const host = withActiveNote(screen.host, text);
+    tabMemory = tabHostMemory(host);
+    set({ screen: { kind: 'tab-host', host } });
+  };
+
+  /**
+   * `Enter` on the run this Home hosts: its view, with `Esc` returning to the Active tab on the row it came from. The view is for the run
+   * the row named, never for whichever leg executes now, so a leg that ended since the read shows what it left.
+   */
+  const openActiveView = (runId: string): void => {
+    if (!openScreen('run-view', { runId, store: deps.runStore?.(runId), from: 'tab-host' }))
+      noteOnActiveTab('The run view could not be opened now.');
+  };
+
+  /**
+   * `Enter` on a History row: the run's detail, loaded asynchronously (the terminal outbox is a file). The result is handed to the tab only
+   * if the tab host is still in front and still waiting for this run; a fault that is not about the run's rows leaves the list, with a
+   * sentence, instead of ending the Home.
+   */
+  const openHistoryDetail = (runId: string): void => {
+    const history = deps.history;
+    if (history === undefined) return;
+    const land = (change: (host: TabHostState) => TabHostState): void => {
+      const screen = state.screen;
+      if (exiting || screen?.kind !== 'tab-host') return;
+      const host = change(screen.host);
+      if (host === screen.host) return;
+      tabMemory = tabHostMemory(host);
+      set({ screen: { kind: 'tab-host', host } });
+    };
+    void history.loadDetail(runId).then(
+      (load) => {
+        try {
+          land((host) => withHistoryLoad(host, runId, load));
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      () => {
+        try {
+          land((host) => withHistoryLoadFailure(host, runId));
+        } catch (error) {
+          failHome(error);
+        }
+      },
+    );
+  };
+
+  /**
+   * `Enter` on a failed or recent run of the strip (ADR-0140 §6): the tab host opens on the History tab at that run's detail, loaded as
+   * a detail opened from a History row is, and `Esc` steps back to the list and then to the landing. No run is written, resumed or
+   * cancelled from the strip (`p` on the detail only marks a finished run), so a run of another directory opens as well as this one's. A
+   * Home with no history to read says so.
+   */
+  const openRunDetail = (runId: string): boolean => {
+    if (deps.history === undefined) {
+      set({ notice: RUN_HISTORY_UNAVAILABLE });
+      return false;
+    }
+    if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
+    const host = enterHistoryAtDetail(freshTabMemory('history'), tabEntry(), runId);
+    tabMemory = tabHostMemory(host);
+    putScreen({ kind: 'tab-host', host });
+    openHistoryDetail(runId);
+    return true;
+  };
+
+  /**
+   * Resume a saved conversation: the one in `selectedId`, or the one the picker returns. `leaving` is published with the action's first state
+   * change (see {@link openNativeAction}); it is used only when the action starts, so a resume that is not available leaves it unpublished.
+   */
+  const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
       const notice = 'Session resume is unavailable here. Use relavium chat resume.';
@@ -796,7 +2210,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note(notice);
       return;
     }
-    openNativeAction(async () => {
+    const operation = async (): Promise<void> => {
       const old = state.session;
       const id = selectedId ?? (await deps.pickSession?.());
       if (id === undefined || exiting) return;
@@ -805,7 +2219,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       const result = await resume(id);
-      if (result === undefined) return;
+      if (result === undefined) {
+        // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the landing says so
+        // instead of coming back as if nothing had been asked.
+        if (!exiting) {
+          set({ notice: RESUME_CANCELLED });
+          old?.store.note(RESUME_CANCELLED);
+        }
+        return;
+      }
       if ('notice' in result) {
         if (!exiting) {
           set({ notice: result.notice });
@@ -836,20 +2258,107 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         pendingMessage: '',
         errorText: undefined,
         notice: undefined,
-        continueSessionId: undefined,
+        stripFocus: undefined,
         attachments: [],
         historyEntries: [],
         search: undefined,
         mention: undefined,
         modelPicker: undefined,
         effortPicker: undefined,
-        permissionsSheet: undefined,
+        chatSheet: undefined,
         shellBusy: false,
         shellCommand: undefined,
         submitBusy: true,
       });
       activateSession(result, () => set({ submitBusy: false }));
-    }, 'Session resume');
+    };
+    openNativeAction(operation, 'Session resume', leaving);
+  };
+
+  /**
+   * `Enter` on a conversation of the `/agents` Sessions tab: the resume the strip's session row makes (`openResume`), and the screen goes in
+   * the same state change that starts it, so the chat that opens is never under the tab host and the landing is never drawn between the two.
+   * What closing the screen would reset is reset here and published with it: the tab host's memory, the interrupt window and the parked rows.
+   * A Home that cannot resume says so on the tab, which stays. A conversation that cannot be resumed leaves the landing with the resume's own
+   * notice (the screen is already gone), and a tab host opened again starts at its top.
+   */
+  const resumeFromSessions = (sessionId: string, host: TabHostState): void => {
+    if (deps.resumeChat === undefined) {
+      const next = withSessionsNote(host, SESSIONS_RESUME_UNAVAILABLE);
+      tabMemory = tabHostMemory(next);
+      set({ screen: { kind: 'tab-host', host: next } });
+      return;
+    }
+    // No guard on `exiting` or `nativeActionBusy` here: a key reaches a screen only through `handleKey`, which drops every key in either state,
+    // and `openNativeAction` refuses both itself.
+    tabMemory = freshTabMemory();
+    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no Sessions tab
+    disarmInterrupt();
+    openResume(sessionId, { screen: undefined, ...parkedPatch() });
+  };
+
+  /**
+   * A registry word typed at the landing (ADR-0140 §3): answered here, never sent to the model. `/help` opens the sheet; a word of the
+   * bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments); any other registry word is a
+   * chat's, and the notice says so. The line is cleared first, as every other command's is.
+   */
+  const answerLandingWord = (word: string, withArguments: boolean): void => {
+    set({ input: emptyEditor() });
+    const name = word.slice(1);
+    if (name === 'help') {
+      if (withArguments) set({ notice: '/help accepts no arguments.' });
+      else openScreen('help');
+      return;
+    }
+    const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
+    if (command === undefined) {
+      set({
+        notice: `${word} works in a chat. Start one, then type it. /help lists the commands.`,
+      });
+    } else if (withArguments) {
+      set({ notice: `${word} accepts no arguments here. Start a chat to use them.` });
+    } else {
+      void Promise.resolve(command.run(homeReplCtx, [])).catch(() => undefined);
+    }
+  };
+  /**
+   * A line that starts with a slash, answered at the landing (ADR-0140 §3): such a line is a command line and is NEVER a message, because a
+   * chat reads every line that starts with `/` as a slash command (its unknown ones are answered `unknown command`, never sent to the model),
+   * so a chat started for it would only answer that. What the first word is decides the notice: a registry word is answered by
+   * {@link answerLandingWord} whatever follows it (a Home word with text after it is told it takes none, a chat's word is told it works in a
+   * chat); a near miss of a command gets its suggestion, which never invokes the command it names; any other lower-case word is said to be
+   * unknown, by itself; and any other line (a path such as `/Users/x/file.txt`, an upper-case word) is said to be unknown as the chat says
+   * it, shown by {@link shownLine}. A line that does not start with a slash is a message, and `false`. In a chat only the suggestion is
+   * local: the chat's own dispatch answers the rest.
+   */
+  const answerTypedWord = (text: string): boolean => {
+    const word = text.split(/\s/u, 1)[0] ?? '';
+    if (!word.startsWith('/')) return false;
+    const token = word.slice(0, 65); // the word as it is shown: a longer one is cut, and still answered
+    const landing = state.session === undefined;
+    if (REPL_COMMANDS_BY_NAME.has(token.slice(1))) {
+      if (!landing) return false; // a chat's own command: the dispatch takes it
+      answerLandingWord(token, text.length > token.length);
+      return true;
+    }
+    const nearest = nearestCommandName(
+      token,
+      (landing ? HOME_HELP_COMMANDS : HOME_CHAT_PALETTE_COMMANDS).map(
+        (command) => `/${command.name}`,
+      ),
+    );
+    if (nearest !== undefined) {
+      const notice = `Unknown command. Did you mean ${nearest}?`;
+      set({ input: emptyEditor(), notice });
+      state.session?.store.note(notice);
+      return true;
+    }
+    if (!landing) return false;
+    set({
+      input: emptyEditor(),
+      notice: `Unknown command: ${LANDING_WORD.test(token) ? token : shownLine(text)}. /help lists the commands.`,
+    });
+    return true;
   };
 
   const managementCommand = (text: string): boolean => {
@@ -877,7 +2386,51 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (text !== '/permissions') set({ notice: '/permissions accepts no arguments.' });
       else if (deps.permissions === undefined)
         set({ notice: 'Remembered commands are not available here.' });
-      else openPermissionsSheet(undefined);
+      else openTabHost('permissions');
+      return true;
+    }
+    // `/workflows` at the Home opens the tab host on its Defined tab (ADR-0140 §2, MVP-8 step 4); it no longer starts a chat. With a chat
+    // in front it is the chat's own command, which lists what the project holds, and it is not routed here.
+    if (state.session === undefined && /^\/workflows(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/workflows') set({ notice: '/workflows accepts no arguments.' });
+      else if (deps.defined === undefined)
+        set({ notice: 'The project’s workflows are not available here.' });
+      else openTabHost('defined');
+      return true;
+    }
+    // `/agents` at the Home opens the tab host on the agents strip's Defined tab (ADR-0140 §3, MVP-8 step 5). It is a Home command only: with a
+    // chat in front it is not routed here, so it reaches the chat as the unknown slash it is and starts nothing, as `/run` does.
+    if (state.session === undefined && /^\/agents(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/agents') set({ notice: '/agents accepts no arguments.' });
+      else if (deps.agents === undefined)
+        set({ notice: 'The project’s agents are not available here.' });
+      else openTabHost('agents');
+      return true;
+    }
+    // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
+    // slash it is and starts nothing. (The chat palette does not list it either.)
+    if (state.session === undefined && /^\/run(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/run')
+        set({ notice: '/run accepts no arguments. Use its picker to choose a workflow.' });
+      else openRunLaunch();
+      return true;
+    }
+    // `/import` and `/pricing` are Home words too (ADR-0140 §9): a card each, opened only at the landing. With a chat in front they are not
+    // routed here, and the chat's own dispatch answers the line as the unknown slash it is, as it answers `/run`.
+    if (state.session === undefined && /^\/import(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/import')
+        set({ notice: '/import accepts no arguments. It asks for the path.' });
+      else openImportCard();
+      return true;
+    }
+    if (state.session === undefined && /^\/pricing(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/pricing') set({ notice: '/pricing accepts no arguments.' });
+      else openPricingCard();
       return true;
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
@@ -901,24 +2454,35 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note('Use /providers to connect or manage provider keys.');
       return true;
     }
-    // Preserve exact chat commands and their existing argument handling. Fuzzy
-    // guidance is local to Home and never invokes the suggested action.
-    const token = text.slice(0, 65).split(/\s/u, 1)[0] ?? '';
-    if (token.startsWith('/') && !REPL_COMMANDS.some((command) => `/${command.name}` === token)) {
-      const commands =
-        state.session === undefined ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS;
-      const nearest = nearestCommandName(
-        token,
-        commands.map((command) => `/${command.name}`),
-      );
-      if (nearest !== undefined) {
-        const notice = `Unknown command. Did you mean ${nearest}?`;
-        set({ input: emptyEditor(), notice });
-        state.session?.store.note(notice);
-        return true;
-      }
-    }
-    return false;
+    return answerTypedWord(text);
+  };
+
+  /**
+   * Track the build of a fresh chat in the `loading` state, so a signal (or a mid-build exit) can reclaim its just-spawned session (its MCP
+   * child, its frame loop) rather than orphan it (see `teardownActive`), and hand the built session to `ready` or the rejection to `failed`.
+   * A build that finishes after the Home is leaving, or while the exit guard stops the run, is torn down at once and neither runs.
+   */
+  const awaitBuild = (
+    build: Promise<HomeChatSession>,
+    ready: (built: HomeChatSession) => void,
+    failed: (error: unknown) => void,
+  ): void => {
+    buildInFlight = build;
+    void build.then(
+      (built) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting || state.exitGuard === 'stopping') {
+          void built.teardown().catch(() => undefined); // exited (or leaving, the run being stopped) mid-build ⇒ reclaim the just-built session
+          return;
+        }
+        ready(built);
+      },
+      (err: unknown) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) return;
+        failed(err);
+      },
+    );
   };
 
   const submit = (): void => {
@@ -926,6 +2490,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
       set({ input: emptyEditor() });
+      if (openRunView()) return; // the strip's `▶` row: `Enter` brings back the view of the run that is executing
       if (state.keyless) openProviderSetup();
       return;
     }
@@ -945,30 +2510,63 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mention: undefined,
       modelPicker: undefined,
       effortPicker: undefined,
-      permissionsSheet: undefined,
+      chatSheet: undefined,
       historyEntries: history.entries,
     });
-    // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
-    // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
-    const build = deps.startChat();
-    buildInFlight = build;
-    void build.then(
+    awaitBuild(
+      deps.startChat(),
       (built) => {
-        if (buildInFlight === build) buildInFlight = undefined;
-        if (exiting) {
-          void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
-          return;
-        }
-        set({ session: built, mode: 'chat', submitBusy: true });
+        set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
         activateSession(built, () => sendChatLine(built, trimmed, trimmed));
       },
-      (err: unknown) => {
-        if (buildInFlight === build) buildInFlight = undefined;
-        if (exiting) return;
+      (err) => {
         set({
           errorText: err instanceof Error ? err.message : String(err),
           pendingMessage: '',
           mode: 'home', // route a build failure back to Home with the banner
+        });
+      },
+    );
+  };
+
+  /**
+   * `c` on an agent's detail (ADR-0140 §3): the screen closes and the build of a chat bound to that agent begins in ONE state change, as a
+   * resume's does (`resumeFromSessions`), so the chat that opens is never under the tab host and the landing is never drawn between the two.
+   * `agent` is the catalog's path of the file the detail showed and the definition the detail was drawn from. The chat opens idle (there is no
+   * first message to send), and the person types the first one. A build that fails leaves the landing with ONE fixed sentence and nothing
+   * half-open: the loading state is gone, no session is held, and what the error said is never shown. The host decides why: the file vanished
+   * or is refused by the hardened read, it no longer parses, it is no longer the definition the detail showed (the sentence then says the list
+   * is out of date), its provider has no key, or a server it declares was not approved. A Home that is leaving, or a chat already in front,
+   * starts nothing.
+   */
+  const startAgentChat = (agent: HomeAgentRequest): void => {
+    // No guard on `nativeActionBusy` here: a key reaches a screen only through `handleKey`, which drops every key while one is set. A chat
+    // in front or one already building has no agent detail to come from, and is not disturbed all the same.
+    if (exiting || state.session !== undefined || state.mode !== 'home') return;
+    tabMemory = freshTabMemory();
+    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no agent detail
+    disarmInterrupt();
+    doctorRunId += 1; // as a submit does: an in-flight /doctor run must not land its report on the chat that opens
+    set({
+      screen: undefined,
+      ...parkedPatch(),
+      errorText: undefined,
+      notice: undefined,
+      pendingMessage: '', // there is no typed message to echo while it builds
+      mode: 'loading',
+      palette: undefined,
+    });
+    awaitBuild(
+      deps.startChat(agent),
+      (built) => {
+        set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
+        activateSession(built, () => set({ submitBusy: false }));
+      },
+      (err) => {
+        set({
+          notice: agentStartNotice(agentStartReasonOf(err)),
+          pendingMessage: '',
+          mode: 'home',
         });
       },
     );
@@ -1274,11 +2872,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'blocked': {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
         // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
+        const noKeyRemedy =
+          deps.providerSetup === undefined
+            ? `run \`relavium provider set-key ${step.provider}\``
+            : 'open /providers to connect a key';
         const hint =
           step.reason === 'no-key'
-            ? deps.providerSetup === undefined
-              ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
-              : `${step.displayName}: no key for ${step.provider} — open /providers to connect a key`
+            ? `${step.displayName}: no key for ${step.provider} — ${noKeyRemedy}`
             : `${step.displayName} is not available on your key — pick another`;
         set({ modelPicker: { ...open, hint } });
         break;
@@ -1299,53 +2899,62 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // ---- The in-Home `/permissions` sheet (ADR-0137 §2) ---------------------------------------------------------
-  // Open on the data read NOW, in the chat's current mode: only at an idle prompt with nothing pending, so a card cannot arrive while
-  // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so.
-  const openPermissionsSheet = (active: HomeChatSession | undefined): void => {
-    const port = active === undefined ? deps.permissions : active.permissions;
-    if (port === undefined) return;
-    if (active === undefined) {
-      // The bare Home: only from the Home itself, with nothing being built or resumed. (`submitBusy` and `nativeActionBusy` are defence in
-      // depth: the keys that start those are gated while one runs, so a test can only reach the mode check.)
-      if (state.mode !== 'home' || state.submitBusy || state.nativeActionBusy) return;
-    } else {
-      const snap = active.store.getSnapshot();
-      // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
-      // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
-      if (
-        snap.state.status === 'running' ||
-        state.shellBusy ||
-        state.submitBusy ||
-        snap.review !== undefined ||
-        snap.question !== undefined ||
-        snap.checkpoint !== undefined ||
-        snap.approval !== undefined
-      )
-        return;
-    }
+  // ---- The in-Home chat's docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) ---------------------------------
+  /**
+   * Whether a docked sheet may open over this chat now: only at an idle prompt with nothing pending, so a card cannot arrive while it is
+   * open (the same gate ChatApp applies). The key gates above already keep a busy chat from reaching here (a running turn, a `!` command
+   * and a submit in flight all gate typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+   */
+  const sheetMayOpen = (active: HomeChatSession): boolean => {
+    const snap = active.store.getSnapshot();
+    return !(
+      snap.state.status === 'running' ||
+      state.shellBusy ||
+      state.submitBusy ||
+      snap.review !== undefined ||
+      snap.question !== undefined ||
+      snap.checkpoint !== undefined ||
+      snap.approval !== undefined
+    );
+  };
+  // `/permissions`: open on the data read NOW, in the chat's current mode. A chat without a port is never offered the sheet; it dispatches
+  // and says so. The bare Home has no such sheet: its `/permissions` is the Permissions tab of the tab host (ADR-0140 §3), a screen of the slot.
+  const openPermissionsSheet = (active: HomeChatSession): void => {
+    const port = active.permissions;
+    if (port === undefined || !sheetMayOpen(active)) return;
     // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
     const opened = openPermissionsSheetThroughPort(
       port,
-      active?.store.getSnapshot().mode,
+      active.store.getSnapshot().mode,
       interruptNow(),
     );
-    if (opened.sheet !== undefined) set({ permissionsSheet: opened.sheet });
-    else if (active !== undefined) active.store.note(opened.note);
-    else set({ notice: opened.note });
+    if (opened.sheet !== undefined) set({ chatSheet: permissionsChatSheet(opened.sheet) });
+    else active.store.note(opened.note);
   };
-  // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
-  // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
-  const routePermissionsSheetKey = (
+  // `/agent`: the definition THIS session holds, nothing read and nothing written. It goes into the one sheet slot, so it replaces
+  // whatever sheet was there (none can be, a sheet owns the keyboard) and no field is added to the state. A chat without the view is never
+  // offered the sheet; it dispatches and the chat prints a notice. A defect in the view's builder must not take the prompt down with it either.
+  const openAgentSheet = (active: HomeChatSession): void => {
+    const view = active.boundAgent;
+    if (view === undefined || !sheetMayOpen(active)) return;
+    try {
+      set({ chatSheet: agentChatSheet(view()) });
+    } catch {
+      active.store.note(AGENT_UNREADABLE);
+    }
+  };
+  // The open sheet owns every key. A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on
+  // to the card's own handling (the sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the
+  // product takes). The agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped. A permissions withdrawal runs
+  // through the port (the store is read again there) and the sheet reloads with the answer; a defect in the port must not leave the keyboard
+  // owned by a frozen sheet.
+  const routeChatSheetKey = (
     active: HomeChatSession | undefined,
     input: string,
     key: ChatKey,
   ): boolean => {
-    const open = state.permissionsSheet;
-    const port = active === undefined ? deps.permissions : active.permissions;
+    const open = state.chatSheet;
     if (open === undefined) return false;
-    // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
-    // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
     const pending = active?.store.getSnapshot();
     if (
       pending !== undefined &&
@@ -1354,32 +2963,35 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         pending.checkpoint !== undefined ||
         pending.approval !== undefined)
     ) {
-      set({ permissionsSheet: undefined });
+      set({ chatSheet: undefined });
       return false;
     }
+    if (active === undefined) {
+      set({ chatSheet: undefined });
+      return true;
+    }
+    if (open.kind === 'agent') {
+      if (foldAgentSheetKey(input, key) === 'close') set({ chatSheet: undefined });
+      return true;
+    }
+    const port = active.permissions;
     if (port === undefined) {
-      set({ permissionsSheet: undefined });
+      set({ chatSheet: undefined });
       return true;
     }
     const canArm =
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
-    const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
-    if (result.sheet === undefined && permissionsIsTheCommand) {
-      // The sheet a command opened is closing: the run ends with it, and the last frame it leaves (the scrollback of the inline renderer) is
-      // the sheet's, not a Home prompt, so the closed state is never published. Unless it closed because of a fault: then the Home stays,
-      // with the note, so that the person can read it. Either way the command is over: a sheet opened later is an ordinary one.
-      permissionsIsTheCommand = false;
-      if (result.note === undefined) {
-        exitHome();
-        return true;
-      }
-    }
-    set({ permissionsSheet: result.sheet });
-    if (result.note !== undefined) {
-      if (active !== undefined) active.store.note(result.note);
-      else set({ notice: result.note });
-    }
+    const result = foldPermissionsSheetThroughPort(
+      port,
+      open.sheet,
+      input,
+      key,
+      canArm,
+      interruptNow(),
+    );
+    set({ chatSheet: result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet) });
+    if (result.note !== undefined) active.store.note(result.note);
     return true;
   };
 
@@ -1440,17 +3052,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
   // wires a REAL impl: `/doctor` (availableIn ['home','chat']) runs the fast tier into the Home `notice` surface.
   const homeReplCtx: ReplCommandContext = {
-    exit: () => exitHome(),
+    exit: () => requestExit(),
     cancel: () => undefined,
     exportSession: () => undefined,
     help: () => undefined,
-    showWorkflows: () => undefined,
+    showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens the Defined tab from the controller (MVP-8 step 4)
     // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
     // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
     managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
+    showAgent: () => undefined, // `/agent` is a chat's (ADR-0140 §3): the landing has no session, so it answers the word itself and never runs this
     openDetails: () => undefined,
     setMode: (argument) => {
       managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
@@ -1521,6 +3134,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (step.kind === 'run') {
       set({ palette: undefined });
+      // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling, a
+      // sentence), and it is answered as the same line pasted is (ADR-0140 §3): by `managementCommand`, which a submitted line goes through
+      // first, so `/run extra` says `/run accepts no arguments` here as it does for a paste, not that `/run` is unknown. It starts with a
+      // slash, so it is a command line and is always answered: it never starts a chat.
+      if (step.command === undefined && active === undefined && palette.query.trim().length > 0)
+        managementCommand(`/${palette.query.trim()}`);
       if (step.command !== undefined) {
         if (step.command.name === 'providers') {
           openProviderSetup();
@@ -1528,11 +3147,29 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProjectInit();
         } else if (step.command.name === 'resume') {
           openResume();
+        } else if (step.command.name === 'run' && active === undefined) {
+          openRunLaunch();
+        } else if (step.command.name === 'workflows' && active === undefined) {
+          // home: bare `/workflows` opens the tab host on its Defined tab (ADR-0140 §2) — the same as the typed command.
+          if (deps.defined === undefined)
+            set({ notice: 'The project’s workflows are not available here.' });
+          else openTabHost('defined');
+        } else if (step.command.name === 'agents' && active === undefined) {
+          // home: bare `/agents` opens the tab host on the agents strip's Defined tab (ADR-0140 §3) — the same as the typed command.
+          if (deps.agents === undefined)
+            set({ notice: 'The project’s agents are not available here.' });
+          else openTabHost('agents');
         } else if (step.command.name === 'permissions' && active === undefined) {
-          // home: bare `/permissions` opens the sheet over the Home with the project's list only (ADR-0137 §3).
+          // home: bare `/permissions` opens the tab host on its Permissions tab (ADR-0140 §3).
           if (deps.permissions === undefined)
             set({ notice: 'Remembered commands are not available here.' });
-          else openPermissionsSheet(undefined);
+          else openTabHost('permissions');
+        } else if (step.command.name === 'import' && active === undefined) {
+          // home: bare `/import` opens the import card (ADR-0140 §9) — the same function the typed command calls.
+          openImportCard();
+        } else if (step.command.name === 'pricing' && active === undefined) {
+          // home: bare `/pricing` opens the model pricing form (ADR-0140 §9) — the same function the typed command calls.
+          openPricingCard();
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -1544,6 +3181,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         } else if (step.command.name === 'permissions' && active.permissions !== undefined) {
           // chat: bare `/permissions` opens the sheet (ADR-0137 §2) — parity with the typed intercept below.
           openPermissionsSheet(active);
+        } else if (step.command.name === 'agent' && active.boundAgent !== undefined) {
+          // chat: bare `/agent` opens the bound agent's sheet (ADR-0140 §3) — parity with the typed intercept below.
+          openAgentSheet(active);
         } else if (step.command.name === 'effort' && canOpenEffortPicker(active)) {
           // chat: bare `/effort` on a reasoning-capable model opens the interactive overlay (ADR-0066 §6) — parity
           // with the typed-`/effort` intercept; a non-reasoning model falls through to the notice below.
@@ -1779,6 +3419,30 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  /**
+   * The bare chat commands that open an overlay of the Home instead of dispatching to the session, as the open call or `undefined`. Each is
+   * an exact match, so `/models <arg>` and the like are not intercepted: they dispatch and are rejected as the command that takes no
+   * argument, like the standalone chat.
+   * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
+   *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
+   * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
+   * - `/agent` opens the read-only sheet of the agent this chat is bound to (ADR-0140 §3), where the session holds its view.
+   * - `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the informational notice; a
+   *   non-reasoning model falls through to the slash dispatch (the ctx handler's "no controllable tier" notice).
+   */
+  const overlayCommandFor = (
+    active: HomeChatSession,
+    trimmed: string,
+  ): (() => void) | undefined => {
+    if (trimmed === '/models' && deps.reseatChat !== undefined) return openModelPicker;
+    if (trimmed === '/permissions' && active.permissions !== undefined)
+      return () => openPermissionsSheet(active);
+    if (trimmed === '/agent' && active.boundAgent !== undefined)
+      return () => openAgentSheet(active);
+    if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
+    return undefined;
+  };
+
   // Submit `line`: a leading `!command` runs the shell escape (attachments stay pending — they ride the NEXT
   // message); a `/slash` passes through unchanged (attachments stay); otherwise it is a MESSAGE — expand the pending
   // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
@@ -1804,29 +3468,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       runShell(active, parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
       return;
     }
-    // `/models` in a LIVE chat opens the reseat picker (ADR-0059) instead of dispatching — parity with the standalone
-    // ChatApp's submit-intercept. Only when a reseat builder is wired (always, in production); else it falls through
-    // to the normal slash dispatch (which surfaces the "interactive terminal" hint). `/models <arg>` is NOT
-    // intercepted (exact match) — it dispatches and is rejected as an unknown argument, like the standalone chat.
-    if (trimmed === '/models' && deps.reseatChat !== undefined) {
+    const open = overlayCommandFor(active, trimmed);
+    if (open !== undefined) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
-      openModelPicker();
-      return;
-    }
-    // Bare `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the
-    // informational notice — parity with the standalone ChatApp. A non-reasoning model falls through to the slash
-    // dispatch (the ctx handler's "no controllable tier" notice). `/effort <tier>` (with an arg) is not intercepted.
-    if (trimmed === '/permissions' && active.permissions !== undefined) {
-      history = recordHistory(history, line);
-      set({ input: emptyEditor(), historyEntries: history.entries });
-      openPermissionsSheet(active);
-      return;
-    }
-    if (trimmed === '/effort' && canOpenEffortPicker(active)) {
-      history = recordHistory(history, line);
-      set({ input: emptyEditor(), historyEntries: history.entries });
-      openEffortPicker(active);
+      open();
       return;
     }
     if (trimmed.startsWith('/') || state.attachments.length === 0) {
@@ -1904,7 +3550,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.search !== undefined ||
       state.mention !== undefined ||
       (state.effortPicker !== undefined && active !== undefined) ||
-      state.permissionsSheet !== undefined
+      state.chatSheet !== undefined
     )
       return { kind: 'overlay' };
     if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
@@ -1912,8 +3558,56 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
     return busy ? { kind: 'work' } : { kind: 'prompt', hasText: state.input.text.length > 0 };
   };
+  // The run view's ladder (ADR-0139 §5). It asks the host about THE VIEW'S run now, not the poll's last read: a press that arrives a
+  // moment after the leg ended must not cancel anything. The first press only arms; nothing is cancelled until the second.
+  const handleScreenInterrupt = (screen: HomeScreen): void => {
+    if (screen.kind === 'tab-host') {
+      // A browser is not a run: `Ctrl+C` closes the whole screen from any tab, arms nothing and cancels nothing, even with a leg executing
+      // behind it (ADR-0140 §1). A run view opened from it is the run view's: its second press is what cancels.
+      interrupt = pressTabHostInterrupt().state;
+      showInterruptHint(false);
+      leaveTabHost();
+      return;
+    }
+    if (screen.kind === 'gate-card') {
+      // `Ctrl+C` on a card closes the card AND the view it was opened from (ADR-0139 §5): it never answers, and it arms nothing (a card
+      // is not a run to cancel). `Esc` is the one step back, to the view.
+      showInterruptHint(false);
+      closeScreen();
+      return;
+    }
+    if (screen.kind === 'help') {
+      // The sheet is not a run: `Ctrl+C` closes it, arms nothing and cancels nothing, even with a leg executing behind it.
+      showInterruptHint(false);
+      closeScreen();
+      return;
+    }
+    const leg = runScreenLeg(screen.runId, deps.hostedRuns?.snapshot() ?? state.hostedRun);
+    const decision = pressRunViewInterrupt(interrupt, leg, interruptNow());
+    interrupt = decision.state;
+    switch (decision.action) {
+      case 'arm-run-cancel':
+        showInterruptHint(true);
+        return;
+      case 'cancel-run':
+        showInterruptHint(false);
+        cancelHostedRun();
+        return;
+      case 'wait-for-stop':
+        showInterruptHint(false); // a hint only: it arms nothing, and the view already says it is waiting
+        return;
+      case 'close-screen':
+        showInterruptHint(false);
+        closeScreen();
+        return;
+    }
+  };
   // Returns whether the key was consumed; `false` leaves an open overlay to close itself on `Ctrl+C`, arming nothing.
   const handleInterrupt = (): boolean => {
+    if (state.screen !== undefined) {
+      handleScreenInterrupt(state.screen);
+      return true;
+    }
     const active = state.mode === 'chat' ? state.session : undefined;
     if (active !== undefined && tearingDown === active) return true; // a key arriving mid-teardown drives nothing
     const decision = pressInterrupt(interrupt, interruptContext(active), interruptNow());
@@ -1922,7 +3616,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'end-session':
         showInterruptHint(false);
         if (active === undefined) {
-          exitHome();
+          requestExit();
         } else {
           abortActive(active);
           cancelActive(active);
@@ -1944,7 +3638,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         showInterruptHint(false);
         return false;
       case 'exit-now':
-        exitHome();
+        requestExit();
         return true;
     }
   };
@@ -2006,40 +3700,86 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     applyChatAction(active, reduceChatKey(input, key, state.input.text, running));
   };
 
-  const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
+  /**
+   * What `Enter` does on a focused strip row (ADR-0140 §6): a parked run opens its gate or budget card, a session is resumed, and a failed or
+   * recent run opens its detail in History (nothing is resumed or answered from it). The run this Home hosts opens its view instead, as the `▶` row does.
+   */
+  const activateStripRow = (row: StripRow): void => {
+    if (row.role === 'session') {
+      openResume(row.id);
+      return;
+    }
+    if (row.role === 'parked') {
+      openGateCard(row.id, 'landing');
+      return;
+    }
+    const hosted = deps.hostedRuns?.snapshot().active?.runId === row.id;
+    if (hosted && openRunView()) return;
+    openRunDetail(row.id);
+  };
+
+  /**
+   * A key while a strip row is focused on the landing (`↓` at the empty prompt put it there). `↑`/`↓` move along the rows in the order the
+   * strip draws them (`↓` past the last stays on it, `↑` before the first returns to the prompt), `Enter` does what the row's kind says and
+   * `Esc` returns to the prompt. The focus names a row by its identity: a refresh that takes the row off the strip drops the focus (it never
+   * moves it onto another row). Returns whether the key was handled; any other key ends the focus and is then typed as usual.
+   */
+  const routeStripFocusKey = (focus: StripFocus, key: HomeKey & ChatKey): boolean => {
+    const rows = stripRows(state.parkedRuns, state.snapshot);
+    const index = focusFor(rows, focus);
+    const row = index === undefined ? undefined : rows[index];
+    if (row === undefined) {
+      // Not reachable while `set` keeps the focus on the rows it is given; a focus that names a row the strip no longer lists opens
+      // nothing and says so (ADR-0140 §6), and is dropped. Any other key is typed as usual.
+      if (key.return === true) {
+        set({ stripFocus: undefined, notice: STRIP_ROW_GONE });
+        return true;
+      }
+      set({ stripFocus: undefined });
+      return false;
+    }
+    if (key.escape === true) {
+      set({ stripFocus: undefined });
+      return true;
+    }
+    if (key.return === true) {
+      activateStripRow(row);
+      return true;
+    }
+    if (key.upArrow === true || key.downArrow === true) {
+      set({ stripFocus: stepFocus(rows, focus, key.upArrow === true ? -1 : 1) });
+      return true;
+    }
+    set({ stripFocus: undefined });
+    return false;
+  };
+
+  /**
+   * The strip's own keys at the landing: a focused row's (`routeStripFocusKey`), and `↓` at the empty prompt, which moves onto the first row
+   * the strip draws, across its sections in their order: the parked runs, the failed runs, the sessions, the recent runs. Whether the key
+   * was handled; any other key is the prompt's.
+   */
+  const handleStripKey = (key: HomeKey & ChatKey): boolean => {
+    if (state.stripFocus !== undefined) return routeStripFocusKey(state.stripFocus, key);
+    if (key.downArrow !== true || state.input.text.length > 0) return false;
+    const first = stepFocus(stripRows(state.parkedRuns, state.snapshot), undefined, 1);
+    if (first === undefined) return false;
+    set({ stripFocus: first });
+    return true;
+  };
+
+  const handleHomeKey = (input: string, key: HomeKey & ChatKey, focusDropped: boolean): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
-      exitHome();
+      requestExit();
       return;
     }
+    // The `Enter` that follows a refresh dropping the focused row was meant for that row, not for the empty prompt (which would show the
+    // run view, or open provider setup when keyless): it is ignored once, with no notice, and the next one is the prompt's own.
+    if (focusDropped && key.return === true && state.stripFocus === undefined) return;
     const action = reduceHomeKey(input, key);
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
-    const sessions = state.snapshot.recentSessions;
-    const focused = state.continueSessionId;
-    if (focused !== undefined) {
-      const index = sessions.findIndex((session) => session.sessionId === focused);
-      if (key.escape === true) {
-        set({ continueSessionId: undefined });
-        return;
-      }
-      if (key.return === true) {
-        if (index >= 0) openResume(focused);
-        else set({ continueSessionId: undefined });
-        return;
-      }
-      if (key.upArrow === true || key.downArrow === true) {
-        const next = index + (key.upArrow === true ? -1 : 1);
-        set({
-          continueSessionId:
-            next < 0 ? undefined : sessions[Math.min(next, sessions.length - 1)]?.sessionId,
-        });
-        return;
-      }
-      set({ continueSessionId: undefined });
-    } else if (key.downArrow === true && state.input.text.length === 0 && sessions.length > 0) {
-      set({ continueSessionId: sessions[0]?.sessionId });
-      return;
-    }
+    if (handleStripKey(key)) return;
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
@@ -2067,43 +3807,148 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  /**
+   * The key at an open overlay, whether one took it. Each open overlay owns EVERY key while it is open, and only one opens at a time:
+   * - the `/` palette, before the mode dispatch, so it overlays Home/chat input;
+   * - the `/models` picker (2.5.G S7), opened from the bare-Home palette (next-session default, ADR-0063) OR a live in-Home chat (a typed
+   *   or palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches;
+   * - the `/effort` overlay (ADR-0066 §6), chat-scoped, so it always has a live session; the guard keeps `routeEffortPickerKey`'s `active`
+   *   non-null (a stale overlay with no session falls through, never expected);
+   * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
+   *   withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
+   */
+  const routeOverlayKey = (input: string, key: HomeKeyEvent): boolean => {
+    if (state.palette !== undefined) {
+      handlePaletteKey(input, key);
+      return true;
+    }
+    if (state.modelPicker !== undefined) {
+      if (!state.submitBusy) routeModelPickerKey(input, key);
+      return true;
+    }
+    if (state.effortPicker !== undefined && state.session !== undefined) {
+      routeEffortPickerKey(state.session, input, key);
+      return true;
+    }
+    return state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key);
+  };
+
   // The open-overlay + mode key router — extracted from `handleKey` so its bracketed-paste handling stays within the
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
   // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
-  const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+  const dispatchKey = (input: string, key: HomeKeyEvent): void => {
+    // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
+    const focusDropped = focusJustDropped;
+    focusJustDropped = false;
+    // The exit-guard card (ADR-0139 §6) owns every key while it is open, `Ctrl+C` included: there it is a cancel, not the keymap's.
+    if (state.exitGuard !== undefined) {
+      routeExitGuardKey(state.exitGuard, input, key);
+      return;
+    }
     // `Ctrl+C` is the interrupt keymap's before anything else (ADR-0115 §1); any other key ends the armed state.
     if (isInterruptKey(input, key)) {
       if (handleInterrupt()) return;
     } else {
       disarmInterrupt();
     }
-    // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
-    if (state.palette !== undefined) {
-      handlePaletteKey(input, key);
+    // The screen in front (ADR-0140 §1) owns every key that is left: no overlay is open while it is, and the prompt is not offered.
+    if (state.screen !== undefined) {
+      routeScreenKey(state.screen, input, key);
       return;
     }
-    // The `/models` picker (2.5.G S7) — opened from the bare-Home palette (next-session default, ADR-0063) OR a live
-    // in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches.
-    if (state.modelPicker !== undefined) {
-      if (state.submitBusy) return;
-      routeModelPickerKey(input, key);
-      return;
-    }
-    // The `/effort` overlay (ADR-0066 §6) — chat-scoped, so it always has a live session; the guard keeps
-    // `routeEffortPickerKey`'s `active` non-null (a stale overlay with no session falls through, never expected).
-    if (state.effortPicker !== undefined && state.session !== undefined) {
-      routeEffortPickerKey(state.session, input, key);
-      return;
-    }
-    // The `/permissions` sheet (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither withdraws.
-    if (state.permissionsSheet !== undefined && routePermissionsSheetKey(state.session, input, key))
-      return;
+    if (routeOverlayKey(input, key)) return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
       return;
     }
-    handleHomeKey(input, key);
+    handleHomeKey(input, key, focusDropped);
   };
+
+  // ---- The strip's idle refresh (ADR-0140 §6) --------------------------------------------------------------------------------
+  // The strip is read when the Home opens and when a chat or a screen returns; between those, a person looking at the landing sees what
+  // another terminal does only through this tick. It uses the Active tab's poll (`createActivePoll`): every five seconds it asks the change
+  // token (`PRAGMA data_version`, the in-process generation, the hosted run) and reads the strip only when that moved. It is paused, not
+  // stopped, while anything else has the keyboard or the screen, and it is cancelled with the Home's other timers when the Home ends.
+  const stripPollPaused = (): boolean =>
+    stripRefreshPaused({
+      mode: state.mode,
+      screen: state.screen !== undefined,
+      palette: state.palette !== undefined,
+      modelPicker: state.modelPicker !== undefined,
+      effortPicker: state.effortPicker !== undefined,
+      chatSheet: state.chatSheet !== undefined,
+      search: state.search !== undefined,
+      mention: state.mention !== undefined,
+      exitGuard: state.exitGuard !== undefined,
+      nativeActionBusy: state.nativeActionBusy,
+      terminal,
+    });
+  /** A newer read of the strip: published only when it differs from what the landing shows, so an idle tick never repaints. */
+  const applyStripRead = (read: StripRead): void => {
+    const parked = withoutExecutingRun(read.parked, deps.hostedRuns?.snapshot());
+    const snapshotMoved = !isDeepStrictEqual(read.snapshot, state.snapshot);
+    const parkedMoved = !sameParkedRows(parked, state.parkedRuns);
+    if (!snapshotMoved && !parkedMoved) return;
+    const focused = state.stripFocus;
+    set({
+      ...(snapshotMoved ? { snapshot: read.snapshot } : {}),
+      ...(parkedMoved ? { parkedRuns: parked } : {}),
+    });
+    // A read of what ANOTHER terminal changed took the focused row off the strip under a person who was looking at it: an `Enter` they aimed
+    // at it must not fall through to the empty prompt's own (the run view, or provider setup when keyless), so the first `Enter` after the
+    // drop is ignored once (`focusJustDropped`). Not when the row left because this Home started a leg on that run (the person answered its
+    // gate: they know it has gone), and it is set here and nowhere else: the other reads of the rows follow the person's own act (a leg that
+    // started or ended, a screen that closed). Only the landing counts: behind a screen, a card or a chat the person is not looking at the strip.
+    const ownLeg =
+      focused?.kind === 'run' && deps.hostedRuns?.snapshot().active?.runId === focused.id;
+    if (focused !== undefined && state.stripFocus === undefined && !ownLeg && landingInFront())
+      focusJustDropped = true;
+  };
+  const strip = deps.strip;
+  if (strip !== undefined) {
+    // The strip's own schedule (not the generic poll's, which the Active tab shares): while its reads keep failing the next attempt waits
+    // twice as long (5, 10, 20, 40, then 60 s at most), and it is one interval again after a read that was applied or a token that moved.
+    const backoff = createStripBackoff(
+      (callback, delayMs) => schedule(callback, delayMs),
+      stripSeed,
+    );
+    stripPoll = createActivePoll<StripRead>({
+      schedule: backoff.schedule,
+      now: () => interruptNow(),
+      token: () => backoff.observe(strip.token()),
+      // Both reads of the strip are SQLite on the Home's own connection, taken in one synchronous stretch: the rows of one read describe
+      // one moment, and the poll applies them in the same turn, so a card cannot open between the read and its paint. A parked-rows read
+      // that throws fails the whole read (`readParkedRowsOrThrow`): it is never counted as applied with the old rows under it.
+      read: () =>
+        Promise.resolve({
+          snapshot: deps.homeStore.read(),
+          parked: readParkedRowsOrThrow(deps.gateCards, state.parkedRuns),
+        }),
+      apply: (read) => {
+        backoff.succeeded();
+        // A timer or promise callback has no input handler around it to route a listener's failure, so it is routed here.
+        try {
+          applyStripRead(read);
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      paused: stripPollPaused,
+      isClosed: strip.isClosed,
+      // A failed read keeps the rows the strip has, and the next attempt comes later each time.
+      onError: backoff.failed,
+      intervalMs: STRIP_REFRESH_MS,
+      // What the strip READS does not depend on the clock alone (ADR-0140 §6: it reads when the change token moved, and a read that matches what
+      // is shown repaints nothing), so a token that has not moved is never a reason to read. Its relative words (`5m ago`, `expires in 5m`)
+      // are worded when the landing is painted from the clock then: a landing nothing repaints keeps the words of its last paint until the
+      // next key, read or resize repaints it. That is the contract as written, not a missed tick.
+      maxAgeMs: Number.POSITIVE_INFINITY,
+      // The strip was read as the Home was built, so the first tick compares with the token taken before that read instead of reading
+      // again: a commit that landed in between is read at the first tick. A token that could not be taken makes the poll read at once.
+      after: stripSeed,
+    });
+    stripPoll.start();
+  }
 
   return {
     subscribe(listener) {
@@ -2142,24 +3987,45 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     setTerminalSize(columns, rows) {
       terminal = { columns, rows };
     },
+    openScreen,
+    closeScreen,
+    bindGateCardFrame(visible) {
+      gateCardVisible = visible;
+    },
+    bindHomeFrame(visible) {
+      homeFrameVisible = visible;
+    },
     openPermissionsAsCommand() {
-      if (exiting) return;
-      permissionsIsTheCommand = true;
-      openPermissionsSheet(undefined);
+      if (exiting || deps.permissions === undefined) return;
+      tabHostIsTheCommand = openTabHost('permissions');
       // It did not open (the port could not be read): stay in the Home, whose notice says why.
-      if (state.permissionsSheet === undefined) permissionsIsTheCommand = false;
     },
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
       disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
+      focusJustDropped = false; // and the one ignored `Enter` after a dropped focus
+      if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
+      if (state.screen !== undefined) {
+        // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
+        // soon after it is refused.
+        if (state.screen.kind === 'gate-card') state.screen.card.paste(text);
+        // The tab host drops it too, and a withdrawal's question that was waiting is dropped with it: a paste is typing (ADR-0137 §2).
+        else if (state.screen.kind === 'tab-host') {
+          const host = disarmTabHost(state.screen.host);
+          if (host !== state.screen.host) set({ screen: { kind: 'tab-host', host } });
+        }
+        return;
+      }
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
       // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
-      // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
-      if (state.permissionsSheet !== undefined)
-        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet) });
+      // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
+      // The agent sheet has no question to drop, and a paste changes nothing there; `pasteEditable` keeps it out of the composer.
+      const pastedOver = permissionsSheetOf(state.chatSheet);
+      if (pastedOver !== undefined)
+        set({ chatSheet: permissionsChatSheet(disarmPermissionsSheet(pastedOver)) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;
@@ -2168,11 +4034,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({
         input: insertAtCursor(state.input, pasted),
         notice: undefined,
-        continueSessionId: undefined,
+        stripFocus: undefined,
       });
     },
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself
+      stopHostedTimers(); // a signal ends the Home on its own bound: the exit guard's wait must not fire after it
       // During a `/clear` swap (ADR-0062 §7) BOTH are live at once — the OLD session (`state.session`, still
       // rendered) AND the fresh build (`buildInFlight`) — so reap BOTH; a signal mid-swap must orphan neither MCP
       // child. Outside a swap exactly one is set (a live chat ⇒ session only; a first-message `loading` build ⇒

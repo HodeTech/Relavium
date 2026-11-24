@@ -70,11 +70,11 @@ shared 100,000-case scale files run separately from repeated small mutation coho
 crash, lock, receipt and scale tests remain part of ordinary package CI.
 
 Each ordinary phase retains its five-minute outer watchdog. The one complete permanent
-cohort pins 493 cases and 71 joined native children, including Wave 2's two DB readiness
+cohort pins 582 cases and 71 joined native children, including Wave 2's two DB readiness
 controls. The cohort includes six CLI chat cases for live export notices, refusals
 and transcript rendering, two `logs` cases for its header's one-line floor and
 one for its skipped-row note (PR #97 review), and one `chat/repl-info` case for the `/models` notice's
-question-tool disclosure (ADR-0133); these add no native children.
+question-tool disclosure (ADR-0133); these add no native children. MVP-8 step 1 adds 58 cases to `commands/logs` (the `--failed` and `--follow` views, their notes and their stop rules, 2026-11-22); no other cohort file changed, and no native child was added. MVP-8 step 3 adds ten cases, nine to `render/tui/home-projection` (the Home's strip and Attention rows) and one to `commands/chat` (`/workflows` over the catalog cap), and no native child (2026-11-23). MVP-8 step 5 and its review follow-ups add 19 cases to `commands/chat`, `commands/logs` and `render/tui/home-projection` (the Home's `/agent` sheet and bound-agent view, the doctor's transcript-safe config fault, the `logs --follow` sleep grace and the strip's backoff and retry rows), and no native child (2026-11-24). The PR #102 review's fixes add two more cases to the cohort's files (582 in all, measured by the real collection), and no native child.
 Its outer watchdog is calculated from the existing five-minute setup/general
 allowance, 71 existing 20-second native-case bounds and the existing ten-minute DB scale
 bound (38 minutes 40 seconds total). Individual test/readiness

@@ -2,6 +2,7 @@ import type { ChatMode } from '../../chat/chat-mode.js';
 import type {
   PermissionEntry,
   PermissionsSnapshot,
+  SessionApprovalRow,
   WithdrawAnswer,
 } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
@@ -12,6 +13,7 @@ import {
   clipLine,
   flushRow,
   usableColumns,
+  titleRule,
   windowBody,
   type SheetGeometry,
   type SheetLine,
@@ -244,68 +246,83 @@ export function foldPermissionsSheetKey(
 ): PermissionsSheetStep {
   if (isInterruptKey(input, key)) return { kind: 'close' };
   const entries = sheetEntries(state.snapshot);
-  if (state.armed) {
-    // `Esc` and a navigation key keep the row and are not typing (ADR-0137 §2: only a key that is not navigation is); every other key
-    // keeps it too and is. A navigation key does not move the row either: it drops the question, as every key but `Enter` does.
-    const kept: PermissionsSheetStep = {
+  if (state.armed) return foldArmedKey(key, state, entries, canArm, now);
+  if (key.escape === true) return { kind: 'close' };
+  const cursor = movedCursor(key, state.cursor, entries.length);
+  // An arrow key (or a page key) is a person choosing a row, not typing: it says the keys that follow are deliberate.
+  if (cursor !== undefined)
+    return {
       kind: 'state',
       state: {
         ...state,
-        armed: false,
+        cursor: clampCursor(cursor, entries.length),
         message: undefined,
-        typed: key.escape === true || isNavigationKey(key) ? state.typed : true,
+        typed: false,
       },
     };
-    // The question is not on screen: the frame says how to leave, and `Esc` does.
-    if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
-    const entry = entries[state.cursor];
-    if (isPlainEnter(key) && entry !== undefined) {
-      const held = now - state.armedAt;
-      if (held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS)
-        return {
-          kind: 'withdraw',
-          entry,
-          state: { ...state, armed: false, message: undefined },
-        };
-      return {
-        kind: 'state',
-        state: { ...state, armed: false, message: notice(SHEET_ENTER_NOTE) },
-      };
-    }
-    return kept;
-  }
-  if (key.escape === true) return { kind: 'close' };
-  const count = entries.length;
-  // An arrow key (or a page key) is a person choosing a row, not typing: it says the keys that follow are deliberate.
-  const move = (cursor: number): PermissionsSheetStep => ({
+  if (isWithdrawKey(input, key)) return foldWithdrawKey(state, entries, canArm, now);
+  return { kind: 'state', state: { ...state, typed: true, message: undefined } };
+}
+
+/** Where a navigation key would put the cursor (before it is clamped), or `undefined` for any other key. */
+function movedCursor(key: ChatKey, cursor: number, count: number): number | undefined {
+  if (key.upArrow === true) return cursor - 1;
+  if (key.downArrow === true) return cursor + 1;
+  if (key.pageUp === true) return cursor - PAGE;
+  if (key.pageDown === true) return cursor + PAGE;
+  if (key.home === true) return 0;
+  if (key.end === true) return count - 1;
+  return undefined;
+}
+
+/** A key while a withdrawal's question is up: only a plain `Enter` inside the dwell window confirms; every other key keeps the row. */
+function foldArmedKey(
+  key: ChatKey,
+  state: PermissionsSheetState,
+  entries: readonly SheetEntry[],
+  canArm: boolean,
+  now: number,
+): PermissionsSheetStep {
+  // `Esc` and a navigation key keep the row and are not typing (ADR-0137 §2: only a key that is not navigation is); every other key
+  // keeps it too and is. A navigation key does not move the row either: it drops the question, as every key but `Enter` does.
+  const kept: PermissionsSheetStep = {
     kind: 'state',
     state: {
       ...state,
-      cursor: clampCursor(cursor, count),
+      armed: false,
       message: undefined,
-      typed: false,
+      typed: key.escape === true || isNavigationKey(key) ? state.typed : true,
     },
-  });
-  if (key.upArrow === true) return move(state.cursor - 1);
-  if (key.downArrow === true) return move(state.cursor + 1);
-  if (key.pageUp === true) return move(state.cursor - PAGE);
-  if (key.pageDown === true) return move(state.cursor + PAGE);
-  if (key.home === true) return move(0);
-  if (key.end === true) return move(count - 1);
-  if (isWithdrawKey(input, key)) {
-    if (!canArm || entries[state.cursor] === undefined)
-      return { kind: 'state', state: { ...state, typed: true } };
-    if (state.typed)
-      return { kind: 'state', state: { ...state, message: notice(SHEET_TYPED_NOTE) } };
-    // Too soon is not typing: a person who pressed `d` early and presses it again after a moment is choosing.
-    if (now - state.openedAt < SHEET_SETTLE_MS)
-      return { kind: 'state', state: { ...state, message: notice(SHEET_WAIT_NOTE) } };
+  };
+  // The question is not on screen: the frame says how to leave, and `Esc` does.
+  if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
+  const entry = entries[state.cursor];
+  if (isPlainEnter(key) && entry !== undefined) {
+    const held = now - state.armedAt;
+    if (held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS)
+      return { kind: 'withdraw', entry, state: { ...state, armed: false, message: undefined } };
     return {
       kind: 'state',
-      state: { ...state, armed: true, armedAt: now, message: undefined },
+      state: { ...state, armed: false, message: notice(SHEET_ENTER_NOTE) },
     };
   }
-  return { kind: 'state', state: { ...state, typed: true, message: undefined } };
+  return kept;
+}
+
+/** `d`, `Delete` or `Backspace` (see {@link isWithdrawKey}) with no question up: it arms only a settled sheet, with a row selected, when nothing has been typed. */
+function foldWithdrawKey(
+  state: PermissionsSheetState,
+  entries: readonly SheetEntry[],
+  canArm: boolean,
+  now: number,
+): PermissionsSheetStep {
+  if (!canArm || entries[state.cursor] === undefined)
+    return { kind: 'state', state: { ...state, typed: true } };
+  if (state.typed) return { kind: 'state', state: { ...state, message: notice(SHEET_TYPED_NOTE) } };
+  // Too soon is not typing: a person who pressed `d` early and presses it again after a moment is choosing.
+  if (now - state.openedAt < SHEET_SETTLE_MS)
+    return { kind: 'state', state: { ...state, message: notice(SHEET_WAIT_NOTE) } };
+  return { kind: 'state', state: { ...state, armed: true, armedAt: now, message: undefined } };
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
@@ -377,91 +394,137 @@ function rowLine(
 ): BodyLine {
   const selected = entry === state.cursor;
   const armed = selected && state.armed;
-  const chip = !selected ? '' : armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
-  const right = chip === '' ? tail : tail === '' ? chip : `${chip}${CHIP_GAP}${tail}`;
+  const chip = rowChip(selected, armed);
+  const right = rowRight(chip, tail);
   const text = flushRow(`${selected ? MARKER : NO_MARKER}${label}`, right, width);
+  return {
+    kind: rowKind(selected, armed),
+    text,
+    spans: rowSpans(text, right, chip, tail, armed),
+    entry,
+  };
+}
+
+/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `[Enter] withdraw`. */
+function rowChip(selected: boolean, armed: boolean): string {
+  if (!selected) return '';
+  return armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
+}
+
+/** The right-hand side of a row: the chip and the value, the one that exists, or both with a gap. */
+function rowRight(chip: string, tail: string): string {
+  if (chip === '') return tail;
+  return tail === '' ? chip : `${chip}${CHIP_GAP}${tail}`;
+}
+
+/** How a row is drawn: armed (its question is up), selected, or as any other row. */
+function rowKind(selected: boolean, armed: boolean): SheetLineKind {
+  if (armed) return 'armed';
+  return selected ? 'selected' : 'row';
+}
+
+/** The coloured spans of a row: the chip's key in its role, the value dimmed; none when the row was too narrow for the right-hand side. */
+function rowSpans(
+  text: string,
+  right: string,
+  chip: string,
+  tail: string,
+  armed: boolean,
+): SheetSpan[] {
   const spans: SheetSpan[] = [];
-  if (right !== '' && text.endsWith(right)) {
-    const at = text.length - right.length;
-    if (chip !== '')
-      spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
-    if (tail !== '') {
-      const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
-      spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
-    }
+  if (right === '' || !text.endsWith(right)) return spans;
+  const at = text.length - right.length;
+  if (chip !== '')
+    spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
+  if (tail !== '') {
+    const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
+    spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
   }
-  return { kind: armed ? 'armed' : selected ? 'selected' : 'row', text, spans, entry };
+  return spans;
 }
 
 /** The whole body, before it is windowed: the headings, the rows, and the empty or failure text of a section. */
 function bodyLines(state: PermissionsSheetState, width: number): readonly BodyLine[] {
-  const lines: BodyLine[] = [];
   const { project, session } = state.snapshot;
-  let entryIndex = 0;
-  if (project.ok) {
-    lines.push({
-      kind: 'heading',
-      text: `This project · remembered (${String(project.rows.length)})`,
-    });
-    if (project.rows.length === 0) {
-      for (const text of wrapWords(emptyProjectText(state), width))
-        lines.push({ kind: 'text', text: text.trimEnd() });
-    }
-    for (const item of project.rows) {
-      lines.push(rowLine(escaped(item.label), escaped(item.remembered), entryIndex, state, width));
-      entryIndex += 1;
-    }
-  } else {
-    lines.push({ kind: 'heading', text: 'This project · remembered' });
-    for (const text of wrapWords(project.text, width))
-      lines.push({ kind: 'text', text: text.trimEnd() });
-  }
-  if (session !== undefined) {
-    lines.push({ kind: 'heading', text: `This session · approved (${String(session.length)})` });
-    if (session.length === 0) lines.push({ kind: 'text', text: EMPTY_SESSION_TEXT });
-    for (const item of session) {
-      lines.push(
-        rowLine(
-          escaped(item.text),
-          item.alsoRemembered ? '(also remembered)' : '',
-          entryIndex,
-          state,
-          width,
-        ),
-      );
-      entryIndex += 1;
-    }
-  }
+  const lines = projectLines(state, width);
+  if (session !== undefined)
+    lines.push(...sessionLines(state, session, project.ok ? project.rows.length : 0, width));
   return lines;
 }
 
-/** The rule that opens the sheet and carries its title, as the card's rule carries `Approval needed`: it also separates the sheet from the conversation above. */
-function ruleLine(state: PermissionsSheetState, width: number): SheetLine {
-  const title = clipLine(sheetTitle(state), Math.max(1, width - 4));
-  const lead = `─ ${title} `;
-  const text = `${lead}${'─'.repeat(Math.max(2, width - displayWidth(lead)))}`;
-  return {
-    kind: 'rule',
-    text,
-    spans: [
-      { from: 0, to: 2, role: 'dim' },
-      { from: 2, to: 2 + title.length, role: 'strong' },
-      { from: 2 + title.length, to: text.length, role: 'dim' },
-    ],
-  };
+/** The project section: its heading, then its rows or the empty text, or the failure text of a store that could not be read. */
+function projectLines(state: PermissionsSheetState, width: number): BodyLine[] {
+  const { project } = state.snapshot;
+  const lines: BodyLine[] = [];
+  if (!project.ok) {
+    lines.push({ kind: 'heading', text: 'This project · remembered' });
+    for (const text of wrapWords(project.text, width))
+      lines.push({ kind: 'text', text: text.trimEnd() });
+    return lines;
+  }
+  lines.push({
+    kind: 'heading',
+    text: `This project · remembered (${String(project.rows.length)})`,
+  });
+  if (project.rows.length === 0) {
+    for (const text of wrapWords(emptyProjectText(state), width))
+      lines.push({ kind: 'text', text: text.trimEnd() });
+  }
+  project.rows.forEach((item, entry) => {
+    lines.push(rowLine(escaped(item.label), escaped(item.remembered), entry, state, width));
+  });
+  return lines;
 }
 
-/** The lines of the sheet when the terminal is below the floor: the title, why, and the way out. */
-function tooSmallLines(state: PermissionsSheetState): readonly SheetLine[] {
+/** The session section: its heading, then its rows (numbered after the project's) or the empty text. */
+function sessionLines(
+  state: PermissionsSheetState,
+  session: readonly SessionApprovalRow[],
+  firstEntry: number,
+  width: number,
+): BodyLine[] {
+  const lines: BodyLine[] = [
+    { kind: 'heading', text: `This session · approved (${String(session.length)})` },
+  ];
+  if (session.length === 0) lines.push({ kind: 'text', text: EMPTY_SESSION_TEXT });
+  session.forEach((item, at) => {
+    lines.push(
+      rowLine(
+        escaped(item.text),
+        item.alsoRemembered ? '(also remembered)' : '',
+        firstEntry + at,
+        state,
+        width,
+      ),
+    );
+  });
+  return lines;
+}
+
+/** The rule that opens the sheet and carries its title. */
+function ruleLine(state: PermissionsSheetState, width: number): SheetLine {
+  return titleRule(sheetTitle(state), width);
+}
+
+/** The text a sheet shows below the floor, whatever the sheet is: why, and the way out. */
+export const SHEET_TOO_SMALL_TEXT = 'Enlarge the terminal to use this screen — Esc closes.';
+
+/** The lines of a sheet titled `title` when the terminal is below the floor: the title, why, and the way out. */
+export function tooSmallSheetLines(title: string): readonly SheetLine[] {
   return [
-    ruleLine(state, 52),
-    { kind: 'text', text: 'Enlarge the terminal to use this screen — Esc closes.' },
+    titleRule(title, 52),
+    { kind: 'text', text: SHEET_TOO_SMALL_TEXT },
     {
       kind: 'legend',
       text: legend(SHEET_LEGEND_EMPTY_ITEMS),
       spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS),
     },
   ];
+}
+
+/** The lines of the sheet when the terminal is below the floor: the title, why, and the way out. */
+function tooSmallLines(state: PermissionsSheetState): readonly SheetLine[] {
+  return tooSmallSheetLines(sheetTitle(state));
 }
 
 /** Whether the sheet's frame can show a withdrawal's question: the terminal is at least 80×24. */
@@ -475,24 +538,89 @@ function rowsIn(lines: readonly BodyLine[]): number {
 }
 
 /**
- * The sheet's lines, top to bottom, for a terminal of this size. The budget is the card's ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
- * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain. The rule that carries the
- * title, the note, the message row and the legend are always drawn (the floor of 80×24 leaves room for all of them and at least eight body
- * lines) and the selected row is always visible; the body gets the rest, up to {@link SHEET_WINDOW} lines. Every line is clipped to the width.
- *
- * When body lines are hidden, the first or last body line is a marker that counts the ROWS it stands in for, the one under the marker
- * included, and only where a row is hidden; a heading is never left alone at the bottom of the window above a marker, and a window never
- * starts in the middle of a sentence.
+ * How many body lines a sheet drawn in a terminal of this size has room for. The budget is the card's ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
+ * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain; the rule that carries the
+ * title, the note, the message row and the legend always take their rows (the floor of 80×24 leaves room for all of them and at least eight
+ * body lines), and the body gets the rest, up to {@link SHEET_WINDOW} lines. A screen that frames the body in a chrome of its own passes the
+ * room its own chrome leaves instead.
+ */
+export function sheetBodyHeight(geometry: SheetGeometry): number {
+  return Math.min(SHEET_WINDOW, cardRowBudget(geometry.terminalRows) - FIXED_ROWS - NOTE_ROWS);
+}
+
+/**
+ * The sheet's lines, top to bottom, for a terminal of this size: the chrome's head, the body, the chrome's foot (and, below the floor, the
+ * one-line "enlarge" frame instead of all three). Nothing is drawn here that {@link permissionsSheetChrome} and
+ * {@link permissionsSheetBody} do not draw, so a screen that composes the body in a frame of its own (the Home's Permissions tab,
+ * ADR-0140 §3) shows the same rows, cursor and markers the chat's docked sheet shows.
  */
 export function permissionsSheetLines(
   state: PermissionsSheetState,
   geometry: SheetGeometry,
 ): readonly SheetLine[] {
   if (!sheetCanArm(geometry)) return tooSmallLines(state);
-  const width = usableColumns(geometry.columns);
-  const room = cardRowBudget(geometry.terminalRows);
+  const chrome = permissionsSheetChrome(state, geometry);
+  return [
+    ...chrome.head,
+    ...permissionsSheetBody(state, chrome.bodyWidth, chrome.bodyHeight),
+    ...chrome.foot,
+  ];
+}
+
+/** What surrounds the sheet's body: the rule above it, and the note, the message row and the legend below it, with the room that is left for the body. */
+export interface PermissionsSheetChrome {
+  /** The rule that opens the sheet and carries its title. */
+  readonly head: readonly SheetLine[];
+  /** The note on what a grant is worth, the message row (the question, the last answer, or the hint on the selected row) and the legend. */
+  readonly foot: readonly SheetLine[];
+  /** The columns every line is clipped to. */
+  readonly bodyWidth: number;
+  /** The body lines the frame leaves room for ({@link sheetBodyHeight}). */
+  readonly bodyHeight: number;
+}
+
+/**
+ * The frame of the sheet for a terminal of this size, at or above the floor ({@link sheetCanArm}); below it the sheet draws
+ * {@link permissionsSheetLines}' one-line "enlarge" frame and no body. Every line is clipped to the width.
+ */
+export function permissionsSheetChrome(
+  state: PermissionsSheetState,
+  geometry: SheetGeometry,
+): PermissionsSheetChrome {
+  const bodyWidth = usableColumns(geometry.columns);
+  const items = legendItems(state);
+  const legendText = clipLine(legend(items), bodyWidth);
+  return {
+    head: [ruleLine(state, bodyWidth)],
+    foot: [
+      { kind: 'note', text: clipLine(sheetNote(state), bodyWidth) },
+      messageLine(state, bodyWidth),
+      {
+        kind: 'legend',
+        text: legendText,
+        spans: clampSpans(legendSpans(items), legendText.length),
+      },
+    ],
+    bodyWidth,
+    bodyHeight: sheetBodyHeight(geometry),
+  };
+}
+
+/**
+ * The sheet's body: the headings, the rows and the empty or failure text of each section, `height` lines of them at most, each clipped to
+ * `width` columns, with no frame around them. The selected row is always visible.
+ *
+ * When body lines are hidden, the first or last body line is a marker that counts the ROWS it stands in for, the one under the marker
+ * included, and only where a row is hidden; a heading is never left alone at the bottom of the window above a marker, and a window never
+ * starts in the middle of a sentence. A window that had to be shorter is padded with blank lines, so the body keeps its height as the
+ * cursor moves.
+ */
+export function permissionsSheetBody(
+  state: PermissionsSheetState,
+  width: number,
+  height: number,
+): readonly SheetLine[] {
   const all = bodyLines(state, width);
-  const height = Math.min(SHEET_WINDOW, room - FIXED_ROWS - NOTE_ROWS);
   const cursorLine = Math.max(
     0,
     all.findIndex((line) => line.entry === state.cursor),
@@ -551,34 +679,29 @@ export function permissionsSheetLines(
     };
   // A windowed list keeps one height: a window that had to be shorter is padded below, so the sheet does not change size under the cursor.
   while (all.length > height && body.length < height) body.push({ kind: 'text', text: '' });
-  const items = state.armed
-    ? SHEET_LEGEND_ARMED_ITEMS
-    : sheetEntries(state.snapshot).length > 0
-      ? SHEET_LEGEND_IDLE_ITEMS
-      : SHEET_LEGEND_EMPTY_ITEMS;
-  const legendText = clipLine(legend(items), width);
-  return [
-    ruleLine(state, width),
-    ...body,
-    { kind: 'note', text: clipLine(sheetNote(state), width) },
-    messageLine(state, width),
-    {
-      kind: 'legend',
-      text: legendText,
-      spans: clampSpans(legendSpans(items), legendText.length),
-    },
-  ];
+  return body;
+}
+
+/** The legend's items: the armed question's, or the idle list's, or the empty list's. */
+function legendItems(state: PermissionsSheetState): readonly LegendItem[] {
+  if (state.armed) return SHEET_LEGEND_ARMED_ITEMS;
+  return sheetEntries(state.snapshot).length > 0
+    ? SHEET_LEGEND_IDLE_ITEMS
+    : SHEET_LEGEND_EMPTY_ITEMS;
+}
+
+/** What withdrawing the entry would mean, in one sentence. */
+function withdrawHint(entry: SheetEntry): string {
+  if (entry.kind === 'project')
+    return 'Press d to withdraw it: auto mode will ask about this command again.';
+  return entry.row.alsoRemembered
+    ? 'Press d to withdraw the session approval; the project still remembers it.'
+    : 'Press d to withdraw it: this command will need approval again.';
 }
 
 /** What withdrawing the selected row will do, said before it is done: the row under the list while nothing else needs saying. */
 function hintLine(entry: SheetEntry, width: number): SheetLine {
-  const text =
-    entry.kind === 'project'
-      ? 'Press d to withdraw it: auto mode will ask about this command again.'
-      : entry.row.alsoRemembered
-        ? 'Press d to withdraw the session approval; the project still remembers it.'
-        : 'Press d to withdraw it: this command will need approval again.';
-  const shown = clipLine(text, width);
+  const shown = clipLine(withdrawHint(entry), width);
   // The key is the one thing on the line that is not dimmed: it is what the line is about.
   return {
     kind: 'hint',

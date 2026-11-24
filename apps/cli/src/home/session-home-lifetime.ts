@@ -50,6 +50,15 @@ export class SessionHomeLifetime {
     });
   }
 
+  /**
+   * Leave the shared connection open for the process's exit. A hosted leg the run host had to abandon may still be writing to it, so the
+   * surface's database tail must not close it under that leg (ADR-0139 §6): the invocation's finite-exit bound, which the abandon armed,
+   * is what ends the process, and with it the handle.
+   */
+  retainStore(): void {
+    this.#store = undefined;
+  }
+
   adoptStore(store: { readonly close: () => void }): void {
     if (this.#store !== undefined) throw new CliError('cli_internal', '');
     this.#store = store;

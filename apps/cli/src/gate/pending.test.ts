@@ -2,7 +2,13 @@ import { createClient, createRunHistoryReader, runMigrations, type DbClient } fr
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { seedRun } from '../test-support.js';
-import { decidedGateNodes, humanGateResumeHints, pendingHumanGates } from './pending.js';
+import {
+  decidedGateNodes,
+  humanGateResumeHints,
+  pendingGateDisplays,
+  pendingHumanGates,
+  pendingParkDisplays,
+} from './pending.js';
 import type { RunEvent } from '@relavium/shared';
 
 describe('pendingHumanGates', () => {
@@ -39,6 +45,50 @@ describe('pendingHumanGates', () => {
 
   it('returns [] for an empty event log (no reconstructable run)', () => {
     expect(pendingHumanGates([])).toEqual([]);
+  });
+});
+
+describe('pendingParkDisplays', () => {
+  let client: DbClient;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+  });
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  it('names the nodes whose media jobs are in flight, beside the gates, from the one fold of the log', async () => {
+    await seedRun(client.db, { slug: 'a', runId: 'media', state: 'paused' });
+    await seedRun(client.db, {
+      slug: 'a',
+      runId: 'gate',
+      state: 'paused',
+      gate: { gateId: 'g1', gateType: 'approval' },
+    });
+    const reader = createRunHistoryReader(client.db);
+    expect(pendingParkDisplays(reader.loadRunEvents('media'))).toEqual({
+      pendingGates: [],
+      pendingBudgetGates: [],
+      pendingMediaJobNodeIds: ['g'],
+    });
+    expect(pendingParkDisplays(reader.loadRunEvents('gate')).pendingMediaJobNodeIds).toEqual([]);
+    expect(pendingParkDisplays([])).toEqual({
+      pendingGates: [],
+      pendingBudgetGates: [],
+      pendingMediaJobNodeIds: [],
+    });
+  });
+
+  it('leaves `pendingGateDisplays` as it was: `status` and `logs` read it, and nothing of a job reaches their output', async () => {
+    await seedRun(client.db, { slug: 'a', runId: 'media', state: 'paused' });
+    const events = createRunHistoryReader(client.db).loadRunEvents('media');
+    expect(pendingGateDisplays(events)).toEqual({ pendingGates: [], pendingBudgetGates: [] });
+    expect(Object.keys(pendingGateDisplays(events)).sort()).toEqual([
+      'pendingBudgetGates',
+      'pendingGates',
+    ]);
   });
 });
 

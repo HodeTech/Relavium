@@ -23,6 +23,9 @@ export const INTERRUPT_ARM_WINDOW_MS = 2000;
  * - `overlay` — a details view, palette, picker, `@` mention, reverse search or a confirmation card is open.
  * - `home` — the Home with no chat on screen; `loading` is true while the first message's chat is being built (nothing is loaded
  *   yet and nothing can be lost), false for the loaded Home.
+ *
+ * The Home's run view is not a context here: it has its own rows ({@link pressRunViewInterrupt}), because its second press cancels a
+ * run and never ends a session.
  */
 export type InterruptContext =
   | { readonly kind: 'card' }
@@ -88,6 +91,62 @@ export function pressInterrupt(
   }
 }
 
+/** What the surface must do for a `Ctrl+C` in the Home's run view. */
+export type RunViewInterruptAction =
+  /** A leg executing, the first press: show the hint; the keymap is armed and NOTHING is cancelled. */
+  | 'arm-run-cancel'
+  /** A leg executing, the second press inside the window: request the run's cooperative cancel. */
+  | 'cancel-run'
+  /** A leg already cancelling: a hint only. It arms nothing and cancels nothing more. */
+  | 'wait-for-stop'
+  /** No leg executing (a disposition card, a parked run, a run another run has replaced): close the view; arms nothing. */
+  | 'close-screen';
+
+/**
+ * The run view's `Ctrl+C` ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §5). Cancelling a run
+ * cannot be undone, so it takes two presses, and the second is decided by the state of the VIEW'S run AT that press, not by the state the
+ * first press saw: a window armed while the leg executed does nothing to a leg that has since ended or begun cancelling. The second press
+ * cancels a run; it never ends a session, which is why the view has rows of its own and is not a context of {@link pressInterrupt}.
+ *
+ * - **Executing**: the first press arms and cancels nothing; a second inside the window cancels.
+ * - **Cancelling**: a hint only. It arms nothing and cancels nothing more, whatever came before.
+ * - **No leg executing** (a card, a parked run, a view of a run another run has replaced): close the view and arm nothing.
+ */
+export function pressRunViewInterrupt(
+  state: InterruptState,
+  leg: HostedLegState,
+  now: number,
+): { readonly state: InterruptState; readonly action: RunViewInterruptAction } {
+  switch (leg) {
+    case 'executing':
+      return isArmed(state, now)
+        ? { state: DISARMED, action: 'cancel-run' }
+        : { state: { armedAt: now }, action: 'arm-run-cancel' };
+    case 'cancelling':
+      return { state: DISARMED, action: 'wait-for-stop' };
+    case 'none':
+      return { state: DISARMED, action: 'close-screen' };
+  }
+}
+
+/** What the surface must do for a `Ctrl+C` in the Home's tab host. */
+export type TabHostInterruptAction =
+  /** Close the whole screen, from any tab and any depth: the way out is one press. */
+  'close-screen';
+
+/**
+ * The tab host's `Ctrl+C` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §1). A browser is not a run and not an approval: the press closes the screen and arms nothing, so a second press is a first press of
+ * the landing's own keymap, and a withdrawal's question never survives it. It takes no leg and no clock on purpose: nothing a browser
+ * shows can be cancelled by it. (A run view opened FROM a browser is the run view's, [`pressRunViewInterrupt`]: its second press cancels.)
+ */
+export function pressTabHostInterrupt(): {
+  readonly state: InterruptState;
+  readonly action: TabHostInterruptAction;
+} {
+  return { state: DISARMED, action: 'close-screen' };
+}
+
 /**
  * Whether a raw key is `Ctrl+C`. Raw mode delivers it as the key (the kernel no longer turns it into SIGINT), as ink's `useInput`
  * parses it: the letter with `ctrl` set. A key with `meta` set is a different chord and is not an interrupt.
@@ -102,4 +161,67 @@ export function isInterruptKey(
 /** Any key that is not `Ctrl+C` ends the armed state at once: a `Ctrl+C` long after an interrupt starts over. */
 export function pressOtherKey(): InterruptState {
   return DISARMED;
+}
+
+/**
+ * Leaving the Home while a workflow run executes
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The rows below are the exit guard: what
+ * a request to end the Home does, and what each key means at the confirmation card it opens. Like the `Ctrl+C` table above they decide
+ * and perform nothing: the controller owns the card, the cancel and the exit.
+ */
+
+/** Whether the Home's run host has a leg that would be lost with the Home: none, one executing, or one already cancelling. */
+export type HostedLegState = 'none' | 'executing' | 'cancelling';
+
+/** What a request to end the Home does: leave now, or ask first. */
+export type ExitDecision = 'exit' | 'ask';
+
+/**
+ * Every way to end the Home (`/exit`, the second `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out)
+ * asks this one question. With no leg the Home leaves exactly as it always did; with a leg executing or cancelling it asks, because
+ * cancelling a run is irreversible (a cancelled run cannot be resumed).
+ */
+export function decideExit(leg: HostedLegState): ExitDecision {
+  return leg === 'none' ? 'exit' : 'ask';
+}
+
+/** What a key means at the exit-guard card. */
+export type ExitGuardAnswer =
+  /** `Ctrl+Y`: cancel the run and leave. */
+  | 'confirm'
+  /** `Esc`, `Ctrl+C` or `Ctrl+N`: close the card and stay. A confirmation treats both interrupt keys as cancel, never as confirm. */
+  | 'stay'
+  /** Every other key (a bare letter, `Enter`, `Ctrl+D`, a chord with `meta`): the card is still open and nothing is decided. */
+  | 'ignore';
+
+/**
+ * The card's keys. The chord is the one the Home's other cards use (a Ctrl letter, the letter being the whole input, `meta` unset),
+ * written out here because `chord-guard.ts` imports this module through the review model, so it cannot be imported back.
+ */
+export function pressExitGuardKey(
+  input: string,
+  key: { readonly ctrl?: boolean; readonly meta?: boolean; readonly escape?: boolean },
+): ExitGuardAnswer {
+  if (key.escape === true) return 'stay';
+  if (isInterruptKey(input, key)) return 'stay';
+  if (key.ctrl !== true || key.meta === true) return 'ignore';
+  if (input === 'n') return 'stay';
+  if (input === 'y') return 'confirm';
+  return 'ignore';
+}
+
+/** What a key other than `Ctrl+C` means in the run view. */
+export type RunViewAnswer =
+  /** `Esc`: leave the view (or close its card). The leg is untouched, the keymap is not armed, and nothing is cancelled. */
+  | 'leave'
+  /** Every other key (a letter, `Enter`, an arrow, `Ctrl+D`, `Ctrl+Y`): the view is unchanged. */
+  | 'ignore';
+
+/**
+ * The run view's keys ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §5): `Esc` steps back one
+ * level and never arms or cancels, and no other key does anything. `Ctrl+C` is not here: it is the keymap's (`pressInterrupt`), and the
+ * controller asks that first. A card in this view that is open decides nothing on a key it does not own.
+ */
+export function pressRunViewKey(key: { readonly escape?: boolean }): RunViewAnswer {
+  return key.escape === true ? 'leave' : 'ignore';
 }

@@ -182,8 +182,9 @@ timed out once in the merge commit's push run, which a re-run cleared). Between 
 [PR #100](https://github.com/HodeTech/Relavium/pull/100) (2026-11-18) made several `relavium` processes on one home able to write at the same
 time (each waits for the staging inventory instead of failing) and made CI run once per commit; its
 [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) lists what is still owed. MVP-4
-(command permissions, the interrupt keymap, turn limits, the `/permissions` sheet and the Home entry points; ADR-0115, 0118, 0136, 0137 and 0138) is implemented on `development`
-(steps 1–7), and its pull request, [PR #101](https://github.com/HodeTech/Relavium/pull/101), was opened on 2026-11-21 and is under review; the
+(command permissions, the interrupt keymap, turn limits, the `/permissions` sheet and the Home entry points; ADR-0115, 0118, 0136, 0137 and 0138) is complete and on `main`
+through [PR #101](https://github.com/HodeTech/Relavium/pull/101), merged on 2026-11-21 (its
+[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) lists what is still owed); the Home as the hub (MVP-8) is implemented and reviewed, and its pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) is open for review with the review's findings answered. The
 published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source

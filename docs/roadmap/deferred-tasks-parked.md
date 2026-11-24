@@ -1528,11 +1528,14 @@ B2's missing-vertex fail-closed as one-line fixes; they were recorded below inst
   entry's provider to match. *(low · apps/cli/src/chat/session-host.ts)*
 - [~] **The session builders fall back to an env-only key resolver.** *Low; latent.* *(C5)* Every production caller
   passes a keychain-aware one. **Re-check:** make `providers` required. *(low · apps/cli/src/chat/session-host.ts)*
-- [~] **Run outputs show a credential nested under a credential's name.** *Low.* *(D3)* An object or array under
-  `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under such a name
-  prints `[REDACTED]`, and a value that cannot be represented prints no note. **Re-check:** mask any non-null value
-  under a name the scrubber reads as a credential, keep `null`, carry `masked` out of the catch. *(low ·
-  apps/cli/src/render/run-outputs.ts)*
+- [~] **Run outputs and the node page show a credential nested under a credential's name.** *Low.* *(D3)* An object
+  or array under `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under
+  such a name prints `[REDACTED]`, and a value that cannot be represented prints no note. The gap is in the one
+  masking seam, `apps/cli/src/render/output-masking.ts` (`maskedAsMember`), so it has two surfaces: the final summary
+  (`apps/cli/src/render/run-outputs.ts`) and the node page's output preview (`apps/cli/src/history/node-detail-model.ts`,
+  MVP-8 step 4), which mask through it. **Re-check:** mask any non-null value under a name the scrubber reads as a
+  credential, keep `null`, carry `masked` out of the catch; the change is made in the seam and both surfaces are
+  tested. *(low · apps/cli/src/render/output-masking.ts, run-outputs.ts; apps/cli/src/history/node-detail-model.ts)*
 - [~] **The secret walk and the media walk have no depth bound.** *Low; fails closed.* *(D5)* About 3,000 levels
   make the summary `[unserializable]`. **Re-check:** a depth cap with a fixed marker. *(low ·
   packages/core/src/tools/bounding.ts)*
@@ -1637,6 +1640,13 @@ Positive consequence, and ADR-0120's plain drawing, against ADR-0114 §5. Record
   *(export-1)* `O_NONBLOCK` is what keeps that open from blocking; a test would hang its worker on a regression
   rather than fail. **Re-check:** run the case in a child process with a `spawnSync` timeout. *(low ·
   apps/cli/src/process/owned-storage.ts)*
+  **Checked 2026-11-24 (PR #102 review; stays open):** the entry is about the own-export identity check (`identityIfUnchanged`,
+  `apps/cli/src/process/owned-storage.ts`, whose comment still says no test drives it), not about the forced write. The forced write
+  of `chat-export --force` is another path: `2de9eefe` moved it to `process/forced-write.ts`, and `chat/export-force.test.ts` ("a FIFO
+  at the target") now drives a FIFO there, there from the start and swapped in after the look, with a **late reader** (a helper that
+  reads the FIFO after a second, so a write that waits shows as elapsed time and the test fails instead of hanging its worker). The
+  same technique would close this entry for the own-export check: swap a FIFO in between the `lstat` and the open, with a late reader
+  at the other end, and assert that the check answers "changed" in under a second. It was not done.
 - [~] **The MCP consent card's argument display passes U+2028 and U+2029.** *Low; pre-existing.* *(security-1's
   sibling)* `safe()` in the consent gate strips controls and zero-width characters but not the line separators, so a
   repository-declared server's argument can look like a comment. **Re-check:** apply ADR-0120's approval escape when
@@ -1711,7 +1721,7 @@ predates the correction, recorded below by the maintainer's ruling. **The mainta
 sitting was held.** Round 7's medium and its lows (the reconcile comments, the TTL rule's either-way clock, two test
 comments and a test name) were fixed on `development` after the merge. Recorded:
 
-- [ ] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
+- [x] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
   pre-existing (on `main` before the correction); must be fixed before v0.2.0 (maintainer ruling 2026-11-07).*
   *(security-2)* When terminal B decides gate g with `relavium gate` and releases its lease, terminal A's open card for
   g still takes an answer. A's resume reclaims the lease under a fresh fence, its guarded append is refused on its
@@ -1724,6 +1734,21 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
   `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
   `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
   *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
+  **Implemented 2026-11-22 on `development` and committed in `0494fad5`; closed 2026-11-24 by the record that its closing condition
+  was met: MVP-8 step 2 ran three review rounds on it, and round two included the opus security sitting on the lease fence and the
+  secret, consent and resume paths (verdict PASS, D64; the [step 2 record](phases/phase-2.6-conversational-authoring.md#mvp-8-step-2-implementation-record-2026-11-22)).** Classified at the write, not read in `#reclaim()`: a claim `#reclaim()` re-takes stays unproven until a
+  write under it is acknowledged. Until then a terminal is guarded against the last sequence this process asked for at its park, and
+  an `AppendConflictError` whose durable head differs from that head is ownership loss: no terminal, no outbox entry,
+  the re-taken row released by its exact fence, and `uncertain` with no terminal (exit `6`). The answer and the Ctrl-C
+  case are both covered. `InMemoryRunStore` now refuses a duplicate `(runId, seq)` with an untyped error, as SQLite's
+  index does, checked after the guard, the fence and the terminal refusal. Tests:
+  `packages/core/src/engine/stale-gate-card.e2e.test.ts` (two engines on one reference store),
+  `packages/core/src/engine/execution-host.test.ts`, and the native SQLite proof
+  `apps/cli/src/engine/stale-gate-card.native.test.ts` (commit `81449aab`: engines built on the CLI's own host, each on
+  its own `better-sqlite3` connection to one `history.db` file in one OS process, with a negative control that emulates
+  the pre-fix classification). Round 1's corrections (2026-11-22) added a store fault on the first write after the
+  re-take while another process has moved the log, which must still end fenced, and a pin on the in-memory store's
+  check order; ADR-0079 and ADR-0078 §2 carry dated notes.
 - [~] **No test pins the own-export read's size-plus-one bound.** *Low; test gap.* *(export-1)* A file that grows
   between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
   `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*

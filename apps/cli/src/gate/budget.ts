@@ -33,10 +33,15 @@ export function budgetDecisionFromFlags(flags: BudgetDecisionFlags): GateDecisio
       '--approve-amount must be a non-negative safe integer in decimal microcents',
     );
   }
+  return budgetApprovalDecision(parsed.data);
+}
+
+/** The approval of a budget gate: exactly the frozen amount, never a figure the person typed or a message carried. */
+export function budgetApprovalDecision(microcents: number): GateDecision {
   return {
     decision: 'approved',
     decidedBy: DECIDED_BY_CLI,
-    approvedAmountMicrocents: parsed.data,
+    approvedAmountMicrocents: microcents,
   };
 }
 

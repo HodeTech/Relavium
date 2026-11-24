@@ -8,6 +8,7 @@ import { InvocationRegistry } from '../process/invocation-registry.js';
 import { createInvocationFiniteExit } from '../process/invocation-finite-exit.js';
 import { createNativeProcessController } from '../process/native-process-owner.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
+import { safetyRank, type WorkflowSafetyExit } from '../process/exit-observations.js';
 
 function fixture() {
   const captured = captureIo();
@@ -154,6 +155,28 @@ describe('workflow command lifetime and bounded shared observations', () => {
       }),
     ).toBe(7);
     expect(f.invocation.registry.observations.exitCode()).toBe(7);
+  });
+  it('keeps the stronger fact of every ordered pair, by the one order the shared safetyRank states (8, then 7, 5, 6)', async () => {
+    const order: readonly WorkflowSafetyExit[] = [8, 7, 5, 6];
+    // The lifetime reads the shared table, so a change to it is a change here: the table itself is pinned strictly descending.
+    expect(order.map((fact) => safetyRank(fact))).toEqual(
+      [...order.map((fact) => safetyRank(fact))].sort((a, b) => b - a),
+    );
+    for (const first of order) {
+      for (const second of order) {
+        const f = fixture();
+        const stronger = order[Math.min(order.indexOf(first), order.indexOf(second))];
+        expect(
+          await f.lifetime.execute(() => {
+            f.lifetime.publish(first, true);
+            f.lifetime.publish(second, true);
+            return Promise.resolve(0);
+          }),
+          `${String(first)} then ${String(second)}`,
+        ).toBe(stronger);
+        expect(f.invocation.registry.observations.exitCode()).toBe(stronger);
+      }
+    }
   });
   it('a competing infrastructure fault outranks an escaping operational refusal without losing its private cause', async () => {
     const f = fixture();

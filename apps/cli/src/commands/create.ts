@@ -1,10 +1,12 @@
-import { relative } from 'node:path';
+import { homedir } from 'node:os';
+
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   assertSlugAvailable,
   buildAuthored,
   catalogPath,
+  confineCatalogTarget,
   resolveProjectConfigDir,
   serializeAuthored,
   writeAuthoredFile,
@@ -18,6 +20,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { isInteractiveTerminal } from '../process/output-mode.js';
+import { sanitizeInline } from '../render/sanitize.js';
 
 export interface CreateCommandArgs {
   /** `--force`: overwrite an existing project entry with the same id; without it a collision is a clean exit-2 fault. */
@@ -30,6 +33,8 @@ export interface CreateCommandDeps {
   readonly global: GlobalOptions;
   /** Injectable wizard (tests inject canned answers); default is the `@clack/prompts` wizard. */
   readonly prompter?: CreatePrompter;
+  /** The operator home the path rules read. The program passes none (the process's own, read in {@link createCommand}); a test hands it a temporary one. */
+  readonly homeDir?: string | undefined;
 }
 
 /**
@@ -69,8 +74,10 @@ export async function createCommand(
   const owner = deps.commandLifetime?.work;
   owner?.assertAdmitting();
   const cwd = deps.global.cwd;
+  // The one place the command reads the process's own home; every rule below is handed it.
+  const home = deps.homeDir ?? homedir();
   // Refuse an invalid launch destination before asking the user for wizard input.
-  resolveProjectConfigDir(cwd);
+  resolveProjectConfigDir(cwd, home);
   const spec = await (
     deps.prompter ??
     (owner === undefined
@@ -87,7 +94,7 @@ export async function createCommand(
   const parsed = buildAuthored(spec); // build + validate (a bad combination is a typed exit-2 CliError)
   // The asynchronous wizard may outlive a project-marker change. Resolve again
   // at publication instead of retaining a now-global alias from before the prompt.
-  const projectConfigDir = resolveProjectConfigDir(cwd);
+  const projectConfigDir = resolveProjectConfigDir(cwd, home);
   // Project-global id uniqueness (across both catalogs) — a cross-kind collision is rejected even with --force.
   assertSlugAvailable({
     projectConfigDir,
@@ -95,13 +102,23 @@ export async function createCommand(
     kind: parsed.kind,
     slug: parsed.slug,
     force: args.force,
+    homeDir: home,
   });
 
-  const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
-  const targetDisplay = relative(cwd, target);
-  assertProjectArtifactPath(target);
-  writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
+  const catalogTarget = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
+  assertProjectArtifactPath(catalogTarget, home);
+  // A catalog directory that is a link out of the project would take the file with it: the write goes where the link leads, shown as such.
+  const { writeTarget, targetDisplay } = confineCatalogTarget({
+    projectConfigDir,
+    cwd,
+    target: catalogTarget,
+  });
+  // Written through the canonical directory the confinement computed, which must still resolve to itself at the write.
+  writeAuthoredFile(writeTarget, targetDisplay, serializeAuthored(parsed), args.force, {
+    pinDirectory: true,
+  });
   warnSnapshotLiterals(parsed.definition, deps.io);
-  deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${targetDisplay}\n`);
+  // The destination is spelled from the directory names under the project, which a link inside it can make anything: one row, no controls.
+  deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${sanitizeInline(targetDisplay)}\n`);
   return EXIT_CODES.success;
 }

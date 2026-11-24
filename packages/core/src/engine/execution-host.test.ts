@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   isAppendConflictError,
   isCorruptRunEventError,
+  isLeaseFencedError,
   RunAlreadyTerminalError,
   RunEventSchema,
   type RunEvent,
@@ -11,6 +12,7 @@ import {
 import {
   createAbortController,
   createInMemoryHost,
+  createInMemoryRunLeases,
   createManualTimerController,
   InMemoryRunStore,
 } from './execution-host.js';
@@ -552,5 +554,67 @@ describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2
     // Another run's terminal does not close this one.
     await store.persistEvent({ ...started(0), runId: 'r2' });
     await expect(store.persistEvent({ ...failed(1), runId: 'r2' })).resolves.toBeUndefined();
+  });
+
+  it('mirrors UNIQUE(run_id, seq) — an unguarded duplicate sequence is refused, per run', async () => {
+    // The stale gate card (deferred-tasks-parked.md): an UNGUARDED terminal at a sequence another writer had
+    // used. SQLite's unique index refused it; this reference landed it, so a core test could not see the
+    // defect. The refusal is untyped like SQLite's — never a stale belief and never a lost claim. Only the
+    // unguarded duplicate is exercised here: a guarded one is the not-ahead guard's, not this index's.
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent(skipped(3), { expectedLastSequenceNumber: 0 });
+
+    const refusals: unknown[] = [];
+    for (const duplicate of [failed(3), skipped(3), started(0)]) {
+      await store.persistEvent(duplicate).then(
+        () => refusals.push('accepted'),
+        (error: unknown) => refusals.push(error),
+      );
+    }
+    expect(refusals).toHaveLength(3);
+    for (const refusal of refusals) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect(String(refusal)).toMatch(
+        /UNIQUE constraint failed: run_events\.run_id, run_events\.seq/,
+      );
+      expect(isAppendConflictError(refusal)).toBe(false);
+      expect(isLeaseFencedError(refusal)).toBe(false);
+      expect(refusal).not.toBeInstanceOf(RunAlreadyTerminalError);
+    }
+    expect(store.eventsFor('r1').map((e) => [e.sequenceNumber, e.type])).toEqual([
+      [0, 'run:started'],
+      [3, 'node:skipped'],
+    ]);
+    // A fresh sequence still lands, and the same sequence in another run is not a duplicate.
+    await expect(store.persistEvent(skipped(4))).resolves.toBeUndefined();
+    await expect(store.persistEvent({ ...skipped(3), runId: 'r2' })).resolves.toBeUndefined();
+  });
+
+  it('checks the duplicate sequence LAST, as SQLite inserts last — a fence or terminal refusal wins', async () => {
+    // SQLite's order is guard, fence, terminal, insert, and the unique index fires only at the insert. A write
+    // that is stale on two counts must report what SQLite reports: the engine reads a fence refusal as lost
+    // ownership and a duplicate as a store fault, so a reference that checked the duplicate first would hand
+    // a fenced-out writer the store-fault path. Unguarded, because a guarded duplicate is the not-ahead guard's.
+    const store = new InMemoryRunStore();
+    const leases = createInMemoryRunLeases(() => 0);
+    store.bindLeases(leases);
+    const stale = await leases.acquire('r1', 'owner-a', 60_000);
+    expect(stale).toBeDefined();
+    if (stale === undefined) return;
+    await leases.release('r1', stale);
+    const current = await leases.acquire('r1', 'owner-b', 60_000);
+    expect(current?.ownerId).toBe('owner-b');
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent(skipped(3), { expectedLastSequenceNumber: 0 });
+
+    // A stale fence at a used sequence: the fence refusal, not the duplicate.
+    await expect(store.persistEvent(skipped(3), { fence: stale })).rejects.toSatisfy(
+      isLeaseFencedError,
+    );
+    // A second terminal at a used sequence: the exactly-one-terminal refusal, not the duplicate.
+    await store.persistEvent(failed(5), { expectedLastSequenceNumber: 3 });
+    await expect(store.persistEvent(failed(5))).rejects.toBeInstanceOf(RunAlreadyTerminalError);
+    expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0, 3, 5]);
   });
 });

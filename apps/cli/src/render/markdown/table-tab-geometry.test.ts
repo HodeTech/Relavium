@@ -34,9 +34,16 @@ describe('table tab geometry', () => {
     expect(row.indexOf('x')).toBe(x);
     expect(row.indexOf('Y')).toBe(y);
   });
-  it('falls back literally when right aligned tab endpoints cannot agree', () => {
+  it('draws a wrapped grid, not a literal source, when right aligned tab endpoints cannot agree', () => {
+    // The single-line grid has no tab phase that agrees, so the wrapped grid draws it (ADR-0143). Tabs expand from
+    // the start of their own cell there, so the Y of each row sits where its own cell puts it.
     expect(grid([['header'], ['x\tY'], ['x\tYY']], 'right').map((row) => row.text)).toEqual([
-      'literal fallback',
+      '┌────────────┐',
+      '│     header │',
+      '├────────────┤',
+      '│  x       Y │',
+      '│ x       YY │',
+      '└────────────┘',
     ]);
   });
   it('uses preceding column widths and continuation prefixes for every content row', () => {

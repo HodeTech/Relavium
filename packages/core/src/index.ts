@@ -10,6 +10,9 @@
 export { parseWorkflow, MAX_SOURCE_CHARS } from './parser.js';
 export type { WorkflowDefinition, ParseWorkflowOptions } from './parser.js';
 
+// The hardened decode's structural-token budget (ADR-0035): the CLI's catalog scan charges the same count against its own per-scan budget.
+export { countYamlTokens, MAX_YAML_TOKENS } from './yaml-decode.js';
+
 // Agent parser — the `.agent.yaml` sibling of parseWorkflow (CLI catalog scan 2.I, authoring 2.J).
 export { parseAgent, AgentParseError } from './agent-parser.js';
 export type { AgentDefinition, ParseAgentOptions } from './agent-parser.js';

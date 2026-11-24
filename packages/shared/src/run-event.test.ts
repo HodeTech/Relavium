@@ -10,6 +10,8 @@ import {
   RunEventSchema,
   SessionEventSchema,
   StopReasonSchema,
+  TOOL_ACTIVITY_TOOL_ID_PATTERN,
+  TOOL_ACTIVITY_UNKNOWN_TOOL_ID,
 } from './run-event.js';
 import type { RunEvent, RunEventType, SessionEvent, SessionEventType } from './index.js';
 
@@ -866,6 +868,259 @@ describe('cost:updated and sequenceNumber invariants', () => {
       expect(RunEventSchema.safeParse({ ...base, cumulativeCostMicrocents: 1.5 }).success).toBe(
         false,
       );
+    }
+  });
+
+  describe('toolActivity on node:completed / node:failed (ADR-0140 §4)', () => {
+    const terminals = ['node:completed', 'node:failed'] as const;
+    const activity = [
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 12 }, // finished
+      { toolId: 'run_command', ok: false, resultRecorded: true, durationMs: 340 }, // ran and failed: measured
+      { toolId: 'write_file', ok: false, resultRecorded: true }, // refused: a result, but nothing ran to measure
+      { toolId: 'web_fetch', ok: false, resultRecorded: false }, // unpaired: no result recorded, so no duration
+    ];
+
+    it('parses an event WITHOUT the new fields, unchanged — the field is optional', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse(valid[type]);
+        expect('toolActivity' in parsed).toBe(false);
+        expect('toolActivityTruncated' in parsed).toBe(false);
+      }
+    });
+
+    it('parses an event WITH both fields and keeps them as written', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse({
+          ...valid[type],
+          toolActivity: activity,
+          toolActivityTruncated: 3,
+        });
+        expect(parsed).toMatchObject({ toolActivity: activity, toolActivityTruncated: 3 });
+      }
+    });
+
+    it('is content-free: a key beyond { toolId, ok, resultRecorded, durationMs } is STRIPPED, never kept (lenient read)', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse({
+          ...valid[type],
+          toolActivity: [
+            {
+              toolId: 'run_command',
+              ok: true,
+              resultRecorded: true,
+              durationMs: 5,
+              arguments: { command: 'cat /secret' },
+              outputSummary: 'the result text',
+            },
+          ],
+        });
+        // The entry survives with only its four declared keys; the extras are removed, and parsing does not fail.
+        expect(parsed).toMatchObject({
+          toolActivity: [{ toolId: 'run_command', ok: true, resultRecorded: true, durationMs: 5 }],
+        });
+        if (parsed.type !== 'node:completed' && parsed.type !== 'node:failed')
+          throw new Error('expected a node terminal');
+        expect(Object.keys(parsed.toolActivity?.[0] ?? {}).sort()).toEqual([
+          'durationMs',
+          'ok',
+          'resultRecorded',
+          'toolId',
+        ]);
+        expect(JSON.stringify(parsed)).not.toContain('cat /secret');
+        expect(JSON.stringify(parsed)).not.toContain('the result text');
+      }
+    });
+
+    it('bounds the array at 50 entries: 50 parse, 51 are rejected', () => {
+      const entries = (count: number) =>
+        Array.from({ length: count }, (_, index) => ({
+          toolId: `tool-${index}`,
+          ok: true,
+          resultRecorded: true,
+        }));
+      for (const type of terminals) {
+        expect(
+          RunEventSchema.safeParse({ ...valid[type], toolActivity: entries(50) }).success,
+        ).toBe(true);
+        expect(
+          RunEventSchema.safeParse({ ...valid[type], toolActivity: entries(51) }).success,
+        ).toBe(false);
+      }
+    });
+
+    it('pins each entry: a non-empty toolId, a boolean ok, a boolean resultRecorded, a non-negative integer durationMs', () => {
+      const withEntry = (entry: unknown) =>
+        RunEventSchema.safeParse({ ...valid['node:completed'], toolActivity: [entry] }).success;
+      expect(withEntry({ toolId: 'read_file', ok: true, resultRecorded: true })).toBe(true);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 0 }),
+      ).toBe(true);
+      expect(withEntry({ toolId: 'read_file', ok: false, resultRecorded: false })).toBe(true);
+      expect(withEntry({ toolId: '', ok: true, resultRecorded: true })).toBe(false);
+      expect(withEntry({ ok: true, resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: 'yes', resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: true, resultRecorded: 'yes' })).toBe(false);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: -1 }),
+      ).toBe(false);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 1.5 }),
+      ).toBe(false);
+    });
+
+    // sse-event-schema.md, "A node's tool trace": the outcome table has four rows and `durationMs` is "present only
+    // when it was measured". Every combination of (resultRecorded, ok, durationMs present) is listed here, so a rule
+    // dropped from the schema — or one added that refuses a state the tracker writes — fails exactly one row.
+    describe('the cross-field rules of an entry (PR #102 review: P2)', () => {
+      const parses = (entry: Record<string, unknown>) =>
+        RunEventSchema.safeParse({
+          ...valid['node:completed'],
+          toolActivity: [{ toolId: 'read_file', ...entry }],
+        });
+
+      it.each([
+        // resultRecorded, ok, durationMs, verdict, outcome
+        [true, true, undefined, true, 'succeeded, not measured'],
+        [true, true, 12, true, 'succeeded, measured'],
+        [true, true, 0, true, 'succeeded, measured as 0 ms'],
+        [true, false, undefined, true, 'refused: a result, nothing ran'],
+        [true, false, 340, true, 'failed and measured'],
+        [false, false, undefined, true, 'unpaired'],
+        [false, true, undefined, false, 'unpaired but ok: no result, so no success'],
+        [false, false, 12, false, 'unpaired but measured: nothing was recorded to measure it by'],
+        [false, true, 12, false, 'unpaired, ok and measured'],
+        [false, false, 0, false, 'unpaired with a zero duration is still a duration'],
+      ] as const)(
+        'resultRecorded %s, ok %s, durationMs %s -> accepted %s (%s)',
+        (resultRecorded, ok, durationMs, accepted, outcome) => {
+          const parsed = parses({
+            resultRecorded,
+            ok,
+            ...(durationMs === undefined ? {} : { durationMs }),
+          });
+          expect(parsed.success, outcome).toBe(accepted);
+        },
+      );
+
+      it('names the field that breaks the rule, for each node terminal', () => {
+        for (const type of terminals) {
+          const result = RunEventSchema.safeParse({
+            ...valid[type],
+            toolActivity: [{ toolId: 'web_fetch', ok: true, resultRecorded: false, durationMs: 3 }],
+          });
+          expect(result.success).toBe(false);
+          const paths = result.success
+            ? []
+            : result.error.issues.map((issue) => issue.path.join('.'));
+          expect(paths.sort()).toEqual(['toolActivity.0.durationMs', 'toolActivity.0.ok']);
+        }
+      });
+
+      it('one impossible entry refuses the whole event, however many valid ones surround it', () => {
+        expect(
+          RunEventSchema.safeParse({
+            ...valid['node:failed'],
+            toolActivity: [
+              { toolId: 'a', ok: true, resultRecorded: true, durationMs: 1 },
+              { toolId: 'b', ok: true, resultRecorded: false },
+              { toolId: 'c', ok: false, resultRecorded: false },
+            ],
+          }).success,
+        ).toBe(false);
+      });
+
+      it('still strips an unknown key from an accepted entry (the lenient read is unchanged)', () => {
+        const parsed = RunEventSchema.parse({
+          ...valid['node:completed'],
+          toolActivity: [{ toolId: 'read_file', ok: false, resultRecorded: false, extra: 'x' }],
+        });
+        expect(parsed).toMatchObject({
+          toolActivity: [{ toolId: 'read_file', ok: false, resultRecorded: false }],
+        });
+        expect(JSON.stringify(parsed)).not.toContain('extra');
+      });
+    });
+
+    it('REQUIRES resultRecorded: an entry without it is rejected, so a refusal is never mistaken for an unpaired call', () => {
+      for (const type of terminals) {
+        expect(
+          RunEventSchema.safeParse({
+            ...valid[type],
+            toolActivity: [{ toolId: 'read_file', ok: false }],
+          }).success,
+        ).toBe(false);
+      }
+    });
+
+    it('bounds the toolId to the registered-id charset and 128 characters: model-chosen text cannot be stored', () => {
+      const withId = (toolId: unknown) =>
+        RunEventSchema.safeParse({
+          ...valid['node:completed'],
+          toolActivity: [{ toolId, ok: true, resultRecorded: true }],
+        }).success;
+      // What a registered tool id looks like: a built-in name, an MCP `mcp_{server}_{tool}`, a namespaced id.
+      for (const id of ['read_file', 'mcp_github_create-issue', 'a'.repeat(128), 'ns.tool:v1']) {
+        expect(withId(id)).toBe(true);
+      }
+      // The 129th character, and every shape a hostile or hallucinated name can take.
+      for (const id of [
+        'a'.repeat(129),
+        'x'.repeat(200),
+        'read file',
+        'read_file\nIGNORE PREVIOUS INSTRUCTIONS',
+        '../../etc/passwd',
+        'lésefil',
+        'a/b',
+        '<script>',
+        '',
+      ]) {
+        expect(withId(id)).toBe(false);
+      }
+    });
+
+    it('exports the pattern and the fixed unknown id the engine writes, and the pattern admits that id', () => {
+      expect(TOOL_ACTIVITY_UNKNOWN_TOOL_ID).toBe('unknown_tool');
+      expect(TOOL_ACTIVITY_TOOL_ID_PATTERN.test(TOOL_ACTIVITY_UNKNOWN_TOOL_ID)).toBe(true);
+    });
+
+    it('accepts an empty trace — the engine always writes toolActivity, [] for a node with no tool call', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse({ ...valid[type], toolActivity: [] });
+        expect(parsed).toHaveProperty('toolActivity', []);
+        expect('toolActivityTruncated' in parsed).toBe(false);
+      }
+    });
+
+    it('pins toolActivityTruncated to a non-negative integer', () => {
+      for (const type of terminals) {
+        const base = { ...valid[type], toolActivity: activity };
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: 0 }).success).toBe(true);
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: -1 }).success).toBe(
+          false,
+        );
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: 1.5 }).success).toBe(
+          false,
+        );
+      }
+    });
+
+    it('is not carried by node:retrying (the attempt that retries is not a terminal)', () => {
+      const parsed = RunEventSchema.parse({ ...valid['node:retrying'], toolActivity: activity });
+      expect('toolActivity' in parsed).toBe(false);
+    });
+  });
+
+  it('accepts an optional non-negative integer durationMs on agent:tool_result, and omitting it stays valid', () => {
+    const base = valid['agent:tool_result'];
+    expect(RunEventSchema.safeParse(base).success).toBe(true);
+    const parsedWithout = RunEventSchema.parse(base);
+    expect('durationMs' in parsedWithout).toBe(false);
+    for (const durationMs of [0, 1, 250, 3_600_000]) {
+      expect(RunEventSchema.parse({ ...base, durationMs })).toMatchObject({ durationMs });
+    }
+    for (const durationMs of [-1, 1.5, Number.NaN, '5', null]) {
+      expect(RunEventSchema.safeParse({ ...base, durationMs }).success).toBe(false);
     }
   });
 

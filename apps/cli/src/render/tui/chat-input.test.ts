@@ -510,7 +510,7 @@ describe('pasteIsEditable (the SHARED bracketed-paste gate — ADR-0068 / ADR-00
     mentionOpen: false,
     modelPickerOpen: false,
     effortPickerOpen: false,
-    permissionsSheetOpen: false,
+    chatSheetOpen: false,
     approvalPending: false,
   };
 

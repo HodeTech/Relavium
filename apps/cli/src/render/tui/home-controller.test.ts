@@ -27,6 +27,7 @@ import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@re
 
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
+import { permissionsSheetOf } from './chat-sheet.js';
 import type { MentionReader } from './mention.js';
 import type {
   PermissionEntry,
@@ -39,6 +40,7 @@ import {
   SHEET_CONFIRM_WINDOW_MS,
   SHEET_SETTLE_MS,
   sheetEntries,
+  type PermissionsSheetState,
 } from './permissions-sheet.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
@@ -3284,7 +3286,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
   it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
     const { port } = portOf();
     const { c, sent } = await open(makeSession({ permissions: port }));
-    const sheet = c.getSnapshot().permissionsSheet;
+    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
     expect(sheet?.surface).toBe('chat');
     expect(sheet?.mode).toBe('ask');
     expect(sent, 'nothing was dispatched').toEqual([]);
@@ -3293,7 +3295,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
 
   it('is dispatched like any command where the chat has no port', async () => {
     const { c, sent } = await open(makeSession({}));
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     expect(sent).toEqual(['/permissions']);
   });
 
@@ -3308,7 +3310,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
       },
     });
     const { c } = await open(made);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     expect(made.store.getSnapshot().state.warnings).toContain('Could not read the permissions.');
   });
 
@@ -3318,13 +3320,13 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     type(c, 'hello');
     expect(c.getSnapshot().input.text).toBe('');
     c.handleKey('', { escape: true });
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     type(c, '/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet).toBeDefined();
+    expect(c.getSnapshot().chatSheet).toBeDefined();
     c.handleKey('c', CTRL_C);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
       false,
     );
@@ -3335,13 +3337,13 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, t } = await open(makeSession({ permissions: port }));
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
     expect(withdraw).not.toHaveBeenCalled();
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
     expect(withdraw).toHaveBeenCalledTimes(1);
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
-    const sheet = c.getSnapshot().permissionsSheet;
+    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
     expect(sheet?.armed).toBe(false);
     expect(sheet?.message).toEqual({
       tone: 'done',
@@ -3357,8 +3359,8 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, t } = await open(makeSession({ permissions: port }));
     // `d` pressed at once: too soon, and it says so; it is not typing.
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
       tone: 'note',
       text: 'Wait a moment, then press d.',
     });
@@ -3369,8 +3371,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     }
     t.advance(2_000);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed, 'typed text poisons arming').toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed, 'typed text poisons arming').toBe(
+      false,
+    );
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
       /^Typed keys are ignored here/u,
     );
     t.advance(2_000);
@@ -3380,10 +3384,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('', { downArrow: true });
     c.handleKey('', { upArrow: true });
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
       /^Too early or too late for Enter/u,
     );
     expect(withdraw).not.toHaveBeenCalled();
@@ -3394,10 +3398,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, t } = await open(makeSession({ permissions: port }));
     t.advance(SHEET_SETTLE_MS - 1);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     t.advance(1);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
   });
 
   it('an Enter long after the question is too late: a suspended or abandoned question is not answered by a stray Enter', async () => {
@@ -3408,7 +3412,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
     c.handleKey('', ENTER);
     expect(withdraw).not.toHaveBeenCalled();
-    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
       /^Too early or too late for Enter/u,
     );
   });
@@ -3419,16 +3423,16 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     settle(t);
     c.handleKey('d', {});
     c.handlePaste('withdraw it all');
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
     // The paste was typing: `d` arms nothing until an arrow key.
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     c.handleKey('', { downArrow: true });
     c.handleKey('', { upArrow: true });
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('x', {});
     c.handleKey('', ENTER);
@@ -3440,7 +3444,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, t } = await open(makeSession({ permissions: port }));
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
     c.setTerminalSize(60, 20); // shrinks while the question is up
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
@@ -3448,17 +3452,17 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
       withdraw,
       'Enter withdraws nothing in a frame that hides the question',
     ).not.toHaveBeenCalled();
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     c.setTerminalSize(80, 24);
     // The Enter and the `d` above were keys typed into a sheet: an arrow key says the person is choosing a row again.
     c.handleKey('', { downArrow: true });
     c.handleKey('', { upArrow: true });
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
   });
 
   it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
@@ -3477,7 +3481,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('d', {});
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
       tone: 'failed',
       text: 'Could not withdraw that row; nothing changed.',
     });
@@ -3501,7 +3505,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('d', {});
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     expect(made.store.getSnapshot().state.warnings.join(' ')).toContain(
       'Could not read the permissions again.',
     );
@@ -3513,19 +3517,19 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, t } = await open(made);
     settle(t);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
     void made.store.requestApproval(
       { toolId: 'write_file', action: 'fs_write', preview: { path: 'x' } },
       true,
     );
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().chatSheet).toBeUndefined();
     expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
   });
 });
 
-describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
   const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
   const SNAPSHOT: PermissionsSnapshot = {
     project: {
@@ -3575,23 +3579,30 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     });
     return { c, t, startChat };
   };
+  /** The sheet the Permissions tab holds, when the tab host is open on that tab (the bare Home's `/permissions` is that tab, ADR-0140 §3). */
+  const sheetOf = (c: HomeController): PermissionsSheetState | undefined => {
+    const screen = c.getSnapshot().screen;
+    return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
+  };
   const openSheet = async (c: HomeController): Promise<void> => {
     type(c, '/permissions');
     c.handleKey('', ENTER);
     await flush();
   };
 
-  it('a typed bare /permissions opens the sheet over the Home instead of starting a chat, with the project list only', async () => {
+  it('a typed bare /permissions opens the Permissions tab instead of starting a chat, with the project list only', async () => {
     const { port } = portOf();
     const { c, startChat } = home(port);
     await openSheet(c);
     const snap = c.getSnapshot();
     expect(snap.mode).toBe('home');
-    expect(snap.permissionsSheet?.surface).toBe('project');
-    expect(snap.permissionsSheet?.mode, 'no chat, no mode').toBeUndefined();
+    expect(snap.screen?.kind, 'a screen of the slot, not an overlay').toBe('tab-host');
+    expect(snap.chatSheet, 'the chat’s overlay is not the bare Home’s').toBeUndefined();
+    expect(sheetOf(c)?.surface).toBe('project');
+    expect(sheetOf(c)?.mode, 'no chat, no mode').toBeUndefined();
     expect(snap.input.text).toBe('');
     expect(startChat, 'nothing was sent as a message').not.toHaveBeenCalled();
-    expect(sheetEntries(snap.permissionsSheet?.snapshot ?? SNAPSHOT)).toHaveLength(2);
+    expect(sheetEntries(sheetOf(c)?.snapshot ?? SNAPSHOT)).toHaveLength(2);
   });
 
   it('the palette’s /permissions opens it too, and an argument is refused with a notice and opens nothing', async () => {
@@ -3601,20 +3612,20 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     for (const ch of 'permissions') c.handleKey(ch, {});
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    expect(sheetOf(c)?.surface).toBe('project');
     c.handleKey('', { escape: true });
     // A `/` typed at an empty prompt opens the palette, so a line with an argument reaches the Home as a paste.
     c.handlePaste('/permissions now');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c)).toBeUndefined();
     expect(c.getSnapshot().notice).toBe('/permissions accepts no arguments.');
   });
 
   it('says so, and opens nothing, where the Home has no port', async () => {
     const { c, startChat } = home(undefined);
     await openSheet(c);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c)).toBeUndefined();
     expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
     expect(startChat).not.toHaveBeenCalled();
   });
@@ -3628,7 +3639,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       },
     });
     await openSheet(c);
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c)).toBeUndefined();
     expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
   });
 
@@ -3639,10 +3650,10 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     type(c, 'hello');
     expect(c.getSnapshot().input.text).toBe('');
     c.handleKey('', { escape: true });
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c)).toBeUndefined();
     await openSheet(c);
     c.handleKey('c', { ctrl: true });
-    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c)).toBeUndefined();
     expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
       false,
     );
@@ -3655,7 +3666,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     await openSheet(c);
     t.advance(SHEET_SETTLE_MS + 100);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(sheetOf(c)?.armed).toBe(true);
     c.handleKey('', ENTER); // at once: too early
     expect(withdraw).not.toHaveBeenCalled();
     t.advance(SHEET_SETTLE_MS + 100);
@@ -3664,7 +3675,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.handleKey('', ENTER);
     expect(withdraw).toHaveBeenCalledTimes(1);
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
-    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+    expect(sheetOf(c)?.message).toEqual({
       tone: 'done',
       text: 'Withdrawn. Auto mode asks about it again.',
     });
@@ -3676,12 +3687,12 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.handlePaste('/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    expect(sheetOf(c)?.surface).toBe('project');
     c.handleKey('', { escape: true });
     c.handlePaste('/permissionsx');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet, 'a longer word is another command').toBeUndefined();
+    expect(sheetOf(c), 'a longer word is another command').toBeUndefined();
     expect(c.getSnapshot().notice).toBe('Unknown command. Did you mean /permissions?');
   });
 
@@ -3717,7 +3728,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.handlePaste('/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
     t.advance(SHEET_SETTLE_MS + 100);
     c.handleKey('d', {});
     t.advance(SHEET_CONFIRM_DWELL_MS);
@@ -3743,8 +3754,8 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.handlePaste('/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
-    expect(c.getSnapshot().permissionsSheet?.snapshot.session).toEqual([]);
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
+    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.snapshot.session).toEqual([]);
   });
 
   it('SECURITY: keys typed ahead after the command withdraw nothing on the Home either, at any pace', async () => {
@@ -3782,7 +3793,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.handleKey('d', {});
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+    expect(sheetOf(c)?.message).toEqual({
       tone: 'failed',
       text: 'Could not withdraw that row; nothing changed.',
     });
@@ -3805,7 +3816,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c2.handleKey('d', {});
     t2.advance(SHEET_CONFIRM_DWELL_MS);
     c2.handleKey('', ENTER);
-    expect(c2.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sheetOf(c2)).toBeUndefined();
     expect(c2.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
   });
 
@@ -3815,9 +3826,9 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     await openSheet(c);
     t.advance(SHEET_SETTLE_MS + 100);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(sheetOf(c)?.armed).toBe(true);
     c.handlePaste('pasted words');
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(sheetOf(c)?.armed).toBe(false);
     expect(c.getSnapshot().input.text).toBe('');
   });
 
@@ -3828,7 +3839,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     c.setTerminalSize(60, 20);
     t.advance(SHEET_SETTLE_MS + 100);
     c.handleKey('d', {});
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(sheetOf(c)?.armed).toBe(false);
   });
 
   describe('opened as the run’s whole job: a bare `relavium permissions` (ADR-0137 §3)', () => {
@@ -3837,15 +3848,13 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       const onExit = vi.fn();
       const { c } = home(port, clock(), { onExit });
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+      expect(sheetOf(c)?.surface).toBe('project');
       expect(onExit).not.toHaveBeenCalled();
       c.handleKey('', { escape: true });
       expect(onExit).toHaveBeenCalledTimes(1);
       // The last frame the run leaves (the scrollback of the inline renderer) is the sheet's: a closed state with the Home's prompt is
       // never published on the way out.
-      expect(c.getSnapshot().permissionsSheet?.surface, 'the closed state is not published').toBe(
-        'project',
-      );
+      expect(sheetOf(c)?.surface, 'the closed state is not published').toBe('project');
     });
 
     it('Ctrl+C closes it and ends the run too, once', () => {
@@ -3867,9 +3876,9 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       c.openPermissionsAsCommand();
       t.advance(SHEET_SETTLE_MS + 100);
       c.handleKey('d', {});
-      expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+      expect(sheetOf(c)?.armed).toBe(true);
       c.handleKey('', { escape: true });
-      expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+      expect(sheetOf(c)?.armed).toBe(false);
       expect(onExit).not.toHaveBeenCalled();
       c.handleKey('', { escape: true });
       expect(onExit).toHaveBeenCalledTimes(1);
@@ -3897,7 +3906,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       c.handleKey('d', {});
       t.advance(SHEET_CONFIRM_DWELL_MS);
       c.handleKey('', ENTER);
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(c.getSnapshot().notice).toBe(
         'Withdrawn. Auto mode asks about it again. Could not read the permissions again.',
       );
@@ -3905,9 +3914,9 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       // The command is over: a sheet opened later is an ordinary one, and closing it returns to the Home instead of ending the run.
       loads = 0;
       await openSheet(c);
-      expect(c.getSnapshot().permissionsSheet).toBeDefined();
+      expect(sheetOf(c)).toBeDefined();
       c.handleKey('', { escape: true });
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(
         onExit,
         'the flag did not outlive the sheet that closed on a fault',
@@ -3930,12 +3939,12 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
         { onExit },
       );
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
       fail = false;
       await openSheet(c);
       c.handleKey('', { escape: true });
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(onExit, 'the flag did not leak from the failed open').not.toHaveBeenCalled();
     });
 
@@ -3943,7 +3952,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       const onExit = vi.fn();
       const { c } = home(undefined, clock(), { onExit });
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(onExit).not.toHaveBeenCalled();
     });
 
@@ -3958,7 +3967,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       c.handleKey('', ENTER);
       expect(c.getSnapshot().mode).toBe('loading');
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(sheetOf(c)).toBeUndefined();
       expect(onExit).not.toHaveBeenCalled();
     });
 

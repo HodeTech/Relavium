@@ -14,6 +14,7 @@ import {
   type ReasoningEffort,
 } from '@relavium/shared';
 
+import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pricing-fields.js';
 import { sanitizeInline } from '../render/sanitize.js';
 
 /**
@@ -275,6 +276,21 @@ export function capUsd(microcents: number): string {
 }
 
 /**
+ * A price flag with the value it takes, spelled by the pricing field table (`--input USD_PER_MTOK`, `--image USD_PER_IMAGE`,
+ * `--audio USD_PER_SECOND`): the one table `relavium models pricing` itself parses, so a remedy printed here is a command the
+ * shell accepts and a new or renamed flag is one edit there, not a second copy to find. Bare words, never `<angle brackets>`:
+ * `<` and `>` are shell redirections, so a pasted remedy would read from a file named `p` and create one named `--image`.
+ */
+function priceFlagHint(field: PricingField): string {
+  return `${field.flag} ${field.placeholder}`;
+}
+
+/** The prices a model with no token price needs: the paired token fields (input and output), in the order the shell takes them. */
+const TOKEN_PRICE_HINTS = PRICING_FIELDS.filter((field) => field.pairedWith !== undefined).map(
+  priceFlagHint,
+);
+
+/**
  * What we tell a user when a turn ran on a model we could not PRICE (ADR-0071 §K7).
  *
  * A cost cap on an unpriced model is a hole: the governor cannot estimate a turn's cost, so it degrades to `allow`
@@ -310,10 +326,8 @@ export function unpricedModelNote(
     // (ADR-0044 §3). Printing `--audio USD_PER_MTOK` would send the user to a number a million times off.
     // Bare words, never `<angle brackets>`: `<` and `>` are shell redirections, so the pasted remedy would
     // read from a file named `p` and CREATE one named `--image` rather than running.
-    const flags = sorted
-      .map((m) => (m === 'image' ? '--image USD_PER_IMAGE' : `--${m} USD_PER_SECOND`))
-      .join(' ');
+    const flags = sorted.map((modality) => priceFlagHint(pricingField(modality))).join(' ');
     return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${flags}\`, or set ${strictSetting} to refuse it instead.`;
   }
-  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID --input USD_PER_MTOK --output USD_PER_MTOK\`, or set ${strictSetting} to refuse an unpriced model.`;
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${TOKEN_PRICE_HINTS.join(' ')}\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

@@ -51,14 +51,16 @@ const SURFACES: readonly {
   discloseNeedle?: RegExp;
 }[] = [
   {
-    file: 'commands/run.ts',
-    what: '`relavium run` — the workflow engine',
+    // The shared run core (`prepareRun`, which `relavium run` calls) builds the engine's ports.
+    file: 'run-core/prepare-run.ts',
+    what: '`relavium run` — the workflow engine, wired by the shared run core',
     needle: /effectJournal:\s*\(correlation/,
     resumeNeedle: /effectResume:\s*createEffectResumePort\(/,
   },
   {
-    file: 'commands/gate.ts',
-    what: '`relavium gate` — the FAR side of a human gate, where a tool-using node does its work',
+    // The shared resume core (`resumeRun`, which `relavium gate` calls) builds the engine's ports.
+    file: 'run-core/resume-run.ts',
+    what: '`relavium gate` — the FAR side of a human gate, where a tool-using node does its work; wired by the shared resume core',
     needle: /effectJournal:\s*\(correlation/,
     resumeNeedle: /effectResume:\s*createEffectResumePort\(/,
   },
@@ -110,8 +112,8 @@ describe('the effect journal is wired on every production surface (ADR-0080)', (
     // `session-host.ts` and `build-engine.ts` are the CONSTRUCTORS, not surfaces — they forward what a
     // surface supplies, which is why they are excluded rather than missing.
     expect(builders).toEqual([
-      'commands/run.ts',
-      'commands/gate.ts',
+      'run-core/prepare-run.ts',
+      'run-core/resume-run.ts',
       'commands/agent-run.ts',
       'commands/chat.ts',
       'home/drive-home.tsx',

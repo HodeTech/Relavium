@@ -101,3 +101,7 @@ future feature, deferral or claim of merge-commit execution.
 > product names/comparison references are removed from the explanatory prose.
 > The technical decision, status and guarantees are unchanged. See the
 > [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+The Home now also hosts workflow runs: a leg runs in the Home process, answers its own cards, and is departed before the Home's database closes. Its exit and lifecycle rules are in [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §6, and the strip's rows become actionable with an idle refresh ([ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §6). The 'read-only display' sentence stays as history.

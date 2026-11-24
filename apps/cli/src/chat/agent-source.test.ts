@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { KNOWN_PROVIDERS } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
 import { DEFAULT_CHAT_AGENT_ID, DEFAULT_CHAT_MODEL } from './default-agent.js';
+import { BARE_ID_WITHOUT_HOME } from '../workflows/resolve.js';
 import { resolveChatAgent } from './agent-source.js';
 
 const AGENT_YAML = [
@@ -19,16 +20,21 @@ const AGENT_YAML = [
 
 describe('resolveChatAgent', () => {
   let dir: string;
+  // The operator home a bare id is admitted against: a fresh directory, never the real one (the key is required).
+  let home: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'relavium-chat-agent-'));
+    home = mkdtempSync(join(tmpdir(), 'relavium-chat-agent-home-'));
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   it('binds the built-in default agent over [chat].default_model when no --agent is given', () => {
     const agent = resolveChatAgent(undefined, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: 'gpt-4o',
     });
@@ -42,6 +48,7 @@ describe('resolveChatAgent', () => {
     // map cannot place (`chat-latest`) still resolves. Without this passthrough it throws "cannot infer a provider".
     const agent = resolveChatAgent(undefined, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: 'chat-latest',
       defaultProvider: 'openai',
@@ -55,6 +62,7 @@ describe('resolveChatAgent', () => {
     try {
       resolveChatAgent(undefined, {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: undefined,
         defaultModel: 'chat-latest',
       });
@@ -67,6 +75,7 @@ describe('resolveChatAgent', () => {
   it('falls back to DEFAULT_CHAT_MODEL when neither --agent nor [chat].default_model is set', () => {
     const agent = resolveChatAgent(undefined, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: undefined,
     });
@@ -77,6 +86,7 @@ describe('resolveChatAgent', () => {
     const resolve = (keyed: readonly string[]) =>
       resolveChatAgent(undefined, {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: undefined,
         defaultModel: undefined,
         hasKey: (id) => keyed.includes(id),
@@ -100,6 +110,7 @@ describe('resolveChatAgent', () => {
     expect(
       resolveChatAgent(undefined, {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: undefined,
         defaultModel: 'claude-haiku-4-5',
         defaultProvider: 'anthropic',
@@ -111,6 +122,7 @@ describe('resolveChatAgent', () => {
     expect(
       resolveChatAgent(undefined, {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: undefined,
         defaultModel: undefined,
         defaultProvider: 'gemini',
@@ -122,6 +134,7 @@ describe('resolveChatAgent', () => {
   it('bakes opts.reasoningEffort onto the DEFAULT agent (ADR-0066)', () => {
     const agent = resolveChatAgent(undefined, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: 'claude-opus-4-8',
       reasoningEffort: 'high',
@@ -135,6 +148,7 @@ describe('resolveChatAgent', () => {
     writeFileSync(path, `${AGENT_YAML}\nreasoning_effort: off`); // the authored agent pins 'off'
     const agent = resolveChatAgent(path, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: undefined,
       reasoningEffort: 'high', // a config default MUST NOT override the authored agent's own tier
@@ -148,6 +162,7 @@ describe('resolveChatAgent', () => {
     writeFileSync(path, AGENT_YAML);
     const agent = resolveChatAgent(path, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: undefined,
     });
@@ -167,10 +182,57 @@ describe('resolveChatAgent', () => {
     writeFileSync(join(projectConfigDir, 'agents', filename), AGENT_YAML);
     const agent = resolveChatAgent('coder', {
       cwd: dir,
+      homeDir: home,
       projectConfigDir,
       defaultModel: undefined,
     });
     expect(agent.id).toBe('coder');
+  });
+
+  it('refuses a bare --agent id when the surface supplied no operator home, and reads nothing', () => {
+    // The admission is judged against the operator home; with none there is no read, never a fall back to the process's own home.
+    const projectConfigDir = join(dir, '.relavium');
+    mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
+    writeFileSync(join(projectConfigDir, 'agents', 'coder.agent.yaml'), AGENT_YAML);
+    let caught: unknown;
+    try {
+      resolveChatAgent('coder', {
+        cwd: dir,
+        homeDir: undefined,
+        projectConfigDir,
+        defaultModel: undefined,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('internal');
+      expect(caught.message).toBe(BARE_ID_WITHOUT_HOME);
+      expect(caught.message).not.toContain(dir);
+    }
+  });
+
+  it('still reads an explicit agent file path with no operator home: a path is not admitted against it', () => {
+    const path = join(dir, 'coder.agent.yaml');
+    writeFileSync(path, AGENT_YAML);
+    const agent = resolveChatAgent(path, {
+      cwd: dir,
+      homeDir: undefined,
+      projectConfigDir: undefined,
+      defaultModel: undefined,
+    });
+    expect(agent.id).toBe('coder');
+  });
+
+  it('binds the built-in default agent with no operator home: it reads no file, so it needs none', () => {
+    const agent = resolveChatAgent(undefined, {
+      cwd: dir,
+      homeDir: undefined,
+      projectConfigDir: undefined,
+      defaultModel: 'gpt-4o',
+    });
+    expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
   });
 
   it('is a clean exit-2 CliError when the --agent ref is not found', () => {
@@ -178,6 +240,7 @@ describe('resolveChatAgent', () => {
     try {
       resolveChatAgent('nope', {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: join(dir, '.relavium'),
         defaultModel: undefined,
       });
@@ -196,6 +259,7 @@ describe('resolveChatAgent', () => {
     try {
       resolveChatAgent('some-agent', {
         cwd: dir,
+        homeDir: home,
         projectConfigDir: undefined,
         defaultModel: undefined,
       });
@@ -218,6 +282,7 @@ describe('resolveChatAgent', () => {
     writeFileSync(path, yaml);
     const agent = resolveChatAgent(path, {
       cwd: dir,
+      homeDir: home,
       projectConfigDir: undefined,
       defaultModel: undefined,
     });
@@ -230,7 +295,12 @@ describe('resolveChatAgent', () => {
     writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1)); // one byte over the UTF-8 precheck
     let caught: unknown;
     try {
-      resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined });
+      resolveChatAgent(path, {
+        cwd: dir,
+        homeDir: home,
+        projectConfigDir: undefined,
+        defaultModel: undefined,
+      });
     } catch (err) {
       caught = err;
     }
@@ -247,7 +317,12 @@ describe('resolveChatAgent', () => {
     writeFileSync(path, 'id: bad\nprovider: not-a-provider\nmodel: m\nsystem_prompt: x');
     let caught: unknown;
     try {
-      resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined });
+      resolveChatAgent(path, {
+        cwd: dir,
+        homeDir: home,
+        projectConfigDir: undefined,
+        defaultModel: undefined,
+      });
     } catch (err) {
       caught = err;
     }

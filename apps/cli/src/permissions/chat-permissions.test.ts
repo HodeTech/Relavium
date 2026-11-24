@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalCache } from '../chat/chat-mode.js';
 import {
+  ALLOWLIST_UNREADABLE,
   createPermissionsPort,
+  MAX_ALLOWLIST_ENTRIES,
   MAX_ROW_TEXT,
   NOT_AVAILABLE,
   PROJECT_FAILURES,
@@ -63,6 +65,110 @@ const GRANTS: ListResult = {
     },
   ],
 };
+
+describe('readPermissions: the repository’s allowlist (ADR-0140 §3)', () => {
+  const withAllowlist = (read: NonNullable<PermissionsDeps['allowlist']>): PermissionsDeps => ({
+    ...deps({}),
+    allowlist: read,
+  });
+
+  it('has none where the surface lists none: the snapshot is exactly what it was, with no allowlist key at all', () => {
+    const snapshot = readPermissions(deps({ list: GRANTS }));
+    expect('allowlist' in snapshot).toBe(false);
+  });
+
+  it('lists the exact entries and the patterns the config resolves, and reads them again on every call', () => {
+    const read = vi
+      .fn<NonNullable<PermissionsDeps['allowlist']>>()
+      .mockReturnValueOnce({ commands: ['git status'], globs: ['npm *'] })
+      .mockReturnValueOnce({ commands: ['git status', 'npm test'], globs: undefined });
+    const d = withAllowlist(read);
+    expect(readPermissions(d).allowlist).toEqual({
+      ok: true,
+      commands: ['git status'],
+      globs: ['npm *'],
+      omitted: 0,
+    });
+    expect(readPermissions(d).allowlist).toEqual({
+      ok: true,
+      commands: ['git status', 'npm test'],
+      globs: [],
+      omitted: 0,
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('is empty, not unreadable, for a config that lists nothing', () => {
+    expect(
+      readPermissions(withAllowlist(() => ({ commands: undefined, globs: undefined }))).allowlist,
+    ).toEqual({
+      ok: true,
+      commands: [],
+      globs: [],
+      omitted: 0,
+    });
+  });
+
+  it('keeps at most the bound of each list and counts what it left out; each entry is cut like a command row', () => {
+    const many = (prefix: string, count: number): string[] =>
+      Array.from({ length: count }, (_, i) => `${prefix}${String(i)}`);
+    const list = readPermissions(
+      withAllowlist(() => ({
+        commands: many('c', MAX_ALLOWLIST_ENTRIES + 3),
+        globs: [...many('g', MAX_ALLOWLIST_ENTRIES + 2), 'x'.repeat(MAX_ROW_TEXT + 50)],
+      })),
+    ).allowlist;
+    if (list?.ok !== true) throw new Error('the allowlist was readable');
+    expect(list.commands).toHaveLength(MAX_ALLOWLIST_ENTRIES);
+    expect(list.globs).toHaveLength(MAX_ALLOWLIST_ENTRIES);
+    expect(list.omitted).toBe(3 + 3);
+    const long = readPermissions(
+      withAllowlist(() => ({ commands: ['x'.repeat(1_000_000)], globs: undefined })),
+    ).allowlist;
+    if (long?.ok !== true) throw new Error('the allowlist was readable');
+    expect([...(long.commands[0] ?? '')]).toHaveLength(MAX_ROW_TEXT);
+    expect(long.commands[0]?.endsWith('…')).toBe(true);
+  });
+
+  it('masks a secret before it cuts the entry: a token that straddles the cut is not left as a fragment', () => {
+    const secret = `sk-ant-api03-${'K'.repeat(40)}`;
+    // The token starts 24 characters before the cut, so the cut text alone would hold a fragment of it and no whole token.
+    const straddling = `${'a'.repeat(MAX_ROW_TEXT - 25)} ${secret} ${'b'.repeat(50)}`;
+    const list = readPermissions(
+      withAllowlist(() => ({ commands: [straddling], globs: [straddling] })),
+    ).allowlist;
+    if (list?.ok !== true) throw new Error('the allowlist was readable');
+    for (const entry of [...list.commands, ...list.globs]) {
+      expect(entry).toContain('[REDACTED]');
+      expect(entry).not.toContain('sk-ant');
+      expect(entry).not.toContain('KKKK');
+      expect([...entry].length).toBeLessThanOrEqual(MAX_ROW_TEXT);
+    }
+  });
+
+  it('says a config that cannot be read in a fixed sentence that carries nothing of the error, and still reads the rest', () => {
+    const snapshot = readPermissions({
+      ...deps({ list: GRANTS }),
+      allowlist: () => {
+        throw new Error('/secret/path/config.toml: bad entry "rm -rf"');
+      },
+    });
+    expect(snapshot.allowlist).toEqual({ ok: false, text: ALLOWLIST_UNREADABLE });
+    expect(JSON.stringify(snapshot.allowlist)).not.toContain('secret');
+    expect(snapshot.project.ok).toBe(true);
+  });
+
+  it('is carried by the port’s load, so a host that reads the port gets it with the rows', () => {
+    const port = createPermissionsPort(
+      {
+        ...deps({ list: GRANTS }),
+        allowlist: () => ({ commands: ['git status'], globs: undefined }),
+      },
+      'project',
+    );
+    expect(port.load().allowlist).toMatchObject({ ok: true, commands: ['git status'] });
+  });
+});
 
 describe('readPermissions', () => {
   it('lists the remembered commands by label and minute, and never an argument', () => {

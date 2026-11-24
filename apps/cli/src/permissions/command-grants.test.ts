@@ -4,6 +4,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -326,6 +327,8 @@ describe('the fold fails closed (ADR-0084 §5)', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain('relavium permissions revoke --all');
     expect(messages[0]).not.toContain('npm');
+    // The one place a person learns why remembered commands stopped working: the reason is in the message.
+    expect(messages[0]).toContain('a line does not parse');
   });
 
   it('a truncated TOMBSTONE does not resurrect the grant it was revoking', async () => {
@@ -341,6 +344,8 @@ describe('the fold fails closed (ADR-0084 §5)', () => {
     await grants.remember(['npm', 'test']);
     appendFileSync(file(), '\n{"v":1,"unexpected":true}\n');
     expect(grants.matches(['npm', 'test'])).toBe(false);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('a line is not a grant or a revocation');
   });
 
   it('a torn tail (a process killed mid-append) makes the store unreadable, and nothing is appended behind it', async () => {
@@ -756,6 +761,21 @@ describe('the file protocol', () => {
     expect(removeCommandGrantsFile(home)).toEqual({ ok: true, removed: true });
     expect(existsSync(target)).toBe(true);
     expect(() => lstatSync(file())).toThrow();
+  });
+
+  it('a grants file with a second hard link is not written through: the other name keeps its bytes and its mode', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    const other = join(home, 'other-name.txt');
+    linkSync(file(), other);
+    const before = readFileSync(other, 'utf8');
+    const modeBefore = statSync(other).mode & 0o777;
+    expect(await store().remember(['npm', 'run', 'build'])).toEqual({
+      ok: false,
+      reason: 'unwritable',
+    });
+    expect(readFileSync(other, 'utf8'), 'nothing was appended through the link').toBe(before);
+    expect(statSync(other).mode & 0o777).toBe(modeBefore);
   });
 
   it('a symlink to a REAL grants file is not followed either: the same grants would otherwise be honoured through a link', async () => {

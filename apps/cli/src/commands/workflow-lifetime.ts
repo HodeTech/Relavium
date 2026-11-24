@@ -3,7 +3,7 @@ import { toUserFacing } from '../process/errors.js';
 import { CliError } from '../process/cli-error.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { createCliInvocation } from '../process/invocation.js';
-import type { WorkflowSafetyExit } from '../process/exit-observations.js';
+import { safetyRank, type WorkflowSafetyExit } from '../process/exit-observations.js';
 import type { OwnerRetirement } from '../process/invocation-registry.js';
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -12,9 +12,10 @@ import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { WorkflowTerminal } from './workflow-terminal.js';
 import { ownNotification } from '../process/owned-notification.js';
 import type { EffectNoticeOwner } from '../engine/effect-retention.js';
+import type { RunLifetime } from '../run-core/run-lifetime.js';
 
 /** Single command owner: registration/signals precede its first owned asynchronous preparation. */
-export class WorkflowLifetime {
+export class WorkflowLifetime implements RunLifetime {
   readonly invocation: CliInvocation;
   readonly terminal: WorkflowTerminal;
   readonly effectNoticeOwner: EffectNoticeOwner;
@@ -139,8 +140,7 @@ export class WorkflowLifetime {
   }
   publish(safety: WorkflowSafetyExit | undefined, hostSafe: boolean): void {
     this.invocation.registry.observations.observeWorkflowSafety(safety);
-    const rank: Readonly<Record<WorkflowSafetyExit, number>> = { 8: 4, 7: 3, 5: 2, 6: 1 };
-    if (safety !== undefined && (this.#safety === undefined || rank[safety] > rank[this.#safety]))
+    if (safety !== undefined && safetyRank(safety) > safetyRank(this.#safety))
       this.#safety = safety;
     this.#hostSafe ||= hostSafe;
   }

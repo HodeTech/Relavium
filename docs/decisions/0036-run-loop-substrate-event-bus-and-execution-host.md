@@ -102,3 +102,15 @@ error. The [canonical consumption contract](../reference/contracts/sse-event-sch
 owns the API, defaults and host responsibilities. Step acceptance and independent reviews
 are recorded in the [W8 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10).
 Advisory readiness does not close the separately recorded exact-capacity residual.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+Additive to the run-event contract: an optional, content-free `toolActivity` array on `node:completed` and `node:failed` (`{ toolId, ok, durationMs }`, at most fifty entries plus `truncated`), and an exhaustiveness guard on the store's fold. No new event type. Older binaries ignore the field, which the lenient schemas allow. Per-node cost and attempt attribution are read from `cost:attempt_settled` ([ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md)), not added as a field. See [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4.
+
+### Amendment note — 2026-11-22 (MVP-8 step 1, the round-2 review)
+
+The node terminals' `toolActivity` entry carries `resultRecorded` (a required boolean distinguishing a refusal, a measured failure and an unpaired call), and a call is recorded when it starts. The bus event `agent:tool_result` carries an optional measured `durationMs`. Neither changes the event sequence or the checkpoint fold. See [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4 and the reference.
+
+### Correction note — 2026-11-22 (MVP-8 step 1, the round-4 review)
+
+The node terminals' count of calls beyond the kept entries is named `toolActivityTruncated` (as in the reference and in the shared schema). The 2026-11-22 note above says `truncated` and is corrected here; see [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4.

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +38,7 @@ import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createCommandGrantStore } from '../permissions/command-grants.js';
+import { NOT_WIRED_MARK } from '../render/tui/agent-sheet.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   ABORTED_EFFECT_ATTENTION_NOTICE,
@@ -57,6 +58,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { ChatApp, selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
+import { MAX_CATALOG_FILES } from '../workflows/catalog.js';
 import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
 import { captureIo, parseNdjson, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { processIo } from '../process/io.js';
@@ -100,6 +102,11 @@ const EMPTY_CHAT: ResolvedChatConfig = {
 
 const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
 
+/** The label `/agent` shows for the file the catalog-agent tests bind: relative to the working directory, never absolute. */
+const AGENT_LABEL = join('.relavium', 'agents', 'checker.agent.yaml');
+const escapeForRegExp = (text: string): string =>
+  text.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+
 function globalOptions(cwd: string): GlobalOptions {
   return { json: false, color: false, cwd, configPath: undefined, verbosity: 'normal' };
 }
@@ -121,9 +128,10 @@ function blockWorkflowsDir(cwd: string): void {
 }
 
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
-function linesDriver(lines: readonly string[]): ChatDriver {
+function linesDriver(lines: readonly string[], afterStart?: () => void): ChatDriver {
   return async (ctx) => {
     ctx.startSession();
+    afterStart?.(); // what the operator does between the session going live and the first command
     await ctx.onActivated?.(() => !ctx.shouldStop()); // a real driver activates after wiring its subscription
     for (const line of lines) {
       await ctx.processLine(line);
@@ -1078,6 +1086,63 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/workflows says why a catalog above the cap cannot be listed, in the cap`s own words, and the session survives', async () => {
+    mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+    for (let i = 0; i <= MAX_CATALOG_FILES; i += 1)
+      writeFileSync(join(cwd, '.relavium', 'workflows', `w${String(i)}.relavium.yaml`), '');
+    const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('could not list workflows: too many workflow files in the catalog');
+    expect(err(), 'the code alone is not the whole of what is said').not.toContain(
+      'could not list workflows: invalid_invocation',
+    );
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  describe('a config file that breaks mid-session is named without its absolute path (RUNCORE-3)', () => {
+    const breakGlobalConfig = (): void => {
+      mkdirSync(join(home, '.relavium'), { recursive: true });
+      writeFileSync(join(home, '.relavium', 'config.toml'), 'not = [valid');
+    };
+    const breakProjectConfig = (): void => {
+      mkdirSync(join(cwd, '.relavium'), { recursive: true });
+      writeFileSync(join(cwd, '.relavium', 'project.toml'), 'not = [valid');
+    };
+
+    it.each([
+      ['global', breakGlobalConfig, `~${sep}.relavium${sep}config.toml: is not valid TOML`],
+      ['project', breakProjectConfig, `.relavium${sep}project.toml: is not valid TOML`],
+    ])(
+      '/workflows with a broken %s config says which file, from `~` or the project, and the session survives',
+      async (_layer, breakConfig, named) => {
+        mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+        const { d, err, store, sessionId } = deps([], [textTurn('hi')]);
+        await chatCommand(
+          { agent: undefined },
+          { ...d, drive: linesDriver(['/workflows', 'hello', '/exit'], breakConfig) },
+        );
+        expect(err()).toContain(`could not list workflows: ${named}`);
+        expect(err(), 'neither the home nor the project root rides the transcript').not.toContain(
+          home,
+        );
+        expect(err()).not.toContain(cwd);
+        expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+      },
+    );
+
+    it('/export with a broken config says which file, from `~`, and not where it lives', async () => {
+      const { d, err } = deps([], [textTurn('hi')]);
+      await chatCommand(
+        { agent: undefined },
+        { ...d, drive: linesDriver(['hello', '/export', '/exit'], breakGlobalConfig) },
+      );
+      expect(err()).toContain(
+        `export failed: ~${sep}.relavium${sep}config.toml: is not valid TOML`,
+      );
+      expect(err()).not.toContain(home);
+    });
+  });
+
   it('/permissions on a headless chat says remembered commands are not available, never ends the session, and takes no argument (ADR-0137 §2)', async () => {
     const { d, err, store, sessionId } = deps(
       ['/permissions', '/permissions --revoke 1', 'hello', '/exit'],
@@ -1273,6 +1338,212 @@ describe('chatCommand', () => {
     expect(err()).toContain(
       "/permissions: unknown argument 'now'. Open /permissions and press d on a row to withdraw it.",
     );
+  });
+
+  it('/agent on a headless chat prints the bound agent’s fields as a notice, never ends the session, and takes no argument (ADR-0140 §3)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/agent', '/agent now', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    // The built-in default agent, from the definition the session holds: its id, name, provider, model, grant and prompt head.
+    expect(out).toContain('Agent · relavium-chat');
+    expect(out).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
+    expect(out).toMatch(/Provider\s+anthropic/u);
+    expect(out).toMatch(/Model\s+claude-sonnet-4-6/u);
+    // A headless chat has no question card, so the grant's `ask_user` is not offered and the notice says so (the count leads).
+    expect(out).toMatch(/Tools\s+\d+ of 9 offered: read_file, list_directory/u);
+    expect(out).toContain(`ask_user ${NOT_WIRED_MARK}`);
+    expect(out, 'a definition the host owns has no file to name').not.toMatch(/\bFile\s/u);
+    expect(out).toMatch(/System prompt\s+You are Relavium's built-in chat assistant/u);
+    expect(
+      out,
+      'the dispatch rejects a typed token, as it does for every zero-argument command',
+    ).toContain("/agent: unknown argument 'now'.");
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  /** A project agent file under `.relavium/agents/` of the test's working directory, granting `tools`; its path. */
+  const writeCatalogAgent = (tools: readonly string[]): string => {
+    mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
+    const file = join(cwd, '.relavium', 'agents', 'checker.agent.yaml');
+    writeFileSync(
+      file,
+      [
+        'id: checker',
+        'name: Checker',
+        'provider: anthropic',
+        'model: claude-sonnet-4-6',
+        'system_prompt: Check things.',
+        'tools:',
+        ...tools.map((tool) => `  - ${tool}`),
+        '',
+      ].join('\n'),
+    );
+    return file;
+  };
+
+  it('/agent on a chat bound to a catalog file names the file, and marks the declared tool this host does not wire (register: MVP-8 step 5)', async () => {
+    const file = writeCatalogAgent(['read_file', 'ask_user']);
+    const { d, err } = deps(['/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: file }, d);
+    const out = err();
+    expect(out).toContain('Agent · checker');
+    // The label is relative, never the absolute path the file was read from.
+    expect(out).toMatch(new RegExp(String.raw`File\s+${escapeForRegExp(AGENT_LABEL)}$`, 'mu'));
+    expect(out).not.toContain(cwd);
+    // The grant exactly as declared, with `ask_user` marked: a headless chat has no question card to put it on.
+    expect(out).toMatch(
+      /Tools\s+1 of 2 offered: read_file,\s+ask_user \(not available in this chat\)/u,
+    );
+  });
+
+  it('/agent on a chat whose host wires every declared tool shows the file and no mark and no count', async () => {
+    const file = writeCatalogAgent(['read_file', 'search_files']);
+    const { d, err } = deps(['/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: file }, d);
+    const out = err();
+    expect(out).toMatch(new RegExp(String.raw`File\s+${escapeForRegExp(AGENT_LABEL)}$`, 'mu'));
+    expect(out).toMatch(/Tools\s+read_file, search_files$/mu);
+    expect(out).not.toContain(NOT_WIRED_MARK);
+    expect(out).not.toContain('offered');
+  });
+
+  it('an interactive chat hands the driver a view that names the file and marks only what ITS host does not wire (a question card is wired there)', async () => {
+    const file = writeCatalogAgent(['read_file', 'ask_user', 'invoke_agent']);
+    const { d } = deps([], [textTurn('unused')]);
+    const seen: { label: string | undefined; unwired: readonly boolean[] | undefined }[] = [];
+    await chatCommand(
+      { agent: file },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          ctx.startSession();
+          void ctx.onActivated?.(() => !ctx.shouldStop());
+          const view = ctx.boundAgent?.();
+          seen.push({ label: view?.sourceLabel, unwired: view?.toolOffer?.unwired });
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    // `ask_user` is offered where a person can answer; `invoke_agent` is wired nowhere.
+    expect(seen).toEqual([{ label: AGENT_LABEL, unwired: [false, false, true] }]);
+  });
+
+  it('/agent shows the reasoning effort the session uses now, the footer’s, and says what the definition declares when that differs (ADR-0140 §3)', async () => {
+    const { d, err } = deps(['/agent', '/effort high', '/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: undefined }, d);
+    const shown = err()
+      .split('\n')
+      .filter((line) => line.includes('Reasoning effort'));
+    // Before `/effort`: no tier on the session and none in the definition. After it: the session's, and the definition's own is named.
+    expect(shown).toHaveLength(2);
+    expect(shown[0]).toMatch(/Reasoning effort\s+not set$/u);
+    expect(shown[1]).toMatch(/Reasoning effort\s+high \(declared: not set\)$/u);
+  });
+
+  it('an interactive chat hands the driver a view that follows /effort, made afresh on each call (ADR-0140 §3)', async () => {
+    const { d } = deps([], [textTurn('unused')]);
+    const seen: (string | undefined)[] = [];
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          ctx.startSession();
+          void ctx.onActivated?.(() => !ctx.shouldStop());
+          seen.push(ctx.boundAgent?.().sessionEffort);
+          await ctx.processLine('/effort high');
+          seen.push(ctx.boundAgent?.().sessionEffort);
+          seen.push(ctx.boundAgent?.().detail.reasoningEffort);
+          return { kind: 'exit' };
+        },
+      },
+    );
+    expect(seen).toEqual([undefined, 'high', undefined]);
+  });
+
+  it('chat --json /agent writes the fields to stderr, never to the stdout NDJSON stream', async () => {
+    const { io, out, err } = captureIo();
+    const store = createSessionStore(client.db);
+    let id = 0;
+    const d: ChatCommandDeps = {
+      io: { ...io, stdin: Readable.from(['/agent\n']) },
+      global: { ...globalOptions(cwd), json: true },
+      providers: scriptedResolver([textTurn('unused')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: driveJson,
+      now: () => 0,
+      uuid: () => `id-${id++}`,
+    };
+    expect(await chatCommand({ agent: undefined }, d)).toBe(EXIT_CODES.chatEnded);
+    parseNdjson(out()); // throws if a human line leaked onto stdout
+    expect(out()).not.toContain('Agent ·');
+    expect(out()).not.toContain('System prompt'); // the model rides `session:started`, so a field label is the leak test
+    expect(err()).toContain('Agent · relavium-chat');
+    expect(err()).toMatch(/Model\s+claude-sonnet-4-6/u);
+  });
+
+  it.each([
+    {
+      label: 'an interactive chat hands the driver',
+      interactive: true,
+      expected: 'claude-sonnet-4-6',
+    },
+    { label: 'a plain chat hands the driver no', interactive: false, expected: undefined },
+  ])(
+    '$label bound-agent view of the session’s own definition (ADR-0140 §3)',
+    async ({ interactive, expected }) => {
+      const { d } = deps([], [textTurn('unused')]);
+      let seen: string | undefined = 'not driven';
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          ...(interactive ? { io: { ...d.io, stdoutIsTty: true, stdinIsTty: true } } : {}),
+          drive: (ctx) => {
+            seen = ctx.boundAgent?.().detail.model;
+            ctx.startSession();
+            void ctx.onActivated?.(() => !ctx.shouldStop());
+            return Promise.resolve({ kind: 'exit' });
+          },
+        },
+      );
+      expect(seen).toBe(expected);
+    },
+  );
+
+  it('after a /models reseat the driver’s bound-agent view shows the reseated model, not the one the chat started on (ADR-0140 §3)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    const views: (string | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      views.push(ctx.boundAgent?.().detail.model);
+      ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
+    );
+    expect(views).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8']);
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {

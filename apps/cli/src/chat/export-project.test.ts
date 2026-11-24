@@ -90,6 +90,8 @@ describe('exportSessionToProject (MVP-A3)', () => {
   let client: DbClient;
   let store: SessionStore;
   let cwd: string;
+  /** A temporary operator home: the path rules read it, so no test reaches the real one. */
+  let homeDir: string;
   const workflows = (): string => join(cwd, '.relavium', 'workflows');
   const file = (id: string): string => join(workflows(), `${id}.relavium.yaml`);
   const idIn = (path: string): RegExpMatchArray | null =>
@@ -105,20 +107,23 @@ describe('exportSessionToProject (MVP-A3)', () => {
       store.appendMessage(message(id, 1, 'assistant'));
     }
     cwd = mkdtempSync(join(tmpdir(), 'relavium-export-project-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'relavium-export-project-home-'));
   });
   afterEach(() => {
     client.sqlite.close();
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   const exportS1 = (projectConfigDir: string | undefined = join(cwd, '.relavium')) =>
-    exportSessionToProject({ store, sessionId: 's1', cwd, projectConfigDir });
+    exportSessionToProject({ store, sessionId: 's1', cwd, homeDir, projectConfigDir });
 
   it('writes into .relavium/workflows/ under the title slug, never a UUID file in the cwd', () => {
     const result = exportSessionToProject({
       store,
       sessionId: 's1',
       cwd,
+      homeDir,
       projectConfigDir: undefined,
     });
     expect(result.path).toBe(file('my-session'));
@@ -149,6 +154,7 @@ describe('exportSessionToProject (MVP-A3)', () => {
         store,
         sessionId: 's2',
         cwd,
+        homeDir,
         projectConfigDir: join(cwd, '.relavium'),
       }).workflowId,
     ).toBe('my-session-4');
@@ -188,6 +194,7 @@ describe('exportSessionToProject (MVP-A3)', () => {
       store,
       sessionId: 's2',
       cwd,
+      homeDir,
       projectConfigDir: join(cwd, '.relavium'),
     });
     expect(other.workflowId).toBe('my-session-2');
@@ -202,6 +209,7 @@ describe('exportSessionToProject (MVP-A3)', () => {
       store,
       sessionId: 's1',
       cwd,
+      homeDir,
       projectConfigDir: undefined,
     });
     expect(result.workflowId).toBe('my-session-2');
@@ -225,6 +233,7 @@ describe('exportSessionToProject (MVP-A3)', () => {
         store,
         sessionId: 's3',
         cwd,
+        homeDir,
         projectConfigDir: join(cwd, '.relavium'),
       }).workflowId,
     ).toBe('aux-2');
@@ -289,7 +298,13 @@ describe('exportSessionToProject (MVP-A3)', () => {
     const refusal = (): string => {
       let caught: unknown;
       try {
-        exportSessionToProject({ store, sessionId: 's1', cwd, projectConfigDir: undefined });
+        exportSessionToProject({
+          store,
+          sessionId: 's1',
+          cwd,
+          homeDir,
+          projectConfigDir: undefined,
+        });
       } catch (error) {
         caught = error;
       }

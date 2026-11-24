@@ -7,9 +7,18 @@
  * proves the code believes it did not spawn.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 import type { McpServerRef } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -118,8 +127,59 @@ describe('assertStdioConsent — nothing spawns without a decision (ADR-0084 §1
       prompt: () => Promise.resolve(true),
     });
     expect(err()).toContain('could not be read');
-    expect(err()).toContain(store);
+    // Named from `~`, so a transcript or a screen share does not carry the operator's directory layout away.
+    expect(err()).toContain(`~${sep}.relavium${sep}mcp-consent.ndjson could not be read`);
+    expect(err()).not.toContain(home);
+    // And the way out: a store that cannot be read stays unread (every later approval would be appended and never seen) until the file
+    // is deleted or moved aside, which only the person can do.
+    expect(err()).toContain('Delete the file or move it aside to start a new grant log.');
   });
+
+  // A symbolic link is not created on every Windows account.
+  it.skipIf(process.platform === 'win32')(
+    'does NOT honour a grant read through a symbolic link, says so without a path, and refuses to record into it',
+    async () => {
+      const store = mcpConsentPath(home);
+      const deps = {
+        global: globalOptions(),
+        homeDir: home,
+        now: () => '2026-08-20T00:00:00.000Z',
+      };
+      let asked = 0;
+      const prompt = (): Promise<boolean> => {
+        asked += 1;
+        return Promise.resolve(true);
+      };
+      const first = io();
+      await assertStdioConsent([ref()], process.cwd(), { ...deps, io: first.io, prompt });
+      expect(asked).toBe(1);
+      expect(first.err()).not.toContain('could not be read'); // a readable store: no warning
+      // The store is moved aside and a link to it takes its place: the grant is still readable THROUGH the link.
+      const moved = join(home, 'moved-store.ndjson');
+      renameSync(store, moved);
+      symlinkSync(moved, store);
+      const before = readFileSync(moved, 'utf8');
+
+      const second = io();
+      await expect(
+        assertStdioConsent([ref()], process.cwd(), { ...deps, io: second.io, prompt }),
+      ).rejects.toSatisfy(isCliError);
+      expect(asked).toBe(2); // the grant behind the link was not honoured, so it asked again
+      expect(second.err()).toContain(`~${sep}.relavium${sep}mcp-consent.ndjson could not be read`);
+      expect(readFileSync(moved, 'utf8')).toBe(before); // and nothing was written through the link
+      // Neither the warning nor the failure that follows the answer names the operator's directory.
+      expect(second.err()).not.toContain(home);
+      try {
+        await assertStdioConsent([ref()], process.cwd(), { ...deps, io: io().io, prompt });
+        expect.unreachable('a consent that cannot be recorded must not let the run start');
+      } catch (error) {
+        if (!isCliError(error)) throw error;
+        expect(error.message).toContain(`recorded in ~${sep}.relavium${sep}mcp-consent.ndjson`);
+        expect(error.message).toContain('symbolic link');
+        expect(error.message).not.toContain(home);
+      }
+    },
+  );
 
   it('refuses a declaration carrying a LONE SURROGATE rather than crashing (§10.15)', async () => {
     // §3 refuses it "at parse": the string has no UTF-8 encoding, so a non-TypeScript implementation of the
@@ -275,6 +335,64 @@ describe('non-interactive: refuse with the digest, never prompt (ADR-0084 §6)',
     const digest = /v1:[0-9a-f]{64}/.exec(err())?.[0] ?? '';
     await assertStdioConsent([ref()], process.cwd(), { ...deps, allowedDigests: [digest] });
     expect(() => readFileSync(mcpConsentPath(home), 'utf8')).toThrow();
+  });
+});
+
+describe('a native card answers where the terminal signals do not (ADR-0139 §4)', () => {
+  // A hosted leg's `io` reports non-TTY on purpose, so the four-way precondition is false for it. The Home's card is its own host's
+  // input owner: it asks, and it is the only prompt a hosted leg can open.
+  it('asks through the card with no TTY at all, and never without a prompter', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false, stdinIsTty: false, env: { CI: 'true' } });
+    const deps = { io: cliIo, global: globalOptions(), homeDir: home };
+    const subjects: string[] = [];
+    await assertStdioConsent([ref()], process.cwd(), {
+      ...deps,
+      nativeCard: true,
+      prompt: (subject: ConsentSubject) => {
+        subjects.push(subject.serverId);
+        return Promise.resolve(true);
+      },
+    });
+    expect(subjects).toEqual(['fs']);
+
+    // The flag alone is not a way to ask: with no card wired the gate refuses with the digest, exactly as for a script.
+    const refused: unknown = await assertStdioConsent(
+      [ref({ id: 'other', args: ['--other'] })],
+      process.cwd(),
+      {
+        ...deps,
+        nativeCard: true,
+      },
+    ).catch((caught: unknown) => caught);
+    expect(isCliError(refused) && refused.message).toContain('--allow-mcp-stdio');
+  });
+
+  it('a card that refuses stops the run and writes no grant', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false, stdinIsTty: false });
+    const error: unknown = await assertStdioConsent([ref()], process.cwd(), {
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      nativeCard: true,
+      prompt: () => Promise.resolve(false),
+    }).catch((caught: unknown) => caught);
+    expect(isCliError(error) && error.message).toContain('was not approved');
+    expect(() => readFileSync(mcpConsentPath(home), 'utf8')).toThrow();
+  });
+
+  it('without the flag the terminal signals still decide, so no other host gains a way to ask', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false });
+    let asked = 0;
+    await assertStdioConsent([ref()], process.cwd(), {
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      prompt: () => {
+        asked += 1;
+        return Promise.resolve(true);
+      },
+    }).catch(() => undefined);
+    expect(asked).toBe(0);
   });
 });
 

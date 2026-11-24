@@ -1,5 +1,5 @@
-import type { ModelCatalogStore, ProviderStore } from '@relavium/db';
-import { catalogModel, catalogPricing } from '@relavium/llm';
+import type { ModelCatalogStore, ModelCatalogUpsert, ProviderStore } from '@relavium/db';
+import { catalogModel, catalogPricing, type ModelPricing } from '@relavium/llm';
 
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -7,10 +7,58 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
+import {
+  PRICING_FIELDS,
+  modelIdFault,
+  modelIdSentence,
+  noTokenPriceSentence,
+  pairingIssue,
+  pairingSentence,
+  priceToMicrocents,
+  pricingField,
+  usdTextOfMicrocents,
+  type PriceArgs,
+  type PriceColumn,
+  type PricingFieldId,
+  type PricingNaming,
+} from './pricing-fields.js';
 
-/** Integer micro-cents/MTok → a USD string, for echoing the catalog price an override replaces (ADR-0071 §5). */
-function microcentsToUsd(microcents: number): string {
-  return (microcents / 100_000_000).toString();
+/**
+ * SET a price, or CLEAR one — a discriminated union, so a `--clear` invocation cannot carry a price and a set
+ * invocation cannot forget one. The two are different acts, and typing them as one optional-riddled shape is how a
+ * half-applied invocation gets written.
+ */
+export type ModelsPricingCommandArgs = SetPricingArgs | ClearPricingArgs;
+
+export interface SetPricingArgs extends PriceArgs {
+  readonly clear?: undefined;
+  /** The model id to price. Since ADR-0071 §1 this MAY be one the catalog already knows — the user outranks it. */
+  readonly model: string;
+  /** The provider slug that serves the model — must be registered, AND must be the one the catalog anchors the model
+   *  to (a contradicting price would never be applied anywhere, so it is refused rather than stored). */
+  readonly provider: string;
+  // The prices are the field table's ({@link PRICING_FIELDS}); each is present only when it was stated, and each is
+  // quoted in the field's unit — USD per million tokens for the token three, USD per BILLED UNIT (an image, a second;
+  // ADR-0044 §3's canonical units, ADR-0089 §4) for the media three.
+  //
+  // `inputUsdPerMtok` and `outputUsdPerMtok` are **given together or not at all** (the pairing rule). They are optional
+  // since [ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c): a MEDIA-ONLY invocation is
+  // how a user satisfies a strict cap that refused a generation on a model the catalog already prices for tokens. Forcing
+  // token rates there would make them restate numbers they may not know into a row that outranks the catalog — and the
+  // plausible-looking `--input 0 --output 0` would then bill every token on that model at nothing. Omitted ⇒ the upsert
+  // omits the column and the store preserves whatever the row already had.
+  //
+  // `cachedInputUsdPerMtok` omitted ⇒ the row records that it was NOT stated (migration 0011), and a reader derives it: the
+  // catalog's cache DISCOUNT applied to the input rate the user gave. A stated `0` is believed: the flag is what lets a
+  // stored `0` mean "free" rather than "nobody said". The media columns are NULLABLE, so a stated `0` and an unstated
+  // rate are already distinct on disk and need no companion flag.
+}
+
+/** `models pricing <model> --provider <p> --clear` — retire the override; the model falls back to the catalog. */
+export interface ClearPricingArgs {
+  readonly clear: true;
+  readonly model: string;
+  readonly provider: string;
 }
 
 export interface ModelsPricingCommandDeps {
@@ -22,125 +70,73 @@ export interface ModelsPricingCommandDeps {
   readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'listAll' | 'clearUserPricing'>;
   /** The provider registry — resolves the `<slug>` → its internal `llm_providers` UUID (the catalog FK). */
   readonly providers: Pick<ProviderStore, 'list'>;
+  /**
+   * Runs {@link commitPricing}'s re-check and its write as ONE unit, in an IMMEDIATE transaction (`db.transaction(work, { behavior:
+   * 'immediate' })`), so nothing can write between the re-check and the write. Absent ⇒ the work simply runs (a test with no
+   * database; the output is the same).
+   */
+  readonly atomically?: <T>(work: () => T) => T;
 }
 
-/** 1 USD/Mtok = 1e8 micro-cents/Mtok (ADR-0065 §2 — the exact inverse of `@relavium/llm`'s in-code `usd()`). */
-const USD_PER_MTOK_TO_MICROCENTS = 100_000_000;
-/**
- * A typo/absurdity ceiling: no real model is $100,000 / Mtok. It also keeps the micro-cent product ($100k × 1e8 =
- * 1e13) far under `Number.MAX_SAFE_INTEGER` (~9.007e15), so the integer never loses precision on the way to the DB.
- */
-const MAX_USD_PER_MTOK = 100_000;
-
-/** Convert one USD/Mtok flag to integer micro-cents, rejecting a non-finite / negative / absurd value (exit 2). */
-function usdToMicrocents(usdPerMtok: number, flag: string): number {
-  if (!Number.isFinite(usdPerMtok) || usdPerMtok < 0) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} must be a finite, non-negative number of USD per million tokens`,
-    );
-  }
-  if (usdPerMtok > MAX_USD_PER_MTOK) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} ($${usdPerMtok}/Mtok) is implausibly large — the maximum is $${MAX_USD_PER_MTOK}/Mtok`,
-    );
-  }
-  return Math.round(usdPerMtok * USD_PER_MTOK_TO_MICROCENTS);
+/** What {@link preparePricing} reads. It writes nothing, so it takes no store method that does. */
+export interface PreparePricingDeps {
+  readonly catalog: Pick<ModelCatalogStore, 'listAll'>;
+  readonly providers: Pick<ProviderStore, 'list'>;
 }
 
 /**
- * A single media unit's price is orders of magnitude larger than a token's, so it gets its own ceiling: an
- * image or a second of video at $1000 is already absurd, while $1000/Mtok is merely expensive.
+ * What {@link commitPricing} writes through: the one write of the command, and the reads of the one rule it checks again (the
+ * cross-provider duplicate), which another process can break between the prepare and the commit.
  */
-const MAX_USD_PER_MEDIA_UNIT = 1_000;
-
-/**
- * USD per BILLED MEDIA UNIT → integer µ¢ ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
- *
- * The scalar is the same USD→µ¢ conversion {@link usdToMicrocents} uses; what differs is the *denominator* the
- * stored number is understood against. A token rate is per MILLION tokens and is divided by 1e6 at use; a media
- * rate is per ONE image / ONE second and is not (ADR-0044 §3's canonical billed units).
- *
- * **An earlier version of this comment claimed routing `--image` through the per-Mtok validator would "store a
- * rate a million times too small". That is wrong** — both functions multiply by the same constant, so the
- * stored integer would be identical. The two real differences are the CEILING ({@link MAX_USD_PER_MEDIA_UNIT}
- * vs the per-Mtok one, and $1000 per image is already absurd where $1000/Mtok is merely expensive) and the
- * error sentence, which has to name the right denominator or a user pricing one image will enter a millionth
- * of the number they meant. Kept separate for those two reasons, not for an arithmetic one.
- *
- * `0` is accepted and meaningful: it records "this modality is free, and I am telling you so", which the
- * NULLABLE column can hold distinctly from "nobody has said" (see `mediaRates` in `model-catalog-view.ts`).
- */
-function usdPerUnitToMicrocents(usdPerUnit: number, flag: string): number {
-  if (!Number.isFinite(usdPerUnit) || usdPerUnit < 0) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} must be a finite, non-negative number of USD per billed unit`,
-    );
-  }
-  if (usdPerUnit > MAX_USD_PER_MEDIA_UNIT) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} ($${usdPerUnit}) is implausibly large — the maximum is $${MAX_USD_PER_MEDIA_UNIT} per unit`,
-    );
-  }
-  return Math.round(usdPerUnit * USD_PER_MTOK_TO_MICROCENTS);
+export interface CommitPricingDeps {
+  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'clearUserPricing' | 'listAll'>;
+  readonly providers: Pick<ProviderStore, 'list'>;
+  /** See {@link ModelsPricingCommandDeps.atomically}. */
+  readonly atomically?: <T>(work: () => T) => T;
 }
 
 /**
- * SET a price, or CLEAR one — a discriminated union, so a `--clear` invocation cannot carry a price and a set
- * invocation cannot forget one. The two are different acts, and typing them as one optional-riddled shape is how a
- * half-applied invocation gets written.
+ * One price a SET states: the field and the integer micro-cents that will be stored. The USD as it was typed is not kept: every line
+ * that names a price says the stored integer ({@link usdTextOfMicrocents}), so no sentence can say a price the database does not hold.
  */
-export type ModelsPricingCommandArgs = SetPricingArgs | ClearPricingArgs;
+export interface PlannedPrice {
+  readonly id: PricingFieldId;
+  readonly microcents: number;
+}
 
-export interface SetPricingArgs {
-  readonly clear?: undefined;
-  /** The model id to price. Since ADR-0071 §1 this MAY be one the catalog already knows — the user outranks it. */
+/**
+ * Everything a SET will do, decided and validated, with nothing written: the model and provider, the prices it states (in the field
+ * table's order) and the exact row the store will be given. The Home's card shows this; {@link commitPricing} writes exactly this.
+ */
+export interface SetPricingPlan {
+  readonly kind: 'set';
   readonly model: string;
-  /** The provider slug that serves the model — must be registered, AND must be the one the catalog anchors the model
-   *  to (a contradicting price would never be applied anywhere, so it is refused rather than stored). */
   readonly provider: string;
-  /**
-   * Input and output prices, USD per million tokens. **Given together or not at all.**
-   *
-   * Optional since [ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c): a
-   * MEDIA-ONLY invocation (`--image`/`--audio`/`--video` with no token flags) is how a user satisfies a strict
-   * cap that refused a generation on a model the catalog already prices for tokens. Forcing token rates there
-   * would make them restate numbers they may not know into a row that outranks the catalog — and the
-   * plausible-looking `--input 0 --output 0` would then bill every token on that model at nothing.
-   *
-   * The arg builder enforces the pairing and the "at least one price" rule; omitted ⇒ the upsert omits the
-   * columns and the store preserves whatever the row already had.
-   */
-  readonly inputUsdPerMtok?: number;
-  readonly outputUsdPerMtok?: number;
-  /**
-   * Cache-read price, USD per million tokens.
-   *
-   * Omitted ⇒ the row records that it was NOT stated (migration 0011), and a reader derives it: the catalog's cache
-   * DISCOUNT applied to the input rate the user gave. `--cached 0` is a real instruction and is believed — the flag
-   * is what lets a stored `0` mean "free" rather than "nobody said".
-   */
-  readonly cachedInputUsdPerMtok?: number;
-  /**
-   * Per-modality media-OUTPUT prices in USD per **billed unit** — image per IMAGE, audio and video per SECOND
-   * (ADR-0044 §3's canonical units; ADR-0089 §4).
-   *
-   * These exist so a `strict_cost_cap` refusal has an answer. Under strict mode a generation whose modality the
-   * catalog cannot price is refused pre-egress — correctly, since the cap cannot bound a charge it cannot see —
-   * and until these flags existed the only thing a user could do about it was turn the cap off. No shipped
-   * catalog row carries a media rate, so for now this is the ONLY way to price one.
-   *
-   * Omitted ⇒ the column is left alone and the store preserves whatever is there (the `--cached` rule). An
-   * explicit `0` is written and believed: the NULLABLE column distinguishes "free, stated" from "never stated",
-   * so unlike `--cached` no separate `…Stated` flag is needed.
-   */
-  readonly imageUsdPerCount?: number;
-  readonly audioUsdPerSecond?: number;
-  readonly videoUsdPerSecond?: number;
+  readonly providerId: string;
+  readonly prices: readonly PlannedPrice[];
+  /** The upsert, exactly as the store will receive it: a pricing-only patch, so every column it omits is PRESERVED. */
+  readonly upsert: ModelCatalogUpsert;
+  /** The catalog's own price for the model, which a stated token or cached price replaces; `undefined` when it prices none. */
+  readonly shipped: ModelPricing | undefined;
 }
+
+/** A CLEAR, decided with nothing written: whether the operator has an override for the model now, and what the catalog would give. */
+export interface ClearPricingPlan {
+  readonly kind: 'clear';
+  readonly model: string;
+  readonly provider: string;
+  readonly providerId: string;
+  /** Whether an active `source='user'` row exists for this model and provider as of the prepare. The commit's answer is the truth. */
+  readonly hasOverride: boolean;
+  readonly shipped: ModelPricing | undefined;
+}
+
+export type PricingPlan = SetPricingPlan | ClearPricingPlan;
+
+/** What a commit did: a SET wrote its row; a CLEAR retired a row, or found none to retire. */
+export type PricingOutcome =
+  | { readonly kind: 'set' }
+  | { readonly kind: 'clear'; readonly cleared: boolean };
 
 /** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
 const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
@@ -160,93 +156,22 @@ function shellArg(value: string): string {
   return `'${escaped}'`;
 }
 
+// ── prepare: resolve, validate, plan — and write nothing ───────────────────────────────────────────────────────────────────
+
 /**
- * The `--json` record for a completed write — the stored micro-cents, echoed back.
+ * Decide what `models pricing` will do, and refuse what it must refuse, WITHOUT writing: the provider and the catalog's anchoring
+ * are resolved, the prices are validated against the field table and converted, and the result is the plan {@link commitPricing}
+ * writes. A refusal is a thrown {@link CliError} (a clean exit `2`, nothing written).
  *
- * Lifted out of {@link modelsPricingCommand}: the omission rules (a field the invocation did not write is
- * ABSENT, not `0`) are a contract worth reading on its own, and inlining them pushed that function's
- * cognitive complexity from 37 to 42.
+ * The shell calls this, then {@link commitPricing}, then prints; the Home's `/pricing` form calls the same two steps and shows the
+ * plan on a card between them, so the card says exactly what the write does. `naming` is how a refusal names a field: by the
+ * shell's flag (the default, and what the shell pins) or by the form's label.
  */
-function pricingJsonRecord(
+export function preparePricing(
   args: ModelsPricingCommandArgs,
-  written: {
-    readonly inputCostPerMtokMicrocents: number | undefined;
-    readonly outputCostPerMtokMicrocents: number | undefined;
-    readonly cachedInputCostPerMtokMicrocents: number | undefined;
-    readonly mediaImageCostMicrocents: number | undefined;
-    readonly mediaAudioCostMicrocents: number | undefined;
-    readonly mediaVideoCostMicrocents: number | undefined;
-  },
-): Record<string, unknown> {
-  const {
-    inputCostPerMtokMicrocents,
-    outputCostPerMtokMicrocents,
-    cachedInputCostPerMtokMicrocents,
-    mediaImageCostMicrocents,
-    mediaAudioCostMicrocents,
-    mediaVideoCostMicrocents,
-  } = written;
-  return {
-    model: args.model,
-    provider: args.provider,
-    source: 'user',
-    // Absent on a media-only invocation, which is exactly what a machine consumer needs to know: the token
-    // columns were PRESERVED, not written. Emitting a `0` here would report a price nobody set.
-    ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
-    ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
-    // OMITTED when `--cached` was not given, exactly like the two token fields above. It used to stay
-    // present as `0` "unchanged contract" — but the store PRESERVES the existing cached rate rather
-    // than writing that `0`, so the field reported a value the database does not hold. A machine
-    // consumer confirming the write it just made was told a number nobody set, and the canonical CLI
-    // doc says an unspecified field is omitted.
-    ...(cachedInputCostPerMtokMicrocents === undefined ? {} : { cachedInputCostPerMtokMicrocents }),
-    // The media rates this invocation wrote, in the canonical stored unit. Omitted when not stated — a
-    // script automating the strict-cap remedy has to be able to confirm the write it just made, and the
-    // human path already echoes them (ADR-0089 §4(c)).
-    ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
-    ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
-    ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
-    // The catalog price this override REPLACES (ADR-0071 §5). A machine consumer must be able to see the
-    // divergence for the same reason a human must: the flip removed the guard that made mispricing a
-    // shipped model impossible. Three states, and each says something different — `null` when the catalog
-    // does not price the model at all (the case the user tier was invented for), the shipped numbers when
-    // it does, and ABSENT when this invocation wrote no token or cache price, because a media-only
-    // re-price replaces nothing and claiming otherwise is the opposite of the transparency this is for.
-    ...(inputCostPerMtokMicrocents === undefined && cachedInputCostPerMtokMicrocents === undefined
-      ? {}
-      : {
-          overriddenCatalogPrice: ((): unknown => {
-            const shipped = catalogPricing(args.model);
-            return shipped === undefined
-              ? null
-              : {
-                  inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
-                  outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
-                  cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
-                };
-          })(),
-        }),
-  };
-}
-
-/** `models pricing <model> --provider <p> --clear` — retire the override; the model falls back to the catalog. */
-export interface ClearPricingArgs {
-  readonly clear: true;
-  readonly model: string;
-  readonly provider: string;
-}
-
-export interface ModelsPricingCommandDeps {
-  readonly io: CliIo;
-  readonly global: GlobalOptions;
-  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'listAll' | 'clearUserPricing'>;
-  readonly providers: Pick<ProviderStore, 'list'>;
-}
-
-export function modelsPricingCommand(
-  args: ModelsPricingCommandArgs,
-  deps: ModelsPricingCommandDeps,
-): ExitCode {
+  deps: PreparePricingDeps,
+  naming: PricingNaming = 'flag',
+): PricingPlan {
   // The guard that lived here REFUSED a price for a model the shipped table already knew, because the table always
   // won and the override would have been a silent no-op. It is gone with the table (ADR-0071 §1): pricing now
   // resolves USER → CATALOG, so overriding a catalog model is not a mistake to be prevented — it is the feature.
@@ -265,73 +190,54 @@ export function modelsPricingCommand(
   // user regrets — before it existed, an override could be corrected but never removed, so a model priced by mistake
   // stayed priced by the user for good.
   if (args.clear === true) {
-    return runClearPricing(args, deps, providerRow.id);
+    const hasOverride = deps.catalog
+      .listAll()
+      .some(
+        (row) =>
+          row.modelId === args.model && row.providerId === providerRow.id && row.source === 'user',
+      );
+    return {
+      kind: 'clear',
+      model: args.model,
+      provider: args.provider,
+      providerId: providerRow.id,
+      hasOverride,
+      shipped: catalogPricing(args.model),
+    };
   }
+  return prepareSet(args, deps, providerRow.id, naming);
+}
 
-  // Cross-provider ambiguity guard (ADR-0065 §2): the cost overlay keys by MODEL ID (the runtime references a model
-  // by id alone, no provider), so the SAME id user-priced under two providers can't be distinguished — the cap
-  // would then apply an arbitrary one. Reject fail-loud rather than silently overwrite; nothing is written.
-  const dup = deps.catalog
-    .listAll()
-    .find(
-      (m) => m.source === 'user' && m.modelId === args.model && m.providerId !== providerRow.id,
-    );
-  if (dup !== undefined) {
-    const otherProvider =
-      deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
-    throw new CliError(
-      'invalid_invocation',
-      `'${args.model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
-    );
+/** The refusals and the conversion of a SET, in the order the shell has always applied them. */
+function prepareSet(
+  args: SetPricingArgs,
+  deps: PreparePricingDeps,
+  providerId: string,
+  naming: PricingNaming,
+): SetPricingPlan {
+  // The model id is the first thing a price is recorded under: an id the terminal would show as another id is refused before anything
+  // else is read (the field table's rule, which the Home's form reads as well). A CLEAR is never refused by it, so an id stored before
+  // the rule can still be removed.
+  const idFault = modelIdFault(args.model);
+  if (idFault !== undefined) throw new CliError('invalid_invocation', modelIdSentence(idFault));
+
+  // The pairing rule is the field table's, and it lives here as well as in the shell's parser: whatever calls the core — the shell, the
+  // Home's form, a test — gets the same refusal, and a half-stated pair can never reach the store.
+  const issue = pairingIssue((id) => args[pricingField(id).arg] !== undefined);
+  if (issue !== undefined) throw new CliError('invalid_invocation', pairingSentence(issue, naming));
+
+  assertNotUserPricedElsewhere(args.model, deps, providerId);
+  assertCatalogAnchor(args);
+
+  // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row). Every price is optional on
+  // a media-only or cached-only invocation, in which case the upsert omits the column and the store preserves it.
+  const prices: PlannedPrice[] = [];
+  for (const field of PRICING_FIELDS) {
+    const usd = args[field.arg];
+    if (usd !== undefined)
+      prices.push({ id: field.id, microcents: priceToMicrocents(field, usd, naming) });
   }
-  // Provider-vs-CATALOG guard (ADR-0071 §1). The catalog anchors a model id to ONE provider, and both the merge
-  // and the cost overlay drop a row that contradicts it — so writing one would store a price that silently never
-  // applies, which is the worst of both worlds: the user believes they set it, and nothing reads it.
-  const anchored = catalogModel(args.model)?.provider;
-  if (anchored !== undefined && anchored !== args.provider) {
-    throw new CliError(
-      'invalid_invocation',
-      `'${args.model}' is ${anchored}'s model, not ${args.provider}'s — the catalog anchors a model id to one provider, and a price under the wrong one would never be applied. Re-run with \`--provider ${anchored}\`. Nothing written.`,
-    );
-  }
-  // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row).
-  // Absent on a media-only invocation, in which case the upsert omits them and the store preserves the row.
-  const inputCostPerMtokMicrocents =
-    args.inputUsdPerMtok === undefined
-      ? undefined
-      : usdToMicrocents(args.inputUsdPerMtok, '--input');
-  const outputCostPerMtokMicrocents =
-    args.outputUsdPerMtok === undefined
-      ? undefined
-      : usdToMicrocents(args.outputUsdPerMtok, '--output');
-  // OMITTED `--cached` ⇒ `undefined`, so the upsert OMITS the column and the store PRESERVES an existing rate: a
-  // re-price must never zero — or overwrite — a cache rate the user hand-entered earlier.
-  //
-  // `--cached 0` is a REAL instruction (a self-hosted endpoint whose cache genuinely costs nothing), and the money
-  // column cannot tell it apart from "never mentioned" — both are `0`. So the FACT of the statement rides in its own
-  // flag (migration 0011): stated ⇒ the number is theirs, zero included; not stated ⇒ a reader DERIVES it from the
-  // catalog's cache discount applied to their own input rate (see `rowToUserPricing`). Reading a stored `0` as
-  // "free" would bill a whole class of tokens at nothing; reading it as "unset" would discard what the user typed.
-  const cachedInputCostPerMtokMicrocents =
-    args.cachedInputUsdPerMtok === undefined
-      ? undefined
-      : usdToMicrocents(args.cachedInputUsdPerMtok, '--cached');
-  // Media rates follow the `--cached` OMISSION rule (omitted ⇒ leave the column alone) but NOT its ambiguity: the
-  // columns are NULLABLE, so a stated `0` and an unstated rate are already distinct on disk and no `…Stated`
-  // companion flag is needed. Converted here, before the write, so an implausible `--image` cannot leave a row
-  // half-applied — the same reason the token conversions happen above the upsert.
-  const mediaImageCostMicrocents =
-    args.imageUsdPerCount === undefined
-      ? undefined
-      : usdPerUnitToMicrocents(args.imageUsdPerCount, '--image');
-  const mediaAudioCostMicrocents =
-    args.audioUsdPerSecond === undefined
-      ? undefined
-      : usdPerUnitToMicrocents(args.audioUsdPerSecond, '--audio');
-  const mediaVideoCostMicrocents =
-    args.videoUsdPerSecond === undefined
-      ? undefined
-      : usdPerUnitToMicrocents(args.videoUsdPerSecond, '--video');
+  const states = (id: PricingFieldId): boolean => prices.some((price) => price.id === id);
 
   // A media-only invocation on a model NOTHING can price for tokens is refused here, at write time, rather
   // than surprising the user at run time ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
@@ -341,130 +247,248 @@ export function modelsPricingCommand(
   // now is the difference between a clear exit `2` and a strict cap that keeps refusing after they did what it
   // asked. (An existing user row that already STATED its token rates is fine — a media-only re-price preserves
   // them, which is the ordinary remedy path.)
-  if (inputCostPerMtokMicrocents === undefined && catalogPricing(args.model) === undefined) {
+  if (!states('input') && catalogPricing(args.model) === undefined) {
     const existingStated = deps.catalog
       .listAll()
       .some((row) => row.modelId === args.model && row.source === 'user' && row.tokenRatesStated);
     if (!existingStated) {
       throw new CliError(
         'invalid_invocation',
-        `'${stripTerminalControls(args.model)}' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied. Re-run with --input USD_PER_MTOK --output USD_PER_MTOK as well. Nothing written.`,
+        noTokenPriceSentence(stripTerminalControls(args.model), naming),
       );
     }
   }
-  // A pricing-ONLY upsert: omit display name + limits (and every media/capability column) so the store PRESERVES
-  // whatever an existing row carries — including a soft-deactivated live row the active-only reader cannot see, so
-  // a re-price never zeroes a discovered name/context. A brand-new user-priced model defaults display → the id and
-  // limits → the `0` "unknown" sentinel (in the store), so no read is needed here. `cachedInput…` is omitted when
-  // `--cached` was not passed (so the store preserves the existing cached rate — see the local above).
-  deps.catalog.upsert({
-    providerId: providerRow.id,
-    modelId: args.model,
-    source: 'user',
-    // The store derives `tokenRatesStated` from the presence of both rates (ADR-0089 §4), so the rule lives in
-    // one place rather than depending on every caller remembering it — this command was not the only writer.
-    ...(inputCostPerMtokMicrocents === undefined || outputCostPerMtokMicrocents === undefined
-      ? {}
-      : { inputCostPerMtokMicrocents, outputCostPerMtokMicrocents }),
-    // The rate AND the fact that it was stated ride together, or neither does. Writing the number without the flag
-    // would leave a reader deriving a value the user had explicitly typed.
-    ...(cachedInputCostPerMtokMicrocents === undefined
-      ? {}
-      : { cachedInputCostPerMtokMicrocents, cachedInputStated: true }),
-    ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
-    ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
-    ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
-  });
 
-  if (deps.global.json) {
-    // Key-free record; prices echoed back as the stored integer micro-cents (the canonical unit).
-    writeRecordLines(deps.io, [
-      pricingJsonRecord(args, {
-        inputCostPerMtokMicrocents,
-        outputCostPerMtokMicrocents,
-        cachedInputCostPerMtokMicrocents,
-        mediaImageCostMicrocents,
-        mediaAudioCostMicrocents,
-        mediaVideoCostMicrocents,
-      }),
-    ]);
+  const columns: { -readonly [K in PriceColumn]?: number } = {};
+  for (const price of prices) columns[pricingField(price.id).column] = price.microcents;
+  return {
+    kind: 'set',
+    model: args.model,
+    provider: args.provider,
+    providerId,
+    prices,
+    // A pricing-ONLY upsert: omit display name + limits (and every media/capability column the invocation did not state) so the store
+    // PRESERVES whatever an existing row carries — including a soft-deactivated live row the active-only reader cannot see, so a
+    // re-price never zeroes a discovered name/context. A brand-new user-priced model defaults display → the id and limits → the `0`
+    // "unknown" sentinel (in the store), so no read is needed here. A column the invocation omitted is preserved (see the pairing
+    // rule for the token pair; the cached rate and every media rate are each independently optional).
+    upsert: {
+      providerId,
+      modelId: args.model,
+      source: 'user',
+      // The store derives `tokenRatesStated` from the presence of both token rates (ADR-0089 §4), so the rule lives in one place
+      // rather than depending on every caller remembering it — this command was not the only writer.
+      ...columns,
+      // The cached rate AND the fact that it was stated ride together, or neither does. Writing the number without the flag
+      // would leave a reader deriving a value the user had explicitly typed. `--cached 0` is a REAL instruction (a self-hosted
+      // endpoint whose cache genuinely costs nothing), and the money column cannot tell it apart from "never mentioned" — both
+      // are `0` — so the FACT of the statement rides in its own flag (migration 0011).
+      ...(states('cached') ? { cachedInputStated: true } : {}),
+    },
+    shipped: catalogPricing(args.model),
+  };
+}
+
+/**
+ * Cross-provider ambiguity guard (ADR-0065 §2): the cost overlay keys by MODEL ID (the runtime references a model by id alone, no
+ * provider), so the SAME id user-priced under two providers can't be distinguished — the cap would then apply an arbitrary one.
+ * Reject fail-loud rather than silently overwrite; nothing is written.
+ */
+function assertNotUserPricedElsewhere(
+  model: string,
+  deps: PreparePricingDeps,
+  providerId: string,
+): void {
+  const dup = deps.catalog
+    .listAll()
+    .find((m) => m.source === 'user' && m.modelId === model && m.providerId !== providerId);
+  if (dup === undefined) return;
+  const otherProvider =
+    deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
+  throw new CliError(
+    'invalid_invocation',
+    `'${model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
+  );
+}
+
+/**
+ * Provider-vs-CATALOG guard (ADR-0071 §1). The catalog anchors a model id to ONE provider, and both the merge and the cost overlay
+ * drop a row that contradicts it — so writing one would store a price that silently never applies, which is the worst of both
+ * worlds: the user believes they set it, and nothing reads it.
+ */
+function assertCatalogAnchor(args: SetPricingArgs): void {
+  const anchored = catalogModel(args.model)?.provider;
+  if (anchored !== undefined && anchored !== args.provider) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${args.model}' is ${anchored}'s model, not ${args.provider}'s — the catalog anchors a model id to one provider, and a price under the wrong one would never be applied. Re-run with \`--provider ${anchored}\`. Nothing written.`,
+    );
+  }
+}
+
+// ── commit: the one write ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The single write of the command, and exactly what the plan describes: a SET upserts the plan's row; a CLEAR retires the operator's
+ * row. It decides nothing new: every refusal is the prepare's, except that the one rule another process can break between the prepare
+ * and the commit is checked AGAIN here. A card stays open for as long as a person reads it, and a `models pricing` run from a shell in
+ * that time can price the same model under another provider; the overlay keys by model id, so writing the plan then would leave two
+ * prices for one id and the cap would apply an arbitrary one. The re-check and the write are one unit (`deps.atomically`), so nothing
+ * can slip in between them; a refusal is the shell's own typed refusal and writes nothing.
+ */
+export function commitPricing(plan: PricingPlan, deps: CommitPricingDeps): PricingOutcome {
+  const unit = deps.atomically ?? (<T>(work: () => T): T => work());
+  return unit((): PricingOutcome => {
+    if (plan.kind === 'clear') {
+      return { kind: 'clear', cleared: deps.catalog.clearUserPricing(plan.model, plan.providerId) };
+    }
+    assertNotUserPricedElsewhere(plan.model, deps, plan.providerId);
+    deps.catalog.upsert(plan.upsert);
+    return { kind: 'set' };
+  });
+}
+
+// ── what the commands say ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+function statedPrice(plan: SetPricingPlan, id: PricingFieldId): PlannedPrice | undefined {
+  return plan.prices.find((price) => price.id === id);
+}
+
+/**
+ * The `--json` record for a completed write — the stored micro-cents, echoed back. The omission rules (a field the invocation did not
+ * write is ABSENT, not `0`) are a contract worth reading on its own.
+ */
+function pricingJsonRecord(plan: SetPricingPlan): Record<string, unknown> {
+  const record: Record<string, unknown> = {
+    model: plan.model,
+    provider: plan.provider,
+    source: 'user',
+  };
+  // Absent on a media-only invocation, which is exactly what a machine consumer needs to know: the token columns were PRESERVED, not
+  // written. Emitting a `0` there would report a price nobody set. The same for the cached rate: the store PRESERVES the existing
+  // one rather than writing a `0`, so a field the invocation did not state would report a value the database does not hold. The
+  // media rates this invocation wrote are in the canonical stored unit, so a script automating the strict-cap remedy can confirm
+  // the write it just made.
+  for (const price of plan.prices) record[pricingField(price.id).column] = price.microcents;
+  // The catalog price this override REPLACES (ADR-0071 §5). A machine consumer must be able to see the divergence for the same reason
+  // a human must: the flip removed the guard that made mispricing a shipped model impossible. Three states, and each says something
+  // different — `null` when the catalog does not price the model at all (the case the user tier was invented for), the shipped
+  // numbers when it does, and ABSENT when this invocation wrote no token or cache price, because a media-only re-price replaces
+  // nothing and claiming otherwise is the opposite of the transparency this is for.
+  if (statedPrice(plan, 'input') !== undefined || statedPrice(plan, 'cached') !== undefined) {
+    const shipped = plan.shipped;
+    record['overriddenCatalogPrice'] =
+      shipped === undefined
+        ? null
+        : {
+            inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
+            outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
+            cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
+          };
+  }
+  return record;
+}
+
+/**
+ * The prices a SET states, as one list, joined ONCE. Every part is independently optional now that a media-only (and cache-only)
+ * invocation is legal, so no part may carry its own separator and none may assume another precedes it. Media parts are echoed in the
+ * canonical BILLED unit, not USD/Mtok (ADR-0044 §3) — a user reading back "image $0.04/Mtok" would have every reason to think they had
+ * priced it wrong. Each amount is the STORED integer, printed exactly: the sentence says the price the database holds, never the digits
+ * that were typed.
+ */
+export function pricingPriceNote(plan: SetPricingPlan): string {
+  return plan.prices
+    .map(
+      (price) =>
+        `${price.id} $${usdTextOfMicrocents(price.microcents)}${pricingField(price.id).suffix}`,
+    )
+    .join(', ');
+}
+
+/**
+ * The sentence that says a SET was recorded. The shell prints it with the divergence note after it; the Home shows it alone. The
+ * model id is user-typed (or discovered), so any terminal-control byte is stripped before the echo — parity with `renderModelList`.
+ * The provider is a validated (kebab) ProviderId, and the prices are numbers — both already safe.
+ */
+export function pricingSetSentence(plan: SetPricingPlan): string {
+  return `Set user pricing for ${stripTerminalControls(plan.model)} (${plan.provider}): ${pricingPriceNote(plan)}. It applies to your next run/chat and survives \`relavium models refresh\`.`;
+}
+
+/**
+ * THE DIVERGENCE IS LOUD (ADR-0071 §5) — and it is the condition on which the "a user can never misprice a shipped model" guard was
+ * removed. The user outranks the catalog now; they get what they asked for. What they do NOT get is to do it in silence, so when their
+ * number disagrees with the one we shipped, we say both. Only when TOKEN rates were actually stated: a media-only invocation overrides
+ * no catalog token price, so printing "yours wins" over numbers the user never touched would be false — and alarming, since the whole
+ * point of allowing a media-only set is that it does NOT disturb the catalog's token pricing.
+ */
+export function catalogDivergence(plan: SetPricingPlan): { readonly shipped: string } | undefined {
+  const shipped = plan.shipped;
+  if (shipped === undefined || statedPrice(plan, 'input') === undefined) return undefined;
+  return { shipped: catalogTokenRates(shipped) };
+}
+
+/** `input $5/Mtok, output $30/Mtok`: what the catalog charges. */
+export function catalogTokenRates(shipped: ModelPricing): string {
+  return `input $${usdTextOfMicrocents(shipped.inputPerMtokMicrocents)}/Mtok, output $${usdTextOfMicrocents(shipped.outputPerMtokMicrocents)}/Mtok`;
+}
+
+/** The sentence for a CLEAR, as a flat if/else so no nested ternary decides the message. */
+export function clearedPricingSentence(plan: ClearPricingPlan, cleared: boolean): string {
+  const safeModel = stripTerminalControls(plan.model);
+  if (!cleared) {
+    return `${safeModel} (${plan.provider}) has no user price to clear — nothing changed.`;
+  }
+  const shipped = plan.shipped;
+  if (shipped === undefined) {
+    return `Cleared the user price for ${safeModel} (${plan.provider}). The catalog does not price this model, so its cost cap will not apply until you price it again.`;
+  }
+  return `Cleared the user price for ${safeModel} (${plan.provider}). It falls back to the catalog: ${catalogTokenRates(shipped)}.`;
+}
+
+/**
+ * The shell's own output for a commit: `--json` records, or the human lines. This is the half of the command that only the shell does;
+ * the Home shows the same sentences ({@link pricingSetSentence}, {@link clearedPricingSentence}) in its own notice.
+ */
+export function writePricingResult(
+  plan: PricingPlan,
+  outcome: PricingOutcome,
+  deps: Pick<ModelsPricingCommandDeps, 'io' | 'global'>,
+): ExitCode {
+  if (plan.kind === 'clear') {
+    const cleared = outcome.kind === 'clear' && outcome.cleared;
+    if (deps.global.json) {
+      // `source` is the EFFECTIVE price source after the clear, decided by the catalog exactly as the human sentence decides its
+      // words — 'catalog' iff the catalog actually prices the model, else null (unpriced, the cost cap will not apply). `cleared ?
+      // 'catalog'` was wrong: a cleared model the catalog does NOT price reported 'catalog' while the human line said the opposite.
+      const source = plan.shipped !== undefined ? 'catalog' : null;
+      writeRecordLines(deps.io, [{ model: plan.model, provider: plan.provider, cleared, source }]);
+      return EXIT_CODES.success;
+    }
+    deps.io.writeOut(`${clearedPricingSentence(plan, cleared)}\n`);
     return EXIT_CODES.success;
   }
-
-  // Empty on a media-only invocation — printing `input $undefined/Mtok` is worse than saying nothing.
-  // ONE list, joined ONCE. Every part is independently optional now that a media-only (and cache-only)
-  // invocation is legal, so no part may carry its own separator and none may assume another precedes it. The
-  // first version stitched three notes with ad-hoc separators — `cachedNote` owned a leading `", "` on the
-  // assumption that token rates were always printed first, and the media joiner asked whether the TOKEN note
-  // was empty rather than whether anything had been printed at all. `--cached 0.5 --image 0.04` therefore
-  // rendered `): , cached $0.5/Mtokimage $0.04/image`: a stray comma and two clauses run together.
-  //
-  // Media parts are echoed in the canonical BILLED unit, not USD/Mtok (ADR-0044 §3) — a user reading back
-  // "image $0.04/Mtok" would have every reason to think they had priced it wrong.
-  const priceNote = [
-    args.inputUsdPerMtok === undefined
-      ? undefined
-      : `input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok`,
-    args.cachedInputUsdPerMtok === undefined
-      ? undefined
-      : `cached $${args.cachedInputUsdPerMtok}/Mtok`,
-    args.imageUsdPerCount === undefined ? undefined : `image $${args.imageUsdPerCount}/image`,
-    args.audioUsdPerSecond === undefined ? undefined : `audio $${args.audioUsdPerSecond}/s`,
-    args.videoUsdPerSecond === undefined ? undefined : `video $${args.videoUsdPerSecond}/s`,
-  ]
-    .filter((part): part is string => part !== undefined)
-    .join(', ');
-  // THE DIVERGENCE IS LOUD (ADR-0071 §5) — and it is the condition on which the "a user can never misprice a
-  // shipped model" guard was removed. The user outranks the catalog now; they get what they asked for. What they do
-  // NOT get is to do it in silence, so when their number disagrees with the one we shipped, we say both.
-  const shipped = catalogPricing(args.model);
-  // Only when TOKEN rates were actually stated. A media-only invocation overrides no catalog token price, so
-  // printing "yours wins" over numbers the user never touched would be false — and alarming, since the whole
-  // point of allowing a media-only set is that it does NOT disturb the catalog's token pricing.
-  const divergence =
-    shipped === undefined || args.inputUsdPerMtok === undefined
-      ? ''
-      : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${shellArg(stripTerminalControls(args.model))} --clear\` to go back to the catalog's.`;
-  // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
-  // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe
-  // because it goes through `stringifyJsonLine` — NOT because `JSON.stringify` escapes them, which it does not
-  // (see security-review.md). The provider is a validated (kebab) ProviderId, and the prices are numbers —
-  // both already safe.
+  if (deps.global.json) {
+    // Key-free record; prices echoed back as the stored integer micro-cents (the canonical unit).
+    writeRecordLines(deps.io, [pricingJsonRecord(plan)]);
+    return EXIT_CODES.success;
+  }
+  const divergence = catalogDivergence(plan);
   deps.io.writeOut(
-    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): ${priceNote}. It applies to your next run/chat and survives \`relavium models refresh\`.${divergence}\n`,
+    `${pricingSetSentence(plan)}${
+      divergence === undefined
+        ? ''
+        : `\n  Overrides the catalog price for this model: ${divergence.shipped}. Yours wins. Run \`relavium models pricing ${shellArg(stripTerminalControls(plan.model))} --clear\` to go back to the catalog's.`
+    }\n`,
   );
   return EXIT_CODES.success;
 }
 
-/** `--clear` (ADR-0071 §5): retire the user override for one model+provider and report the fallback. */
-function runClearPricing(
-  args: ClearPricingArgs,
+/** `relavium models pricing`: prepare, commit, print. The Home's form runs the same two steps with a card between them. */
+export function modelsPricingCommand(
+  args: ModelsPricingCommandArgs,
   deps: ModelsPricingCommandDeps,
-  providerId: string,
 ): ExitCode {
-  const cleared = deps.catalog.clearUserPricing(args.model, providerId);
-  if (deps.global.json) {
-    // `source` is the EFFECTIVE price source after the clear, decided by the catalog exactly as
-    // `clearedPricingMessage` decides its words — 'catalog' iff the catalog actually prices the model, else null
-    // (unpriced, the cost cap will not apply). `cleared ? 'catalog'` was wrong: a cleared model the catalog does
-    // NOT price reported 'catalog' while the human line said the opposite.
-    const source = catalogPricing(args.model) !== undefined ? 'catalog' : null;
-    writeRecordLines(deps.io, [{ model: args.model, provider: args.provider, cleared, source }]);
-    return EXIT_CODES.success;
-  }
-  deps.io.writeOut(clearedPricingMessage(args, cleared));
-  return EXIT_CODES.success;
-}
-
-/** The human line for a `--clear`, as a flat if/else so no nested ternary decides the message. */
-function clearedPricingMessage(args: ClearPricingArgs, cleared: boolean): string {
-  const safeModel = stripTerminalControls(args.model);
-  if (!cleared) {
-    return `${safeModel} (${args.provider}) has no user price to clear — nothing changed.\n`;
-  }
-  const shipped = catalogPricing(args.model);
-  if (shipped === undefined) {
-    return `Cleared the user price for ${safeModel} (${args.provider}). The catalog does not price this model, so its cost cap will not apply until you price it again.\n`;
-  }
-  return `Cleared the user price for ${safeModel} (${args.provider}). It falls back to the catalog: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok.\n`;
+  const plan = preparePricing(args, deps);
+  const outcome = commitPricing(plan, deps);
+  return writePricingResult(plan, outcome, deps);
 }

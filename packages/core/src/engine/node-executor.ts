@@ -205,6 +205,24 @@ export interface NodeExecContext {
    * absent means "never throttle", which is the pre-`CR-30` behaviour.
    */
   readonly whenReady?: () => Promise<void>;
+  /**
+   * The run's elapsed-milliseconds clock — the engine's own, the one its event timestamps and node durations come
+   * from. An executor that dispatches tools reads it around each dispatch and reports the span on
+   * `agent:tool_result.durationMs` (the agent runner forwards it to the turn core), which is where the node's durable
+   * `toolActivity` takes a call's duration from (ADR-0140 §4). Optional: a test double need not supply it, and
+   * absent means "no duration is recorded", never a guess.
+   */
+  readonly elapsedMs?: () => number;
+  /**
+   * An executor that dispatches tools calls this once for EVERY tool call it attempts, BEFORE it decides anything
+   * about the call (a refused or denied call is announced too) and before it enters the registry, with the id the call
+   * is attributed to — a registered tool's id, or the fixed `unknown_tool` (the agent runner forwards it to the turn
+   * core). The engine records the call on the node's `toolActivity` from here, so a call still running when the node
+   * is cut by its deadline or abandoned after its grace window is on the terminal as an unpaired entry instead of
+   * missing from it (ADR-0140 §4). Optional: a test double need not supply it, and absent means the node's trace holds
+   * no call it did not announce. A call announced after the node is no longer live is ignored.
+   */
+  readonly onToolStart?: (toolId: string) => void;
   /** Aborts when the run is cancelled, fails elsewhere, or times out — thread it into provider/tool calls. */
   readonly signal: AbortSignalLike;
   /** 1-based attempt number for this dispatch (always 1 in 1.N; node-level retry is 1.S). */

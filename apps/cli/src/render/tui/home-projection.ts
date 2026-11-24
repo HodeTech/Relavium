@@ -3,7 +3,9 @@ import type {
   HomeGateRow,
   HomeRunRow,
   HomeSessionRow,
+  HomeSnapshot,
 } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { sanitizeInline } from './chat-projection.js';
 import { formatCostShort } from './format.js';
 
@@ -29,6 +31,14 @@ export function homeFitsTerminal(cols: number, rows: number): boolean {
     cols >= HOME_MIN_COLS &&
     rows >= HOME_MIN_ROWS
   );
+}
+
+/** Whether the Home has nothing to show: no session, run or attention row, and no parked run of this project either. */
+export function homeIsEmpty(
+  snapshot: HomeSnapshot,
+  parkedRuns: readonly unknown[] | undefined,
+): boolean {
+  return snapshot.isEmpty && (parkedRuns === undefined || parkedRuns.length === 0);
 }
 
 /** The single-line degrade shown (and held until a resize) when the terminal is below the Home minimum. */
@@ -99,7 +109,10 @@ export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
     .join(SEP);
 }
 
-/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost. */
+/** What the strip says after the cost of a run recorded for another project: it lists runs of every directory, and such a run opens read-only. */
+export const OTHER_PROJECT_MARK = 'other project';
+
+/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost [· other project]. */
 export function runLabel(row: HomeRunRow, nowMs: number): string {
   const name = row.workflowSlug ?? shortId(row.runId);
   const anchor = row.status === 'running' ? row.startedAt : (row.completedAt ?? row.startedAt);
@@ -108,6 +121,7 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     row.status,
     relativeTime(anchor ?? row.createdAt, nowMs),
     formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls),
+    ...(row.project === undefined ? [] : [OTHER_PROJECT_MARK]),
   ]
     .filter((s) => s.trim().length > 0)
     .join(SEP);
@@ -141,4 +155,79 @@ export function agentLabel(row: HomeAgentRow, nowMs: number): string {
   return [row.agentSlug, relativeTime(row.lastUsedAt, nowMs)]
     .filter((s) => s.trim().length > 0)
     .join(SEP);
+}
+
+/** Whether the run host has a leg that is preparing, executing or cancelling: the one meaning of "a run is active" for the Home. */
+export function hostedRunIsLive(snapshot: RunHostSnapshot | undefined): boolean {
+  return snapshot !== undefined && (snapshot.active !== undefined || snapshot.launching);
+}
+
+/**
+ * The `▶` row of the Home's strip ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3): the
+ * active run's id and its state, in one line, or `undefined` (no row at all) when no run is active. The state is a word, never a
+ * colour alone: `starting` until the engine has named the run, `running`, and `cancelling` once the stop was requested. The id is
+ * sanitized at this boundary. `last` is how an earlier leg ended; it is a later card's to show, not this row's.
+ */
+export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | undefined {
+  if (snapshot === undefined || !hostedRunIsLive(snapshot)) return undefined;
+  const active = snapshot.active;
+  if (active?.runId === undefined) return `▶ run${SEP}starting`;
+  // Once the engine has named the run, `Enter` at the empty prompt brings its view back: the row says so, because nothing else does.
+  return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
+}
+
+/** What `Enter` at the empty prompt does while a leg is live and has a run to show: the words the `▶` row and the landing's hint share. */
+export const HOSTED_RUN_ENTER_CUE = 'Enter shows it';
+
+/** Whether a leg is live and has named its run, so `Enter` at the empty prompt can show its view (`openRunView`). */
+export function hostedRunCanBeShown(snapshot: RunHostSnapshot | undefined): boolean {
+  return snapshot?.active?.runId !== undefined;
+}
+
+/** What the exit-guard card is showing: it asks first, then waits for the run to stop. */
+export type ExitGuardPhase = 'confirm' | 'stopping';
+
+/**
+ * The glyph of the exit-guard card's title row, so the card reads without colour as the other cards do (ADR-0122 §7.2): a warning while the
+ * run is still going, the stop square once the person confirmed, and the quiet ring once there is nothing left to stop. Each surface has its
+ * own glyph and a word for each state, and "the run is stopping" is not drawn alike: the strip's `▶` row says the word `cancelling`, the run
+ * view draws `■ cancelling`, and this card draws `⚠` (still asking) and then `■` (confirmed).
+ */
+export const EXIT_GUARD_GLYPH = { warning: '⚠', stopping: '■', ended: '○' } as const;
+
+/**
+ * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The title
+ * row is a glyph and a few words; each line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y`
+ * stops the run and leaves and the other three keys stay; once the person confirmed, the card only says that the run is stopping and for
+ * how long the Home waits.
+ */
+export function exitGuardLines(
+  phase: ExitGuardPhase,
+  snapshot: RunHostSnapshot | undefined,
+  /** The longest a confirmed exit waits for the run: the grace and then the host's settle bound ({@link HOSTED_RUN_EXIT_BOUND_MS}). */
+  boundSeconds: number,
+): readonly string[] {
+  const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
+  // `: <run id>` for a leg that has named its run, nothing for one that has not: the card's title names the run when it can.
+  const named = active?.runId === undefined ? '' : `: ${sanitizeInline(active.runId)}`;
+  if (phase === 'stopping')
+    return [
+      `${EXIT_GUARD_GLYPH.stopping} Stopping the run…`,
+      `The Home leaves as soon as it has stopped, within about ${boundSeconds} s.`,
+    ];
+  if (!hostedRunIsLive(snapshot))
+    return [
+      `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
+      'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay',
+    ];
+  if (active?.cancelling === true)
+    return [
+      `${EXIT_GUARD_GLYPH.warning} The run is stopping${named}.`,
+      `Ctrl+Y leave when it has stopped (about ${boundSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
+    ];
+  return [
+    `${EXIT_GUARD_GLYPH.warning} A workflow run is executing${named}.`,
+    'Leaving stops it, and a stopped run cannot be resumed.',
+    'Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay',
+  ];
 }

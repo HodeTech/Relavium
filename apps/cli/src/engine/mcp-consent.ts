@@ -1,23 +1,15 @@
 import { createHash } from 'node:crypto';
-import {
-  constants,
-  appendFileSync,
-  chmodSync,
-  closeSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-} from 'node:fs';
+import { constants, closeSync, lstatSync, mkdirSync, openSync } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { RelaviumError, canonicalJson } from '@relavium/shared';
 import { z } from 'zod';
 
+import { readRegularFile } from '../permissions/file-state.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
 import { findOnPath } from './find-on-path.js';
+import { AppendTargetRefusedError, appendToOwnerOnlyFile } from './owner-only-append.js';
 
 /**
  * The consent fingerprint and its grant log
@@ -219,6 +211,23 @@ const ConsentTombstoneSchema = z
   .strict();
 
 /**
+ * The most bytes of grant log {@link readGrants} reads, 4 MiB: 256 lines of the largest size one can be ({@link MAX_CONSENT_LINE_BYTES}), or
+ * thousands of ordinary ones (a grant line is usually well under a kilobyte). A log past it is a planted or runaway file, and it reads as
+ * "no grants" rather than being read whole into memory. So that an honest log never gets there unannounced, a record that would take the
+ * file past this bound is REFUSED when it is written ({@link append}), with the way out named, instead of being appended and then never read.
+ */
+export const MAX_CONSENT_STORE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The most bytes ONE serialized line of the log (its two framing newlines included) may take, 16 KiB. The comparison metadata of a grant is
+ * clipped to 512 characters a string and 64 entries a list, but that bound is on CHARACTERS and on entries, not on the line: 64 arguments and
+ * 64 variable names of 512 characters are about 66 KB, and a control character, a C1 character or a bidi mark is escaped to six bytes, so a
+ * hostile declaration could make a line of about 400 KB, and about ten such approvals would take the log past {@link MAX_CONSENT_STORE_BYTES}
+ * for good. An ordinary line is a few hundred bytes, so 16 KiB leaves it a wide margin and a single `write` stays one small record.
+ */
+export const MAX_CONSENT_LINE_BYTES = 16 * 1024;
+
+/**
  * The effective grants, or `undefined` when the log could not be folded (ADR-0084 §5).
  *
  * **`undefined` means NO GRANTS, and that is the whole point of returning it.** Skipping an unparseable line
@@ -229,13 +238,12 @@ const ConsentTombstoneSchema = z
  * reversed without anyone saying so.
  */
 export function readGrants(path: string): ReadonlyMap<string, ConsentGrant> | undefined {
-  if (!existsSync(path)) return new Map();
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
-  }
+  // The same read the operator's two permission files get: a link, a FIFO, a device or a directory at the path, or a file over the size
+  // bound, is "could not be read" (no grants) instead of being followed, waited on or slurped whole. An absent file is simply empty.
+  const read = readRegularFile(path, MAX_CONSENT_STORE_BYTES);
+  if (read.kind === 'absent') return new Map();
+  if (read.kind === 'refused') return undefined;
+  const { text } = read;
   const grants = new Map<string, ConsentGrant>();
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue; // the leading-newline framing, and a trailing terminator
@@ -272,23 +280,13 @@ export function readGrants(path: string): ReadonlyMap<string, ConsentGrant> | un
  */
 export function appendGrant(path: string, grant: ConsentGrant): void {
   ensureFile(path);
-  refuseSymlink(path);
-  const bounded = boundMetadata(grant);
-  // A LEADING newline as well as a trailing one: a process killed mid-append leaves a partial last line with
-  // no terminator, and appending straight onto it would concatenate into one corrupt line — which, under
-  // this file's fail-closed fold, would cost every grant on the machine rather than one entry.
-  appendFileSync(path, `\n${stringifyJsonLine(bounded)}\n`, { mode: FILE_MODE });
-  healMode(path);
+  append(path, boundedLine(grant));
 }
 
 /** Withdraw a grant by appending a tombstone — the fold drops the digest when it sees one. */
 export function appendRevocation(path: string, digest: string, revokedAt: string): void {
   ensureFile(path);
-  refuseSymlink(path);
-  appendFileSync(path, `\n${stringifyJsonLine({ v: 1, revoked: digest, revokedAt })}\n`, {
-    mode: FILE_MODE,
-  });
-  healMode(path);
+  append(path, `\n${stringifyJsonLine({ v: 1, revoked: digest, revokedAt })}\n`);
 }
 
 function ensureFile(path: string): void {
@@ -310,57 +308,97 @@ function ensureFile(path: string): void {
 }
 
 /**
- * Bound the record's COMPARISON METADATA so one append is genuinely one bounded record (§5).
+ * The grant's whole serialized line, bounded so one append is genuinely one bounded record (§5).
  *
- * §5 claims "a single `appendFileSync` of one bounded record", and nothing bounded it: neither
- * `McpServerRefSchema` nor `ConsentGrant` caps an `args` count, an `env` count, or a string length, so a
- * declaration could produce a line of megabytes — well past where a single write is reliably atomic, which
- * is the property the no-lock concurrent-append design leans on.
+ * §5 claims "a single `appendFileSync` of one bounded record", and nothing bounded it: neither `McpServerRefSchema` nor `ConsentGrant` caps
+ * an `args` count, an `env` count, or a string length, so a declaration could produce a line of megabytes — well past where a single write
+ * is reliably atomic, which is the property the no-lock concurrent-append design leans on. The metadata is first clipped to
+ * {@link MAX_METADATA_ENTRIES} entries of {@link MAX_METADATA_CHARS} characters; the LINE is then held to {@link MAX_CONSENT_LINE_BYTES}
+ * (those character bounds alone allow about 400 KB once control characters are escaped) by keeping fewer entries and shorter strings
+ * until it fits, so the log's growth is bounded by a number of bytes, not of characters.
  *
- * Only the metadata is trimmed. The `digest` is fixed-size and is the IDENTITY; `command`, `args`, `envNames`
- * and `cwd` exist so a later prompt can say what changed, and a truncated diff is a smaller loss than a torn
- * line that folds the whole store closed. The schema-level cap this makes unnecessary for atomicity is still
- * worth having for the prompt, and is recorded as its own item.
+ * Only the metadata is ever trimmed, so a grant is never REFUSED for being wordy (a refused record fails the run the person has just
+ * approved). The `digest` is fixed-size and is the IDENTITY; `command`, `args`, `envNames` and `cwd` exist so a later prompt can say what
+ * changed, and a shorter diff is a smaller loss than a torn line that folds the whole store closed. With no entries and 64 characters a string
+ * the line is under a kilobyte, so the last step always fits.
  */
-function boundMetadata(grant: ConsentGrant): ConsentGrant {
-  const clip = (text: string): string =>
-    text.length <= MAX_METADATA_CHARS ? text : `${text.slice(0, MAX_METADATA_CHARS)}…`;
+function boundedLine(grant: ConsentGrant): string {
+  for (const [entries, chars] of CLIP_STEPS) {
+    // A LEADING newline as well as a trailing one: a process killed mid-append leaves a partial last line with
+    // no terminator, and appending straight onto it would concatenate into one corrupt line — which, under
+    // this file's fail-closed fold, would cost every grant on the machine rather than one entry.
+    const line = `\n${stringifyJsonLine(clipGrant(grant, entries, chars))}\n`;
+    if (Buffer.byteLength(line, 'utf8') <= MAX_CONSENT_LINE_BYTES) return line;
+  }
+  throw new ConsentStoreError('the MCP consent record is too large to store');
+}
+
+/** `grant` with its comparison metadata cut to `entries` entries a list and `chars` characters a string. */
+function clipGrant(grant: ConsentGrant, entries: number, chars: number): ConsentGrant {
+  const clip = (text: string): string => (text.length <= chars ? text : `${text.slice(0, chars)}…`);
   return {
     ...grant,
     command: clip(grant.command),
-    args: grant.args.slice(0, MAX_METADATA_ENTRIES).map(clip),
-    envNames: grant.envNames.slice(0, MAX_METADATA_ENTRIES).map(clip),
+    args: grant.args.slice(0, entries).map(clip),
+    envNames: grant.envNames.slice(0, entries).map(clip),
     cwd: clip(grant.cwd),
   };
 }
 
-/** Per-string and per-list ceilings for the stored comparison metadata. */
+/** Per-string and per-list ceilings for the stored comparison metadata: the first step of {@link CLIP_STEPS}. */
 const MAX_METADATA_CHARS = 512;
 const MAX_METADATA_ENTRIES = 64;
 
+/** What a record is cut to, [entries a list, characters a string], until its line fits {@link MAX_CONSENT_LINE_BYTES}; the first is the normal bound. */
+const CLIP_STEPS: readonly (readonly [number, number])[] = [
+  [MAX_METADATA_ENTRIES, MAX_METADATA_CHARS],
+  [16, MAX_METADATA_CHARS],
+  [4, 128],
+  [0, 64],
+];
+
+/** The sentence this store carries for each way the shared append refuses its target. */
+const APPEND_REFUSAL_SENTENCES: Readonly<Record<AppendTargetRefusedError['reason'], string>> = {
+  symlink: 'the MCP consent store is a symbolic link; refusing to write through it',
+  'hard-link': 'the MCP consent store has more than one hard link; refusing to write to it',
+  'not-regular': 'the MCP consent store is not a regular file; refusing to write to it',
+};
+
 /**
- * Refuse to write through a SYMLINK at the grant path.
+ * One append through ONE descriptor ({@link appendToOwnerOnlyFile}): a link at the grant path is refused unfollowed, and so is a file
+ * that is not a regular one, and the `0600` mode is set on the descriptor that was written.
  *
- * `ensureFile`'s exclusive create refuses to follow one at first creation, but every later `appendFileSync`
- * and `chmodSync` follows links — so a process that replaced the file with a symlink after the first write
- * turned this store into a write primitive against any file the CLI can write. A review reproduced a grant
- * record landing in an arbitrary target. ADR-0084 accepts that anything with write access to `~/.relavium`
- * can edit the grant FILE; using it to write somewhere else is a different thing, and not accepted.
- *
- * `lstat` rather than `O_NOFOLLOW` because `appendFileSync` takes no flags — a check-then-write window
- * remains, and it is narrower than the unbounded one it replaces. The sibling terminal outbox has the
- * identical shape and gets the identical guard.
+ * `ensureFile`'s exclusive create refuses to follow a link at first creation, but a later append that opened the path again would
+ * follow one — so a process that replaced the file with a symlink after the first write turned this store into a write primitive
+ * against any file the CLI can write. A review reproduced a grant record landing in an arbitrary target. ADR-0084 accepts that
+ * anything with write access to `~/.relavium` can edit the grant FILE; using it to write somewhere else is a different thing, and
+ * not accepted. An earlier version closed it with an `lstat` followed by `appendFileSync` and `chmodSync`, which left a window
+ * between the check and each of the two operations; the open, the check and the write are now one file.
  */
-function refuseSymlink(path: string): void {
+function append(path: string, text: string): void {
+  // A log that grew past the bound would be refused by EVERY later read, and each later approval would be appended and never seen: say so
+  // now, at the write that would do it, with the way out (a link or a special file is the append's own refusal, below).
+  if (sizeOf(path) + Buffer.byteLength(text, 'utf8') > MAX_CONSENT_STORE_BYTES) {
+    throw new ConsentStoreError(
+      'the MCP consent store is full; delete it or move it aside to start a new one',
+    );
+  }
   try {
-    if (lstatSync(path).isSymbolicLink()) {
-      throw new ConsentStoreError(
-        'the MCP consent store is a symbolic link; refusing to write through it',
-      );
-    }
+    appendToOwnerOnlyFile(path, text, FILE_MODE);
   } catch (error) {
-    if (error instanceof ConsentStoreError) throw error;
-    // The path vanished between the create and this check — the append below fails on its own terms.
+    if (error instanceof AppendTargetRefusedError) {
+      throw new ConsentStoreError(APPEND_REFUSAL_SENTENCES[error.reason]);
+    }
+    throw error;
+  }
+}
+
+/** The size of the file at `path` itself (a link is not followed), `0` when there is none or it cannot be inspected. */
+function sizeOf(path: string): number {
+  try {
+    return lstatSync(path).size;
+  } catch {
+    return 0;
   }
 }
 
@@ -369,13 +407,5 @@ export class ConsentStoreError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'ConsentStoreError';
-  }
-}
-
-function healMode(path: string): void {
-  try {
-    chmodSync(path, FILE_MODE);
-  } catch {
-    // Windows, or a file we do not own. The at-rest guard there is the per-user profile ACL (ADR-0050).
   }
 }

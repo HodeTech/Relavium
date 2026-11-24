@@ -242,6 +242,7 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
         store: second.store,
         sessionId: SESSION_ID,
         cwd: dir,
+        homeDir: tmpdir(), // a home that is not the project
         force: false,
       });
       const yaml = readFileSync(result.path, 'utf8');

@@ -27,8 +27,15 @@ import {
   createSessionUsageStore,
   createProviderStore,
   createRunHistoryReader,
+  createRunPinStore,
+  loadRunSnapshot,
 } from '@relavium/db';
-import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
+import {
+  RUN_LEASE_TTL_MS,
+  type AgentSessionRecord,
+  type ReasoningEffort,
+  type RunStatus,
+} from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -45,6 +52,7 @@ import {
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
+  type BuildChatSessionOptions,
   type BuiltChatSession,
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
@@ -63,6 +71,7 @@ import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/s
 import { runModeSettings } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
+import { faultForTranscript } from '../config/config-error-text.js';
 import { ConfigError } from '../config/errors.js';
 import {
   ConfigWriteRefusedError,
@@ -89,6 +98,7 @@ import {
   createNativePromptChannel,
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
+import { createChordHistory } from '../render/tui/chord-guard.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -138,7 +148,37 @@ import {
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
+import { createActiveReader } from '../history/active-source.js';
+import { createHistorySource } from '../history/history-source.js';
+import { createNodeDetailLoader } from '../history/node-detail-source.js';
+import { createRunDetailLoader } from '../history/run-detail-source.js';
+import {
+  createChangeProbe,
+  dataVersionOf,
+  readSnapshotOf,
+  type ChangeToken,
+} from '../history/change-probe.js';
+import { createFileTerminalOutbox, terminalOutboxStamp } from '../engine/terminal-outbox.js';
+import { terminalOutboxPath } from '../history/open.js';
+import { createRunViewFeed } from '../render/tui/run-view-feed.js';
+import { readParkedRuns } from '../render/tui/home-attention.js';
+import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createHomeStore } from './home-store.js';
+import { RunHost } from './run-host.js';
+import { runMediaContinue } from './media-continue.js';
+import { readRunGates } from './run-gates.js';
+import { createNativeConsentPrompter } from './consent-card.js';
+import { resolveHomeChatAgent, type HomeAgentRequest, type HomeChatAgent } from './agent-start.js';
+import { createAgentsPort } from './agents-port.js';
+import { createDefinedPort, createExportPort } from './defined-port.js';
+import { createSessionsPort } from './sessions-port.js';
+import { createPinPort } from './pin-port.js';
+import { createProjectCatalog, createRunLaunch } from './run-launch.js';
+import { runExportCard } from '../render/tui/export-card.js';
+import { createImportPort } from './import-port.js';
+import { runImportCard } from '../render/tui/import-card.js';
+import { createPricingPort } from './pricing-port.js';
+import { runPricingCard } from '../render/tui/pricing-card.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
@@ -158,8 +198,8 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
-  /** Open the `/permissions` sheet as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3): the Home ends
-   *  with success when the sheet is closed. Absent ⇒ the ordinary Home. */
+  /** Open the tab host on its Permissions tab as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   *  ADR-0140 §1): the Home ends with success when the screen is closed. Absent ⇒ the ordinary Home. */
   readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
@@ -182,6 +222,12 @@ export interface HomeDeps {
     noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
+  /**
+   * The Home's workflow-run host ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §2, §6).
+   * Injectable for tests; absent, it is built over the Home's own `history.db` connection. It is closed BEFORE the shared
+   * database, so a leg's MCP clients, departure and owner finish while the connection is still open.
+   */
+  readonly run?: RunHost;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
   /** The onboarding clack slice (2.5.G S8) — omit for the real prompts; a test injects a scripted one. Only ever
@@ -258,6 +304,16 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
   },
 };
 
+/** The agent a chat is built with: the session's own when it rebinds one, else the definition a `c` read (with its file for the consent prompt), else none. */
+function boundAgentOptions(
+  bound: Pick<BuiltChatSession, 'agent'> | undefined,
+  resolvedAgent: HomeChatAgent | undefined,
+): Pick<BuildChatSessionOptions, 'agent' | 'mcpArtifact'> {
+  if (bound !== undefined) return { agent: bound.agent };
+  if (resolvedAgent === undefined) return {};
+  return { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
+}
+
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // Ownerless embeddings retain their original cause/cleanup contract. The product boundary
   // always supplies the original invocation and normalizes before returning to its pure entry.
@@ -284,7 +340,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const startingModes = createStartingModeRuntime(initialConfig, true);
   const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
-  const nativePrompt = createNativePromptChannel();
+  // One chord history for every card the Home shows (ADR-0139 §4): the MCP consent card (this channel), the gate and budget cards and the
+  // exit guard (the controller). What one answered, the next is locked against, so a key held through an answer cannot answer the next card.
+  const chordHistory = createChordHistory();
+  const nativePrompt = createNativePromptChannel({ history: chordHistory });
   let lastSavedSessionId: string | undefined;
   let finalSetupNote: string | undefined;
   const promptFlow = {
@@ -342,6 +401,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
+  let runHost: RunHost | undefined = deps.run;
   // A store update alone is not visibility proof (it may be hidden, scrolled away or replaced).
   // Keep one content-free terminal fallback until its actual delivery is acknowledged.
   let effectAttentionPending = false;
@@ -637,9 +697,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
 
   let result: ExitCode;
   try {
+    const runReader = createRunHistoryReader(opened.db);
     const homeStore = createHomeStore({
       sessions: opened.store,
-      runs: createRunHistoryReader(opened.db),
+      runs: runReader,
+      // A run of another project is marked `other project` in the strip (the same project root the Defined and History tabs use).
+      projectRoot: deps.global.cwd,
+      homeDir: deps.homeDir,
     });
 
     // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the
@@ -656,6 +720,30 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         standardEnvPolicy: keyPolicy,
         credentialSurface: 'home',
       });
+    // The workflow-run host, over the SAME open connection the Home reads and writes: a hosted leg never opens or
+    // closes a second one (ADR-0139 §2). Nothing is registered, built or read until a run is started. Its MCP consent
+    // prompt is the Home's native card on the one prompt flow (ADR-0139 §4): the only prompt a hosted leg can open, and
+    // it answers only while the launch flow holds that flow open (with none open it refuses, which is the safe answer).
+    // The live output of a hosted leg: the leg's one event reader folds into a run store, and the run view mounts `RunApp` over it.
+    // The Active tab's change token (ADR-0140 §2): `PRAGMA data_version` of this connection, which does not move for the leg's own writes,
+    // and an in-process generation the leg's event reader bumps for every event it sees, which does.
+    const changeProbe = createChangeProbe(dataVersionOf(opened.db));
+    const runFeed = createRunViewFeed({
+      color: () => deps.global.color,
+      onEvent: changeProbe.bump,
+    });
+    const hostedRuns: RunHost = (runHost ??= new RunHost({
+      invocation: deps.invocation,
+      io: deps.io,
+      global: deps.global,
+      db: opened.db,
+      // The home the Home's own configuration was loaded from (the override, or the OS's), so a hosted leg reads the same files.
+      homeDir,
+      providers,
+      mcpSecretResolver,
+      consent: createNativeConsentPrompter(promptFlow),
+      renderer: runFeed.renderer,
+    }));
     let keyless = !sampleProviderSetup(providers).some(
       ({ availability }) => availability.status === 'usable',
     );
@@ -994,6 +1082,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           onSetEffort,
           permissions,
+          boundAgent,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1157,6 +1246,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onSetEffort,
           // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
           ...(permissions === undefined ? {} : { permissions }),
+          // ADR-0140 §3: `/agent` opens the sheet of the agent THIS session holds (a reseat or a `/clear` wires a new chat, so a new view).
+          boundAgent,
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };
@@ -1175,6 +1266,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     };
 
+    // The project's `.relavium/` directory, found afresh on every call (a `/init` in this Home is seen at once): the catalog of `/run`, the
+    // agents of `/agents` and the read an agent's `c` makes of its file, all go through this.
+    const currentProjectConfigDir = (): string | undefined => {
+      try {
+        return findProjectConfigDir(deps.global.cwd, homeDir);
+      } catch {
+        return undefined; // a home that cannot be resolved safely: there is no project to offer
+      }
+    };
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const constructChat = (
       factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
@@ -1182,9 +1282,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       ownership === undefined ? factory() : ownership.hosts.construct(factory);
     const startChat = (
       bound?: Pick<BuiltChatSession, 'agent' | 'context' | 'fsPolicy'>,
+      agentRequest?: HomeAgentRequest,
     ): Promise<HomeChatSession> =>
       constructChat(async (host) => {
         const cwd = bound?.context.workingDir ?? deps.global.cwd;
+        // An agent of the project (`c` on its detail, ADR-0140 §3): its file is read ONCE, through the catalog's hardened single-file read, and
+        // before anything is built; the definition that read produced is what is bound, and the file is never read again. A file that
+        // vanished, is refused by that read (a link out of the project, a FIFO), no longer parses, or is no longer the definition the
+        // detail was drawn from stops here with a fixed reason. The Home adds no authority: the session is bound to that definition's own
+        // grant, the MCP consent gate below is the one every path uses (its card names the file), and every tool call still asks (ADR-0057).
+        const resolvedAgent =
+          agentRequest === undefined
+            ? undefined
+            : resolveHomeChatAgent(agentRequest, {
+                cwd,
+                projectConfigDir: currentProjectConfigDir(),
+                homeDir,
+                hasKey: (id) => providerHasKey(providers, id),
+              });
         const start = startingModes.resolve(cwd);
         // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
         // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
@@ -1216,6 +1331,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The Home is always a terminal with a person at it: it can always ask (ADR-0132).
         const askPort = createAskUserPort();
         askPort.bind(store);
+        // A `/clear` rebinds the agent the session already holds; `c` binds the definition the one read above produced. Neither reads a file, and
+        // the file's path rides with the second so the consent prompt names it (ADR-0084 §7).
+        const boundAgent = boundAgentOptions(bound, resolvedAgent);
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
             startingMode: start.startingMode,
@@ -1252,7 +1370,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...(config.maxTokensEstimate === undefined
               ? {}
               : { maxTokensEstimate: config.maxTokensEstimate }),
-            ...(bound === undefined ? {} : { agent: bound.agent }),
+            ...boundAgent,
             agentRef: undefined,
             cwd,
             projectConfigDir,
@@ -1591,7 +1709,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
           // strand the process without exiting.
           try {
-            closeDb();
+            // A hosted leg the host gave up on may still be writing to the shared database: as at the clean exit below, the handle is
+            // left to the process's exit, which follows at once (ADR-0139 §6).
+            if (runHost?.abandoned !== true) closeDb();
           } finally {
             exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
           }
@@ -1809,12 +1929,173 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           keychain,
         });
       };
+      // `/run`: the picker, the form and the confirmation on the native prompt flow, then the host's single-flight start
+      // (ADR-0139 §2, §7). The catalog finds the project directory afresh, so a `/init` in this Home is seen at once.
+      const launchCatalog = createProjectCatalog({
+        cwd: deps.global.cwd,
+        projectConfigDir: currentProjectConfigDir,
+        homeDir,
+        // The configuration a start loads, so the file scope the confirmation names is the one the start resolves.
+        configPath: deps.global.configPath,
+      });
+      const runLaunch = createRunLaunch({
+        flow: promptFlow,
+        host: hostedRuns,
+        catalog: launchCatalog,
+        assertAdmitting: assertHomeAdmitting,
+      });
+      // The Defined tab (ADR-0140 §2, MVP-8 step 4): the very catalog `/run` offers, and the project's workflow pins, read every time the
+      // tab is entered. The pins are keyed by the project's real path; the project is found afresh, as the catalog's is.
+      const definedPins = createRunPinStore(opened.db);
+      // The directory a workflow pin is keyed by, found afresh for every read and every toggle (a `/init` in this Home is seen at once).
+      const workflowPinRoot = (): string => {
+        let configDir: string | undefined;
+        try {
+          configDir = findProjectConfigDir(deps.global.cwd, homeDir);
+        } catch {
+          configDir = undefined; // no project resolves safely: the pins of the working directory, which hold none
+        }
+        return commandGrantRoot(deps.global.cwd, configDir);
+      };
+      const defined = createDefinedPort({
+        catalog: launchCatalog,
+        // The latest run of each workflow in this project, as the runs recorded it (the working directory, as `status` reads them).
+        lastRuns: () =>
+          new Map(
+            runReader
+              .loadLatestRunPerWorkflowInProject(deps.global.cwd)
+              .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
+          ),
+        pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
+        // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
+        allPins: () => definedPins.listPins(),
+      });
+      // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
+      // its project root and slug, a run under its full id); nothing is written until the key is pressed.
+      const pins = createPinPort({ store: definedPins, workflowRoot: workflowPinRoot, now });
+      // The History tab (ADR-0140 §2, MVP-8 step 4): finished runs a page at a time over the Home's own connection, the pinned runs, and one
+      // run's detail with its end-held state read from the terminal outbox. Nothing is read until the tab is entered. A run's frozen
+      // workflow snapshot gives its detail the workflow's node order and the node page its place and type; it is read only for the run a
+      // detail or a node is opened on.
+      const frozenSnapshot = (runId: string): string | undefined =>
+        loadRunSnapshot(opened.db, runId)?.workflowDefinitionSnapshot;
+      const history = {
+        ...createHistorySource({
+          reader: runReader,
+          listRunPins: () => definedPins.listPins({ kind: 'run' }),
+          projectRoot: deps.global.cwd,
+          now,
+        }),
+        loadDetail: createRunDetailLoader({
+          reader: runReader,
+          listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+          loadSnapshot: frozenSnapshot,
+        }),
+        loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
+      };
+      // The token adds the hosted run's id to the probe's pair: a leg that starts or ends changes what the Active tab labels `hosted`, and
+      // which runs the strip shows as parked. The Active tab's poll and the strip's idle refresh both compare it.
+      const changeToken = (): ChangeToken => ({
+        ...changeProbe.token(),
+        hostedRunId: hostedRuns.snapshot().active?.runId,
+      });
+      // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
+      const exportPort = createExportPort({ global: deps.global, homeDir });
+      // `/import` (ADR-0140 §9): the import card over `relavium import`'s own prepare and commit, on the same native flow.
+      const importPort = createImportPort({ global: deps.global, homeDir });
+      // `/pricing` (ADR-0140 §9): the pricing form over `relavium models pricing`'s own core, on the Home's one open `history.db` and the
+      // merged catalog the `/models` picker lists (read when the form opens). The database is always open here, so the form always exists.
+      const pricingPort = createPricingPort({
+        db: opened.db,
+        uuid,
+        now,
+        models: () => models.load().entries,
+      });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
-        // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
-        // `relavium permissions` read. Nothing is read until the sheet is opened.
+        chordHistory,
+        launchRun: (slug, path) => runLaunch.open(slug, path),
+        defined,
+        history,
+        pins,
+        // The `/agents` strip (ADR-0140 §3, MVP-8 step 5): the project's agent catalog, found afresh and read every time its tab is entered, and
+        // this project's saved conversations, the very page the `/resume` picker lists (the same store and working directory).
+        agents: createAgentsPort({
+          projectConfigDir: currentProjectConfigDir,
+          cwd: deps.global.cwd,
+          homeDir,
+        }),
+        sessions: createSessionsPort({
+          store: opened.store,
+          cwd: fsPolicyWorkspace(fsPolicy),
+          now,
+        }),
+        // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
+        // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
+        active: {
+          token: changeToken,
+          read: createActiveReader({
+            reader: runReader,
+            projectRoot: deps.global.cwd,
+            hostedRunId: () => hostedRuns.snapshot().active?.runId,
+            listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+            outboxStamp: () => terminalOutboxStamp(terminalOutboxPath(homeDir)),
+            isClosed: () => dbClosed,
+            now,
+            leaseTtlMs: RUN_LEASE_TTL_MS,
+            // The three reads of one tick (the page, the gate states, the leases) are one snapshot of the database.
+            snapshot: readSnapshotOf(opened.db),
+          }),
+          isClosed: () => dbClosed,
+        },
+        // The strip's idle refresh (ADR-0140 §6): the same probe, so a tick that finds the token where the last read left it reads nothing.
+        strip: { token: changeToken, isClosed: () => dbClosed },
+        exportDefined: (slug) =>
+          runExportCard(
+            { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },
+            slug,
+          ),
+        importDefined: () =>
+          runImportCard({
+            flow: promptFlow,
+            port: importPort,
+            assertAdmitting: assertHomeAdmitting,
+          }),
+        pricing: () =>
+          runPricingCard({
+            flow: promptFlow,
+            port: pricingPort,
+            assertAdmitting: assertHomeAdmitting,
+          }),
+        // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
+        // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
+        hostedRuns,
+        runStore: runFeed.storeFor,
+        // The gate and budget cards of this project's parked runs (ADR-0139 §3, §4, §7): the Attention rows read the log, the card reads one
+        // run's gates when it opens, and an answer is the run host's `resume` with the native flow around it, so a masked slot and the
+        // MCP consent card of a resumed leg open on the same prompt channel. A run recorded for another directory is never read or answered.
+        gateCards: {
+          list: () => readParkedRuns(runReader, deps.global.cwd),
+          read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
+          resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
+        },
+        // A run parked on media jobs alone has no gate to answer: `Enter` on it asks whether to continue it here (default No), and a Yes is the
+        // run host's media resume, on the same prompt channel and the same single flight as a gate answer (ADR-0139 §3, the 2026-11-23 note).
+        continueMedia: (runId) =>
+          runMediaContinue(
+            { host: hostedRuns, flow: promptFlow, assertAdmitting: assertHomeAdmitting },
+            runId,
+          ),
+        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): the Permissions tab of the tab host. The project's remembered commands,
+        // over the very store a chat and `relavium permissions` read, and the repository's `[chat]` allowlist as a chat started now would
+        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the tab is entered,
+        // and it is read again every time it is.
         permissions: createPermissionsPort(
           {
+            allowlist: () => {
+              const chat = readEffectiveChat();
+              return { commands: chat.allowedCommands, globs: chat.allowedCommandGlobs };
+            },
             // A store holds the digest key it first read for as long as it lives, and this Home lives as long as the person uses it:
             // another terminal's `revoke --all`, then a new grant, would leave a long-lived store listing nothing while a chat that
             // starts afterwards runs the new grant unasked. So every read and every withdrawal opens its own store.
@@ -1827,7 +2108,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           },
           'project',
         ),
-        startChat,
+        // The controller asks for an agent of the project by its catalog path and the definition the page showed; a `/clear` carries its own
+        // bound agent (`clear`).
+        // The controller draws a failed build's message in the Home's banner: a broken config file is named from the project or `~`,
+        // never by its absolute path (RUNCORE-3).
+        startChat: (agent) =>
+          startChat(undefined, agent).catch((cause: unknown) => {
+            throw faultForTranscript(cause, { cwd: deps.global.cwd, homeDir });
+          }),
         reseatChat,
         resumeChat,
         pickSession: () =>
@@ -1891,7 +2179,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
-      // A bare `relavium permissions` on a terminal (ADR-0137 §3): the Home opens with the sheet open and ends when it is closed.
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1): the Home opens with the Permissions tab open and ends when it is closed.
       if (deps.openPermissions === true) controller.openPermissionsAsCommand();
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
@@ -1957,7 +2245,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the sheet it came for.
+          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the screen it came for.
           if (
             !automaticSetupStarted &&
             !homeInputSealed &&
@@ -2083,8 +2371,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ownedMount?.close() ?? Promise.resolve(),
         ownedJob?.close() ?? Promise.resolve(),
         ownership.hosts.close(),
+        // A hosted leg is cancelled and joined here, while the shared connection it writes to is still open: the
+        // surface closes that connection only after every one of these has settled (ADR-0139 §6).
+        runHost?.close() ?? Promise.resolve(),
       ];
-      await Promise.all(closing);
+      // Every cleanup is awaited whether or not a sibling failed: `Promise.all` would reject at the first failure and could skip the
+      // retention below while the run host's own close is still running.
+      const closed = await Promise.allSettled(closing);
+      // A leg the host gave up on may still be writing to the shared connection, which the surface's database tail would close under it:
+      // keep the handle open for the process's exit, which the leg's armed finite-exit bound brings (ADR-0139 §6), as the unowned path does.
+      if (runHost?.abandoned === true) ownership.retainStore();
+      // Every cleanup has settled by now, so this only reports the first failure, once the retention above is decided.
+      if (closed.some((result) => result.status === 'rejected')) await Promise.all(closing);
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
         let restored = false;
         try {
@@ -2112,8 +2410,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       disposeJobControl?.();
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+      // A hosted leg (only an injected host can have one here: a Home with no invocation registers no owner) is
+      // joined BEFORE the shared db closes, as in the owned path.
+      await runHost?.close().catch(() => undefined);
       if (unmounted && pasteDisabled && mouseDisabled) await flushEffectAttention();
-      closeDb(); // always close the shared db
+      // Always close the shared db, except under a leg `close` gave up on: it may still be writing to it, so the handle is left to the
+      // process's exit, which the leg's armed finite-exit bound brings (ADR-0139 §6).
+      if (runHost?.abandoned !== true) closeDb();
     }
     nativePrompt.ui.dispose();
     ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
@@ -2125,6 +2428,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       else {
         ownership.surface.work.assertAdmitting();
         await deps.io.writeOutAcknowledged(resumeHint(lastSavedSessionId));
+      }
+    }
+    // What the Home owes the person about a hosted run, once the screen is restored (ADR-0139 §6): one plain line for the leg that ended
+    // with a safety fact (it also set the exit code) and one for a leg it had to abandon, each naming the run and the shell remedy.
+    for (const fact of runHost?.exitFacts() ?? []) {
+      const line = `${fact.line}\n`;
+      if (ownership === undefined) deps.io.writeOut(line);
+      else if (ownership.surface.invocation.registry.termination === undefined) {
+        ownership.surface.work.assertAdmitting();
+        await deps.io.writeOutAcknowledged(line);
+      } else {
+        // An abandoned leg armed the finite-exit bound, so the process is ending: the acknowledged channel is closed to new work, and
+        // a plain best-effort write is all that is left to say it with.
+        try {
+          deps.io.writeErr(line);
+        } catch {
+          // the line is advice; the exit code carries the fact
+        }
       }
     }
   }

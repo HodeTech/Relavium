@@ -443,6 +443,19 @@ export class InMemoryRunStore implements RunStore {
     if (TERMINAL_TYPES.has(event.type) && (bucket ?? []).some((e) => TERMINAL_TYPES.has(e.type))) {
       return Promise.reject(new RunAlreadyTerminalError(event.runId));
     }
+    // …and the SAME `UNIQUE(run_id, seq)` the SQLite store's index enforces at its insert, checked last as the
+    // insert is last there. Without it this reference landed an UNGUARDED write at a sequence another writer
+    // had already used — the stale gate card's `run:failed` went into a healthy paused run here while SQLite
+    // refused it — so no `packages/core` test could see that defect. Untyped, like SQLite's constraint error:
+    // it is neither a stale belief (`AppendConflictError`) nor a lost claim (`LeaseFencedError`), and a
+    // reference that typed it would let the engine classify a refusal the real store never classifies.
+    if ((bucket ?? []).some((e) => e.sequenceNumber === event.sequenceNumber)) {
+      return Promise.reject(
+        new Error(
+          `UNIQUE constraint failed: run_events.run_id, run_events.seq (run ${event.runId}, seq ${String(event.sequenceNumber)})`,
+        ),
+      );
+    }
     if (bucket === undefined) {
       this.#events.set(event.runId, [event]);
     } else {

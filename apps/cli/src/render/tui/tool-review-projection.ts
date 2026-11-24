@@ -206,6 +206,12 @@ function isImmutablePreview(preview: ToolPreview): boolean {
   );
 }
 
+/** The cache a document of this kind is kept in: strict (every mask required), command, or ordinary. */
+function documentCache(strict: boolean, command: boolean): WeakMap<ToolPreview, ReviewDocument> {
+  if (strict) return strictDocuments;
+  return command ? commandDocuments : documents;
+}
+
 /**
  * Source snapshots occur once; row indexes and masks refer to absolute original UTF-16 offsets. Building scans
  * every field for secrets, which is the cost of the review (260 ms per MiB), so the one preview that is shown as
@@ -224,7 +230,7 @@ export function createReviewDocument(
 ): ReviewDocument {
   const strict = options?.requireAllMasks === true;
   const command = strict || options?.command === true;
-  const cache = strict ? strictDocuments : command ? commandDocuments : documents;
+  const cache = documentCache(strict, command);
   const known = cache.get(preview);
   if (known !== undefined) return known;
   const built = buildReviewDocument(preview, strict, command);

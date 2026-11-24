@@ -2490,3 +2490,22 @@ describe('a sealed store cancels a pending approval; it does not reject it (ADR-
     });
   });
 });
+
+describe('a denial of a call whose review cannot be drawn (the review of the cleanup)', () => {
+  /** More fields than a review document holds (64): the document is invalid, though the call is not a command. */
+  const TOO_MANY_FIELDS: ToolPreview = {
+    kind: 'operation',
+    target: 'src/app.ts',
+    fields: Array.from({ length: 65 }, (_, at) => ({ name: `f${String(at)}`, value: 'v' })),
+  };
+
+  it('is plain for an ordinary call: only a command too large to show is told so, in the words made for it', async () => {
+    const r = rig(OFF);
+    r.open('big', TOO_MANY_FIELDS);
+    expect(r.store.getSnapshot().review?.document?.valid).toBe(false);
+    expect(r.store.getSnapshot().review?.facts).toBeUndefined();
+    r.show();
+    r.chord('n');
+    expect(await settled(r)).toEqual([{ outcome: 'reject' }]);
+  });
+});

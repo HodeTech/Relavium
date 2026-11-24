@@ -28,6 +28,22 @@
 > defines exact limits, fallbacks and acceptance. The historical algorithm claims
 > below remain visible; this approved qualification governs implementation.
 
+> **Superseded in part by [ADR-0143](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md)
+> (2026-11-23, Accepted), for §Tables only.** The width fallback "renders verbatim, as the sanitized source" is
+> reversed: a table that does not fit on one line now keeps its grid, with each cell wrapped inside its column.
+> Labelled records are the last resort, used only when even the column floors do not fit. The earlier text was
+> also not what the code did, since the source was word-wrapped and that detached each pipe from its cell. The
+> literal fallback stays for the fixed limits, hard breaks, header-only tables and a width too narrow for any record
+> value, and it is described as word-wrapped source. The parked follow-up in §Negative is closed by ADR-0143 for the
+> width case; a capped table stays literal. Colour-off rendering is unchanged.
+
+> **Amended 2026-11-23 by [ADR-0144](0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md)
+> (Accepted), for the deferred highlighter only.** The decision this ADR left to "its own ADR" (Context, and
+> §Alternatives "Highlight code now") is made there: an in-house lexical scanner with no dependency, applied to a
+> fenced block whose info string names a supported language. The parser and the layout geometry are
+> unchanged; the layout's code branch asks the scanner for classed spans, the stream passes a clipped fence's language to
+> it, and colour-off rendering is unchanged.
+
 Assistant text reaches both chat renderers as plain text. Models answer in
 markdown, so the user reads `**`, backticks, `#` and fence lines instead of
 emphasis, code and structure. MVP-2 ("a readable chat") needs this fixed.

@@ -59,16 +59,20 @@ import {
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import {
-  disarmPermissionsSheet,
-  sheetCanArm,
-  type PermissionsSheetState,
-} from './permissions-sheet.js';
+import type { BoundAgentView } from '../../chat/bound-agent-view.js';
+import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
 } from './permissions-sheet-port.js';
-import { PermissionsSheetView } from './permissions-sheet-view.js';
+import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
+import {
+  agentChatSheet,
+  permissionsChatSheet,
+  permissionsSheetOf,
+  type ChatSheetState,
+} from './chat-sheet.js';
+import { ChatSheetView } from './chat-sheet-view.js';
 import {
   foldModelPickerKey,
   partialFailureBanner,
@@ -277,6 +281,10 @@ interface ChatAppProps {
    *  keyboard-owning sheet instead of dispatching. Absent ⇒ the command says remembered commands are not available. `| undefined`
    *  so the createElement passthrough forwards an absent `ctx.permissions`. */
   readonly permissions?: PermissionsPort | undefined;
+  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3). When present, a typed (or palette-selected) bare `/agent` opens the docked, read-only sheet instead of dispatching. Absent ⇒ the
+   *  command dispatches and prints the same fields as a notice. `| undefined` so the createElement passthrough forwards an absent `ctx.boundAgent`. */
+  readonly boundAgent?: (() => BoundAgentView) | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -392,6 +400,14 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
     timer.current = setTimeout(() => setCopied(false), COPIED_TOAST_MS);
   }, []);
   return { copied, flashCopied };
+}
+
+/** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
+export function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
+  if (interruptArmed) return 'Press Ctrl+C again to end the session';
+  return emptyDraft
+    ? '/ for commands · /exit or Ctrl+C twice to end'
+    : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft';
 }
 
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
@@ -639,11 +655,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {props.interruptArmed === true
-            ? 'Press Ctrl+C again to end the session'
-            : editor.text.length === 0
-              ? '/ for commands · /exit or Ctrl+C twice to end'
-              : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft'}
+          {idleHint(props.interruptArmed === true, editor.text.length === 0)}
         </Text>
       )}
 
@@ -860,15 +872,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     effortPickerRef.current = next;
     setEffortPicker(next);
   };
-  // The `/permissions` sheet (ADR-0137 §2) — a keyboard-owning submode like `/effort`, ref-shadowed so a coalesced stdin chunk sees a
-  // just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can arrive while it is open.
-  const [permissionsSheet, setPermissionsSheet] = useState<PermissionsSheetState | undefined>(
-    undefined,
-  );
-  const permissionsSheetRef = useRef<PermissionsSheetState | undefined>(undefined);
-  const applyPermissionsSheet = (next: PermissionsSheetState | undefined): void => {
-    permissionsSheetRef.current = next;
-    setPermissionsSheet(next);
+  // The chat's docked sheet (ADR-0137 §2 `/permissions`, ADR-0140 §3 `/agent`) — ONE slot, a keyboard-owning submode like `/effort`,
+  // ref-shadowed so a coalesced stdin chunk sees a just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can
+  // arrive while it is open, and holding one value, so two sheets cannot be open at once.
+  const [chatSheet, setChatSheet] = useState<ChatSheetState | undefined>(undefined);
+  const chatSheetRef = useRef<ChatSheetState | undefined>(undefined);
+  const applyChatSheet = (next: ChatSheetState | undefined): void => {
+    chatSheetRef.current = next;
+    setChatSheet(next);
   };
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
@@ -1214,51 +1225,73 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
-  // ---- The `/permissions` sheet (ADR-0137 §2) -------------------------------------------------------------------------------
-  // Open on the data read NOW, in the chat's current mode. The caller (submit) gates this on a wired port and an idle prompt.
-  const openPermissionsSheet = (): void => {
-    const port = props.permissions;
-    if (port === undefined) return;
+  // ---- The docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) --------------------------------------------
+  /** Whether a sheet may open now: an idle prompt, with no turn running and no card pending (a card would compete for the keyboard). */
+  const sheetMayOpen = (): boolean => {
     const snap = props.store.getSnapshot();
-    if (
+    return !(
       snap.state.status === 'running' ||
       snap.review !== undefined ||
       snap.question !== undefined ||
       snap.checkpoint !== undefined ||
       snap.approval !== undefined
-    )
-      return;
-    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(port, snap.mode, performance.now());
-    if (opened.sheet === undefined) props.store.note(opened.note);
-    else applyPermissionsSheet(opened.sheet);
+    );
   };
-  // The open sheet owns every key. A withdrawal is carried out through the port (the store is read again there) and the sheet is
-  // reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
-  const routePermissionsSheetKey = (char: string, key: ModelPickerKey): void => {
-    const open = permissionsSheetRef.current;
+  // Open on the data read NOW, in the chat's current mode. The caller (submit) gates this on a wired port and an idle prompt.
+  const openPermissionsSheet = (): void => {
     const port = props.permissions;
+    if (port === undefined || !sheetMayOpen()) return;
+    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
+    const opened = openPermissionsSheetThroughPort(
+      port,
+      props.store.getSnapshot().mode,
+      performance.now(),
+    );
+    if (opened.sheet === undefined) props.store.note(opened.note);
+    else applyChatSheet(permissionsChatSheet(opened.sheet));
+  };
+  // The bound agent's sheet: the definition the session holds, nothing read, nothing written. A defect in the view's builder must not
+  // take the prompt down with it either: the sheet does not open, and the chat says so.
+  const openAgentSheet = (): void => {
+    const view = props.boundAgent;
+    if (view === undefined || !sheetMayOpen()) return;
+    try {
+      applyChatSheet(agentChatSheet(view()));
+    } catch {
+      props.store.note(AGENT_UNREADABLE);
+    }
+  };
+  // The open sheet owns every key. A permissions withdrawal is carried out through the port (the store is read again there) and the
+  // sheet is reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet. The
+  // agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped.
+  const routeChatSheetKey = (char: string, key: ModelPickerKey): void => {
+    const open = chatSheetRef.current;
     if (open === undefined) return;
+    if (open.kind === 'agent') {
+      if (foldAgentSheetKey(char, key) === 'close') applyChatSheet(undefined);
+      return;
+    }
+    const port = props.permissions;
     if (port === undefined) {
-      applyPermissionsSheet(undefined);
+      applyChatSheet(undefined);
       return;
     }
     const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
     const result = foldPermissionsSheetThroughPort(
       port,
-      open,
+      open.sheet,
       char,
       key,
       canArm,
       performance.now(),
     );
-    applyPermissionsSheet(result.sheet);
+    applyChatSheet(result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet));
     if (result.note !== undefined) props.store.note(result.note);
   };
   // A card (or any approval) that arrives while the sheet is open wins: the sheet closes with its question dropped. The sheet opens only
   // when nothing is pending, so this is a defence for a host that lets one arrive, not a path the product takes.
   useEffect(() => {
-    if (permissionsSheetRef.current === undefined) return;
+    if (chatSheetRef.current === undefined) return;
     const snap = props.store.getSnapshot();
     if (
       snap.review !== undefined ||
@@ -1266,7 +1299,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       snap.checkpoint !== undefined ||
       snap.approval !== undefined
     )
-      applyPermissionsSheet(undefined);
+      applyChatSheet(undefined);
   });
 
   // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
@@ -1315,6 +1348,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // `/permissions <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
     if (props.permissions !== undefined && message.trim() === '/permissions') {
       openPermissionsSheet();
+      return;
+    }
+    // A typed (or palette-selected) bare `/agent` opens the bound agent's sheet (ADR-0140 §3) instead of dispatching, where the view is
+    // wired. `/agent <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
+    if (props.boundAgent !== undefined && message.trim() === '/agent') {
+      openAgentSheet();
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -1368,12 +1407,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mentionOpen: mentionRef.current !== undefined,
       modelPickerOpen: modelPickerRef.current !== undefined,
       effortPickerOpen: effortPickerRef.current !== undefined,
-      permissionsSheetOpen: permissionsSheetRef.current !== undefined,
+      chatSheetOpen: chatSheetRef.current !== undefined,
       approvalPending: snap.approval !== undefined || snap.review !== undefined,
     });
-    // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is withdrawn.
-    if (permissionsSheetRef.current !== undefined)
-      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current));
+    // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is
+    // withdrawn. The agent sheet has no question to drop, and a paste changes nothing there.
+    const pastedOver = permissionsSheetOf(chatSheetRef.current);
+    if (pastedOver !== undefined)
+      applyChatSheet(permissionsChatSheet(disarmPermissionsSheet(pastedOver)));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
@@ -1486,7 +1527,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mentionRef.current !== undefined ||
       modelPickerRef.current !== undefined ||
       effortPickerRef.current !== undefined ||
-      permissionsSheetRef.current !== undefined
+      chatSheetRef.current !== undefined
     )
       return { kind: 'overlay' };
     const busy =
@@ -1567,7 +1608,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           mentionRef.current !== undefined ||
           modelPickerRef.current !== undefined ||
           effortPickerRef.current !== undefined ||
-          permissionsSheetRef.current !== undefined;
+          chatSheetRef.current !== undefined;
         if (mouse !== undefined && !overlayOwnsKeyboard) {
           if (mouse.kind === 'wheel') {
             const geom = chatLiveGeom();
@@ -1615,10 +1656,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       routeEffortPickerKey(char, key);
       return;
     }
-    // The open `/permissions` sheet owns every key (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes,
-    // neither ever withdraws. Mutually exclusive with the other submodes (it opens only at an idle prompt).
-    if (permissionsSheetRef.current !== undefined) {
-      routePermissionsSheetKey(char, key);
+    // The open docked sheet owns every key. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C`
+    // closes, neither ever withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped. Mutually exclusive
+    // with the other submodes (a sheet opens only at an idle prompt).
+    if (chatSheetRef.current !== undefined) {
+      routeChatSheetKey(char, key);
       return;
     }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
@@ -1957,7 +1999,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             mention !== undefined ||
             modelPicker !== undefined ||
             effortPicker !== undefined ||
-            permissionsSheet !== undefined
+            chatSheet !== undefined
           }
         />
         {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
@@ -1984,7 +2026,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           color={color}
         />
         {palette !== undefined && (
-          <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
+          <PaletteView
+            commands={CHAT_PALETTE_COMMANDS}
+            state={palette}
+            color={color}
+            maxRows={windowSize.rows - 1}
+          />
         )}
         {search !== undefined && (
           <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
@@ -2007,10 +2054,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             color={color}
           />
         )}
-        {/* The `/permissions` sheet (ADR-0137 §2) — docked here with the other overlays; the transcript stays above it. */}
-        {permissionsSheet !== undefined && (
-          <PermissionsSheetView
-            state={permissionsSheet}
+        {/* The docked sheet — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — here with the other overlays; the transcript stays above it. */}
+        {chatSheet !== undefined && (
+          <ChatSheetView
+            state={chatSheet}
             color={color}
             columns={windowSize.columns}
             rows={windowSize.rows}
@@ -2291,6 +2338,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           onReseat: ctx.onReseat,
           modelPicker: ctx.modelPicker,
           permissions: ctx.permissions,
+          boundAgent: ctx.boundAgent,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
           // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
           mentionReader: ctx.mentionReader,

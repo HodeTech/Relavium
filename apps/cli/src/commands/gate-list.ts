@@ -11,6 +11,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { batchedStateEvents } from '../history/batched-state-events.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /** How many unreadable run ids the #W15-15 warning names before it elides — same bound-the-diagnostic
@@ -64,6 +65,9 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
     // whole listing. With an explicit `runId` there is only one run, so degrading would silently answer "no
     // gates" for a run the user named — that must still fail loudly, and it does (the throw propagates).
     const runIds = targetRunIds(reader, args.runId);
+    // The all-runs form reads every run's state events in batches; a run with no healthy batched answer falls
+    // back to its own per-run read below, so a damaged run keeps the degradation it always had.
+    const batched = args.runId === undefined ? batchedStateEvents(reader, runIds) : undefined;
     const rows: GateRow[] = [];
     const unreadableRunIds: string[] = [];
     for (const runId of runIds) {
@@ -72,7 +76,11 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
         rows.push(...read().map((gate): GateRow => ({ runId, ...gate })));
         continue;
       }
-      const result = readPerRunOrDegrade<readonly PendingGate[]>([], read);
+      const healthy = batched?.get(runId);
+      const result =
+        healthy !== undefined && 'events' in healthy
+          ? { value: pendingHumanGates(healthy.events), degraded: false }
+          : readPerRunOrDegrade<readonly PendingGate[]>([], read);
       // #W15-15: a degraded run used to contribute nothing and say nothing, so "No pending human gates."
       // covered a run whose gates had been LOST. Both output modes now name it.
       if (result.degraded) unreadableRunIds.push(runId);

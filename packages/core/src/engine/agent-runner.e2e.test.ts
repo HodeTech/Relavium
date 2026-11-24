@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { parseWorkflow } from '../parser.js';
 import { createExpressionSandbox, type ExpressionSandbox } from '../expression/sandbox.js';
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { createToolRegistry } from '../tools/registry.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import { WorkflowEngine } from './engine.js';
 import { createAbortController, createInMemoryHost, type TimerKind } from './execution-host.js';
@@ -303,6 +304,215 @@ workflow:
     assertGapFreeSeq(events);
     const completed = events.find((e) => e.type === 'node:completed');
     expect(completed?.type === 'node:completed' && completed.output).toBe('answer');
+  });
+
+  it('records the MEASURED tool duration on the node terminal: the engine clock reaches the turn through the runner (ADR-0140 §4)', async () => {
+    // A host whose clock moves only when the tool "runs": the registry advances it by 250 ms inside `dispatch`. The
+    // two tool events are emitted after the dispatch returned, so only a clock read BEFORE and AFTER the dispatch —
+    // the engine's own, handed down through the node context and the runner — can see the 250.
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    let offset = 0;
+    const host = {
+      ...createInMemoryHost(),
+      clock: { now: () => new Date(base + offset).toISOString() },
+    };
+    const timedRegistry: ToolRegistry = {
+      ...echoRegistry,
+      dispatch: (call, ctx) => {
+        offset += 250;
+        return echoRegistry.dispatch(call, ctx);
+      },
+    };
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-tool-duration
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(
+        () =>
+          scriptedProvider([
+            [
+              { type: 'tool_call_start', id: 'c1', name: 'echo' },
+              { type: 'tool_call_end', id: 'c1' },
+              {
+                type: 'stop',
+                stopReason: 'tool_use',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
+            ],
+            [
+              { type: 'text_delta', text: 'answer' },
+              {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
+            ],
+          ]),
+        timedRegistry,
+        [echoToolDef],
+      ),
+    });
+
+    const events = await drain(engine.start({ workflow: wf }));
+    const completed = events.find((e) => e.type === 'node:completed');
+    if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
+    expect(completed.toolActivity).toEqual([
+      { toolId: 'echo', ok: true, resultRecorded: true, durationMs: 250 },
+    ]);
+  });
+
+  describe('the three outcomes of a tool call, through the REAL registry (ADR-0140 §4)', () => {
+    const TOOL_WORKFLOW = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-tool-outcomes
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const usage = { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } } as const;
+    const callThenAnswer = (): LlmProvider =>
+      scriptedProvider([
+        [
+          { type: 'tool_call_start', id: 'c1', name: 'echo' },
+          { type: 'tool_call_end', id: 'c1' },
+          { type: 'stop', stopReason: 'tool_use', usage },
+        ],
+        [
+          { type: 'text_delta', text: 'answer' },
+          { type: 'stop', stopReason: 'stop', usage },
+        ],
+      ]);
+    const realRegistryWith = (
+      parseArgs: (raw: unknown) => unknown,
+      dispatch: () => Promise<unknown>,
+    ): ToolRegistry =>
+      createToolRegistry({
+        tools: [
+          {
+            id: 'echo',
+            source: 'builtin',
+            description: 'echo',
+            parseArgs,
+            llmVisibleParams: { type: 'object' },
+            policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+            dispatch,
+          },
+        ],
+        host: {},
+      });
+    const clockedHost = (advance: { offset: number }) => ({
+      ...createInMemoryHost(),
+      clock: {
+        now: () => new Date(Date.parse('2026-01-01T00:00:00.000Z') + advance.offset).toISOString(),
+      },
+    });
+
+    it('a REFUSAL the model is told about is a recorded result: ok:false, resultRecorded:true, and no duration', async () => {
+      const advance = { offset: 0 };
+      const registry = realRegistryWith(
+        () => {
+          advance.offset += 250; // time passes while the registry refuses — it is still not a measured dispatch
+          throw new Error('the arguments do not parse');
+        },
+        () => Promise.resolve('never reached'),
+      );
+      const engine = new WorkflowEngine({
+        host: clockedHost(advance),
+        executor: agentExecutor(callThenAnswer, registry, [echoToolDef]),
+      });
+      const events = await drain(engine.start({ workflow: TOOL_WORKFLOW }));
+      const completed = events.find((e) => e.type === 'node:completed');
+      if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
+      // Before: a recorded refusal was indistinguishable from a call the node ended without a result for.
+      expect(completed.toolActivity).toEqual([{ toolId: 'echo', ok: false, resultRecorded: true }]);
+    });
+
+    it('a call whose failure ENDS the node (a tool that throws, which a workflow node does not hand back) is UNPAIRED', async () => {
+      const advance = { offset: 0 };
+      const registry = realRegistryWith(
+        (raw) => raw,
+        () => {
+          advance.offset += 40;
+          return Promise.reject(new Error('boom'));
+        },
+      );
+      const engine = new WorkflowEngine({
+        host: clockedHost(advance),
+        executor: agentExecutor(callThenAnswer, registry, [echoToolDef]),
+      });
+      const events = await drain(engine.start({ workflow: TOOL_WORKFLOW }));
+      const failed = events.find((e) => e.type === 'node:failed');
+      if (failed?.type !== 'node:failed') throw new Error('expected node:failed');
+      expect(failed.error.code).toBe('tool_failed');
+      // No result was ever emitted for it, so the call is on the trace as started and never answered.
+      expect(failed.toolActivity).toEqual([{ toolId: 'echo', ok: false, resultRecorded: false }]);
+    });
+
+    it('a FATAL refusal (a registered tool the node was not granted) is UNPAIRED too — the refused row is for the two refusals a workflow node hands back (PR #102 review: P2)', async () => {
+      // The reference states this as accepted ("A fatal tool failure is unpaired"): the turn announces the call and
+      // then throws, with no `agent:tool_result`, so even a refusal decided before anything ran is on the trace as
+      // "no result recorded" — the node's own `error` says why it failed. This pins that the entry is the schema's
+      // valid unpaired shape and nothing the schema now refuses.
+      let dispatched = 0;
+      const other: CoreToolDef = {
+        ...echoToolDef,
+        id: 'other',
+        dispatch: () => {
+          dispatched += 1;
+          return Promise.resolve('never reached');
+        },
+      };
+      const registry = createToolRegistry({ tools: [echoToolDef, other], host: {} });
+      const engine = new WorkflowEngine({
+        host: createInMemoryHost(),
+        executor: agentExecutor(
+          () =>
+            scriptedProvider([
+              [
+                { type: 'tool_call_start', id: 'c1', name: 'other' },
+                { type: 'tool_call_end', id: 'c1' },
+                { type: 'stop', stopReason: 'tool_use', usage },
+              ],
+            ]),
+          registry,
+          [echoToolDef, other],
+        ),
+      });
+      const events = await drain(engine.start({ workflow: TOOL_WORKFLOW }));
+      const failed = events.find((e) => e.type === 'node:failed');
+      if (failed?.type !== 'node:failed') throw new Error('expected node:failed');
+      expect(failed.error.code).toBe('tool_denied');
+      expect(dispatched).toBe(0);
+      expect(failed.toolActivity).toEqual([{ toolId: 'other', ok: false, resultRecorded: false }]);
+      expect(events.some((e) => e.type === 'agent:tool_result')).toBe(false);
+    });
   });
 
   it('runs two agent nodes concurrently against the shared executor, gap-free, with no cross-node bleed', async () => {

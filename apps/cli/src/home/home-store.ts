@@ -1,8 +1,14 @@
-import type { RunHistoryReader, RunRecord, SessionStore } from '@relavium/db';
+import {
+  MAX_RUN_SUMMARY_IDS,
+  type RunHistoryReader,
+  type RunRecord,
+  type SessionStore,
+} from '@relavium/db';
 import type { AgentSessionRecord, UsageCoverage } from '@relavium/shared';
 
 import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { scrubbedBounded } from '../history/run-detail-model.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 
 /**
@@ -18,6 +24,9 @@ import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverag
  * lookup; and "recent agents" is derived from the already-read sessions (the maintainer-chosen source — there is
  * no DB agent read seam), so the whole snapshot is a handful of bounded queries.
  */
+
+/** The longest a {@link HomeRunRow.project} label is, in characters. */
+export const PROJECT_LABEL_MAX_CHARS = 64;
 
 /** Default top-N per Home list — the read-only strip shows a glanceable handful, not the full history. */
 export const DEFAULT_HOME_LIMIT = 8;
@@ -52,6 +61,13 @@ export interface HomeRunRow {
   readonly totalCostMicrocents: number;
   readonly usageCoverage?: UsageCoverage;
   readonly unpricedCalls?: number;
+  /**
+   * Present only on a run that was recorded for ANOTHER project than the one this Home was opened in ({@link HomeStoreDeps.projectRoot}):
+   * that project's root, `~`-shortened when it lies under the home directory and bounded ({@link PROJECT_LABEL_MAX_CHARS}), never an
+   * absolute home path. Absent for this Home's own project, for a run that recorded none, and when the Home was not told its project, so an
+   * absent marker never claims "same project". The strip draws `other project` for it (`runLabel`).
+   */
+  readonly project?: string;
 }
 
 /** A pending human gate awaiting resolution — the most urgent "attention" item. */
@@ -108,7 +124,16 @@ export interface HomeStoreDeps {
   readonly runs: Pick<
     RunHistoryReader,
     'listRuns' | 'loadRunStateEvents' | 'loadWorkflowSlugs' | 'visitRunEventsForReplay'
-  >;
+  > &
+    Partial<Pick<RunHistoryReader, 'loadRunSummariesByIds'>>;
+  /**
+   * The project root this Home was opened in (the one `relavium run` records as a run's project): a run recorded elsewhere is marked
+   * ({@link HomeRunRow.project}). Absent, or with a `runs` reader that has no `loadRunSummariesByIds`, no row is marked and nothing
+   * extra is read.
+   */
+  readonly projectRoot?: string | undefined;
+  /** The home directory, so a project root under it is shown as `~/…` and never as an absolute home path. */
+  readonly homeDir?: string | undefined;
   /**
    * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
    * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
@@ -206,6 +231,7 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     })),
   );
 
+  const projectByRun = readOtherProjects(deps, [...failedRunRecords, ...recentRunRecords]);
   const usageByRun = new Map<string, ReturnType<typeof readRunUsageCoverage>>();
   const runRow = (run: RunRecord): HomeRunRow => {
     let usage = usageByRun.get(run.id);
@@ -223,11 +249,13 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
       if (read.degraded) unreadableRunIds.push(run.id);
       usageByRun.set(run.id, usage);
     }
+    const project = projectByRun.get(run.id);
     return {
       ...toRunRow(run, slugOf(run)),
       totalCostMicrocents: usage.totalCostMicrocents,
       usageCoverage: usage.usageCoverage,
       unpricedCalls: usage.unpricedCalls,
+      ...(project === undefined ? {} : { project }),
     };
   };
   const failedRuns = failedRunRecords.map(runRow);
@@ -276,6 +304,63 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     unreadableRunIds: [...new Set(unreadableRunIds)],
     isEmpty,
   };
+}
+
+/**
+ * The projects of the runs among `records` that were recorded for another project than this Home's, as a map from run id to the label
+ * the row carries. One batched primary-key read per {@link MAX_RUN_SUMMARY_IDS} ids (the reader refuses a larger set); nothing is read
+ * when the Home was not told its project or the reader cannot answer. A run that recorded no project is not in the map: unknown is not
+ * "another project".
+ */
+function readOtherProjects(
+  deps: HomeStoreDeps,
+  records: readonly RunRecord[],
+): ReadonlyMap<string, string> {
+  const other = new Map<string, string>();
+  const here = deps.projectRoot;
+  const load = deps.runs.loadRunSummariesByIds;
+  if (here === undefined || load === undefined) return other;
+  const ids = [...new Set(records.map((run) => run.id))];
+  for (let from = 0; from < ids.length; from += MAX_RUN_SUMMARY_IDS) {
+    const summaries = load(ids.slice(from, from + MAX_RUN_SUMMARY_IDS));
+    for (const [runId, summary] of summaries) {
+      if (summary.projectRoot !== undefined && summary.projectRoot !== here)
+        other.set(runId, projectLabel(summary.projectRoot, deps.homeDir));
+    }
+  }
+  return other;
+}
+
+/** `value` without its trailing path separators, by a scan from the end (a trailing-run regular expression backtracks over every run of separators). */
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === '/' || value[end - 1] === '\\')) end -= 1;
+  return value.slice(0, end);
+}
+
+/**
+ * A project root as a row may carry it: `~/…` when it lies under `homeDir`, otherwise only its last two segments behind `…/` (a root
+ * outside the home is not abbreviated to a name that could be mistaken for a home path, and is never shown whole), scrubbed and bounded.
+ */
+function projectLabel(root: string, homeDir: string | undefined): string {
+  const home = homeDir === undefined ? undefined : trimTrailingSeparators(homeDir);
+  const rest = home === undefined || home === '' ? undefined : underHome(root, home);
+  if (rest !== undefined) return scrubbedBounded(`~${rest}`, PROJECT_LABEL_MAX_CHARS);
+  const tail = root
+    .split(/[\\/]+/u)
+    .filter(Boolean)
+    .slice(-2)
+    .join('/');
+  return scrubbedBounded(`…/${tail}`, PROJECT_LABEL_MAX_CHARS);
+}
+
+/** What follows `home` in `root` (`''` for the home itself), or `undefined` when `root` is not under it. */
+function underHome(root: string, home: string): string | undefined {
+  if (root === home) return '';
+  const next = root.charAt(home.length);
+  return root.startsWith(home) && (next === '/' || next === '\\')
+    ? root.slice(home.length)
+    : undefined;
 }
 
 function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow {

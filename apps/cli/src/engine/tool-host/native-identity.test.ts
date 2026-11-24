@@ -76,15 +76,19 @@ vi.mock('node:fs', async (original) => {
 
 let base: string;
 let workspace: string;
+// The operator home the catalog admits its reads against: a fresh directory beside the project, never the real one.
+let home: string;
 beforeEach(() => {
   identities.fakes.clear();
   base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-native-identity-')));
+  home = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-native-identity-home-')));
   workspace = join(base, 'workspace');
   mkdirSync(workspace);
 });
 afterEach(() => {
   identities.beforeOpen = undefined;
   rmSync(base, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 /** The fixture must make the original and its replacement collide as Numbers and only as Numbers. */
@@ -173,7 +177,12 @@ describe('the workflow catalog admits an open by exact native identity', () => {
       renameSync(file, `${file}-old`);
       writeFileSync(file, workflow('swapped'));
     };
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: base, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: base,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(identities.beforeOpen).toBeUndefined();
     expectNumberCollision(
       statSync(`${file}-old`, { bigint: true }).ino,

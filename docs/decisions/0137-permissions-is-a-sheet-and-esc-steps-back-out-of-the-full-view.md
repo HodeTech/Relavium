@@ -315,3 +315,7 @@ The maintainer ruled on 2026-11-21 (answering the PR #101 review, finding K12) t
 - The step 5 implementation notes keep the intermediate wordings (`Enter withdraws · Esc keeps it`, 300 ms, "asks once") because each is a dated record of what was built then; the as-built text is the reference's.
 
 **Not changed in this ledger's edit:** the Status, Date, Decides, Amends and Related lines; Consequences and Landing obligations; every implementation note.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+§3's bare-Home sentence is amended: the landing's `/permissions` opens the Home's tab host at Permissions (closing returns to the landing), and the bare `relavium permissions` opens the Home on that tab and ends the invocation with `0` on close. The chat's `/permissions` stays the docked sheet. The tab composes this sheet; its domain, MCP and egress sections arrive with MVP-7 and MVP-9 ([ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3).

@@ -2,7 +2,7 @@ import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { RunEvent, RunStatus } from '@relavium/shared';
 
-import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
+import type { Db, RunHistoryReader, RunRecord, RunStateEventsRead, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -25,6 +25,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { batchedStateEvents } from '../history/batched-state-events.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
@@ -137,6 +138,14 @@ export async function statusCommand(
     const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
     const runs =
       args.runId === undefined ? reader.listActiveRuns() : [requireRun(reader, args.runId)];
+    // The all-runs form reads every active run's state events in batches (see gatesOf for the per-run fallback).
+    const batched =
+      args.runId === undefined
+        ? batchedStateEvents(
+            reader,
+            runs.map((run) => run.id),
+          )
+        : undefined;
     const statuses: ActiveRunStatus[] = runs.map((run) => {
       let steps: readonly StepRecord[] = [];
       const usage = readPerRunOrDegrade(
@@ -167,7 +176,7 @@ export async function statusCommand(
         // A FINISHED run (`status <runId>`) has nothing pending, whatever its log left open: a run cancelled or
         // failed while a gate waited never resolves that gate: `gate` / `budget resume` answer it with an exit-0
         // `nothing to resume`, and `gate list` skips it.
-        ...gatesOf(reader, run, TERMINAL_STATUSES.has(run.status)),
+        ...gatesOf(reader, run, TERMINAL_STATUSES.has(run.status), batched?.get(run.id)),
       };
     });
 
@@ -213,11 +222,16 @@ function gatesOf(
   reader: RunHistoryReader,
   run: RunRecord,
   finished: boolean,
+  healthy?: RunStateEventsRead,
 ): RunGates & { gatesUnavailable: boolean } {
   const read = readPerRunOrDegrade<RunGates>(
     { pendingGates: [], pendingBudgetGates: [], decidedGateNodes: new Set() },
     () => {
-      const events = reader.loadRunEvents(run.id);
+      // A healthy batched answer serves the fold; anything else is the per-run read, with its own degradation.
+      const events =
+        healthy !== undefined && 'events' in healthy
+          ? healthy.events
+          : reader.loadRunEvents(run.id);
       const pending = finished
         ? { pendingGates: [], pendingBudgetGates: [] }
         : pendingGateDisplays(events);

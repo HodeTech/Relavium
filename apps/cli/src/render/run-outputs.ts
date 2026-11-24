@@ -1,5 +1,4 @@
-import { scrubSecrets } from '@relavium/llm/scrub-secrets';
-
+import { MEMBER_MASK, maskText, maskedAsMember, scrubLeaves } from './output-masking.js';
 import { sanitizeInline, stripTerminalControls } from './sanitize.js';
 
 /**
@@ -19,16 +18,20 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
  * scrubber masks up to its end (`Basic plan`): that name is not a label. The value's own text never joins its name
  * or a neighbour, so it cannot turn a token already masked in place into a whole-value mask. Top-level keys are
  * authored ids, so they get the one-line {@link sanitizeInline}. A secret input the engine already masked (`{ secret: true, ref }`)
- * is rendered as that masked object, never unwrapped.
+ * is rendered as that masked object, never unwrapped. The masking rules themselves live in `output-masking.ts`, the one
+ * seam this summary and the node page's output preview both mask through.
  *
  * Outputs are the run's deliverable, not a diagnostic, so they do NOT get `sanitizeUntrusted`'s whole-text
  * fallback, which blanks a diagnostic outright when its fragments join into a shape once whitespace is removed: on
  * ordinary prose (a bare `https://host` and a later `@handle`) that blanked the whole result. The shared scrubber's
  * own normalized views still apply. A value that was masked says so, with the same pointer to the exact record.
  *
- * **Bounded.** A value shows at most {@link MAX_VALUE_LINES} lines and {@link MAX_VALUE_CHARS} code points,
- * and the whole block at most {@link MAX_TOTAL_CHARS}; what is cut is counted and points at the full record
- * (`relavium logs <runId> --json`). Every value line is indented under its key, so a hard line break in a value
+ * **Bounded.** A value shows at most {@link MAX_VALUE_LINES} lines and {@link MAX_VALUE_CHARS} code points, and
+ * the values of the whole block at most {@link MAX_TOTAL_CHARS} code points between them; what is cut is counted and
+ * points at the full record (`relavium logs <runId> --json`). The bound is on VALUE text, as the reference states it
+ * (commands.md: "12,000 characters per run"): a key is the workflow's own output id, shown as written on one row
+ * ({@link sanitizeInline}), so the labels are not counted, and a key the budget has no room for is still listed, with
+ * `…`, so that no output disappears unsaid. Every value line is indented under its key, so a hard line break in a value
  * cannot forge a row at the summary's own indentation. A row longer than the terminal is wide still soft-wraps to
  * column 0; wrapping value rows at the terminal width is a recorded follow-up (deferred-tasks.md).
  */
@@ -37,13 +40,10 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
 export const MAX_VALUE_LINES = 40;
 /** Code points shown per output value. */
 export const MAX_VALUE_CHARS = 4000;
-/** Code points shown across every output value of one run. */
+/** Code points of VALUE text shown across every output of one run; the keys are not counted. */
 export const MAX_TOTAL_CHARS = 12_000;
-
-/** The text a member masked whole shows — the shared scrubber's own mask. */
-const MEMBER_MASK = '[REDACTED]';
-/** The stand-in value a member's name is read with: one character, which the scrubber's header rule masks. */
-const NAME_PROBE = 'v';
+/** What a value that is empty (an empty string, or only newlines) shows beside its key, so a key never ends in a bare colon. */
+const EMPTY_VALUE = '(empty)';
 
 /**
  * The outputs block as lines, each already prefixed with `indent`. Empty when there are no outputs. `runId`
@@ -67,20 +67,11 @@ export function formatRunOutputs(
       truncated = true;
       continue;
     }
-    const value = displayValue(key, outputs[key]);
-    masked ||= value.masked;
-    // A final newline ends the value; it is not an empty last row, and it does not count toward the line bound.
-    const shown = clip(withoutFinalNewlines(value.text), Math.min(MAX_VALUE_CHARS, budget));
-    budget -= shown.chars;
-    truncated ||= shown.truncated;
-    const rows = shown.text.split('\n');
-    if (rows.length === 1 && !shown.truncated) {
-      lines.push(`${label} ${rows[0] ?? ''}`);
-      continue;
-    }
-    lines.push(label);
-    for (const row of rows) lines.push(`${indent}    ${row}`);
-    if (shown.truncated) lines.push(`${indent}    …`);
+    const output = renderOutput(key, outputs[key], label, indent, budget);
+    for (const line of output.lines) lines.push(line);
+    budget -= output.chars;
+    masked ||= output.masked;
+    truncated ||= output.truncated;
   }
   if (truncated || masked) {
     const id = runId === undefined ? '<runId>' : sanitizeInline(runId);
@@ -89,6 +80,36 @@ export function formatRunOutputs(
     );
   }
   return lines;
+}
+
+/** What one output contributes to the block: its lines, the value text it spent, and whether it was cut or masked. */
+interface RenderedOutput {
+  readonly lines: readonly string[];
+  readonly chars: number;
+  readonly truncated: boolean;
+  readonly masked: boolean;
+}
+
+/** One output under `label`: a value that fits on one row sits beside its key, any other goes below it, indented, with a cut marked. */
+function renderOutput(
+  key: string,
+  value: unknown,
+  label: string,
+  indent: string,
+  budget: number,
+): RenderedOutput {
+  const display = displayValue(key, value);
+  // A final newline ends the value; it is not an empty last row, and it does not count toward the line bound.
+  const shown = clip(withoutFinalNewlines(display.text), Math.min(MAX_VALUE_CHARS, budget));
+  const spent = { chars: shown.chars, truncated: shown.truncated, masked: display.masked };
+  const rows = shown.text.split('\n');
+  if (rows.length === 1 && !shown.truncated) {
+    const row = rows[0] ?? '';
+    return { ...spent, lines: [`${label} ${row === '' ? EMPTY_VALUE : row}`] };
+  }
+  const lines = [label, ...rows.map((row) => `${indent}    ${row}`)];
+  if (shown.truncated) lines.push(`${indent}    …`);
+  return { ...spent, lines };
 }
 
 /**
@@ -121,11 +142,7 @@ function displayValue(
   const onMask = (): void => {
     masked = true;
   };
-  const scrub = (text: string): string => {
-    const out = scrubSecrets(text);
-    if (out !== text) onMask();
-    return out;
-  };
+  const scrub = (text: string): string => maskText(text, onMask);
   if (typeof value === 'string') {
     const shown = maskedAsMember(key, scrub(value), onMask);
     return { text: stripTerminalControls(typeof shown === 'string' ? shown : MEMBER_MASK), masked };
@@ -140,80 +157,6 @@ function displayValue(
     // still print.
     return { text: '[unrepresentable value]', masked: false };
   }
-}
-
-/**
- * A copy of `value` with every string, and every object key, passed through `scrub`, and every object member with a
- * primitive value masked whole when its name labels a credential (see the module note). It follows `JSON.stringify`'s
- * own reading of an object that defines `toJSON`, and throws on a cycle, as `JSON.stringify` would.
- */
-function scrubLeaves(
-  value: unknown,
-  scrub: (text: string) => string,
-  onMask: () => void,
-  ancestors: Set<object>,
-): unknown {
-  if (typeof value === 'string') return scrub(value);
-  if (typeof value !== 'object' || value === null) return value;
-  if (hasToJson(value)) return scrubLeaves(value.toJSON(), scrub, onMask, ancestors);
-  if (ancestors.has(value)) throw new TypeError('a cyclic output value');
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value))
-      return value.map((item) => scrubLeaves(item, scrub, onMask, ancestors));
-    const copy: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      const member = scrubLeaves(item, scrub, onMask, ancestors);
-      // `defineProperty`, not assignment: an own `__proto__` member (JSON.parse makes one) would otherwise hit the
-      // prototype setter and vanish from the display. Two keys masked to the same text keep the later one; the
-      // block's note then says it was masked.
-      Object.defineProperty(copy, scrub(key), {
-        value: maskedAsMember(key, member, onMask),
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-    return copy;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-/**
- * `member` (already masked leaf by leaf), or {@link MEMBER_MASK} in its place when its name labels a credential
- * ({@link namesCredential}); `onMask` is told. Only a value JSON prints as itself is read this way: an object or
- * array is read member by member by the walk itself, and `JSON.stringify` drops `undefined`, a function or a symbol.
- */
-function maskedAsMember(key: string, member: unknown, onMask: () => void): unknown {
-  if (typeof member === 'object' && member !== null) return member;
-  if (member === undefined || typeof member === 'function' || typeof member === 'symbol') {
-    return member;
-  }
-  if (!namesCredential(key)) return member;
-  onMask();
-  return MEMBER_MASK;
-}
-
-/**
- * Whether `key` labels a credential: read as the one-member JSON text `{"<key>":"v"}`, the form the scrubber sees in
- * a serialized object, with a stand-in value, the scrubber masks that value. Only the name decides. The member's own
- * text never enters this view, so its JSON escapes (`\n` for a newline) cannot stretch a token the leaf pass already
- * masked at a line end into a whole-value mask.
- *
- * A name the scrubber masks up to its end on its own (`Basic plan`, `Bearer token`, a URL ending in `?key=1`) is
- * itself a secret shape, not a label: its token has nothing after it in the name, so in the serialized view the
- * token runs on over the closing quote into the stand-in. It is shown masked and masks only itself, not its value.
- */
-function namesCredential(key: string): boolean {
-  const own = scrubSecrets(key);
-  if (own !== key && own.endsWith(MEMBER_MASK)) return false;
-  const tail = `:${JSON.stringify(NAME_PROBE)}}`;
-  return !scrubSecrets(JSON.stringify({ [key]: NAME_PROBE })).endsWith(tail);
-}
-
-function hasToJson(value: object): value is { toJSON: () => unknown } {
-  return 'toJSON' in value && typeof value.toJSON === 'function';
 }
 
 /** Keep at most `maxChars` code points and {@link MAX_VALUE_LINES} lines, never splitting a code point. */

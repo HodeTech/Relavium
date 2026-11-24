@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { catalogModel, type ProviderId } from '@relavium/llm';
 import type { Agent, ReasoningEffort } from '@relavium/shared';
 
@@ -58,6 +60,21 @@ export const DEFAULT_CHAT_TOOLS: readonly string[] = [
   // where the driver wired a question card, so the grant is inert on a non-interactive surface.
   'ask_user',
 ];
+
+/**
+ * Whether `agent` IS the built-in default chat agent: its WHOLE definition is the one {@link buildDefaultChatAgent} makes for the agent's own
+ * model, provider and reasoning tier, field for field. The id alone is not the test (a repository file can be named `relavium-chat`), nor is
+ * a subset of its fields (a file with the built-in prompt and grant but a name, a memory policy, an output schema, a fallback chain or a
+ * token cap of its own is an authored agent, and a screen that called it built-in would vouch for fields the repository wrote). The model,
+ * the provider and the reasoning tier are free, because `/models` swaps them on a session of the built-in agent and the config default
+ * chooses the first. A snapshot written before the built-in definition last changed is not recognised, and is then shown as the agent it is.
+ */
+export function isBuiltInChatAgent(agent: Agent): boolean {
+  return isDeepStrictEqual(
+    agent,
+    buildDefaultChatAgent(agent.model, agent.reasoning_effort, agent.provider),
+  );
+}
 
 /**
  * Infer the provider that serves a model id — **catalog first** (ADR-0071), then a well-known-prefix fallback.

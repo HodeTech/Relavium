@@ -756,7 +756,7 @@ export const mutations = [
   ),
   control(
     'run-core-admission-before-services',
-    'apps/cli/src/commands/run.ts',
+    'apps/cli/src/run-core/prepare-run.ts',
     `  const admitted = resolveAndValidateWorkflowInputs(
     def,
     resolveInputs(def, rawInputs, secretInputs),
@@ -852,7 +852,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    171,
+    185,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -872,7 +872,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    171,
+    185,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),
@@ -893,14 +893,14 @@ export const mutations = [
     '  warnSnapshotLiterals(parsed.definition, deps.io);\n',
     '',
     ['apps/cli/src/commands/create.test.ts'],
-    11,
+    13,
     'warns value-free on created credential literals and preserves the actual authored file',
     'SNAPSHOT_CAUSAL_CREATE_CALLER',
   ),
   control(
     'snapshot-import-warning',
     'apps/cli/src/commands/import.ts',
-    '  warnSnapshotLiterals(parsed.definition, deps.io);\n',
+    '  warnSnapshotLiterals(parsed.definition, {\n    writeErr: (text) => {\n      warnings.push(text);\n    },\n  });\n',
     '',
     ['apps/cli/src/commands/import.test.ts'],
     11,
@@ -909,7 +909,7 @@ export const mutations = [
   ),
   control(
     'snapshot-run-warning',
-    'apps/cli/src/commands/run.ts',
+    'apps/cli/src/run-core/prepare-run.ts',
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],
@@ -1876,10 +1876,10 @@ export const mutations = [
   control(
     'startup-doctor-config-observation',
     'apps/cli/src/chat/doctor-host.ts',
-    '      if (inputs.readConfig !== undefined) {\n' +
-      '        inputs.readConfig();\n' +
-      '        return;\n' +
-      '      }\n',
+    '        if (inputs.readConfig !== undefined) {\n' +
+      '          inputs.readConfig();\n' +
+      '          return;\n' +
+      '        }\n',
     '',
     ['apps/cli/src/commands/chat-starting-mode.test.ts', 'apps/cli/src/home/starting-mode.test.ts'],
     34,

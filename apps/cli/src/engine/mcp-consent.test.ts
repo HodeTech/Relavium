@@ -6,12 +6,16 @@
  * ADR got the answer wrong in a way measurement caught — those say which.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   statSync,
@@ -27,6 +31,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendGrant,
   appendRevocation,
+  ConsentStoreError,
+  MAX_CONSENT_LINE_BYTES,
+  MAX_CONSENT_STORE_BYTES,
   fingerprint,
   readGrants,
   resolveStdioSpawn,
@@ -311,6 +318,71 @@ describe('the grant log (ADR-0084 §5)', () => {
     expect(statSync(path()).mode & 0o777).toBe(0o600);
   });
 
+  describe('the read refuses what the write refuses (review M-E2)', () => {
+    const posix = process.platform !== 'win32';
+
+    it.skipIf(!posix)(
+      'reads NO grants through a symbolic link, even one whose target holds a valid grant',
+      () => {
+        appendGrant(path(), grantOf('v1:aaa'));
+        const target = join(dir, 'planted.ndjson');
+        writeFileSync(target, readFileSync(path(), 'utf8'));
+        rmSync(path());
+        symlinkSync(target, path());
+        // Read through the link the store would hold the grant (the target's bytes are a whole, valid store); it is refused instead.
+        expect(readGrants(target)?.has('v1:aaa')).toBe(true);
+        expect(readGrants(path())).toBeUndefined();
+      },
+    );
+
+    it.skipIf(!posix)(
+      'does not wait on a FIFO at the path: it folds closed, and nothing is read from it',
+      () => {
+        execFileSync('mkfifo', [path()]);
+        // A reader and a writer are held so that a read that forgot O_NONBLOCK could not hang the test worker on the open (a blocked
+        // synchronous open cannot be timed out); the refusal itself comes from the descriptor being no regular file.
+        const reader = openSync(path(), constants.O_RDONLY | constants.O_NONBLOCK);
+        const writer = openSync(path(), constants.O_WRONLY);
+        try {
+          expect(readGrants(path())).toBeUndefined();
+        } finally {
+          closeSync(writer);
+          closeSync(reader);
+        }
+      },
+    );
+
+    it('folds a DIRECTORY at the path closed', () => {
+      mkdirSync(path());
+      expect(readGrants(path())).toBeUndefined();
+    });
+
+    it('folds a file over the size bound closed, and reads one of exactly the bound', () => {
+      writeFileSync(path(), '\n'.repeat(MAX_CONSENT_STORE_BYTES));
+      expect(readGrants(path())?.size).toBe(0); // newlines to the bound are a store with no grants
+      writeFileSync(path(), '\n'.repeat(MAX_CONSENT_STORE_BYTES + 1));
+      expect(readGrants(path())).toBeUndefined(); // one byte more is refused before it is read
+    });
+
+    it.skipIf(!posix)('refuses to APPEND to a FIFO or a directory, and writes nothing', () => {
+      execFileSync('mkfifo', [path()]);
+      const reader = openSync(path(), constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        expect(() => {
+          appendGrant(path(), grantOf('v1:aaa'));
+        }).toThrow(/not a regular file/);
+      } finally {
+        closeSync(reader);
+      }
+      rmSync(path());
+      mkdirSync(path());
+      expect(() => {
+        appendGrant(path(), grantOf('v1:aaa'));
+      }).toThrow();
+      expect(statSync(path()).isDirectory()).toBe(true);
+    });
+  });
+
   it('a tombstone withdraws a grant, and a later grant re-establishes it', () => {
     appendGrant(path(), grantOf('v1:aaa'));
     appendRevocation(path(), 'v1:aaa', '2026-08-20T00:01:00.000Z');
@@ -402,15 +474,108 @@ describe('the grant log (ADR-0084 §5)', () => {
     // Only the METADATA is trimmed; the digest is the identity and is fixed-size.
     appendGrant(path(), {
       ...grantOf('v1:big'),
-      args: Array.from({ length: 500 }, () => 'x'.repeat(5000)),
+      args: Array.from({ length: 500 }, (_unused, index) => `--flag-${String(index)}=value`),
       envNames: Array.from({ length: 500 }, (_unused, index) => `VAR_${String(index)}`),
     });
     const line = readFileSync(path(), 'utf8');
     expect(line.length).toBeLessThan(100_000);
     const stored = readGrants(path())?.get('v1:big');
-    expect(stored?.args).toHaveLength(64);
+    expect(stored?.args).toHaveLength(64); // the entry bound, when the whole line fits its byte bound
     expect(stored?.digest).toBe('v1:big'); // the identity is untouched
   });
+
+  describe('the WHOLE line is bounded, not only its characters and entries (review: the cap undercounted the worst case)', () => {
+    /** Every string at its character bound, made of characters a line escapes to six bytes: the worst case of the old bound. */
+    const hostile = (digest: string): ConsentGrant => ({
+      ...grantOf(digest),
+      command: '\u0001'.repeat(5000),
+      args: Array.from({ length: 500 }, () => '\u0001'.repeat(5000)),
+      envNames: Array.from({ length: 500 }, () => '\u202e'.repeat(5000)),
+      cwd: '\u0001'.repeat(5000),
+    });
+    const lines = (): string[] =>
+      readFileSync(path(), 'utf8')
+        .split('\n')
+        .filter((line) => line !== '');
+
+    it('holds one hostile approval to the line bound, keeps its identity, and still reads back', () => {
+      appendGrant(path(), hostile('v1:hostile'));
+      const stored = lines();
+      expect(stored).toHaveLength(1);
+      expect(Buffer.byteLength(stored[0] ?? '', 'utf8') + 2).toBeLessThanOrEqual(
+        MAX_CONSENT_LINE_BYTES,
+      );
+      const grant = readGrants(path())?.get('v1:hostile');
+      expect(grant?.digest).toBe('v1:hostile');
+      expect(grant?.args.length).toBeLessThan(64); // the metadata was cut further, never the identity
+    });
+
+    it('cuts a plainly long record in steps: fewer entries first, and only then shorter strings', () => {
+      // 64 arguments of 512 plain characters are 33 KB: over the line bound, so the lists shrink to 16 entries (8 KB) and keep their text.
+      appendGrant(path(), {
+        ...grantOf('v1:long'),
+        args: Array.from({ length: 64 }, () => 'a'.repeat(512)),
+      });
+      const stored = readGrants(path())?.get('v1:long');
+      expect(stored?.args).toHaveLength(16);
+      expect(stored?.args[0]).toBe('a'.repeat(512));
+    });
+
+    it('keeps the log readable after many hostile approvals (about ten of the old bound made it unreadable for good)', () => {
+      for (let n = 0; n < 40; n += 1) appendGrant(path(), hostile(`v1:hostile-${String(n)}`));
+      expect(statSync(path()).size).toBeLessThanOrEqual(40 * MAX_CONSENT_LINE_BYTES);
+      expect(readGrants(path())?.size).toBe(40);
+    });
+
+    it('keeps an ordinary grant exactly as it was: the first bound applies when the line fits', () => {
+      appendGrant(path(), grantOf('v1:ordinary'));
+      expect(readGrants(path())?.get('v1:ordinary')).toEqual(grantOf('v1:ordinary'));
+    });
+
+    it('refuses a record that would take the log past the size the read accepts, and says how to recover', () => {
+      writeFileSync(path(), '\n'.repeat(MAX_CONSENT_STORE_BYTES - 16));
+      let thrown: unknown;
+      try {
+        appendGrant(path(), grantOf('v1:late'));
+      } catch (error) {
+        thrown = error;
+      }
+      if (!(thrown instanceof ConsentStoreError)) throw new Error('expected a ConsentStoreError');
+      expect(thrown.message).toBe(
+        'the MCP consent store is full; delete it or move it aside to start a new one',
+      );
+      expect(statSync(path()).size).toBe(MAX_CONSENT_STORE_BYTES - 16); // nothing was written
+      expect(readGrants(path())?.size).toBe(0); // and the log is still one the read accepts
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'REFUSES to write into a file that has a second hard link, and leaves the other name untouched',
+    () => {
+      appendGrant(path(), grantOf('v1:aaa'));
+      const other = join(dir, 'other-name.txt');
+      linkSync(path(), other); // the same file under another name, as a planted hard link would be
+      chmodSync(other, 0o644);
+      const before = readFileSync(other, 'utf8');
+      expect(() => {
+        appendGrant(path(), grantOf('v1:bbb'));
+      }).toThrow(/more than one hard link/);
+      expect(() => {
+        appendRevocation(path(), 'v1:aaa', '2026-08-20T00:01:00.000Z');
+      }).toThrow(/more than one hard link/);
+      expect(readFileSync(other, 'utf8')).toBe(before);
+      expect(statSync(other).mode & 0o777).toBe(0o644); // not even the 0600 repair reached it
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'still READS a store with a second hard link: reading writes nothing and echoes nothing',
+    () => {
+      appendGrant(path(), grantOf('v1:aaa'));
+      linkSync(path(), join(dir, 'other-name.txt'));
+      expect(readGrants(path())?.has('v1:aaa')).toBe(true);
+    },
+  );
 
   it('two REAL concurrent processes each granting — the race the protocol exists for (§10.13)', async () => {
     if (!existsSync(SHARED_DIST)) {

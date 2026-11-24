@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { REPL_COMMANDS, type ReplCommand } from '../../commands/repl-commands.js';
+import {
+  CHAT_PALETTE_COMMANDS,
+  HOME_CHAT_PALETTE_COMMANDS,
+  HOME_PALETTE_COMMANDS,
+  REPL_COMMANDS,
+  type ReplCommand,
+} from '../../commands/repl-commands.js';
 import {
   clampIndex,
   filterPaletteCommands,
@@ -52,6 +58,161 @@ describe('filterPaletteCommands', () => {
     expect(filterPaletteCommands(FIXTURE, 'gam').map((c) => c.name)).toEqual(['gamma']);
     expect(filterPaletteCommands(FIXTURE, 'unrelated').map((c) => c.name)).toEqual(['gamma']);
     expect(filterPaletteCommands(FIXTURE, 'zzz')).toEqual([]);
+  });
+});
+
+/** The palettes the user can open, by the set of commands each one lists. */
+const PALETTES: readonly (readonly [string, readonly ReplCommand[]])[] = [
+  ['the bare Home', HOME_PALETTE_COMMANDS],
+  ['a standalone chat', CHAT_PALETTE_COMMANDS],
+  ['the chat inside the Home', HOME_CHAT_PALETTE_COMMANDS],
+];
+
+const hasName = (command: ReplCommand, q: string): boolean =>
+  command.name.toLowerCase().includes(q);
+const hasDescription = (command: ReplCommand, q: string): boolean =>
+  command.description.toLowerCase().includes(q);
+
+/**
+ * The ranking written a second way, as a stable sort by tier over the list's own index (the implementation buckets): the name that equals
+ * the query, the names that start with it, the names that contain it, the descriptions that contain it. A command that matches neither
+ * its name nor its description is not in the result.
+ */
+function expectedOrder(commands: readonly ReplCommand[], query: string): readonly string[] {
+  const q = query.trim().toLowerCase();
+  const tier = (command: ReplCommand): number => {
+    const name = command.name.toLowerCase();
+    if (name === q) return 0;
+    if (name.startsWith(q)) return 1;
+    if (name.includes(q)) return 2;
+    return 3;
+  };
+  return commands
+    .map((command, index) => ({ command, index }))
+    .filter(({ command }) => hasName(command, q) || hasDescription(command, q))
+    .sort((a, b) => tier(a.command) - tier(b.command) || a.index - b.index)
+    .map(({ command }) => command.name);
+}
+
+describe('filterPaletteCommands ranks the matches (the name the user typed comes first)', () => {
+  const RANKED: readonly ReplCommand[] = [
+    cmd('init', 'Set up the agent directories.'),
+    cmd('subagent', 'A name that contains the query.'),
+    cmd('agents', 'A name that starts with the query.'),
+    cmd('agent', 'The name that is the query.'),
+    cmd('agentic', 'Another name that starts with it.'),
+    cmd('later', 'Its agent is only in the description.'),
+    cmd('other', 'unrelated'),
+  ];
+
+  it('orders the name that equals the query, then names that start with it, names that contain it, then descriptions', () => {
+    expect(filterPaletteCommands(RANKED, 'agent').map((c) => c.name)).toEqual([
+      'agent',
+      'agents',
+      'agentic',
+      'subagent',
+      'init',
+      'later',
+    ]);
+  });
+
+  it('keeps the list order inside each group, ignores case and the whitespace around the query', () => {
+    expect(filterPaletteCommands(RANKED, '  AGENT ').map((c) => c.name)).toEqual([
+      'agent',
+      'agents',
+      'agentic',
+      'subagent',
+      'init',
+      'later',
+    ]);
+    // Two names that start with the query keep their list order, and a name that equals it jumps ahead of both.
+    expect(
+      filterPaletteCommands([cmd('ab', ''), cmd('abc', ''), cmd('a', '')], 'a').map((c) => c.name),
+    ).toEqual(['a', 'ab', 'abc']);
+  });
+
+  it('changes only the order: the same commands match as under a plain name-or-description substring test', () => {
+    for (const query of ['agent', 'age', 'a', 'e', 'unrelated', 'zzz', 'its']) {
+      const q = query.toLowerCase();
+      const plain = RANKED.filter((c) => hasName(c, q) || hasDescription(c, q)).map((c) => c.name);
+      expect(
+        filterPaletteCommands(RANKED, query)
+          .map((c) => c.name)
+          .sort(),
+        `the matches of ${JSON.stringify(query)}`,
+      ).toEqual([...plain].sort());
+    }
+  });
+
+  it.each(PALETTES)(
+    'typing a command`s whole name puts that command first, for every command of %s',
+    (_where, commands) => {
+      for (const command of commands)
+        expect(
+          filterPaletteCommands(commands, command.name)[0]?.name,
+          `/${command.name} typed in full`,
+        ).toBe(command.name);
+    },
+  );
+
+  it.each(PALETTES)(
+    'every query a person types on the way (each prefix, each letter) ranks as the rule says, on %s',
+    (_where, commands) => {
+      const queries = new Set<string>('abcdefghijklmnopqrstuvwxyz');
+      for (const command of commands)
+        for (let length = 1; length <= command.name.length; length += 1)
+          queries.add(command.name.slice(0, length));
+      for (const query of queries)
+        expect(
+          filterPaletteCommands(commands, query).map((c) => c.name),
+          `the ranking of ${JSON.stringify(query)}`,
+        ).toEqual(expectedOrder(commands, query));
+    },
+  );
+
+  it.each(PALETTES)(
+    'a word that is not a command here (agent, copy, help) puts a name match first, or nothing, on %s',
+    (_where, commands) => {
+      for (const word of ['agent', 'copy', 'help']) {
+        const found = filterPaletteCommands(commands, word);
+        const first = found[0];
+        if (commands.some((c) => hasName(c, word)))
+          expect(first !== undefined && hasName(first, word), `/${word}: a name leads`).toBe(true);
+        else if (first !== undefined)
+          expect(hasDescription(first, word), `/${word}: only descriptions match`).toBe(true);
+        // Whatever leads, it is a command that matches: nothing is ever offered that the plain test would not.
+        for (const command of found)
+          expect(hasName(command, word) || hasDescription(command, word)).toBe(true);
+      }
+    },
+  );
+
+  it('on the Home, `agent` is `/agents` and not `/init` (whose description names "agent directories"); in a chat it is `/agent`', () => {
+    expect(filterPaletteCommands(HOME_PALETTE_COMMANDS, 'agent')[0]?.name).toBe('agents');
+    expect(filterPaletteCommands(HOME_PALETTE_COMMANDS, 'agent').map((c) => c.name)).toContain(
+      'init',
+    );
+    expect(filterPaletteCommands(CHAT_PALETTE_COMMANDS, 'agent')[0]?.name).toBe('agent');
+    expect(filterPaletteCommands(CHAT_PALETTE_COMMANDS, 'copy')[0]?.name).toBe('copy');
+    // `/help` is the palette itself, never an entry; no command here carries the word at all.
+    for (const [, commands] of PALETTES)
+      expect(commands.some((command) => command.name === 'help')).toBe(false);
+  });
+
+  it('typed key by key and confirmed with Return, the palette runs the command whose name was typed', () => {
+    for (const [where, commands] of PALETTES)
+      for (const command of commands) {
+        let state = INITIAL_PALETTE_STATE;
+        for (const char of command.name) {
+          const step = foldPaletteKey(char, {}, state, commands);
+          if (step.kind !== 'state') throw new Error('a printable key did not extend the query');
+          state = step.state;
+        }
+        const run = foldPaletteKey('', { return: true }, state, commands);
+        expect(run.kind === 'run' && run.command?.name, `/${command.name} on ${where}`).toBe(
+          command.name,
+        );
+      }
   });
 });
 

@@ -75,6 +75,10 @@ default.
 
 - **Color is never required for meaning.** `NO_COLOR` / `--no-color` degrade to a legible,
   color-free rendering; status is carried by text, not color alone.
+- **Syntax colour is decoration.** A highlighted code block ([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md))
+  only classes text that is already shown, so `NO_COLOR` / `--no-color` draw the source unchanged. It uses five named ANSI
+  colours, bold and dim, so the terminal's own theme sets the shades; a comment is dim, and a diff line also carries its
+  `+` or `-`. The class list and the colours are in [markdown-rendering.md](markdown-rendering.md#syntax-highlighting).
 - **Keyboard-only.** Core navigation needs no mouse — **PgUp/PgDn** page the transcript,
   **Ctrl+Home/Ctrl+End** jump to the top/tail, and **auto-follow** re-pins to the newest output.
   Mouse-wheel scrolling is an optional convenience, not a requirement.
@@ -104,6 +108,16 @@ shows as an escape or `(empty)` instead of nothing. The contract is
 **MVP-4 step 5 (2026-11-20): the `/permissions` sheet** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is docked under the conversation like the other overlays, so it works in the inline renderer, which is the accessible mode, and not only in the full-screen one. It reads the same with colour off: the selected row is marked `›`, the sections have headings, hidden rows are counted by `▲ n more` / `▼ n more`, and a withdrawal's question is the message row's text, not a colour. Below 80×24 it says so and arms nothing. `Esc` closes an idle sheet and, while a withdrawal's question is up, keeps the row instead (a second `Esc` then closes it); `Ctrl+C` closes it from either state; neither ever withdraws. The sheet's arming keys are `d`, `Delete` and `Backspace`, and the legend names `[d / Del]` (the Backspace key arms too and is not on the legend). The contract is [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet). Since MVP-4 step 7 the same sheet opens on the bare Home and from a bare `relavium permissions` on a terminal, docked under the Home the same way, with the same words and glyphs and below the same 80×24 floor.
 
 **MVP-4 step 6 (2026-11-21): `Esc` leaves the full view for the card** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4). The keys are named in words on the screen (`Esc back`, `Ctrl+C stops the turn`), not by colour, in the inline renderer as in the full-screen one; stepping back answers nothing and needs no visible frame, so a screen too small to read still says `[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.` and `Esc` still leaves it.
+
+**MVP-8 (2026-11-23): the Home's new screens** (the run view and its cards, the tab host, `/agents`, the help sheet, the `/agent` sheet, and the `/import`, `/pricing` and export cards; see [home.md](home.md)) carry the properties above and add these, all in words and glyphs and none in colour alone:
+
+- **Every screen names its keys.** A legend under each screen lists what it answers to, the way out last (`Esc back`, `Ctrl+Y writes`); a tab's legend adds `Ctrl+C close` just before the way out where the whole legend still fits 80 columns; nothing needs a mouse. A legend leaves out only keys it has no room for, and [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23) lists them.
+- **State is a glyph and a word.** A run, an agent file or a pin reads `✓ completed`, `✗ failed`, `‖ paused`, `✗ invalid`, `★ pinned`, `? other project`; colour only emphasises. An absence has a sentence, never a bare dash.
+- **Nothing is hidden without a marker, and every screen fits 80×24.** A list longer than its screen is windowed with `▲ N more` and `▼ N more` (the tab lists, the palette, a select prompt, the help sheet), the highlighted row is always on a drawn row, and below 80×24 a screen says to enlarge the terminal and answers only the keys that leave it.
+- **A card is answered only once it is on screen.** A card answered by a Ctrl chord (a gate, a budget abort, an MCP consent, and the `/import`, `/pricing` and export cards) counts its chord after the frame that shows the card has been painted, after its dwell and quiet gap, and a held key cannot answer the next card; a card that cannot be seen cannot be answered by accident. Two questions are lighter on purpose: the exit guard's `Ctrl+Y` needs the painted frame and the lockout but no dwell or gap, since a key opened it and it is read before it is answered, and the question whether to continue a run parked on media jobs is a Yes/No with No as its default, so an `Enter` typed ahead, `Esc` and `Ctrl+C` all answer No and nothing starts.
+- **Text from files and models stays inside its row.** A gate's message is drawn behind a gutter with host glyphs and answer-chord spellings replaced, an agent's prompt is shown as a scrubbed head, and every line passes the display-boundary sanitizer.
+
+These properties do not add assistive-technology semantics to the full-screen renderer.
 
 ## See also
 

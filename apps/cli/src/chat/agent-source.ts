@@ -9,6 +9,12 @@ import { buildDefaultChatAgent, DEFAULT_CHAT_MODEL } from './default-agent.js';
 export interface ResolveChatAgentOptions {
   readonly cwd: string;
   readonly projectConfigDir: string | undefined;
+  /**
+   * The operator home a bare id is admitted against (a project artifact must not be read through a link into global state). The key
+   * is required and never defaulted: a caller states the home it already resolved, or `undefined` when it has none (a hermetic
+   * embedding), in which case a bare id is refused ({@link resolveYamlSource}) rather than judged by the process's real home.
+   */
+  readonly homeDir: string | undefined;
   /** The resolved `[chat].default_model` — used only to build the default agent when no `--agent` is given. */
   readonly defaultModel: string | undefined;
   /** The resolved `[chat].default_provider` (ADR-0059) — persisted at pick time, used verbatim for the DEFAULT
@@ -103,6 +109,7 @@ export function resolveChatAgentSource(
     subdir: 'agents',
     projectConfigDir: opts.projectConfigDir,
     idSuffixes: ['.agent.yaml', '.relavium.yaml', '.yaml'],
+    homeDir: opts.homeDir,
   });
   // The source label rides into `AgentParseError.message`, which the CLI now promotes to the user
   // (process/errors.ts). An absolute path there is what the error contract forbids, so it is relative

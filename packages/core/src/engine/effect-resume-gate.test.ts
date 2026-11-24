@@ -169,6 +169,49 @@ workflow:
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(false);
   });
 
+  it('a journal with thousands of unresolved effects is refused with a BOUNDED message that counts the rest (PR #102 review: P3)', async () => {
+    // The refusal names the effects a human has to go and check; it named every one, so its size grew with the
+    // journal and a run with a runaway node stored a megabyte-long error that the run-detail read then refused.
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+    const engineB = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+      effectResume: {
+        unresolvedForRun: () =>
+          Promise.resolve(
+            Array.from({ length: 20_000 }, (_, index) => ({
+              identity: {
+                scope: `run:${runId}:node-${String(index)}`,
+                slot: index,
+                toolId: 'run_command',
+              },
+              state: 'prepared' as const,
+              tier: 3 as const,
+              nodeId: `node-${String(index)}`,
+            })),
+          ),
+      },
+    });
+    const events = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId,
+        workflow: GATED,
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+    const failure = events.find((e) => e.type === 'run:failed');
+    if (failure?.type !== 'run:failed') throw new Error('expected run:failed');
+    expect(failure.error.code).toBe('effect_needs_attention');
+    const message = failure.error.message;
+    expect(message).toContain('20000 external effect(s) from a prior attempt are unresolved');
+    expect(message).toContain('node-0/run_command (prepared, tier 3)');
+    expect(message).toContain('and 19980 more');
+    expect(message).not.toContain('node-19999/run_command');
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThan(4096);
+  });
+
   it.each([
     {},
     [],

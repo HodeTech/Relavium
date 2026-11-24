@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { GLOBAL_ARTIFACTS_REMEDY } from '../authoring/global-artifacts.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import type { KeychainStore } from '../secrets/keychain.js';
+import { checkConfig } from './doctor.js';
 import { assembleDoctorProbes } from './doctor-host.js';
 
 const resolver: ProviderResolver = {
@@ -33,6 +35,55 @@ describe('assembleDoctorProbes', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it('names a broken config file from `~` or the project in the report, never by its absolute path (RUNCORE-3)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-doctor-config-'));
+    try {
+      const workspace = join(root, 'workspace');
+      const home = join(root, 'home');
+      mkdirSync(workspace);
+      mkdirSync(join(home, '.relavium'), { recursive: true });
+      const configPath = join(home, '.relavium', 'config.toml');
+      writeFileSync(configPath, 'not = [valid');
+      const probes = assembleDoctorProbes({
+        cwd: workspace,
+        configPath,
+        operatorHomeDir: home,
+        resolver,
+      });
+      const check = checkConfig(probes.config);
+      expect(check.status).toBe('fail');
+      expect(check.detail.startsWith(`~${sep}.relavium${sep}config.toml: is not valid TOML`)).toBe(
+        true,
+      );
+      expect(check.detail).not.toContain(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('looks for global artifacts and loads the config in the home it was handed, not the OS home', () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-doctor-home-'));
+    try {
+      const workspace = join(root, 'workspace');
+      const home = join(root, 'home');
+      mkdirSync(workspace);
+      mkdirSync(join(home, '.relavium', 'workflows'), { recursive: true });
+      // The marker lives only in the handed home: a probe that asked the OS for the home would see nothing.
+      writeFileSync(join(home, '.relavium', 'workflows', 'stray.relavium.yaml'), 'x');
+      writeFileSync(join(home, '.relavium', 'config.toml'), 'not = [valid');
+      const probes = assembleDoctorProbes({ cwd: workspace, operatorHomeDir: home, resolver });
+      expect(probes.globalArtifacts?.()).toBe(GLOBAL_ARTIFACTS_REMEDY);
+      const check = checkConfig(probes.config);
+      expect(check.status, 'the handed home`s own config was the one read').toBe('fail');
+      expect(check.detail).toContain('is not valid TOML');
+      // And with no marker in the handed home, there is nothing to report: the real home is not consulted.
+      rmSync(join(home, '.relavium', 'workflows', 'stray.relavium.yaml'));
+      expect(probes.globalArtifacts?.()).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('builds every probe as a CLOSURE — no keychain read / config load / connect at construction', () => {
     const keychain: KeychainStore = {
       get: vi.fn(() => null),

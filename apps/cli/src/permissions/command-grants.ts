@@ -1,21 +1,11 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import {
-  accessSync,
-  closeSync,
-  constants,
-  fchmodSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  realpathSync,
-  unlinkSync,
-  writeSync,
-} from 'node:fs';
+import { accessSync, constants, mkdirSync, realpathSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
 import { findOnPath } from '../engine/find-on-path.js';
+import { AppendTargetRefusedError, appendToOwnerOnlyFile } from '../engine/owner-only-append.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 
@@ -397,81 +387,25 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     if (read === 'absent')
       return { ok: true, fold: { grants: [], foreign: 0, lines: 0, bytes: 0 } };
     if (read === 'unreadable') return { ok: false };
-    const records = new Map<string, GrantRecord>();
-    const revoked = new Set<string>();
-    let lines = 0;
-    let foreign = 0;
-    for (const line of read.text.split('\n')) {
-      if (line.trim() === '') continue; // the leading-newline framing and a trailing terminator
-      lines += 1;
-      if (lines > COMMAND_GRANT_LIMITS.lines) {
-        report(unreadableMessage(path, 'it has more lines than the bound'));
-        return { ok: false };
-      }
-      let raw: unknown;
-      try {
-        raw = JSON.parse(line);
-      } catch {
-        report(unreadableMessage(path, 'a line does not parse'));
-        return { ok: false };
-      }
-      const tombstone = TombstoneSchema.safeParse(raw);
-      if (tombstone.success) {
-        revoked.add(tombstone.data.revoked);
-        continue;
-      }
-      const grant = GrantRecordSchema.safeParse(raw);
-      if (!grant.success) {
-        report(unreadableMessage(path, 'a line is not a grant or a revocation'));
-        return { ok: false };
-      }
-      if (key === undefined) {
-        foreign += 1; // no key, so nothing in the file can be verified: counted, and told like any record this key did not make
-        continue;
-      }
-      const { mac, ...fields } = grant.data;
-      if (!sameDigest(mac, grantRecordMac(key, fields))) {
-        foreign += 1;
-        continue;
-      }
-      if (!records.has(grant.data.id)) records.set(grant.data.id, grant.data);
+    const parsed = parseGrantLines(read.text, path, key);
+    if (!parsed.ok) {
+      report(parsed.message);
+      return { ok: false };
     }
-    if (foreign > 0) {
+    if (parsed.foreign > 0) {
       report(
-        `${String(foreign)} record(s) in ${path} were not made with this installation's key and are ignored; \`relavium permissions revoke --all\` removes the file and the key.`,
+        `${String(parsed.foreign)} record(s) in ${path} were not made with this installation's key and are ignored; \`relavium permissions revoke --all\` removes the file and the key.`,
       );
     }
-    // Revocation does not depend on file order: a replayed or reordered grant line stays revoked. Two live records for one argv are
-    // one grant (the first is kept, the other ids are its twins, so revoking it withdraws both).
-    const byDigest = new Map<string, { record: GrantRecord; twins: string[]; renewedMs: number }>();
-    for (const record of records.values()) {
-      if (revoked.has(record.id)) continue;
-      const identity = `${record.root}:${record.grant}`;
-      const seen = byDigest.get(identity);
-      const ms = Date.parse(record.at);
-      if (seen === undefined) byDigest.set(identity, { record, twins: [], renewedMs: ms });
-      else {
-        seen.twins.push(record.id);
-        if (ms > seen.renewedMs) seen.renewedMs = ms;
-      }
-    }
-    const grants = [...byDigest.values()].map(
-      ({ record, twins, renewedMs }): LiveGrant => ({
-        ...record,
-        twins,
-        renewedAt: Number.isNaN(renewedMs) ? record.at : new Date(renewedMs).toISOString(),
-      }),
-    );
-    const perRoot = new Map<string, number>();
-    for (const grant of grants) perRoot.set(grant.root, (perRoot.get(grant.root) ?? 0) + 1);
-    if (
-      grants.length > COMMAND_GRANT_LIMITS.total ||
-      [...perRoot.values()].some((count) => count > COMMAND_GRANT_LIMITS.perRoot)
-    ) {
+    const grants = foldGrants(parsed.records, parsed.revoked);
+    if (!withinGrantBounds(grants)) {
       report(unreadableMessage(path, 'it has more grants than the bound'));
       return { ok: false };
     }
-    return { ok: true, fold: { grants, foreign, lines, bytes: read.bytes } };
+    return {
+      ok: true,
+      fold: { grants, foreign: parsed.foreign, lines: parsed.lines, bytes: read.bytes },
+    };
   };
 
   const rootGrants = (fold: Fold, root: string): readonly LiveGrant[] =>
@@ -805,6 +739,113 @@ export function removeCommandGrantsFile(
 const REVOKE_ALL_HINT = '`relavium permissions revoke --all` removes it.';
 const REMOVE_BY_HAND = 'Remove it by hand.';
 
+/** One line of the grants file, classified: a revocation, a grant whose MAC verifies, a record this key did not make, or a line that is neither. */
+type ParsedGrantLine =
+  | { readonly kind: 'revocation'; readonly id: string }
+  | { readonly kind: 'grant'; readonly record: GrantRecord }
+  | { readonly kind: 'foreign' }
+  | { readonly kind: 'invalid'; readonly why: string };
+
+function parseGrantLine(line: string, key: Buffer | undefined): ParsedGrantLine {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line);
+  } catch {
+    return { kind: 'invalid', why: 'a line does not parse' };
+  }
+  const tombstone = TombstoneSchema.safeParse(raw);
+  if (tombstone.success) return { kind: 'revocation', id: tombstone.data.revoked };
+  const grant = GrantRecordSchema.safeParse(raw);
+  if (!grant.success) return { kind: 'invalid', why: 'a line is not a grant or a revocation' };
+  // No key, so nothing in the file can be verified: counted, and told like any record this key did not make.
+  if (key === undefined) return { kind: 'foreign' };
+  const { mac, ...fields } = grant.data;
+  return sameDigest(mac, grantRecordMac(key, fields))
+    ? { kind: 'grant', record: grant.data }
+    : { kind: 'foreign' };
+}
+
+type ParsedGrantLines =
+  | {
+      readonly ok: true;
+      readonly records: ReadonlyMap<string, GrantRecord>;
+      readonly revoked: ReadonlySet<string>;
+      readonly lines: number;
+      readonly foreign: number;
+    }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * The file's lines folded into records and revocations. A line that is not exactly a grant or a revocation, or a file over the line
+ * bound, fails the whole store (the message says why); a well-formed grant with a bad MAC is only counted as foreign (it may be from an
+ * overwritten key). The first record of an id wins.
+ */
+function parseGrantLines(text: string, path: string, key: Buffer | undefined): ParsedGrantLines {
+  const records = new Map<string, GrantRecord>();
+  const revoked = new Set<string>();
+  let lines = 0;
+  let foreign = 0;
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue; // the leading-newline framing and a trailing terminator
+    lines += 1;
+    if (lines > COMMAND_GRANT_LIMITS.lines)
+      return { ok: false, message: unreadableMessage(path, 'it has more lines than the bound') };
+    const parsed = parseGrantLine(line, key);
+    switch (parsed.kind) {
+      case 'invalid':
+        return { ok: false, message: unreadableMessage(path, parsed.why) };
+      case 'revocation':
+        revoked.add(parsed.id);
+        break;
+      case 'foreign':
+        foreign += 1;
+        break;
+      case 'grant':
+        if (!records.has(parsed.record.id)) records.set(parsed.record.id, parsed.record);
+        break;
+    }
+  }
+  return { ok: true, records, revoked, lines, foreign };
+}
+
+/**
+ * The live grants of the records. Revocation does not depend on file order: a replayed or reordered grant line stays revoked. Two live
+ * records for one argv are one grant (the first is kept, the other ids are its twins, so revoking it withdraws both, and a renewal is
+ * the latest of them).
+ */
+function foldGrants(
+  records: ReadonlyMap<string, GrantRecord>,
+  revoked: ReadonlySet<string>,
+): LiveGrant[] {
+  const byDigest = new Map<string, { record: GrantRecord; twins: string[]; renewedMs: number }>();
+  for (const record of records.values()) {
+    if (revoked.has(record.id)) continue;
+    const identity = `${record.root}:${record.grant}`;
+    const seen = byDigest.get(identity);
+    const ms = Date.parse(record.at);
+    if (seen === undefined) byDigest.set(identity, { record, twins: [], renewedMs: ms });
+    else {
+      seen.twins.push(record.id);
+      if (ms > seen.renewedMs) seen.renewedMs = ms;
+    }
+  }
+  return [...byDigest.values()].map(
+    ({ record, twins, renewedMs }): LiveGrant => ({
+      ...record,
+      twins,
+      renewedAt: Number.isNaN(renewedMs) ? record.at : new Date(renewedMs).toISOString(),
+    }),
+  );
+}
+
+/** Whether the grants are within the file's bounds: in all, and per project root. */
+function withinGrantBounds(grants: readonly LiveGrant[]): boolean {
+  if (grants.length > COMMAND_GRANT_LIMITS.total) return false;
+  const perRoot = new Map<string, number>();
+  for (const grant of grants) perRoot.set(grant.root, (perRoot.get(grant.root) ?? 0) + 1);
+  return ![...perRoot.values()].some((count) => count > COMMAND_GRANT_LIMITS.perRoot);
+}
+
 function unreadableMessage(path: string, why: string, recovery: string = REVOKE_ALL_HINT): string {
   return `The remembered-command file ${path} was ignored (${why}); remembered commands will ask again. ${recovery}`;
 }
@@ -822,42 +863,36 @@ export async function namedProgram(
   }
 }
 
+/** The sentence the append's refusal of a link, or of a path that cannot be inspected, carries. */
+const REFUSED_LINK_OR_UNINSPECTABLE =
+  'the remembered-command file cannot be inspected or is a symbolic link; refusing to write';
+const REFUSED_HARD_LINK =
+  'the remembered-command file has more than one hard link; refusing to write to it';
+/** This store's own sentence for each way the shared append refuses its target. */
+const APPEND_REFUSAL_SENTENCES: Readonly<Record<AppendTargetRefusedError['reason'], string>> = {
+  symlink: REFUSED_LINK_OR_UNINSPECTABLE,
+  'hard-link': REFUSED_HARD_LINK,
+  'not-regular': 'the remembered-command file is not a regular file',
+};
+
 /**
  * One record, one write, with a LEADING newline (a process killed mid-append leaves a partial last line with no terminator, and
  * appending straight onto it would weld two records into one corrupt line, which the fail-closed fold would turn into "no
- * grants" for the whole machine). The file is created with the owner-only mode from its FIRST byte, opened without following a
- * symlink and without blocking where the platform allows, and checked on the descriptor to be a regular file, so a path swapped
- * for a link or a FIFO after the read is neither written through nor waited on.
+ * grants" for the whole machine). The check by path here refuses a link or a path that cannot be inspected before anything is
+ * opened; the append itself is the CLI's shared single-descriptor one ({@link appendToOwnerOnlyFile}): the file is created with the
+ * owner-only mode from its FIRST byte, opened without following a symlink and without blocking where the platform allows, and checked
+ * on the descriptor to be a regular file, so a path swapped for a link or a FIFO after the read is neither written through nor waited
+ * on. Its refusals keep this store's own sentences.
  */
 function appendLine(path: string, record: object): void {
   mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE });
   const seen = statState(path);
-  if (seen === 'error' || seen?.isSymbolicLink() === true) {
-    throw new Error(
-      'the remembered-command file cannot be inspected or is a symbolic link; refusing to write',
-    );
-  }
-  const fd = openSync(
-    path,
-    constants.O_WRONLY |
-      constants.O_APPEND |
-      constants.O_CREAT |
-      (constants.O_NOFOLLOW ?? 0) |
-      (constants.O_NONBLOCK ?? 0),
-    FILE_MODE,
-  );
+  if (seen === 'error' || seen?.isSymbolicLink() === true)
+    throw new Error(REFUSED_LINK_OR_UNINSPECTABLE);
   try {
-    if (!fstatSync(fd).isFile())
-      throw new Error('the remembered-command file is not a regular file');
-    const data = Buffer.from(`\n${stringifyJsonLine(record)}\n`, 'utf8');
-    let written = 0;
-    while (written < data.length) written += writeSync(fd, data, written);
-    try {
-      fchmodSync(fd, FILE_MODE);
-    } catch {
-      // Windows, or a file we do not own: the guard there is the per-user profile ACL (ADR-0050).
-    }
-  } finally {
-    closeSync(fd);
+    appendToOwnerOnlyFile(path, `\n${stringifyJsonLine(record)}\n`, FILE_MODE);
+  } catch (error) {
+    if (!(error instanceof AppendTargetRefusedError)) throw error;
+    throw new Error(APPEND_REFUSAL_SENTENCES[error.reason]);
   }
 }

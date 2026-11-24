@@ -10,7 +10,7 @@ import {
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
-import { Box, Text, useApp, useInput, usePaste, useStdout, type Key } from 'ink';
+import { Box, Text, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
 import {
   useEffect,
   useLayoutEffect,
@@ -18,6 +18,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
 } from 'react';
 
 import { HOME_CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
@@ -32,17 +33,30 @@ import type { EditorState } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { HomeController } from './home-controller.js';
-import { HomeView } from './home-view.js';
-import { homeFitsTerminal } from './home-projection.js';
+import type { GateCardScreen, HomeController, HomeControllerState } from './home-controller.js';
+import type { GateCardFrame } from './gate-card-frame.js';
+import { ExitGuardCard, HomeView } from './home-view.js';
+import { RunScreenView } from './run-screen-view.js';
+import { RunCardView } from './run-card-view.js';
+import { createGateCardFrame } from './gate-card-frame.js';
+import {
+  homeFitsTerminal,
+  homeIsEmpty,
+  hostedRunLabel,
+  tooSmallMessage,
+} from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
+import { stripReach } from './strip-focus.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
-import type { PermissionsSheetState } from './permissions-sheet.js';
-import { PermissionsSheetView } from './permissions-sheet-view.js';
+import type { ChatSheetState } from './chat-sheet.js';
+import { ChatSheetView } from './chat-sheet-view.js';
+import { SheetLinesView } from './permissions-sheet-view.js';
+import { TabHostView } from './tab-host-view.js';
+import { helpSheetLines } from './help-sheet.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
@@ -132,7 +146,7 @@ function ChatRegion(
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
     effortPicker: EffortPickerState | undefined;
-    permissionsSheet: PermissionsSheetState | undefined;
+    chatSheet: ChatSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
@@ -188,17 +202,15 @@ function ChatRegion(
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   const viewport = props.viewport;
+  // The rows the region is bounded to: the viewport's own, else the room a native card leaves, else none.
+  const boundedRows = viewport === undefined ? props.promptHeight : viewport.rows;
   return (
     // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
     <Box
       flexDirection="column"
       width={layoutColumns(props.cols)}
-      {...(viewport === undefined
-        ? props.promptHeight === undefined
-          ? {}
-          : { height: props.promptHeight, overflowY: 'hidden' }
-        : { height: viewport.rows, overflowY: 'hidden' })}
+      {...(boundedRows === undefined ? {} : { height: boundedRows, overflowY: 'hidden' })}
     >
       <ChatView
         hidden={review !== undefined && review.screen !== 'card'}
@@ -228,7 +240,7 @@ function ChatRegion(
           props.mention !== undefined ||
           props.modelPicker !== undefined ||
           props.effortPicker !== undefined ||
-          props.permissionsSheet !== undefined
+          props.chatSheet !== undefined
         }
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -254,7 +266,12 @@ function ChatRegion(
         color={color}
       />
       {props.palette !== undefined && (
-        <PaletteView commands={HOME_CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
+        <PaletteView
+          commands={HOME_CHAT_PALETTE_COMMANDS}
+          state={props.palette}
+          color={color}
+          {...(viewport === undefined ? {} : { maxRows: viewport.rows - 1 })}
+        />
       )}
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
@@ -276,10 +293,10 @@ function ChatRegion(
           color={color}
         />
       )}
-      {/* The `/permissions` sheet in a live in-Home chat (ADR-0137 §2) — docked with the other overlays. */}
-      {props.permissionsSheet !== undefined && (
-        <PermissionsSheetView
-          state={props.permissionsSheet}
+      {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — with the other overlays. */}
+      {props.chatSheet !== undefined && (
+        <ChatSheetView
+          state={props.chatSheet}
           color={color}
           columns={props.reviewSize.cols}
           rows={props.reviewSize.rows}
@@ -404,6 +421,40 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }),
   );
   useEffect(() => () => homeFrame.dispose(), [homeFrame]);
+  // The exit guard's `Ctrl+Y` cancels a run for good, so the controller asks this whether the exact landing it holds is on screen.
+  useEffect(() => {
+    controller.bindHomeFrame(homeFrame.visible);
+    return () => controller.bindHomeFrame(undefined);
+  }, [controller, homeFrame]);
+  // The gate and budget card's own measured-frame evidence: the card takes an affirmative chord only while its exact snapshot is on
+  // screen, and its dwell counts from the first frame that was (ADR-0139 §4). The controller asks it through `bindGateCardFrame`.
+  const [cardFrame] = useState(() =>
+    createGateCardFrame({
+      current: () => {
+        const screen = controller.getSnapshot().screen;
+        return screen?.kind === 'gate-card' ? screen.card.getSnapshot() : undefined;
+      },
+      getSize: () => getSizeRef.current(),
+      hasCustody: () =>
+        propsRef.current.inputEnabled?.() !== false &&
+        propsRef.current.suspendPort?.isSuspended() !== true &&
+        propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+        stdout.writable !== false &&
+        !stdout.destroyed &&
+        !stdout.writableEnded,
+      shown: (snapshot) => {
+        const screen = controller.getSnapshot().screen;
+        if (screen?.kind === 'gate-card') screen.card.shown(snapshot);
+      },
+    }),
+  );
+  useEffect(() => {
+    controller.bindGateCardFrame(cardFrame.visible);
+    return () => {
+      controller.bindGateCardFrame(undefined);
+      cardFrame.dispose();
+    };
+  }, [controller, cardFrame]);
   const [noticeWindow, setNoticeWindow] = useState({
     revision: state.noticeRevision,
     cols: size.cols,
@@ -468,10 +519,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       subscribeResize(() => {
         nativeAcknowledgement?.invalidate();
         homeFrame.invalidate();
+        cardFrame.invalidate();
         controller.getSnapshot().session?.store.invalidateToolReview();
         setSize(getSize());
       }),
-    [subscribeResize, getSize, nativeAcknowledgement],
+    [subscribeResize, getSize, nativeAcknowledgement, cardFrame],
   );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
@@ -499,7 +551,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.permissionsSheet === undefined &&
+    state.chatSheet === undefined &&
     !prompt.active &&
     !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
@@ -658,26 +710,46 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return true;
   };
 
+  /** Whether a key is delivered to the Home below 80×24: `Esc`, `Ctrl+C` and `Ctrl+D`, and `Ctrl+Y` and `Ctrl+N` while the exit-guard card is open. */
+  const deliveredBelowMinimum = (input: string, key: Key, exitGuardOpen: boolean): boolean => {
+    if (key.escape) return true;
+    if (!key.ctrl) return false;
+    return input === 'c' || input === 'd' || (exitGuardOpen && (input === 'y' || input === 'n'));
+  };
+
+  /** Whether `PgUp` or `PgDn` pages the landing's notice: the bare landing with a notice, and no card, screen or overlay over it. */
+  const pagesNotice = (current: HomeControllerState, key: Key): boolean =>
+    current.mode === 'home' &&
+    current.notice !== undefined &&
+    current.exitGuard === undefined &&
+    current.screen === undefined &&
+    current.palette === undefined &&
+    current.modelPicker === undefined &&
+    (key.pageUp || key.pageDown);
+
   const routeHomeInput = (input: string, key: Key): boolean => {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
     const live = getSizeRef.current();
-    if (key.return && current.continueSessionId !== undefined && !homeFrame.visible(current))
+    // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
+    // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
+    // (Only on the landing: a screen in the slot has no strip on screen to measure, and its own Enter must reach it.)
+    if (
+      key.return &&
+      current.screen === undefined &&
+      current.stripFocus !== undefined &&
+      !homeFrame.visible(current)
+    )
       return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
-      if (key.escape || (key.ctrl && (input === 'c' || input === 'd')))
+      // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
+      if (deliveredBelowMinimum(input, key, current.exitGuard !== undefined))
         controller.handleKey(input, key);
+      // Any other key is not delivered, but a card that is open counts it as typing: a chord soon after it is refused.
+      else if (current.screen?.kind === 'gate-card') current.screen.card.unseenInput();
       return true;
     }
-    if (
-      current.mode !== 'home' ||
-      current.notice === undefined ||
-      current.palette !== undefined ||
-      current.modelPicker !== undefined ||
-      current.permissionsSheet !== undefined ||
-      (!key.pageUp && !key.pageDown)
-    )
-      return false;
+    if (!pagesNotice(current, key)) return false;
     const previous = noticeWindowRef.current;
     const same =
       previous.revision === current.noticeRevision &&
@@ -691,8 +763,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       keyless: current.keyless,
       errorText: current.errorText,
       showBanner: props.showBanner,
-      isEmpty: current.snapshot.isEmpty,
+      isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
       hasSessions: current.snapshot.recentSessions.length > 0,
+      ...stripReach(current.parkedRuns, current.snapshot),
+      reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
       page: same ? previous.page : 0,
     });
     if (layout === undefined || layout.maxPage === 0) return false;
@@ -717,6 +791,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     ) {
       controller.getSnapshot().session?.store.invalidateToolReview();
       homeFrame.invalidate();
+      cardFrame.invalidate();
       props.onSuspend?.();
       return;
     }
@@ -731,6 +806,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           input.includes('\x03')
         )
           props.nativePrompt.input('\x1b', key);
+        // Any other key is not delivered (the card is not visible), but it is typing as far as the chord guard is concerned: while a
+        // card is open, every key the person types in the composer reaches the channel's typeahead and quiet layers, seen or not.
+        // A key typed with NO card open never gets here: it is a composer edit, not typeahead.
+        else props.nativePrompt.unseenInput();
         return;
       }
       props.nativePrompt.input(input, key);
@@ -765,6 +844,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (props.inputEnabled?.() === false) return;
     if (props.nativePrompt?.getSnapshot().active === true) {
       if (nativeAcknowledgement?.pasteVisible() === true) props.nativePrompt.paste(text);
+      else props.nativePrompt.unseenInput();
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;
@@ -801,7 +881,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           mention={state.mention}
           modelPicker={state.modelPicker}
           effortPicker={state.effortPicker}
-          permissionsSheet={state.permissionsSheet}
+          chatSheet={state.chatSheet}
           now={props.nowMs}
           cols={size.cols}
           // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
@@ -809,11 +889,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           viewport={
             props.alternateScreen === true
               ? {
-                  rows: prompt.active
-                    ? nativePromptFits(size)
-                      ? Math.max(1, size.rows - promptRows(prompt, size.cols))
-                      : 1
-                    : size.rows,
+                  rows: chatViewportRows(prompt, size),
                   cols: size.cols,
                   scroll,
                   // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
@@ -831,13 +907,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           historyEntries={state.historyEntries}
           attachments={state.attachments}
           copied={copied}
-          promptHeight={
-            prompt.active
-              ? nativePromptFits(size)
-                ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2)
-                : 0
-              : undefined
-          }
+          promptHeight={chatPromptHeight(prompt, size)}
         />
         {nativeAcknowledgement && (
           <NativePromptView
@@ -852,14 +922,35 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   }
   if (state.mode === 'loading') {
     return (
-      <Box flexDirection="column" width={layoutColumns(size.cols)}>
-        <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-          {'> '}
-          {sanitizeInline(state.pendingMessage)}
-        </Text>
-        <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat… · Ctrl+C to exit
-        </Text>
+      <LoadingEcho
+        width={layoutColumns(size.cols)}
+        // The echo is a landing too: the exit-guard card is drawn in it, and its `Ctrl+Y` counts only for a frame measured and flushed, as
+        // on the Home (ADR-0139 §6). A loading frame that is never committed would leave the card offering a key that is always refused.
+        onFrame={(node) => {
+          homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
+        }}
+      >
+        {state.pendingMessage !== '' && (
+          // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
+          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+            {'> '}
+            {sanitizeInline(state.pendingMessage)}
+          </Text>
+        )}
+        {!homeFitsTerminal(size.cols, size.rows) && (
+          // The landing says so below 80×24 and so does its echo: a card drawn in the degrade, and a `Ctrl+Y` that answers nothing
+          // there, are explained by the one line that says what to do about it.
+          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+            {tooSmallMessage(size.cols, size.rows)}
+          </Text>
+        )}
+        {state.exitGuard === undefined ? (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            Starting chat… · Ctrl+C to exit
+          </Text>
+        ) : (
+          <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
+        )}
         {nativeAcknowledgement && (
           <NativePromptView
             snapshot={prompt}
@@ -868,7 +959,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             size={size}
           />
         )}
-      </Box>
+      </LoadingEcho>
     );
   }
   return (
@@ -887,7 +978,42 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           size={size}
         />
       )}
-      {!prompt.active && (
+      {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
+      {!prompt.active && state.screen?.kind === 'run-view' && (
+        <RunScreenView
+          runId={state.screen.runId}
+          store={state.screen.store}
+          hostedRun={state.hostedRun}
+          notices={state.screen.notices}
+          interruptArmed={state.interruptArmed}
+          openGate={state.gateCards}
+          gateOpenFailed={state.screen.note !== undefined}
+          columns={size.cols}
+          rows={size.rows}
+          color={color}
+        />
+      )}
+      {!prompt.active && state.screen?.kind === 'gate-card' && (
+        <GateCardScreenView
+          screen={state.screen}
+          frame={cardFrame}
+          flush={() => app.waitUntilRenderFlush()}
+          columns={size.cols}
+          rows={size.rows}
+          nowMs={props.nowMs()}
+          color={color}
+        />
+      )}
+      {!prompt.active && state.screen?.kind === 'tab-host' && (
+        <TabHostView state={state.screen.host} color={color} columns={size.cols} rows={size.rows} />
+      )}
+      {!prompt.active && state.screen?.kind === 'help' && (
+        <SheetLinesView
+          lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
+          color={color}
+        />
+      )}
+      {!prompt.active && state.screen === undefined && (
         <HomeView
           onFrame={(node) => {
             homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
@@ -900,35 +1026,79 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           cols={Number.isFinite(size.cols) ? size.cols : 0}
           rows={size.rows}
           color={color}
-          paletteOpen={
-            state.palette !== undefined ||
-            state.modelPicker !== undefined ||
-            state.permissionsSheet !== undefined
-          }
+          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          {...(state.palette === undefined
+            ? {}
+            : { palette: { commands: HOME_PALETTE_COMMANDS, state: state.palette } })}
           showBanner={props.showBanner}
           keyless={state.keyless}
-          continueSessionId={state.continueSessionId}
+          parkedRuns={state.parkedRuns}
+          stripFocus={state.stripFocus}
           noticePage={noticePage}
           interruptArmed={state.interruptArmed}
+          hostedRun={state.hostedRun}
+          exitGuard={state.exitGuard}
         />
       )}
-      {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (
-        <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
-      )}
+      {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
-      {/* The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, docked under the Home; below its own
-          80×24 floor the sheet says so itself, so it is drawn whatever the Home strip does. */}
-      {state.permissionsSheet !== undefined && (
-        <PermissionsSheetView
-          state={state.permissionsSheet}
-          color={color}
-          columns={size.cols}
-          rows={size.rows}
-        />
-      )}
     </Box>
+  );
+}
+
+/**
+ * The echo shown while the first chat is being built: the person's first line, and the exit-guard card when one is open. Every commit of
+ * its box goes to the Home's measured-frame evidence (`onFrame`), as `HomeView`'s does for the landing: a React commit alone is never
+ * evidence that the card was delivered.
+ */
+function LoadingEcho(
+  props: Readonly<{
+    width: number;
+    onFrame: (node: DOMElement | null) => void;
+    children: ReactNode;
+  }>,
+): ReactElement {
+  const frame = useRef<DOMElement | null>(null);
+  useLayoutEffect(() => {
+    props.onFrame(frame.current);
+  });
+  return (
+    <Box ref={frame} flexDirection="column" width={props.width}>
+      {props.children}
+    </Box>
+  );
+}
+
+/**
+ * The gate or budget card of the slot, painted from the card's own snapshots. The view is pure; this is its one effect: every commit of
+ * the card's box goes to the card's measured-frame evidence, which tells the card when a NEW frame was measured and flushed.
+ */
+function GateCardScreenView(
+  props: Readonly<{
+    screen: GateCardScreen;
+    frame: GateCardFrame;
+    flush: () => Promise<void>;
+    columns: number;
+    rows: number;
+    nowMs: number;
+    color: boolean;
+  }>,
+): ReactElement {
+  const { card } = props.screen;
+  const snapshot = useSyncExternalStore(card.subscribe, card.getSnapshot);
+  return (
+    <RunCardView
+      snapshot={snapshot}
+      columns={props.columns}
+      rows={props.rows}
+      nowMs={props.nowMs}
+      color={props.color}
+      onFrame={(node) => {
+        props.frame.commit(snapshot, node, props.flush);
+      }}
+    />
   );
 }
 
@@ -943,8 +1113,27 @@ const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
   selected: 0,
   display: '',
   error: '',
+  escape: 'cancel',
+  details: [],
 };
 const emptyPromptSubscribe = (): (() => void) => () => {};
+
+type NativeSize = Parameters<typeof nativePromptFits>[0];
+
+/**
+ * The rows the chat's transcript viewport keeps in the alternate screen: the terminal's own with no native card open, what the card leaves
+ * while one is, and one row when the card does not fit (the card then owns the screen).
+ */
+function chatViewportRows(prompt: NativePromptSnapshot, size: NativeSize): number {
+  if (!prompt.active) return size.rows;
+  return nativePromptFits(size) ? Math.max(1, size.rows - promptRows(prompt, size.cols)) : 1;
+}
+
+/** The rows the chat region is bounded to while a native card is open (two fewer than the viewport keeps), or `undefined` with none open. */
+function chatPromptHeight(prompt: NativePromptSnapshot, size: NativeSize): number | undefined {
+  if (!prompt.active) return undefined;
+  return nativePromptFits(size) ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2) : 0;
+}
 
 function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
@@ -963,7 +1152,13 @@ function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const lines = [
     prompt.note,
     prompt.message,
-    ...prompt.options.map((option) => `  ${option.label}${option.hint ? ` — ${option.hint}` : ''}`),
+    // A chord card's body sits behind a two-column gutter, and its key rows carry a nine-column `[Ctrl+Y] ` tag.
+    ...prompt.details.map((line) => `│ ${line}`),
+    ...prompt.options.map((option) => {
+      const lead = prompt.kind === 'chord' ? '  [Ctrl+Y] ' : '  ';
+      const hint = option.hint ? ` — ${option.hint}` : '';
+      return `${lead}${option.label}${hint}`;
+    }),
     prompt.display,
     prompt.error,
   ].filter(Boolean);

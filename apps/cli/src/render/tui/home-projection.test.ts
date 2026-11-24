@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HomeGateRow, HomeRunRow, HomeSessionRow } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import {
   agentLabel,
+  EXIT_GUARD_GLYPH,
+  exitGuardLines,
   expiryLabel,
   gateExpired,
   gateLabel,
   homeFitsTerminal,
+  hostedRunIsLive,
+  hostedRunLabel,
   HOME_MIN_COLS,
   HOME_MIN_ROWS,
   relativeTime,
@@ -171,6 +176,18 @@ describe('row labels', () => {
     );
   });
 
+  it('runLabel: a run recorded for another project says so after its cost, and a run of this one does not', () => {
+    const paused = runRow({ status: 'paused', startedAt: ago(1 * HR), completedAt: undefined });
+    expect(runLabel(paused, NOW), 'same project (or none recorded): no marker').toBe(
+      'deploy  ·  paused  ·  1h ago  ·  free',
+    );
+    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).toBe(
+      'deploy  ·  paused  ·  1h ago  ·  free  ·  other project',
+    );
+    // The marker is a fixed phrase: the other project's root is data and never reaches the line.
+    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).not.toContain('other-app');
+  });
+
   it('runLabel: a RUNNING run anchors on startedAt (not completedAt/createdAt)', () => {
     const run = runRow({ status: 'running', startedAt: ago(10 * MIN), completedAt: undefined });
     expect(runLabel(run, NOW)).toBe('deploy  ·  running  ·  10m ago  ·  free');
@@ -224,5 +241,104 @@ describe('row labels', () => {
     expect(agentLabel({ agentSlug: 'coder', lastUsedAt: ago(3 * DAY) }, NOW)).toBe(
       'coder  ·  3d ago',
     );
+  });
+});
+
+const RUN_ID = '0b8c2f4e-9d4a-4f6e-8a51-3c7d1e2f9a60';
+const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+const running = (cancelling: boolean): RunHostSnapshot => ({
+  launching: false,
+  active: { leg: 'start', runId: RUN_ID, cancelling },
+  last: undefined,
+});
+const ENDED_LAST: RunHostSnapshot = {
+  launching: false,
+  active: undefined,
+  last: {
+    leg: 'start',
+    runId: RUN_ID,
+    terminal: {
+      disposition: 'completed',
+      safety: undefined,
+      headline: 'Run completed.',
+      remedy: undefined,
+    },
+    handedOff: false,
+    retirement: 'retired',
+    fault: undefined,
+  },
+};
+
+describe('the run row of the strip (ADR-0139 §3)', () => {
+  it('shows the active run’s id and its state as a word, behind a glyph, in one line', () => {
+    expect(hostedRunLabel(running(false))).toBe(`▶ ${RUN_ID}  ·  running  ·  Enter shows it`);
+    expect(hostedRunLabel(running(true))).toBe(`▶ ${RUN_ID}  ·  cancelling  ·  Enter shows it`);
+    expect(hostedRunLabel(running(false))).not.toContain('\n');
+  });
+
+  it('says it is starting while the engine has not named the run yet', () => {
+    expect(hostedRunLabel({ launching: true, active: undefined, last: undefined })).toBe(
+      '▶ run  ·  starting',
+    );
+    expect(
+      hostedRunLabel({
+        launching: true,
+        active: { leg: 'start', runId: undefined, cancelling: false },
+        last: undefined,
+      }),
+    ).toBe('▶ run  ·  starting');
+  });
+
+  it('is nothing at all when no run is active: no host, an idle host, and a host whose last leg ended', () => {
+    expect(hostedRunLabel(undefined)).toBeUndefined();
+    expect(hostedRunLabel(IDLE)).toBeUndefined();
+    expect(hostedRunLabel(ENDED_LAST)).toBeUndefined();
+  });
+
+  it('strips terminal control sequences from the id', () => {
+    const label = hostedRunLabel({
+      launching: false,
+      active: { leg: 'start', runId: 'run-\u001b[31mred\u001b[0m', cancelling: false },
+      last: undefined,
+    });
+    expect(label).not.toContain('\u001b');
+  });
+
+  it('reads one meaning of "active": a leg preparing, executing or cancelling', () => {
+    expect(hostedRunIsLive(undefined)).toBe(false);
+    expect(hostedRunIsLive(IDLE)).toBe(false);
+    expect(hostedRunIsLive(ENDED_LAST)).toBe(false);
+    expect(hostedRunIsLive({ launching: true, active: undefined, last: undefined })).toBe(true);
+    expect(hostedRunIsLive(running(false))).toBe(true);
+    expect(hostedRunIsLive(running(true))).toBe(true);
+  });
+});
+
+describe('the exit-guard card text (ADR-0139 §6)', () => {
+  it('says what leaving does and what each key does, in words, within 80 columns', () => {
+    const lines = exitGuardLines('confirm', running(false), 10);
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} A workflow run is executing: ${RUN_ID}.`);
+    expect(lines.join('\n')).toContain('a stopped run cannot be resumed');
+    expect(lines.at(-1)).toBe('Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay');
+    for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
+  });
+
+  it('says the run is already stopping, and names the wait', () => {
+    const lines = exitGuardLines('confirm', running(true), 13);
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} The run is stopping: ${RUN_ID}.`);
+    expect(lines[1]).toContain('(about 13 s)');
+    for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
+  });
+
+  it('says the run has ended when it ended while the card was up', () => {
+    expect(exitGuardLines('confirm', IDLE, 10)[0]).toBe(
+      `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
+    );
+  });
+
+  it('says it is stopping once the person confirmed, and for how long the Home waits', () => {
+    const lines = exitGuardLines('stopping', running(true), 13);
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
+    expect(lines[1]).toContain('within about 13 s');
   });
 });

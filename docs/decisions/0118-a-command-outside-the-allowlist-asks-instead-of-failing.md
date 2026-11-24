@@ -567,3 +567,7 @@ Dated blockquotes were added beneath the sentences of this ADR that the code and
 - **§2, "Revocation and listing"**: the sheet shows a session approval's scrubbed command.
 - **§3**: the tokenizer lives in `packages/shared`, not `packages/core`.
 - **Step 4**: the typed `--revoke` and `--session` forms are gone ([ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)); *Remember* is offered for a listed command and for an outdated grant (finding B1).
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+A workflow run hosted in the Home is unattended, as in the shell: its `run_command` is allowlist-only, with no card and no remembered grant, although a person is present in the Home. The 'a workflow runs unattended' premise holds for hosted runs ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §7).

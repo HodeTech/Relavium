@@ -84,6 +84,11 @@ Exact arguments, bounds and texts live in
     confidentiality-floor path.
   - It is bounded in files scanned, matches and bytes per line. It is
     idempotent and not governed.
+  - *Amended 2026-11-23 ([ADR-0142](0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md)):*
+    the search is also bounded in work units, which the literal matcher now
+    charges for the text it actually reads. A partial result says so in its
+    `stats`, and the tool description tells the model not to read it as an
+    absence.
 - **`find_files`.** Finds files by glob with the in-house matcher. Results are
   sorted by mtime and bounded. It respects ignore files and never lists a
   confidentiality-floor path. It is idempotent and not governed.

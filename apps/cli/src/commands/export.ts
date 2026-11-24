@@ -1,19 +1,22 @@
+import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   authoredFileName,
   detectAndParse,
+  isWindowsDeviceName,
   readAuthoredFile,
   resolveById,
   resolveProjectConfigDir,
   serializeAuthored,
   writeAuthoredFile,
 } from '../authoring/authoring.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { stringifyJsonLine, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeInline, stringifyJsonLine } from '../render/sanitize.js';
 
 export interface ExportCommandArgs {
   /** The in-file `id` of the workflow/agent to export (resolved across both project catalogs). */
@@ -27,6 +30,93 @@ export interface ExportCommandArgs {
 export interface ExportCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** The operator home the path rules read. The program passes none (the process's own); a test hands it a temporary one. */
+  readonly homeDir?: string | undefined;
+}
+
+/**
+ * What an export WILL write, worked out and not written: the destination and the canonical content. It is the whole of what the
+ * Home's export card shows before it asks, and {@link commitExport} writes exactly this and nothing else.
+ */
+export interface ExportPlan {
+  readonly kind: 'workflow' | 'agent';
+  readonly slug: string;
+  /** The absolute destination. The human-facing {@link ExportPlan.targetDisplay} is the cwd-relative one. */
+  readonly target: string;
+  readonly targetDisplay: string;
+  /** The canonical re-serialization, as it will be written (UTF-8). */
+  readonly content: string;
+  /** The bytes {@link ExportPlan.content} takes on disk. */
+  readonly bytes: number;
+  readonly force: boolean;
+}
+
+/**
+ * The first half of `relavium export`: resolve `<id>` across BOTH catalogs, read and re-validate the file, work out the destination
+ * and re-serialize from the validated AST. Nothing is written. Every refusal that does not need the file system's answer to a write
+ * is raised here, as the same exit-2 {@link CliError} the command always raised (an unknown or ambiguous id, an invalid source file,
+ * a destination that resolves into global state); an existing target without `--force` and a target that is not a file are the write's
+ * to refuse, and {@link commitExport} does.
+ */
+export function prepareExport(
+  args: ExportCommandArgs,
+  deps: Pick<ExportCommandDeps, 'global'> & {
+    /** The operator home the path rules read, which has no default here: the command resolves the process's own at its boundary, the Home passes its own. */
+    readonly homeDir: string;
+  },
+): ExportPlan {
+  const cwd = deps.global.cwd;
+  const home = deps.homeDir;
+  const projectConfigDir = resolveProjectConfigDir(cwd, home);
+  const { path } = resolveById({
+    projectConfigDir,
+    cwd,
+    id: args.id,
+    homeDir: home,
+  });
+
+  const displayPath = relative(cwd, path);
+  const yaml = readAuthoredFile(path, displayPath);
+  // Re-validate the source (it was valid at the catalog scan) to get the AST before canonical serialization.
+  // This validates structure, not secrecy. The basename hint picks the parser for a precise error.
+  const parsed = detectAndParse(yaml, displayPath, basename(path));
+
+  // The default destination is named after the id, which comes from a file in the repository: an id Windows reserves for a device
+  // (`aux`, `com1`, ...) makes a file name that cannot be added to git there and may open the device. The explicit `--out` stays the
+  // person's own path, and is the way out.
+  if (args.out === undefined && isWindowsDeviceName(parsed.slug)) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${parsed.slug}' is a device name on Windows, so no file can be named after it — name the file yourself with relavium export <id> --out <path>.`,
+    );
+  }
+  const target =
+    args.out === undefined
+      ? join(cwd, authoredFileName(parsed.kind, parsed.slug))
+      : resolve(cwd, args.out);
+  const targetDisplay = relative(cwd, target);
+  // The rule about global state guards the DEFAULT destination only: `--out` is a path the person typed, and an explicit selection is
+  // theirs to make (commands.md, "Explicit `--config` and `--out` paths retain their selected-file contracts"). What `--out` shares with
+  // every other write is the final-component rule in {@link writeAuthoredFile}: a link or a special file there is never written through.
+  if (args.out === undefined) assertProjectArtifactPath(target, home);
+  const content = serializeAuthored(parsed);
+  return {
+    kind: parsed.kind,
+    slug: parsed.slug,
+    target,
+    targetDisplay,
+    content,
+    bytes: Buffer.byteLength(content, 'utf8'),
+    force: args.force,
+  };
+}
+
+/**
+ * The second half: write the plan. Without `force` an existing target is a clean exit-2 {@link CliError} (`wx`, so no check-then-write
+ * window), and a target that is not a file is one too ({@link writeAuthoredFile}).
+ */
+export function commitExport(plan: ExportPlan): void {
+  writeAuthoredFile(plan.target, plan.targetDisplay, plan.content, plan.force);
 }
 
 /**
@@ -40,25 +130,15 @@ export interface ExportCommandDeps {
  * The default target is `<id>.<suffix>` in cwd; `--out` overrides, `--force` overwrites. **Surface-agnostic**:
  * pure YAML I/O, never the keychain or run state. An unknown/ambiguous id, an invalid source file, or an
  * existing target without `--force` is a clean exit-2 {@link CliError}.
+ *
+ * It is {@link prepareExport} then {@link commitExport}, in that order, and prints after the second: the split lets the Home's export
+ * card show the destination between them, and changes nothing the command prints, returns or throws.
  */
 export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps): ExitCode {
-  const cwd = deps.global.cwd;
-  const projectConfigDir = resolveProjectConfigDir(cwd);
-  const { path } = resolveById({ projectConfigDir, cwd, id: args.id });
-
-  const displayPath = relative(cwd, path);
-  const yaml = readAuthoredFile(path, displayPath);
-  // Re-validate the source (it was valid at the catalog scan) to get the AST before canonical serialization.
-  // This validates structure, not secrecy. The basename hint picks the parser for a precise error.
-  const parsed = detectAndParse(yaml, displayPath, basename(path));
-
-  const target =
-    args.out === undefined
-      ? join(cwd, authoredFileName(parsed.kind, parsed.slug))
-      : resolve(cwd, args.out);
-  const targetDisplay = relative(cwd, target);
-  if (args.out === undefined) assertProjectArtifactPath(target);
-  writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
+  // The one place the command reads the process's own home; every rule below is handed it.
+  const plan = prepareExport(args, { global: deps.global, homeDir: deps.homeDir ?? homedir() });
+  commitExport(plan);
+  const { kind, slug, targetDisplay } = plan;
 
   // Emit the cwd-relative path in both modes — the same contract `import` uses, so a script consuming either
   // command's `--json` gets the same path shape (and no absolute filesystem tree leaks into the output).
@@ -66,15 +146,12 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
     // `stringifyJsonLine`, not a bare `JSON.stringify` (CR-03). `targetDisplay` derives from the user-typed
     // `--out`, so unlike `import --json`'s payload — whose `slug` is kebab-schema-validated and cannot carry
     // one — it really can hold a C1 control or a bidi override, which `JSON.stringify` leaves raw.
-    deps.io.writeOut(
-      `${stringifyJsonLine({ id: parsed.slug, kind: parsed.kind, path: targetDisplay })}\n`,
-    );
+    deps.io.writeOut(`${stringifyJsonLine({ id: slug, kind, path: targetDisplay })}\n`);
   } else {
     // The human line needs the terminal floor for the same reason: every dynamic string written to a terminal
-    // passes `stripTerminalControls` (security-review.md), and this one is user-supplied.
-    deps.io.writeOut(
-      `Exported ${parsed.kind} '${parsed.slug}' to ${stripTerminalControls(targetDisplay)}\n`,
-    );
+    // passes the strip (security-review.md), and this one is user-supplied. `sanitizeInline` is `stripTerminalControls` that also folds a
+    // tab or a line feed (which the strip keeps) to a space, so a name cannot start a second row.
+    deps.io.writeOut(`Exported ${kind} '${slug}' to ${sanitizeInline(targetDisplay)}\n`);
   }
   return EXIT_CODES.success;
 }

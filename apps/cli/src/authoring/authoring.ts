@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import {
   AgentParseError,
@@ -14,8 +14,16 @@ import {
 } from '@relavium/core';
 import { SCHEMA_VERSION } from '@relavium/shared';
 
+import { canonicalProjectPath } from '../config/paths.js';
 import { resolveProjectDirectory } from '../config/project-directory.js';
+import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
+import {
+  createExclusive,
+  pinnedDirectoryGuard,
+  writeForced,
+  type DirectoryGuard,
+} from '../process/forced-write.js';
 import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
 
 /**
@@ -44,8 +52,12 @@ const KIND_SUFFIX: Record<AuthoredKind, string> = {
   agent: '.agent.yaml',
 };
 
-/** The project `.relavium/` to author into: the nearest one walking up from `cwd`, else `<cwd>/.relavium`. */
-export function resolveProjectConfigDir(cwd: string, home?: string): string {
+/**
+ * The project `.relavium/` to author into: the nearest one walking up from `cwd`, else `<cwd>/.relavium`. `home` is the operator home
+ * the path rules read, handed in by the caller (a command passes the process's own at its boundary, the Home passes its own): nothing
+ * here falls back to the real one.
+ */
+export function resolveProjectConfigDir(cwd: string, home: string): string {
   return resolveProjectDirectory(cwd, home);
 }
 
@@ -57,6 +69,79 @@ export function authoredFileName(kind: AuthoredKind, slug: string): string {
 /** The canonical catalog path for an authored doc: `<projectConfigDir>/<workflows|agents>/<slug>.<suffix>`. */
 export function catalogPath(projectConfigDir: string, kind: AuthoredKind, slug: string): string {
   return join(projectConfigDir, KIND_DIR[kind], authoredFileName(kind, slug));
+}
+
+/** What {@link confineToProjectConfig} decided about a catalog target: the path the person sees, and the path the write goes to. */
+export interface ConfinedTarget {
+  /**
+   * The target with its directory replaced by the real one, still spelled from `projectConfigDir` (so a project reached through a link of
+   * its own keeps its own spelling). This is what is shown, what the rule about global state is asked of, and where an occupant is looked for.
+   */
+  readonly target: string;
+  /**
+   * Where the write goes: the CANONICAL directory the check computed (no link anywhere in it) plus the file name. It is the same
+   * directory as {@link ConfinedTarget.target} spelled another way, and it is the one the write must use: `target` is resolved by name again
+   * at the write, so a link put into one of its components after the check (a project reached through a link that is repointed, say) would
+   * take the write elsewhere. Given to {@link writeAuthoredFile} with `pinDirectory`, this path is also looked at again around the write and
+   * refused when it no longer resolves to itself; that narrows a swap of the directory's own name and does not close it
+   * ({@link writeAuthoredFile} says what remains).
+   */
+  readonly writeTarget: string;
+}
+
+/**
+ * Where a catalog file may really be written: the directory it goes into, resolved through every link, must lie inside the project's own
+ * configuration directory, resolved the same way (the root the catalog scan holds a listing to). `assertProjectArtifactPath` keeps a write
+ * out of the operator's home and global configuration, and says nothing about the rest of the disk, so a `.relavium/workflows` that is a
+ * link to a directory elsewhere would otherwise take the file there. A link that stays inside the project is allowed. What is shown and
+ * what is written name the same directory by two spellings ({@link ConfinedTarget}): the project's own, for the person, and the real one,
+ * for the write.
+ *
+ * `displayDirectory` is the directory as the person sees it (cwd-relative): the sentence names it and never the absolute path. A path
+ * that cannot be resolved (a link that points at nothing, a loop, an unreadable component) is refused too: an unresolved link is never
+ * evidence that the write stays inside.
+ */
+export function confineToProjectConfig(
+  projectConfigDir: string,
+  target: string,
+  displayDirectory: string,
+): ConfinedTarget {
+  const root = canonicalProjectPath(projectConfigDir);
+  const directory = canonicalProjectPath(dirname(target));
+  if (root === undefined || directory === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      'The target directory could not be resolved safely. Check directory access and symbolic links, then retry.',
+    );
+  }
+  if (!isWithinFsRoot(root, directory)) {
+    throw new CliError(
+      'invalid_invocation',
+      `The target directory is a link that leaves the project: ${displayDirectory}.`,
+    );
+  }
+  return {
+    target: join(projectConfigDir, relative(root, directory), basename(target)),
+    writeTarget: join(directory, basename(target)),
+  };
+}
+
+/**
+ * {@link confineToProjectConfig} for a catalog file the way a command names it: the real target, the cwd-relative path to show for it (the
+ * one the command prints and the Home's card draws), and the canonical path to write. With no link in the way the first two are what they
+ * always were.
+ */
+export function confineCatalogTarget(opts: {
+  readonly projectConfigDir: string;
+  readonly cwd: string;
+  readonly target: string;
+}): ConfinedTarget & { readonly targetDisplay: string } {
+  const confined = confineToProjectConfig(
+    opts.projectConfigDir,
+    opts.target,
+    dirname(relative(opts.cwd, opts.target)),
+  );
+  return { ...confined, targetDisplay: relative(opts.cwd, confined.target) };
 }
 
 /** Re-serialize canonical YAML, preserving authored literals and placeholders; this is not secret redaction. */
@@ -208,52 +293,160 @@ export function buildAuthored(spec: CreateSpec): ParsedAuthored {
 }
 
 /**
- * Read a YAML file as UTF-8 for authoring, with the SAME regular-file + size guards the catalog scan uses (a
- * crafted symlink to a FIFO/char-device would otherwise block `readFileSync` indefinitely). A missing /
- * unreadable file, a non-regular-file target, or one over the source cap is a typed, exit-2 {@link CliError}
- * whose message is path-free of the absolute path (never echo a raw fs error — error-handling.md).
+ * Read a YAML file as UTF-8 for authoring, with the SAME regular-file + size guards the catalog scan uses. The file is opened ONCE, by
+ * path, with `O_NONBLOCK` (a FIFO swapped in for the file cannot hold the open, nor, being refused below, the read), and every later
+ * question (is it a regular file, how big) and the read itself are asked of the DESCRIPTOR, in bounded chunks, never by path again: a
+ * `stat` then a `readFileSync` by path would let a same-directory owner rename a FIFO over the file between them, and the read would
+ * block with no deadline. Symlinks are followed, as they always were. A missing / unreadable file, a non-regular-file target, or one over
+ * the source cap is a typed, exit-2 {@link CliError} whose message is path-free of the absolute path (never echo a raw fs error —
+ * error-handling.md). The bytes must be well-formed UTF-8: a lenient decode would turn each bad sequence into U+FFFD and the canonical
+ * re-serialization would write that into the person's file, so a corrupt prompt would be laundered into one that looks intact (review
+ * P05-2). A byte-order mark is kept as the lenient decode kept it.
  */
 export function readAuthoredFile(path: string, displayPath: string): string {
-  let stats: ReturnType<typeof statSync>;
+  let fd: number;
   try {
-    stats = statSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (err) {
     if (errnoCode(err) === 'ENOENT') {
       throw new CliError('invalid_invocation', `no file at ${displayPath}`);
     }
-    throw new CliError('invalid_invocation', `could not read ${displayPath}`);
-  }
-  if (!stats.isFile()) {
-    throw new CliError('invalid_invocation', `${displayPath} is not a regular file`);
-  }
-  // The parser's cap is a CHARACTER count; stat.size is BYTES (≤ 4 bytes/UTF-8 char), so `chars * 4` is a byte
-  // ceiling that never false-rejects a within-limit file while bailing before slurping a huge file into memory.
-  if (stats.size > MAX_SOURCE_CHARS * 4) {
-    throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    throw unopenedReason(path, displayPath);
   }
   try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    let stats: ReturnType<typeof fstatSync>;
+    try {
+      stats = fstatSync(fd);
+    } catch {
+      throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    }
+    if (!stats.isFile()) {
+      throw new CliError('invalid_invocation', `${displayPath} is not a regular file`);
+    }
+    // The parser's cap is a CHARACTER count; stat.size is BYTES (≤ 4 bytes/UTF-8 char), so `chars * 4` is a byte
+    // ceiling that never false-rejects a within-limit file while bailing before slurping a huge file into memory.
+    if (stats.size > MAX_SOURCE_CHARS * 4) {
+      throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+    let bytes: Buffer | undefined;
+    try {
+      bytes = readBounded(fd, MAX_SOURCE_CHARS * 4);
+    } catch {
+      throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    }
+    // A file that grew past the ceiling after its size was read is refused as one that was over it.
+    if (bytes === undefined) {
+      throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+    try {
+      return STRICT_UTF8.decode(bytes);
+    } catch {
+      throw new CliError('invalid_invocation', `${displayPath} is not valid UTF-8`);
+    }
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // A read-only descriptor that fails to close has nothing left to lose.
+    }
   }
 }
 
+/** UTF-8 that refuses malformed input instead of repairing it; `ignoreBOM` keeps a leading U+FEFF in the text, as `Buffer#toString` does. */
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** The descriptor's bytes, read in bounded chunks; `undefined` as soon as more than `ceiling` bytes are there. */
+function readBounded(fd: number, ceiling: number): Buffer | undefined {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const buffer = Buffer.alloc(Math.min(64 * 1024, ceiling + 1 - total));
+    const count = readSync(fd, buffer, 0, buffer.length, null);
+    if (count === 0) break;
+    total += count;
+    if (total > ceiling) return undefined;
+    chunks.push(buffer.subarray(0, count));
+  }
+  return Buffer.concat(chunks, total);
+}
+
 /**
- * Atomically write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean
- * exit-2 fault — `wx` fails `EEXIST` so there is no TOCTOU window between a separate existence check and the
- * write; `w` truncates/overwrites under `force`. A non-file target (`EISDIR`/`ENOTDIR`) is also exit 2; other
- * write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a cwd-relative path
- * the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
+ * The sentence for a file that could not be opened. Only the WORDS are chosen by path (a `stat` never blocks): a directory or a device
+ * that cannot be opened for want of permission is still "not a regular file", and a file over the ceiling still "exceeds the size limit",
+ * as before the file was read through a descriptor. What is read is never chosen by path.
+ */
+function unopenedReason(path: string, displayPath: string): CliError {
+  try {
+    const stats = statSync(path);
+    if (!stats.isFile()) {
+      return new CliError('invalid_invocation', `${displayPath} is not a regular file`);
+    }
+    if (stats.size > MAX_SOURCE_CHARS * 4) {
+      return new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+  } catch {
+    // The open's own refusal stands.
+  }
+  return new CliError('invalid_invocation', `could not read ${displayPath}`);
+}
+
+function notAFile(displayPath: string, cause?: unknown): CliError {
+  return new CliError(
+    'invalid_invocation',
+    `cannot write ${displayPath}: the target path is not a file`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/** What {@link writeAuthoredFile} may be told about the path it is given. */
+export interface WriteAuthoredOptions {
+  /**
+   * The directory of `path` is a CANONICAL path a confinement computed ({@link ConfinedTarget.writeTarget}): it must still resolve to
+   * itself, with no link in it, before the directories are created, before the target is looked at, before the temporary is created and
+   * right before the rename, and once more after it. A directory that was swapped for a link since the check (to a place outside the
+   * project, or inside it) is refused when a look catches it. See {@link writeAuthoredFile} for what that does and does not guarantee.
+   */
+  readonly pinDirectory?: boolean;
+}
+
+/**
+ * Write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean exit-2 fault: `wx` fails `EEXIST`,
+ * so there is no TOCTOU window between a separate existence check and the write, and a link at the target is "already there" too, since
+ * `O_EXCL` never follows one. Under `force` the target is replaced by the forced-write sequence ({@link writeForced}): looked at without
+ * being followed, a plain file replaced through a temporary and a rename that keep its mode and group, a link, a FIFO or a device refused
+ * in fixed words with nothing written (review P0-1: a link committed to a repository took `--force` out of the project). A directory
+ * (`EISDIR`/`ENOTDIR`) is also exit 2; other write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a
+ * cwd-relative path the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
+ *
+ * With `pinDirectory` the write also looks at the directory ({@link WriteAuthoredOptions}) and refuses one that stopped being the
+ * approved one. That NARROWS a swap's window and does not close it. A second principal with write access to `.relavium/` who exchanges
+ * the directory's name for a link to another directory, fast enough, can still have the temporary created, or the replaced file renamed,
+ * in the directory the swap points at: every step names the directory again, and a true pin would need `openat` and `renameat` on a
+ * directory descriptor, which Node does not offer. What a forced write adds is DETECTION after the rename (the name must hold the file
+ * that was written and the directory must still resolve to itself), reported in fixed words that say the file may have gone to another
+ * directory; it cannot undo a replacement. The exclusive create (no `force`, or nothing at the target) is one system call after the
+ * look and was not seen to escape in 51,141 raced tries, but it has no after-the-fact check. A temporary created in a directory that is
+ * swapped away just afterwards stays in that directory, which its name no longer reaches.
  */
 export function writeAuthoredFile(
   path: string,
   displayPath: string,
   content: string,
   force: boolean,
+  options: WriteAuthoredOptions = {},
 ): void {
+  const directory = dirname(path);
+  const guard: DirectoryGuard =
+    options.pinDirectory === true ? pinnedDirectoryGuard(directory) : () => undefined;
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
+    guard();
+    mkdirSync(directory, { recursive: true });
+    guard();
+    if (force) {
+      writeForced(path, content, guard);
+    } else {
+      createExclusive(path, content);
+    }
   } catch (err) {
     const code = errnoCode(err);
     if (code === 'EEXIST') {
@@ -263,13 +456,7 @@ export function writeAuthoredFile(
         { cause: err },
       );
     }
-    if (code === 'EISDIR' || code === 'ENOTDIR') {
-      throw new CliError(
-        'invalid_invocation',
-        `cannot write ${displayPath}: the target path is not a file`,
-        { cause: err },
-      );
-    }
+    if (code === 'EISDIR' || code === 'ENOTDIR') throw notAFile(displayPath, err);
     throw err;
   }
 }
@@ -277,20 +464,36 @@ export function writeAuthoredFile(
 /**
  * Locate an authored file by its in-file `id` across BOTH catalogs (the `relavium export <id>` resolution).
  * Returns the matched kind + the absolute path. A missing id is a clean exit-2 fault; an id that names BOTH a
- * workflow and an agent is ambiguous (exit 2) — disambiguate by renaming one. Only VALID catalog entries match
+ * workflow and an agent is ambiguous (exit 2), and so is an id that two valid files of one kind declare (the error names both
+ * paths) — disambiguate by renaming one. Only VALID catalog entries match
  * (an unparseable file's slug is a filename FALLBACK, never a real id).
  */
-export function resolveById(opts: { projectConfigDir: string; cwd: string; id: string }): {
+export function resolveById(opts: {
+  projectConfigDir: string;
+  cwd: string;
+  id: string;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
+}): {
   kind: AuthoredKind;
   path: string;
 } {
   const matches: { kind: AuthoredKind; path: string }[] = [];
   for (const kind of ['workflow', 'agent'] as const) {
-    const entry = discoverCatalog({
+    const found = discoverCatalog({
       projectConfigDir: opts.projectConfigDir,
       cwd: opts.cwd,
       kind: KIND_DIR[kind],
-    }).find((e) => e.valid && e.slug === opts.id);
+      homeDir: opts.homeDir,
+    }).filter((e) => e.valid && e.slug === opts.id);
+    const [entry, other] = found;
+    // Two valid files of one kind that declare one id: which of them `<id>` means is not for this resolution to guess.
+    if (entry !== undefined && other !== undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        `'${opts.id}' is declared by two ${kind} files (${entry.path} and ${other.path}) — rename one to disambiguate.`,
+      );
+    }
     if (entry !== undefined) {
       matches.push({ kind, path: resolve(opts.cwd, entry.path) });
     }
@@ -316,12 +519,59 @@ export function slugExists(opts: {
   cwd: string;
   kind: AuthoredKind;
   slug: string;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
 }): boolean {
   return discoverCatalog({
     projectConfigDir: opts.projectConfigDir,
     cwd: opts.cwd,
     kind: KIND_DIR[opts.kind],
+    homeDir: opts.homeDir,
   }).some((e) => e.valid && e.slug === opts.slug);
+}
+
+/**
+ * The refusal {@link assertSlugAvailable} raises for an id the project already has. It is a {@link CliError} in every respect (the code,
+ * the exit code, the words, the name), and a subclass only so a caller that must word the remedy for itself, the Home's import card,
+ * can tell the clash that `--force` answers from the one it cannot without reading the sentence.
+ */
+export class SlugClashError extends CliError {
+  /** `same-kind`: the id is already this kind's, and `--force` replaces that file. `other-kind`: it is the other kind's, and nothing replaces it. */
+  readonly clash: 'same-kind' | 'other-kind';
+  readonly kind: AuthoredKind;
+  readonly slug: string;
+
+  constructor(
+    clash: 'same-kind' | 'other-kind',
+    kind: AuthoredKind,
+    slug: string,
+    message: string,
+  ) {
+    super('invalid_invocation', message);
+    this.clash = clash;
+    this.kind = kind;
+    this.slug = slug;
+  }
+}
+
+/**
+ * The names Windows reserves for devices, with or without an extension. A file named `aux.relavium.yaml` cannot be added to git on
+ * Windows and may open the device instead, so an id that is one of them is refused as a file name everywhere (the repository is shared
+ * across platforms): by `create`, `import`, `export`'s default destination and the in-chat export alike. Microsoft's naming rules list
+ * `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9` and `LPT0`-`LPT9`.
+ */
+const WINDOWS_DEVICE_NAMES: ReadonlySet<string> = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 10 }, (_, i) => `com${String(i)}`),
+  ...Array.from({ length: 10 }, (_, i) => `lpt${String(i)}`),
+]);
+
+/** Whether `id` (a kebab id, so lower case) is a name Windows reserves for a device, and so cannot be the stem of an authored file. */
+export function isWindowsDeviceName(id: string): boolean {
+  return WINDOWS_DEVICE_NAMES.has(id);
 }
 
 /**
@@ -338,18 +588,30 @@ export function assertSlugAvailable(opts: {
   kind: AuthoredKind;
   slug: string;
   force: boolean;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
 }): void {
-  const { projectConfigDir, cwd, kind, slug, force } = opts;
-  const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
-  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug })) {
+  const { projectConfigDir, cwd, kind, slug, force, homeDir } = opts;
+  if (isWindowsDeviceName(slug)) {
     throw new CliError(
       'invalid_invocation',
+      `'${slug}' is a device name on Windows, so no file can be named after it — choose another id.`,
+    );
+  }
+  const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
+  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug, homeDir })) {
+    throw new SlugClashError(
+      'other-kind',
+      kind,
+      slug,
       `'${slug}' already exists as a ${otherKind} in this project — an id must be unique across agents and workflows; rename one.`,
     );
   }
-  if (!force && slugExists({ projectConfigDir, cwd, kind, slug })) {
-    throw new CliError(
-      'invalid_invocation',
+  if (!force && slugExists({ projectConfigDir, cwd, kind, slug, homeDir })) {
+    throw new SlugClashError(
+      'same-kind',
+      kind,
+      slug,
       `${kind} '${slug}' already exists in this project — pass --force to overwrite.`,
     );
   }

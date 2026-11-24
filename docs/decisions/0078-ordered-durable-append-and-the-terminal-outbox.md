@@ -53,6 +53,15 @@ Considered instead: a denormalized `runs.last_event_seq` column (rejected — it
 
 `InMemoryRunStore` enforces the identical guard. A reference implementation that accepts what the real store rejects makes every `packages/core` test prove nothing.
 
+> **Amended 2026-11-22 (the stale gate card, MVP-8 step 2).** The run terminal is no longer exempt from this
+> guard during a re-take window: after a gate park hands the claim back and the process re-takes it, and until
+> the store acknowledges a write under that claim, the terminal is guarded against the last sequence the process asked for at
+> its park, and a refusal whose durable head differs from that head is ownership loss rather than a store fault,
+> so it gets no terminal-outbox entry (§4). Outside that window the terminal's exemption stands. The rule and its
+> reasons are in [ADR-0079's stale gate card amendment](0079-cross-process-run-ownership-lease-and-fencing-token.md#stale-gate-card-amendment--2026-11-22).
+> `InMemoryRunStore` now also refuses a duplicate `(runId, seq)` as SQLite's unique index does, checked after
+> the guard, the fence and the terminal refusal, as SQLite's insert is last.
+
 ### 3. `reconcile()` is a first-class second write path
 
 It passes its own expected last sequence, and its repair append becomes **conditional on no terminal being present**. Without that condition §4's outbox retry and reconciliation can both append a terminal, breaking ADR-0036's exactly-one-terminal invariant. Fixing this is nearly free today — no shipping surface calls `reconcile()` — and becomes a data-loss bug the moment one does.

@@ -4,7 +4,9 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  readdirSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -229,5 +231,44 @@ describe('createCommand (2.J)', () => {
       if (!isCliError(err)) throw err;
       expect(err.message).toContain('needs an interactive terminal');
     }
+  });
+
+  describe.skipIf(process.platform === 'win32')('a catalog directory that is a link', () => {
+    let outside: string;
+    beforeEach(() => {
+      outside = mkdtempSync(join(tmpdir(), 'relavium-create-outside-'));
+    });
+    afterEach(() => {
+      rmSync(outside, { recursive: true, force: true });
+    });
+
+    it('a link that leaves the project is refused, even with --force, in fixed words, and nothing is written through it', async () => {
+      symlinkSync(outside, join(cwd, '.relavium', 'agents'));
+      const { d, out, err } = deps(scriptedPrompter(AGENT_SPEC));
+      try {
+        await createCommand({ force: true }, d);
+        expect.unreachable('a link out of the project must throw');
+      } catch (cause) {
+        if (!isCliError(cause)) throw cause;
+        expect(cause.exitCode).toBe(2);
+        expect(cause.message).toBe(
+          'The target directory is a link that leaves the project: .relavium/agents.',
+        );
+        expect(cause.message).not.toContain(outside);
+      }
+      expect(readdirSync(outside), 'nothing was written through the link').toEqual([]);
+      expect([out(), err()]).toEqual(['', '']);
+    });
+
+    it('a link that stays inside the project is followed, and the command names where the file went', async () => {
+      mkdirSync(join(cwd, '.relavium', 'shared'), { recursive: true });
+      symlinkSync(join(cwd, '.relavium', 'shared'), join(cwd, '.relavium', 'agents'));
+      const { d, out } = deps(scriptedPrompter(AGENT_SPEC));
+      expect(await createCommand({ force: true }, d)).toBe(EXIT_CODES.success);
+      expect(out()).toBe(
+        "Created agent 'code-reviewer' at .relavium/shared/code-reviewer.agent.yaml\n",
+      );
+      expect(readdirSync(join(cwd, '.relavium', 'shared'))).toEqual(['code-reviewer.agent.yaml']);
+    });
   });
 });

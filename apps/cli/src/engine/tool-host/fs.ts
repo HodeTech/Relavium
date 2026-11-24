@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type BigIntStats, type Dirent } from 'node:fs';
+import { constants, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import { lstat, mkdir, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -33,6 +33,7 @@ import {
 import { captureRequiredCreationMask } from './fs-creation-mask.js';
 import { nativeWriteAttentionFailure, runNativeStage } from './fs-native-write.js';
 import { foldPathComponent } from './fs-path-component.js';
+import { literalFailureTable, scanLiteral } from './literal-search.js';
 import {
   captureFsStageInventory,
   FsStageInventoryError,
@@ -1726,14 +1727,26 @@ const SCAN_ENTRIES = 10000;
 const SCAN_DIRS = 1000;
 const SCAN_DEPTH = 32;
 const SCAN_IGNORE_ANCESTORS = 32;
-const SCAN_FILES = 1000;
-const SCAN_BYTES = 16 * 1024 * 1024;
+// Files and bytes are hard ceilings for a whole call. The entry cap (10,000, which counts directories too) binds before
+// the file cap, so the file cap is a backstop for search. find_files keeps its own 1,000-file ceiling (FIND_FILES): the
+// wider search ceiling must not widen find, which opens every candidate (ADR-0142).
+const SCAN_FILES = 10000;
+const FIND_FILES = 1000;
+const SCAN_BYTES = 64 * 1024 * 1024;
 const SCAN_FILE_BYTES = 1024 * 1024;
 const SCAN_MATCHES = 200;
+// Units of linear work for the ignore and glob matchers. Kept apart from the literal search, so a hostile ignore file
+// cannot buy more work by raising the search ceiling (ADR-0142).
 const SCAN_WORK = 16 * 1024 * 1024;
+// Units of linear work for the literal search: UTF-16 units read by its case fold and its matcher, plus one unit per
+// line and one pattern read per file. A hard ceiling for the whole call (ADR-0142).
+const SCAN_SEARCH_WORK = 64 * 1024 * 1024;
 const IGNORE_BYTES = 64 * 1024;
 const IGNORE_RULES = 256;
 const LINE_BYTES = 2048;
+// A fixed sentence, naming no path or pattern: the pattern is the model's own, and the cause is the same for every refusal.
+const SEARCH_PATTERN_LINE_BREAK =
+  'search_files: the pattern must not contain a line break, because the search matches one line at a time';
 const IGNORE_FILES = ['.gitignore', '.relaviumignore'] as const;
 
 /** Presence is enough: nested rules are unsupported, so never read their contents or follow a link. */
@@ -1748,6 +1761,28 @@ async function hasIgnoreFile(dir: string, signal: AbortSignalLike | undefined): 
     }
   }
   return false;
+}
+
+/**
+ * The refusals of a discovery call's own arguments, before anything is resolved: a path, a glob or a pattern that is empty or over its
+ * byte and length ceiling, and a pattern with a line break. Each sentence is fixed and names neither the path nor the pattern.
+ */
+function assertDiscoveryArguments(
+  path: string,
+  glob: string | undefined,
+  search: FsSearchOpts | undefined,
+): void {
+  const fits = (value: string, limit: number): boolean =>
+    value.length > 0 && value.length <= limit && Buffer.byteLength(value, 'utf8') <= limit;
+  if (!fits(path, 4096)) throw new FsCapabilityError('discovery: invalid path');
+  if (glob !== undefined && !fits(glob, 4096))
+    throw new FsCapabilityError('discovery: invalid glob');
+  if (search !== undefined && !fits(search.pattern, 1024))
+    throw new FsCapabilityError('search_files: invalid pattern');
+  // The scan reads one line at a time, so a pattern with a line break could never match and a complete-looking result would call a
+  // literal absent that was never looked for. The tool schema refuses it first; a host called without it refuses it here (P1-8).
+  if (search !== undefined && /[\r\n]/.test(search.pattern))
+    throw new FsCapabilityError(SEARCH_PATTERN_LINE_BREAK);
 }
 
 async function discover(
@@ -1776,13 +1811,7 @@ async function discover(
 ): Promise<FsFindResult | FsSearchResult> {
   throwIfAborted(signal);
   const glob = find?.glob ?? search?.glob;
-  const fits = (value: string, limit: number): boolean =>
-    value.length > 0 && value.length <= limit && Buffer.byteLength(value, 'utf8') <= limit;
-  if (!fits(path, 4096)) throw new FsCapabilityError('discovery: invalid path');
-  if (glob !== undefined && !fits(glob, 4096))
-    throw new FsCapabilityError('discovery: invalid glob');
-  if (search !== undefined && !fits(search.pattern, 1024))
-    throw new FsCapabilityError('search_files: invalid pattern');
+  assertDiscoveryArguments(path, glob, search);
   const inScope = buildScopeChecker(config);
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   const root = await jailExisting(config, inScope, path);
@@ -1796,6 +1825,9 @@ async function discover(
     bytesScanned: number;
     skippedBinary: number;
     skippedOversize: number;
+    skippedHardLink: number;
+    skippedVanished: number;
+    skippedSymlink: number;
     unreadable: number;
     incomplete: boolean;
     limit?: FsScanLimit;
@@ -1805,12 +1837,44 @@ async function discover(
     bytesScanned: 0,
     skippedBinary: 0,
     skippedOversize: 0,
+    skippedHardLink: 0,
+    skippedVanished: 0,
+    skippedSymlink: 0,
     unreadable: 0,
     incomplete: false,
   };
+  // Two different things end up in `stats.incomplete`. A ceiling or an ignore input the walk cannot apply ends the walk (`halted`,
+  // with `limit` naming it). A skip (a file or directory it could not read, a link it did not follow, a file it never opened) only
+  // makes the result partial: the walk goes on to the rest, so one locked entry never ends the search (built-in-tools.md; PR #102).
+  let halted = false;
   const stop = (limit: FsScanLimit): void => {
+    halted = true;
     stats.incomplete = true;
     stats.limit ??= limit;
+  };
+  /**
+   * An entry the walk reached and could not read is one counted skip: a vanished entry (`ENOENT`) by that name, anything else (a
+   * permission or I/O failure) as unreadable. The caller goes on to the next entry; the verdict is set once, after the walk.
+   */
+  const skipUnread = (error: unknown): void => {
+    if (errnoCode(error) === 'ENOENT') stats.skippedVanished++;
+    else stats.unreadable++;
+  };
+  /**
+   * Counts a candidate the jail refused to open as the file that was listed, and says whether it was one. A hard-linked file is refused
+   * by the alias guard; a file that is a directory or a special file by the time it is opened was replaced after it was listed, so it
+   * counts with the ones that vanished (MISC-2). Each is a file inside the searched scope that was never read, and `incomplete` says so.
+   */
+  const skippedFileKind = (read: JailedRead): boolean => {
+    if (read.kind === 'aliased') {
+      stats.skippedHardLink++;
+      return true;
+    }
+    if (read.kind === 'special' || read.kind === 'directory') {
+      stats.skippedVanished++;
+      return true;
+    }
+    return false;
   };
   const sourceBudget = { remaining: SCAN_BYTES };
   const bodies: string[] = [];
@@ -1867,19 +1931,31 @@ async function discover(
 
     return true;
   }
-  for (const name of IGNORE_FILES) {
-    if (!(await loadIgnore(name))) break;
+  // The workspace ignore files govern the workspace: a scan of a granted root outside it applies none of their rules (matchCandidate),
+  // so a workspace ignore file that is unreadable or unsupported says nothing about that scan and must not end it.
+  if (isWithinFsRoot(workspaceRoot, root)) {
+    for (const name of IGNORE_FILES) {
+      if (!(await loadIgnore(name))) break;
+    }
   }
-  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+  /** Whether `dir` holds a nested ignore file; `undefined` when the probe itself failed, so the directory cannot be entered. */
+  const probeNestedIgnore = async (dir: string): Promise<boolean | undefined> => {
     if (relative(workspaceRoot, dir) === '') return false;
     try {
       const present = await hasIgnoreFile(dir, signal);
       throwIfAborted(signal);
-      if (!present) return false;
+      return present;
     } catch {
       throwIfAborted(signal);
-      stats.unreadable++;
+      return undefined;
     }
+  };
+  // An ancestor that cannot be probed leaves the scan unable to say what rules it inherits, so it ends the scan; a nested ignore file
+  // always does (its rules are unsupported).
+  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+    const present = await probeNestedIgnore(dir);
+    if (present === false) return false;
+    if (present === undefined) stats.unreadable++;
     stop('ignore');
     return true;
   };
@@ -1891,7 +1967,7 @@ async function discover(
     let ancestor = dirname(root);
     let inspected = 0;
     while (
-      !stats.incomplete &&
+      !halted &&
       relative(workspaceRoot, ancestor) !== '' &&
       inScope(ancestor) &&
       !isSensitivePolicyReadPath(ancestor, config.pathPolicy)
@@ -1916,10 +1992,11 @@ async function discover(
   }
   await inspectAncestors();
   const ignored = compileIgnore(...bodies);
-  let work = 0;
+  let matcherWork = 0;
+  let searchWork = 0;
   const matcherLimit = new Error('filesystem matcher work limit reached');
   const consumeMatcherWork = (): void => {
-    if (++work > SCAN_WORK) throw matcherLimit;
+    if (++matcherWork > SCAN_WORK) throw matcherLimit;
   };
   const matchesGlob = glob === undefined ? () => true : compileGlob(glob, consumeMatcherWork);
   const files: { path: string; sizeBytes: number; lastModified: string; mtimeMs: number }[] = [];
@@ -1931,32 +2008,59 @@ async function discover(
     stop('directories');
     return false;
   }
+  /** Whether a link leads to a regular file inside the scope, the one kind of link the walk reads (as that file). Never opens it. */
+  async function linkLeadsToScopedFile(link: string): Promise<boolean> {
+    try {
+      const target = await realpath(link);
+      if (!inScope(target) || isSensitivePolicyReadPath(target, config.pathPolicy)) return false;
+      return (await stat(target)).isFile();
+    } catch {
+      return false;
+    }
+  }
   async function walkDirectory(next: { dir: string; depth: number }): Promise<boolean> {
     if (!admitDirectory()) return false;
+    // A directory the walk cannot enter is one counted skip and its siblings are still walked: `true` means the walk goes on, `false`
+    // that it ended (a ceiling, or ignore rules it cannot apply).
     async function resolveDirectory(path: string): Promise<string | undefined> {
-      const resolved = await resolveInScope(path, inScope);
-      if (resolved === undefined || isSensitivePolicyReadPath(resolved, config.pathPolicy)) {
+      let resolved: string;
+      try {
+        resolved = await realpath(path);
+      } catch (error) {
+        // Queued and gone before it was entered: a vanished entry, by its errno; any other failure is one it could not read.
+        skipUnread(error);
+        return undefined;
+      }
+      if (!inScope(resolved) || isSensitivePolicyReadPath(resolved, config.pathPolicy)) {
         stats.unreadable++;
-        stats.incomplete = true;
         return undefined;
       }
       return resolved;
     }
     const resolved = await resolveDirectory(next.dir);
-    if (resolved === undefined) return false;
-    if (await checkNestedIgnore(resolved)) return false;
+    if (resolved === undefined) return true;
+    const nestedIgnore = await probeNestedIgnore(resolved);
+    if (nestedIgnore === undefined) {
+      // The probe is a `lstat` inside the directory: it fails where the directory cannot be searched, so nothing in it can be read.
+      stats.unreadable++;
+      return true;
+    }
+    if (nestedIgnore) {
+      stop('ignore');
+      return false;
+    }
     const atWorkspaceRoot = relative(workspaceRoot, resolved) === '';
     async function openDirectory(path: string) {
       try {
         return await opendir(path);
-      } catch {
-        stats.unreadable++;
-        stats.incomplete = true;
+      } catch (error) {
+        throwIfAborted(signal);
+        skipUnread(error);
         return undefined;
       }
     }
     const dir = await openDirectory(resolved);
-    if (dir === undefined) return false;
+    if (dir === undefined) return true;
     try {
       function matchCandidate(
         entry: import('node:fs').Dirent,
@@ -1966,7 +2070,7 @@ async function discover(
       ): 'stop' | 'ignored' | 'matched' | 'unmatched' {
         try {
           // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
-          work += rel.length + workspaceRel.length + 2;
+          matcherWork += rel.length + workspaceRel.length + 2;
           consumeMatcherWork();
           const ignoredCandidate =
             isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
@@ -2004,7 +2108,11 @@ async function discover(
         // An entry that vanished between the directory read and this lstat is skipped (as `listOne` does), never
         // fatal: a concurrent unlink must not fail the whole discovery call. Only ENOENT is tolerated.
         const identity = await identityIfPresent(lstat(candidate, { bigint: true }));
-        if (identity === undefined) return 'next';
+        if (identity === undefined) {
+          // Counted only when the walk would have visited it: a directory, or a file the glob matched (MISC-2).
+          if (entry.isDirectory() || match === 'matched') stats.skippedVanished++;
+          return 'next';
+        }
         stage.assertIdentity(identity);
         function queueDirectory(): 'next' | 'stop' {
           if (depth >= SCAN_DEPTH) {
@@ -2015,27 +2123,47 @@ async function discover(
           return 'next';
         }
         if (entry.isDirectory()) return queueDirectory();
-        if (match === 'unmatched') return 'next';
-        const real = await realpath(candidate).catch(() => undefined);
-        if (real === undefined) {
-          stats.unreadable++;
-          stats.incomplete = true;
-          return 'stop';
+        // A link is never descended, so what is behind it is not read: it is counted, whatever its target (a directory, a file outside
+        // the scope, a protected path, nothing), and the count does not say which. The glob is matched against the link's own name,
+        // which says nothing about the files behind a directory link, so an unmatched link is still counted unless it leads to a file
+        // in the scope (the one case the walk reads as a file); its target is never opened or pinned (P1-2, PR #102).
+        const isLink = entry.isSymbolicLink();
+        if (match === 'unmatched') {
+          if (isLink && !(await linkLeadsToScopedFile(candidate))) stats.skippedSymlink++;
+          return 'next';
         }
-        if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) return 'next';
+        let real: string;
+        try {
+          real = await realpath(candidate);
+        } catch (error) {
+          if (isLink) stats.skippedSymlink++;
+          else skipUnread(error);
+          return 'next';
+        }
+        if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) {
+          if (isLink) stats.skippedSymlink++;
+          return 'next';
+        }
         assertFsPolicyPath(config.pathPolicy, candidate, real);
         // The same vanish window, between the realpath above and the identity pin: skipped, never fatal.
         const realIdentity = await identityIfPresent(stat(real, { bigint: true }));
-        if (realIdentity === undefined) return 'next';
-        stage.assertIdentity(realIdentity);
-        const info = await stat(real).catch(() => undefined);
-        if (info === undefined) {
-          stats.unreadable++;
-          stats.incomplete = true;
-          return 'stop';
+        if (realIdentity === undefined) {
+          stats.skippedVanished++;
+          return 'next';
         }
-        if (!info.isFile()) return 'next';
-        if (stats.filesScanned >= SCAN_FILES) {
+        stage.assertIdentity(realIdentity);
+        let info: Stats;
+        try {
+          info = await stat(real);
+        } catch (error) {
+          skipUnread(error);
+          return 'next';
+        }
+        if (!info.isFile()) {
+          if (isLink) stats.skippedSymlink++;
+          return 'next';
+        }
+        if (stats.filesScanned >= (find !== undefined ? FIND_FILES : SCAN_FILES)) {
           stop('files');
           return 'stop';
         }
@@ -2059,16 +2187,10 @@ async function discover(
           } catch (error) {
             throwIfAborted(signal);
             if (error instanceof FsStageInventoryError) throw error;
-            stats.unreadable++;
-            stats.incomplete = true;
-            return 'stop';
-          }
-          if (
-            checked.kind === 'aliased' ||
-            checked.kind === 'special' ||
-            checked.kind === 'directory'
-          )
+            skipUnread(error);
             return 'next';
+          }
+          if (skippedFileKind(checked)) return 'next';
           files.push({
             path: display,
             sizeBytes: fileInfo.size,
@@ -2110,9 +2232,8 @@ async function discover(
               stop('bytes');
               return 'stop';
             }
-            stats.unreadable++;
-            stats.incomplete = true;
-            return 'stop';
+            skipUnread(error);
+            return 'next';
           } finally {
             // Failed decoding and skipped binary candidates have already consumed real I/O too.
             stats.bytesScanned = SCAN_BYTES - sourceBudget.remaining;
@@ -2122,6 +2243,7 @@ async function discover(
             return 'next';
           }
           if (result.kind === 'oversize') stats.skippedOversize++;
+          if (skippedFileKind(result)) return 'next';
           if (result.kind !== 'file') return 'next';
           let text: string;
           try {
@@ -2135,27 +2257,38 @@ async function discover(
             return 'next';
           }
           async function searchLines(text: string): Promise<'next' | 'stop'> {
-            const needle =
-              searchOptions.caseSensitive === false
-                ? foldPattern(searchOptions.pattern)
-                : searchOptions.pattern;
+            const insensitive = searchOptions.caseSensitive === false;
+            const needle = insensitive ? foldPattern(searchOptions.pattern) : searchOptions.pattern;
+            const failure = literalFailureTable(needle);
+            // The pattern is read once per file, to build its failure table; the lines never re-read it.
+            searchWork += needle.length;
             const lines = text.split('\n');
             for (let i = 0; i < lines.length; i++) {
+              throwIfAborted(signal);
               const line = lines[i] ?? '';
-              // Charge the worst-case literal comparisons across all indexOf retries, plus folding.
-              // Each retry resumes at least one folded UTF-16 unit later, so their searched spans do
-              // not cause an uncharged quadratic rescan; the needle multiplier bounds comparisons.
-              work += (line.length * 3 + 1) * (needle.length + 1);
-              if (work > SCAN_WORK) {
+              // The cheapest a line can cost is its own length and the loop's unit. A line that cannot fit even at that
+              // price is not folded: the ceiling is a hard limit, so the work it names is not done first (ADR-0142).
+              if (searchWork + line.length + 1 > SCAN_SEARCH_WORK) {
                 stop('work');
                 break;
               }
-              const at = await findLiteral(
+              const folded = insensitive ? await foldWithSpans(line, signal) : undefined;
+              const haystack = folded?.text ?? line;
+              // Charge the units each line is read in: the fold reads the line once, the matcher reads the haystack once,
+              // and one unit covers the loop. Linear in the text, so the budget bounds real work (ADR-0142). The charge is
+              // a lower bound of the reads: the ASCII test and the whole-word test read a little more, a constant factor.
+              searchWork += (folded === undefined ? 0 : line.length) + haystack.length + 1;
+              if (searchWork > SCAN_SEARCH_WORK) {
+                stop('work');
+                break;
+              }
+              const at = firstLiteralStart(
                 line,
+                haystack,
                 needle,
-                searchOptions.caseSensitive === false,
+                failure,
+                folded,
                 searchOptions.wholeWord === true,
-                signal,
               );
               if (at < 0) continue;
               matches.push({
@@ -2168,7 +2301,7 @@ async function discover(
                 break;
               }
             }
-            if (stats.incomplete) return 'stop';
+            if (halted) return 'stop';
 
             return 'next';
           }
@@ -2186,7 +2319,7 @@ async function discover(
     return true;
   }
   async function walkDirectories(): Promise<void> {
-    while (stack.length > 0 && !stats.incomplete) {
+    while (stack.length > 0 && !halted) {
       throwIfAborted(signal);
       const next = stack.pop();
       if (next === undefined) break;
@@ -2195,6 +2328,19 @@ async function discover(
   }
   await walkDirectories();
   throwIfAborted(signal);
+  // A file inside the scope that the walk reached and did not read is not an absence, whatever the walk's own ceilings said. Only a
+  // ceiling or unsupported ignore input ends the walk (`halted`), so the skips are summed here, after it: one oversized, hard-linked or
+  // unreadable entry, or one link it did not follow, must not end the search of the rest. Binary and invalid UTF-8 files stay out of
+  // this: the tool searches UTF-8 text (its description, built-in-tools.md), and counts the others.
+  if (
+    stats.skippedOversize +
+      stats.skippedHardLink +
+      stats.skippedVanished +
+      stats.skippedSymlink +
+      stats.unreadable >
+    0
+  )
+    stats.incomplete = true;
   if (find !== undefined) {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     return {
@@ -2230,13 +2376,27 @@ function searchExcerpt(line: string, at: number): { content: string; omittedByte
 function foldPattern(text: string): string {
   return Array.from(text, (part) => part.toLowerCase()).join('');
 }
+/**
+ * The folded line and, per folded unit, the source span it came from, so a match maps back to the original text.
+ * An absent map is the identity: ASCII folds one unit to one unit, so it needs no arrays (ADR-0142).
+ */
+interface FoldedLine {
+  readonly text: string;
+  readonly starts?: readonly number[];
+  readonly ends?: readonly number[];
+}
+function isAsciiText(text: string): boolean {
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) return false;
+  return true;
+}
 async function foldWithSpans(
   line: string,
-  starts: number[],
-  ends: number[],
   signal: AbortSignalLike | undefined,
-): Promise<string> {
+): Promise<FoldedLine> {
+  if (isAsciiText(line)) return { text: line.toLowerCase() };
   const chunks: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
   let source = 0;
   let foldedCount = 0;
   for (const part of line) {
@@ -2252,41 +2412,28 @@ async function foldWithSpans(
     }
     source += part.length;
   }
-  return chunks.join('');
+  return { text: chunks.join(''), starts, ends };
 }
-async function findLiteral(
+/** The source offset of the first occurrence that satisfies the word rule, or -1. Linear in the haystack (ADR-0142). */
+function firstLiteralStart(
   line: string,
+  haystack: string,
   needle: string,
-  insensitive: boolean,
+  failure: Int32Array,
+  folded: FoldedLine | undefined,
   wholeWord: boolean,
-  signal: AbortSignalLike | undefined,
-): Promise<number> {
-  let haystack = line;
-  const starts: number[] = [];
-  const ends: number[] = [];
-  if (insensitive) {
-    haystack = await foldWithSpans(line, starts, ends, signal);
-  }
-  let from = 0;
-  let attempts = 0;
-  while (from <= haystack.length) {
-    if (++attempts % 16384 === 0) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      throwIfAborted(signal);
-    }
-    const at = haystack.indexOf(needle, from);
-    if (at < 0) return -1;
-    const start = insensitive ? starts[at] : at;
-    const end = insensitive ? ends[at + needle.length - 1] : at + needle.length;
-    if (
-      start !== undefined &&
-      end !== undefined &&
-      (!wholeWord || (!wordBefore(line, start) && !wordAfter(line, end)))
-    )
-      return start;
-    from = at + 1;
-  }
-  return -1;
+): number {
+  let found = -1;
+  scanLiteral(haystack, needle, failure, (at) => {
+    const start = folded?.starts === undefined ? at : folded.starts[at];
+    const end =
+      folded?.ends === undefined ? at + needle.length : folded.ends[at + needle.length - 1];
+    if (start === undefined || end === undefined) return false;
+    if (wholeWord && (wordBefore(line, start) || wordAfter(line, end))) return false;
+    found = start;
+    return true;
+  });
+  return found;
 }
 function wordBefore(value: string, at: number): boolean {
   if (at <= 0) return false;

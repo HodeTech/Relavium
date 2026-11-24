@@ -1,4 +1,4 @@
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
+import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
 
 /**
  * The small, pure frame a sheet is drawn on ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
@@ -73,6 +73,35 @@ export function clipLine(text: string, width: number): string {
   let cut = sliceDisplayColumns(text, 0, width - 1);
   if (displayWidth(cut) > width - 1) cut = sliceDisplayColumns(text, 0, width - 2);
   return `${cut}…`;
+}
+
+/** `text` wrapped to `width` into at most `max` lines, a cut shown by `…` on the last; never an empty list. */
+export function wrappedLines(text: string, width: number, max: number): readonly string[] {
+  const wrapped = wrapWords(text, Math.max(1, width)).map((line) => line.trimEnd());
+  if (wrapped.length <= max) return wrapped;
+  const kept = wrapped.slice(0, max);
+  kept[max - 1] = clipLine(`${kept[max - 1] ?? ''}…`, width);
+  return kept;
+}
+
+/**
+ * The rule that opens a sheet and carries its title, as the card's rule carries `Approval needed`: it also separates the sheet from the
+ * conversation above. The title is clipped to leave room for the lead (`─ ` and a space) and two dashes, so the rule is never wider than
+ * `width`, and drawn strong; the dashes are dim.
+ */
+export function titleRule(title: string, width: number): SheetLine {
+  const shown = clipLine(title, Math.max(1, width - 5));
+  const lead = `─ ${shown} `;
+  const text = `${lead}${'─'.repeat(Math.max(2, width - displayWidth(lead)))}`;
+  return {
+    kind: 'rule',
+    text,
+    spans: [
+      { from: 0, to: 2, role: 'dim' },
+      { from: 2, to: 2 + shown.length, role: 'strong' },
+      { from: 2 + shown.length, to: text.length, role: 'dim' },
+    ],
+  };
 }
 
 /** The gap kept between a row's label and what flushes right. */

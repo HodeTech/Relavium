@@ -36,6 +36,15 @@ export interface ReplCommandContext {
   readonly help: () => void | Promise<void>;
   /** List the project's discovered workflows + agents (the disk catalog) as a notice (2.5.C S4). */
   readonly showWorkflows: () => void | Promise<void>;
+  /**
+   * `/agent` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5)
+   * — show the agent THIS chat is bound to, read-only: its id and name, the provider and model the session runs on, the tool grant as the
+   * definition declares it, the temperature, the reasoning effort and the head of the system prompt. The interactive hosts (the standalone
+   * chat and the in-Home chat) intercept the command and open the docked sheet before it gets here, as they do `/permissions`; this runs
+   * where there is no sheet to open (a plain, `--json` or one-shot chat) and prints the same fields as a notice. Chat-only: the landing has
+   * no session, so it answers the word itself (ADR-0140 §3) and never runs this.
+   */
+  readonly showAgent: () => void | Promise<void>;
   /** Show the session's cumulative cost as a notice (2.5.C S4; the per-model breakdown is 2.6.C). */
   /** `/cost`, and `/cost --release` — ADR-0074 §1's escape hatch, on the surface that renders the amount. */
   readonly showCost: (release?: boolean) => void | Promise<void>;
@@ -176,6 +185,16 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Scaffold the session so far to a .relavium.yaml.',
     effect: 'write',
     run: (ctx) => ctx.exportSession(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'agent',
+    label: 'Agent',
+    description: 'Show the agent this chat is bound to.',
+    // Listed before `/workflows`, whose description also says "agents": typing `agent` in the palette then selects this one first.
+    // `read`: it shows the definition the session already holds, and reads and writes nothing. Zero-arg: the dispatch rejects any token.
+    effect: 'read',
+    run: (ctx) => ctx.showAgent(),
     availableIn: ['chat'],
   },
   {
@@ -421,11 +440,80 @@ const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/**
+ * The bare Home's `/workflows` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §2, MVP-8 step 4): the tab host on its Defined tab. The chat's `/workflows` (above) is its own command and lists what the project
+ * holds; this one is the Home's and is not in any chat palette, so a line typed in a chat reaches the chat's command and nothing else.
+ */
+const HOME_WORKFLOWS_COMMAND = freezeReplCommand({
+  name: 'workflows',
+  label: 'Workflows',
+  description: 'The workflows of this project: run or export one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+/**
+ * The bare Home's `/agents` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §3, MVP-8 step 5): the tab host on its own two-tab strip, Defined and Sessions. A Home command only: a live chat has no `/agents`, so a
+ * line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
+ */
+const HOME_AGENTS_COMMAND = freezeReplCommand({
+  name: 'agents',
+  label: 'Agents',
+  description: 'The agents of this project, and its saved conversations.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 const HOME_RESUME_COMMAND = freezeReplCommand({
   name: 'resume',
   label: 'Resume session',
   description: 'Search saved conversations and continue one.',
   effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+/**
+ * Run a workflow from the bare Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): a picker
+ * over the project's workflows, the launch form and a confirmation that defaults to No. It is a Home command only: a live chat has no
+ * `/run`, so a line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
+ */
+const HOME_RUN_COMMAND = freezeReplCommand({
+  name: 'run',
+  label: 'Run workflow',
+  description: 'Pick a workflow, fill in its inputs and run it after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+/**
+ * `/import` at the bare Home ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §9): the card over `relavium import`'s own core, which writes a file only on a Yes and never overwrites. A Home command only: a live chat
+ * has no `/import` (the controller routes it, and this entry is in no chat palette).
+ */
+const HOME_IMPORT_COMMAND = freezeReplCommand({
+  name: 'import',
+  label: 'Import file',
+  description: 'Bring a YAML file into this project, after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+/**
+ * `/pricing` at the bare Home (ADR-0140 §9): the form over `relavium models pricing`'s own core, which records a price only on a Yes. A Home
+ * command only, as `/import` is.
+ */
+const HOME_PRICING_COMMAND = freezeReplCommand({
+  name: 'pricing',
+  label: 'Model pricing',
+  description: 'Set or clear your own price for a model (models pricing).',
+  effect: 'write',
   availableIn: ['home'],
   run: () => undefined,
 });
@@ -438,13 +526,19 @@ export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
 ]);
 
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
- *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
+ *  (S5, pre-chat diagnostics). The chat's own `/workflows` and `/cost` stay out of the Home set; the Home has its own `/workflows`
+ *  (the Defined tab, MVP-8 step 4), and `/cost` is chat-only. */
 export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
   HOME_INIT_COMMAND,
   HOME_PERMISSIONS_COMMAND,
   HOME_RESUME_COMMAND,
+  HOME_RUN_COMMAND,
+  HOME_WORKFLOWS_COMMAND,
+  HOME_AGENTS_COMMAND,
+  HOME_IMPORT_COMMAND,
+  HOME_PRICING_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

@@ -18,6 +18,9 @@ import {
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import { boundAgentView } from '../../chat/bound-agent-view.js';
+import { buildDefaultChatAgent } from '../../chat/default-agent.js';
+import { permissionsSheetOf } from './chat-sheet.js';
 import { SHEET_SETTLE_MS } from './permissions-sheet.js';
 import { RootApp } from './home-app.js';
 import {
@@ -1191,13 +1194,13 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     await untilTrue(() => frame().includes('HMSG59'));
     harness.stdin.write('/permissions');
     harness.stdin.write('\r');
-    await untilTrue(() => c.getSnapshot().permissionsSheet !== undefined);
+    await untilTrue(() => c.getSnapshot().chatSheet !== undefined);
     await settleFrames();
     harness.stdin.write('\x1b[5~'); // PgUp: the sheet's own page key
     await settleFrames();
     harness.stdin.write('\x1b[5~');
     await settleFrames();
-    expect(c.getSnapshot().permissionsSheet, 'the sheet is still open').toBeDefined();
+    expect(c.getSnapshot().chatSheet, 'the sheet is still open').toBeDefined();
     expect(frame(), 'the transcript did not scroll behind the sheet').toContain('HMSG59');
   });
 
@@ -1245,35 +1248,113 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     await enterChat(m.c);
     m.harness.stdin.write('/permissions');
     m.harness.stdin.write('\r');
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet !== undefined);
+    await untilTrue(() => m.c.getSnapshot().chatSheet !== undefined);
     await sleep(SHEET_SETTLE_MS + 100);
     m.setSize({ cols: 60, rows: 20 });
     m.fireResize();
     await settleFrames();
     m.harness.stdin.write('d');
     await settleFrames();
-    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
     m.setSize({ cols: 100, rows: 30 });
     m.fireResize();
     await settleFrames();
     // The `d` above was typed into a sheet that could not arm, and that counts as typing: it is refused again, and says why.
     m.harness.stdin.write('d');
     await untilTrue(() =>
-      (m.c.getSnapshot().permissionsSheet?.message?.text ?? '').startsWith(
+      (permissionsSheetOf(m.c.getSnapshot().chatSheet)?.message?.text ?? '').startsWith(
         'Typed keys are ignored',
       ),
     );
-    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
     // An arrow key says the person is choosing a row again.
     m.harness.stdin.write('\u001b[B');
     m.harness.stdin.write('\u001b[A');
     await settleFrames();
     m.harness.stdin.write('d');
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
+    await untilTrue(() => permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed === true);
   });
 });
 
-describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+describe('RootApp — the /agent sheet in the in-Home chat (ADR-0140 §3)', () => {
+  const VIEW = boundAgentView(
+    buildDefaultChatAgent('claude-opus-4-8', 'high', 'anthropic'),
+    'high',
+  );
+  const withAgent = (store: ChatStoreController): HomeChatSession => ({
+    ...makeSession(store),
+    boundAgent: () => VIEW,
+  });
+
+  it('is drawn docked in the chat with the bound agent’s fields, takes a paste away from the prompt, and closes on Esc', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const { c, harness } = mountHome(store, {
+      startChat: () => Promise.resolve(withAgent(store)),
+    });
+    await enterChat(c);
+    harness.stdin.write('/agent');
+    harness.stdin.write('\r');
+    await untilTrue(() => (harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
+    const frame = harness.lastFrame() ?? '';
+    expect(frame).toContain('claude-opus-4-8');
+    expect(frame).toContain('Provider');
+    expect(frame).toContain('anthropic');
+    expect(frame).toContain('the built-in chat agent');
+    expect(frame).toContain('Reasoning effort  high');
+    expect(frame).toContain('Esc close');
+    harness.stdin.write(bracketed('pasted words'));
+    await settleFrames();
+    expect(c.getSnapshot().input.text).toBe('');
+    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
+    harness.stdin.write('\u001b');
+    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
+  });
+
+  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`AMSG${String(i)}`);
+    const { c, harness } = mountHome(store, {
+      alternateScreen: true,
+      startChat: () => Promise.resolve(withAgent(store)),
+    });
+    await enterChat(c);
+    await untilTrue(() => (harness.lastFrame() ?? '').includes('AMSG59'));
+    harness.stdin.write('/agent');
+    harness.stdin.write('\r');
+    await untilTrue(() => c.getSnapshot().chatSheet?.kind === 'agent');
+    await settleFrames();
+    harness.stdin.write('\x1b[5~');
+    await settleFrames();
+    expect(c.getSnapshot().chatSheet?.kind, 'the sheet is still open').toBe('agent');
+    expect(harness.lastFrame() ?? '', 'the transcript did not scroll behind the sheet').toContain(
+      'AMSG59',
+    );
+  });
+
+  it('draws at the terminal’s real size: its lines fit 80 columns, it is no taller than twelve rows at 80x24, and below the floor it says so', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      size: { cols: 80, rows: 24 },
+      startChat: () => Promise.resolve(withAgent(store)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/agent');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
+    const lines = (m.harness.lastFrame() ?? '').split('\n');
+    const from = lines.findIndex((line) => line.includes('Agent · relavium-chat'));
+    const sheet = lines.slice(from);
+    expect(sheet.length).toBeLessThanOrEqual(12);
+    for (const line of sheet) expect(line.length).toBeLessThanOrEqual(80);
+    m.setSize({ cols: 80, rows: 23 });
+    m.fireResize();
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+    m.harness.stdin.write('\u001b');
+    await untilTrue(() => m.c.getSnapshot().chatSheet === undefined);
+  });
+});
+
+describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
   const homePort: PermissionsPort = {
     surface: 'project',
     load: () => ({
@@ -1290,10 +1371,15 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('permissions'));
     m.harness.stdin.write('permissions');
     m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · this project'));
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('▸ Permissions'));
+  };
+  /** The Permissions tab's sheet, while the tab host is open on it. */
+  const tabSheet = (m: MountedHome) => {
+    const screen = m.c.getSnapshot().screen;
+    return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
   };
 
-  it('is drawn under the Home from the palette: the project’s list only, no session section, and Esc closes it back to the Home', async () => {
+  it('is drawn in place of the Home from the palette: the tab strip and the project’s list only, no session section, and Esc closes it back to the Home', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
     await openFromPalette(m);
@@ -1302,19 +1388,19 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     expect(frame).toContain('› npm, 1 argument');
     expect(frame).toContain('[d] withdraw');
     expect(frame, 'the bare Home has no session list').not.toContain('This session');
-    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(frame).toContain('Defined  │  Active  │  History  │  ▸ Permissions');
+    expect(frame).toContain('←/→ tab · Tab cycle · ↑/↓ select · [d / Del] withdraw · Esc close');
     m.harness.stdin.write('\u001b');
-    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('Permissions ·'));
+    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('▸ Permissions'));
     expect(m.c.getSnapshot().mode).toBe('home');
+    expect(m.c.getSnapshot().screen).toBeUndefined();
   });
 
   it('draws at the terminal’s real width and says so below the floor, as in a chat', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
     await openFromPalette(m);
-    const rule = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .find((line) => line.includes('Permissions · this project'));
+    const rule = (m.harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('───'));
     expect(rule?.trimEnd().length, 'two columns of margin on a 100-column terminal').toBe(98);
     m.setSize({ cols: 80, rows: 23 });
     m.fireResize();
@@ -1344,9 +1430,9 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => m.c.getSnapshot().notice === long);
     m.harness.stdin.write('\x1b[6~');
     // the key went to the sheet: a page is six rows
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 6);
+    await untilTrue(() => tabSheet(m)?.cursor === 6);
     m.harness.stdin.write('\x1b[5~'); // and PgUp is the sheet's too
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 0);
+    await untilTrue(() => tabSheet(m)?.cursor === 0);
   });
 
   it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {

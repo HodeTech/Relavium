@@ -57,6 +57,7 @@ import {
   type NodeSkippedReason,
   RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
+  isAppendConflictError,
   isLeaseFencedError,
   type Retry,
   type RunDurability,
@@ -100,6 +101,7 @@ import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
 import { EffectReceiptHealth } from './effect-receipt-health.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
+import { ToolActivityTracker, type ToolActivitySnapshot } from './tool-activity.js';
 import {
   BudgetGovernor,
   CommitmentDurabilityError,
@@ -228,6 +230,26 @@ const DEFAULT_NODE_RETRY_BACKOFF_MS = 1000;
  *  exponential growth can never overflow `delayMs` past the run-event integer range (a stamp-time throw) or
  *  arm an absurd timer. A node-retry that needs a >24h wait should be a scheduled job, not a backoff. */
 const MAX_NODE_RETRY_BACKOFF_MS = 86_400_000;
+
+/**
+ * How many unresolved external effects a settling message NAMES; the rest are only counted (PR #102 review).
+ * The message used to name every one, so its size grew with the journal. A terminal is exempt from CR-32's
+ * durable-event bound on purpose (a run that cannot publish its terminal is worse than a large one,
+ * {@link measureDraft}), so nothing else bounded it — and the run-detail read refuses a stored document above
+ * `MAX_RUN_DETAIL_DOCUMENT_BYTES`, so a long list made the run's own error unreadable. Twenty names is more than
+ * a person checks by hand; the full list stays in the effect journal.
+ */
+const UNRESOLVED_EFFECTS_NAMED = 20;
+
+/** The effects a settling message names, in journal order, with `, and N more` for the ones it does not. */
+function describeUnresolvedEffects(unresolved: readonly UnresolvedEffect[]): string {
+  const named = unresolved
+    .slice(0, UNRESOLVED_EFFECTS_NAMED)
+    .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
+    .join(', ');
+  const rest = unresolved.length - UNRESOLVED_EFFECTS_NAMED;
+  return rest > 0 ? `${named}, and ${String(rest)} more` : named;
+}
 
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
@@ -621,6 +643,13 @@ class RunExecution {
   readonly #nodeDeadlineDisarm = new Map<string, () => void>();
   /** The attempt number a vertex is currently on, so an ABANDONED node logs its real attempt, not 1. */
   readonly #lastAttemptByVertex = new Map<string, number>();
+  /**
+   * The content-free tool trace of each node's current attempt (ADR-0140 §4), fed from the in-node
+   * `agent:tool_call` / `agent:tool_result` events `#nodeEmit` already delivers and attached to the node's
+   * durable terminal. In-process only: the bus events are never persisted, and nothing here changes their
+   * order, their sequence numbers or the checkpoint fold.
+   */
+  readonly #toolActivity = new ToolActivityTracker();
   /** Monotonic per-run dispatch id — see {@link #activeDispatchByVertex}. */
   #nextDispatchId = 0;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
@@ -709,6 +738,40 @@ class RunExecution {
    * was finishing. That is precisely the divergence ADR-0079 exists to prevent, reintroduced by §4 itself.
    */
   #ownership: RunOwnership = 'unclaimed';
+  /**
+   * The log head this process left behind when a gate park handed its claim back, captured by `#reclaim`
+   * when it re-takes that claim and cleared by the first write the store ACKNOWLEDGES under it. `undefined`
+   * whenever no re-taken claim is still unproven.
+   *
+   * **Why a re-taken claim needs proving (the stale gate card, ADR-0079 §4/§5).** A park deletes the lease
+   * row, so another process can resume the run, move its log on and hand the lease back in turn. Its fence
+   * is gone with its row, and this process's re-acquire then succeeds under a FRESH fence that the store
+   * accepts. Only the compare-and-append (ADR-0078 §2) can tell that the log moved — and its refusal used to
+   * read as a store fault, so this process failed the run and wrote `run:failed{internal}` (or Ctrl-C's
+   * `run:cancelled`) at a sequence the other process had used: refused by SQLite and held in the outbox for
+   * good, while the run was healthy and paused at its next gate.
+   *
+   * **The choice: classify at the write, not read in `#reclaim`.** The register offered both. A head read in
+   * `#reclaim` needs a port `RunStore` does not have (a new method breaks every store double and the SQLite
+   * store), or a full checkpoint load whose ADR-0075 strict read can fail a plain cancel, and it would be a
+   * second statement outside the write's transaction. The guarded append already compares the head INSIDE
+   * that transaction, atomically with the fence, so the only change needed is to read its refusal correctly:
+   * until a write under the re-taken claim is acknowledged, an `AppendConflictError` whose durable head is not
+   * this one means another writer moved the log, and that is ownership loss (§5) — no terminal, no outbox
+   * entry, the re-taken row released by its exact fence. A terminal is exempt from the append guard, so while
+   * this is set a terminal is guarded against this head; that is the Ctrl-C case, whose first write is the
+   * terminal. The CR-11 hand-back rule is unchanged: the claim is still handed back at every re-pause and
+   * re-taken before writing; the re-take is only trusted once a write under it lands.
+   *
+   * What is recorded is the value of `#lastAskedSequenceNumber` at the moment of the re-take, in `#reclaim`: the
+   * last sequence ASKED before the park, not the last one acknowledged (the two are equal only if every earlier
+   * write settled before the park). It is then compared against the durable head a conflict reports, rather
+   * than against the LIVE `#lastAskedSequenceNumber`, which a failed guarded ask of this process's own has
+   * already moved on. So a conflict caused by that failed ask (the log did not move; the guard is failing
+   * closed as ADR-0078 intends) keeps its ordinary store-fault handling instead of being misread as a
+   * takeover.
+   */
+  #reclaimedHead: number | undefined;
   /**
    * Builds a per-node effect journal from a run correlation (ADR-0080). Injected as a FACTORY rather than a
    * port, because the correlation differs per node and per retry attempt and only the run loop knows both.
@@ -1470,9 +1533,7 @@ class RunExecution {
         message:
           `${String(blocking.length)} external effect(s) from a prior attempt are unresolved, so this run ` +
           `cannot continue without a human: ` +
-          blocking
-            .map((b) => `${b.nodeId}/${b.identity.toolId} (${b.state}, tier ${String(b.tier)})`)
-            .join(', ') +
+          describeUnresolvedEffects(blocking) +
           `. Check the target before resolving them — resuming again re-enters this gate and stops here.`,
         retryable: false,
       },
@@ -2416,6 +2477,8 @@ class RunExecution {
         this.#nodeDispatches += 1;
         // An approved redispatch opens attempt 1 before its start append can yield to grace.
         this.#lastAttemptByVertex.set(vertex.id, 1);
+        // A fresh attempt starts a fresh tool trace (ADR-0140 §4).
+        this.#toolActivity.reset(vertex.id);
         try {
           await this.#emitDurable({
             type: 'node:started',
@@ -2997,6 +3060,8 @@ class RunExecution {
       // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
       // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
       this.#nodeDispatches += 1;
+      // The failed attempt's trace belonged to its `node:retrying`, which carries none; this one starts clean.
+      this.#toolActivity.reset(vertex.id);
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
@@ -3120,6 +3185,16 @@ class RunExecution {
           // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
           // itself; this one bounds a single node's stream, which is the unbounded case.
           whenReady: () => this.handle.whenConsumersReady(),
+          // The engine's own elapsed clock, so a tool dispatch is measured on the clock its events are stamped by.
+          elapsedMs: () => this.#elapsedMs(),
+          // The node's trace takes a call from the moment it STARTS, not from its `agent:tool_call` event (which comes only
+          // after the dispatch returns), so a call in flight when the node is cut by its deadline or abandoned after its
+          // grace window is on the terminal as an unpaired entry. The same fence as `emit`: a call announced by a
+          // dispatch that no longer owns the node is ignored, so a straggler cannot reopen a trace the terminal took.
+          onToolStart: (toolId) => {
+            if (this.#isLive(vertex.id, dispatchId))
+              this.#toolActivity.recordCall(vertex.id, toolId);
+          },
           signal: this.#abort.signal,
           attemptNumber,
           maxTokensEstimate: this.#maxTokensEstimate,
@@ -3423,7 +3498,20 @@ class RunExecution {
       ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
       // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.
       ...(attemptNumber > 1 ? { attemptNumber } : {}),
+      // The content-free tool trace of this attempt (ADR-0140 §4) — ALWAYS written, `[]` for a node that made no tool
+      // call, so absence on a log means only "written before this field existed".
+      ...this.#takeToolActivity(vertex.id),
     });
+  }
+
+  /**
+   * The node's `toolActivity` fields for its terminal event, taking (and so clearing) the attempt's trace.
+   * ALWAYS yields `toolActivity` (an empty array when the node made no tool call) and `toolActivityTruncated` only
+   * when it is above 0, so that ABSENCE of the field means only "a log from before it existed" and `[]` means "no
+   * tool calls" — a reader never has to guess which.
+   */
+  #takeToolActivity(nodeId: string): ToolActivitySnapshot {
+    return this.#toolActivity.take(nodeId);
   }
 
   /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
@@ -3471,6 +3559,8 @@ class RunExecution {
       // a billed-but-failed PAID media job folded its realized cost into the running total via cost:updated
       // (transient) — persisting it here keeps that fail-cost durable. Mirrors node:completed.
       cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+      // The content-free tool trace of the attempt that ended in this terminal failure (ADR-0140 §4).
+      ...this.#takeToolActivity(vertex.id),
     });
   }
 
@@ -4328,7 +4418,13 @@ class RunExecution {
     } catch {
       acquired = false;
     }
-    if (acquired) return true;
+    if (acquired) {
+      // The re-take is unproven until a write under it lands — see {@link #reclaimedHead}. `??=` keeps the
+      // head of an EARLIER re-take that no acknowledged write has proven yet: that is still the last head this
+      // process recorded at an earlier park, while "last asked" may have moved past it on a failed ask.
+      this.#reclaimedHead ??= this.#lastAskedSequenceNumber;
+      return true;
+    }
     this.#loseOwnership();
     return false;
   }
@@ -5085,12 +5181,28 @@ class RunExecution {
     // run-wide `cumulativeCostMicrocents` (a per-node executor cannot know it), so it is recomputed here
     // authoritatively rather than passed through.
     switch (event.type) {
+      // `agent:tool_call` passes through without being recorded here: the node's `toolActivity` takes a call when it STARTS
+      // (`ctx.onToolStart`), because this event is emitted only after the dispatch returned and is dropped once the node is no
+      // longer live — a call still running at a deadline would leave no trace (ADR-0140 §4). Counting it here too would count it twice.
       case 'agent:token':
       case 'agent:reasoning':
-      case 'agent:tool_call':
-      case 'agent:tool_result':
       case 'agent:file_patch_proposed':
+      case 'agent:tool_call':
         this.#bus.emit({ ...event, runId });
+        return;
+      // The result is what PAIRS with the call the start hook recorded (ADR-0140 §4). It is recorded AFTER the emit,
+      // so the trace holds only what was delivered, and the emit's own order is untouched. The duration is the one the
+      // turn measured around the registry's dispatch and put on the result event: the two events are emitted back to
+      // back AFTER the dispatch returned, so the engine's clock at emit time sees nothing of it (the tracker has no
+      // clock for that reason).
+      case 'agent:tool_result':
+        this.#bus.emit({ ...event, runId });
+        this.#toolActivity.recordResult(
+          event.nodeId,
+          event.toolId,
+          event.success,
+          event.durationMs,
+        );
         return;
       case 'cost:updated':
         if (event.priced === false) this.#cumulativeUnpricedCalls++;
@@ -5329,6 +5441,9 @@ class RunExecution {
         return { kind: 'refused' };
       }
       let acknowledgement: DurableAppendAcknowledgement;
+      // Read after ownership is reconciled below (a reclaim there sets the head), and kept for the catch.
+      let reclaimedHead: number | undefined;
+      let writeFence: RunFence | undefined;
       try {
         // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
         // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
@@ -5358,11 +5473,22 @@ class RunExecution {
         // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
         // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
         // The two claims are independent fields precisely so this asymmetry is expressible.
+        //
+        // **Except under an unproven re-take** ({@link #reclaimedHead}): a terminal is then guarded against
+        // the last sequence this process asked for at its park. After a park another process may have moved the log and
+        // released, and the fresh fence cannot see that; this head check is what does. Not the live
+        // `#lastAskedSequenceNumber` (a failed ask of this process's own has moved it on, and must not keep
+        // its terminal from landing) but the value `#reclaim` captured, which was the last sequence asked.
+        reclaimedHead = this.#reclaimedHead;
+        writeFence = this.#fence;
+        const headGuard = guarded ? expectedLastSequenceNumber : reclaimedHead;
         await this.#host.store.persistEvent(event, {
-          ...(guarded ? { expectedLastSequenceNumber } : {}),
-          ...(this.#fence === undefined ? {} : { fence: this.#fence }),
+          ...(headGuard === undefined ? {} : { expectedLastSequenceNumber: headGuard }),
+          ...(writeFence === undefined ? {} : { fence: writeFence }),
         });
         acknowledgement = { kind: 'persisted' };
+        // The log was where this process left it and the claim is held: the re-take is proven.
+        this.#reclaimedHead = undefined;
         if (terminal) {
           this.#lastAskedSequenceNumber = event.sequenceNumber;
           this.#terminalDurability = 'durable';
@@ -5374,8 +5500,19 @@ class RunExecution {
         // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
         // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
         // recording anything here would be a durable lie about somebody else's run.
-        if (isLeaseFencedError(writeError)) {
+        //
+        // **…and nor is a stale head under an unproven re-take** ({@link #reclaimedHead}, the stale gate
+        // card). The log moved past the last sequence this process asked for at its park, so another process resumed the
+        // run while it was parked: the same loss, discovered by the append guard because the fence was fresh.
+        // Unlike a fence refusal the lease row is THIS process's — it re-took a vacant lease — so it is handed
+        // back by its exact fence (a no-op if anyone else holds it now), or the next resume waits out a TTL.
+        const movedSincePark =
+          reclaimedHead !== undefined &&
+          isAppendConflictError(writeError) &&
+          writeError.actualLastSequenceNumber !== reclaimedHead;
+        if (isLeaseFencedError(writeError) || movedSincePark) {
           this.#loseOwnership();
+          if (movedSincePark && writeFence !== undefined) await this.#releaseLeaseRow(writeFence);
           if (terminal) return acknowledgement; // §5 again, on the race path: deliver nothing
         } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
@@ -5921,10 +6058,12 @@ export class WorkflowEngine {
    *   driven forward.
    *
    * Throws `unknown_run` when no checkpoint exists, or `run_already_active` when the run is already in
-   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}; the cross-process
-   * guarantee is bounded by the store's durable single-writer of `human_gate:resumed` per gate — a true
-   * concurrent double-resolve (two processes loading the same pending gate before either persists) is
-   * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
+   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}. Across
+   * processes it holds because the run's lease is acquired BEFORE the checkpoint is read (ADR-0079 §4): two
+   * processes cannot both load the same pending gate, so the loser is refused with `run_owned_elsewhere` before it
+   * reads or writes anything, and a stale in-memory card that answers meanwhile is refused at its re-take and ends
+   * fenced; the compare-and-append guard and the fence close the rest in the store. `stale-gate-card.e2e.test.ts`
+   * holds the winner inside that window and proves both orders (PR #102 review: P02a-1).
    */
   /**
    * Why the lease could not be taken — naming the holder and WHEN, not just "shortly".
@@ -6658,9 +6797,7 @@ export class WorkflowEngine {
           message:
             `the run was interrupted before completion with ${String(unresolved.length)} external effect(s) ` +
             'unresolved: ' +
-            unresolved
-              .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
-              .join(', ') +
+            describeUnresolvedEffects(unresolved) +
             '. Check the target before running it again.',
         };
       }

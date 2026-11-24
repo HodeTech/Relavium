@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNodeFsCapability } from './fs.js';
 
 // A file can vanish between the directory read and the per-entry probes. The windows are a few microseconds, so the
@@ -12,6 +12,8 @@ const vanishing = vi.hoisted(() => ({
   paths: new Set<string>(),
   bigintLstat: new Set<string>(),
   bigintStat: new Set<string>(),
+  /** A path whose `open` opens another path instead: the file is "replaced" by a directory or a device after it was listed. */
+  openAs: new Map<string, string>(),
   hits: 0,
   fired: [] as string[],
   code: 'ENOENT',
@@ -40,6 +42,11 @@ vi.mock('node:fs/promises', async (original) => {
         return enoent();
       }
       return native.lstat(...args);
+    },
+    open: (...args: Parameters<typeof native.open>) => {
+      const [path, ...rest] = args;
+      const replacement = typeof path === 'string' ? vanishing.openAs.get(path) : undefined;
+      return replacement === undefined ? native.open(...args) : native.open(replacement, ...rest);
     },
     stat: (...args: Parameters<typeof native.stat>) => {
       const [path, options] = args;
@@ -202,6 +209,7 @@ function resetVanishing(): void {
   vanishing.paths.clear();
   vanishing.bigintLstat.clear();
   vanishing.bigintStat.clear();
+  vanishing.openAs.clear();
   vanishing.hits = 0;
   vanishing.fired.length = 0;
   vanishing.code = 'ENOENT';
@@ -229,6 +237,96 @@ it.each(['find_files', 'search_files'] as const)(
     }
   },
 );
+
+// MISC-2 (ADR-0142): a file that vanished before it was read was never searched, and "no match" would claim it was. Each window is
+// counted, and the result says `incomplete`, whichever window it was (the survivors are still reported).
+describe('a file that vanishes before it is read is counted, and the result is partial (MISC-2)', () => {
+  const windows = [
+    ['the lstat identity probe', 'bigintLstat'],
+    ['the identity stat after realpath', 'bigintStat'],
+  ] as const;
+  it.each(windows)('search_files: %s', async (_window, probe) => {
+    await writeFile(join(root, 'kept.txt'), 'needle\n');
+    await writeFile(join(root, 'gone.txt'), 'needle\n');
+    resetVanishing();
+    vanishing[probe].add(join(root, 'gone.txt'));
+    try {
+      const result = await capability().searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+      expect(vanishing.fired).toHaveLength(1);
+      expect(result?.matches.map((match) => match.path)).toEqual(['kept.txt']);
+      expect(result?.stats).toMatchObject({ skippedVanished: 1, incomplete: true });
+      expect(result?.stats.limit).toBeUndefined();
+    } finally {
+      resetVanishing();
+    }
+  });
+
+  it('find_files counts the same window, and its list is partial too', async () => {
+    await writeFile(join(root, 'kept.txt'), 'x\n');
+    await writeFile(join(root, 'gone.txt'), 'x\n');
+    resetVanishing();
+    vanishing.bigintLstat.add(join(root, 'gone.txt'));
+    try {
+      const result = await capability().findFiles?.('.', { glob: '*.txt' });
+      expect(result?.files.map((file) => file.path)).toEqual(['kept.txt']);
+      expect(result?.stats).toMatchObject({ skippedVanished: 1, incomplete: true });
+    } finally {
+      resetVanishing();
+    }
+  });
+
+  it('does not count an entry the glob would not have searched anyway', async () => {
+    await writeFile(join(root, 'kept.txt'), 'needle\n');
+    await writeFile(join(root, 'gone.log'), 'needle\n');
+    resetVanishing();
+    vanishing.bigintLstat.add(join(root, 'gone.log'));
+    try {
+      const result = await capability().searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+      expect(vanishing.fired).toHaveLength(1);
+      expect(result?.matches.map((match) => match.path)).toEqual(['kept.txt']);
+      expect(result?.stats).toMatchObject({ skippedVanished: 0, incomplete: false });
+    } finally {
+      resetVanishing();
+    }
+  });
+
+  it('counts a directory that vanishes, whose files were never reached', async () => {
+    await mkdir(join(root, 'sub'));
+    await writeFile(join(root, 'sub', 'inside.txt'), 'needle\n');
+    await writeFile(join(root, 'kept.txt'), 'needle\n');
+    resetVanishing();
+    vanishing.bigintLstat.add(join(root, 'sub'));
+    try {
+      const result = await capability().searchFiles?.('.', { pattern: 'needle' });
+      expect(result?.matches.map((match) => match.path)).toEqual(['kept.txt']);
+      expect(result?.stats).toMatchObject({ skippedVanished: 1, incomplete: true });
+    } finally {
+      resetVanishing();
+    }
+  });
+
+  const swapped: readonly { what: string; replacement: () => string }[] = [
+    { what: 'a directory', replacement: () => join(root, 'sub') },
+    { what: 'a device', replacement: () => '/dev/null' },
+  ];
+  it.skipIf(process.platform === 'win32').each(swapped)(
+    'search_files counts a file that is $what by the time it is opened, and the result is partial',
+    async ({ replacement }) => {
+      await mkdir(join(root, 'sub'));
+      await writeFile(join(root, 'kept.txt'), 'needle\n');
+      await writeFile(join(root, 'swapped.txt'), 'needle\n');
+      resetVanishing();
+      vanishing.openAs.set(join(root, 'swapped.txt'), replacement());
+      try {
+        const result = await capability().searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+        expect(result?.matches.map((match) => match.path)).toEqual(['kept.txt']);
+        expect(result?.stats).toMatchObject({ skippedVanished: 1, incomplete: true });
+      } finally {
+        resetVanishing();
+      }
+    },
+  );
+});
 
 it('list_directory (recursive) skips an entry that vanishes at the lstat identity probe instead of failing the call', async () => {
   await mkdir(join(root, 'sub'));

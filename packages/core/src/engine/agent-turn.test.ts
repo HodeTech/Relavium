@@ -27,6 +27,7 @@ import {
   ToolPolicyError,
   ToolUnavailableError,
   UnknownToolError,
+  type ToolErrorCode,
 } from '../tools/errors.js';
 import type {
   ToolCallPart,
@@ -51,6 +52,7 @@ import {
   foldRetryable,
 } from './agent-turn.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { ToolActivityTracker } from './tool-activity.js';
 import { unwiredEffectJournal } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
@@ -1354,8 +1356,11 @@ describe('runAgentTurn — tool loop', () => {
 
     it('refuses an identical repeat of a call the user declined, without dispatching it again', async () => {
       let dispatched = 0;
+      // What the start hook and the registry saw, in the order they happened (ADR-0140 §4).
+      const trace: string[] = [];
       const registry = stubRegistry(() => {
         dispatched += 1;
+        trace.push('dispatch');
         throw new ToolDeniedByUserError('echo', 'user_rejected', 'denied', { denialClass: 'user' });
       });
       const sameCall = (id: string): StreamChunk[] => [
@@ -1385,12 +1390,22 @@ describe('runAgentTurn — tool loop', () => {
       const params = baseParams(provider, {
         registry,
         limits: { ...chatLimits, maxToolCorrections: 5 },
+        onToolStart: (toolId) => trace.push(`start:${toolId}`),
       });
       expect((await runAgentTurn(params)).text).toBe('done');
       expect(dispatched).toBe(2); // c1 and c3 only
       const texts = failedSummaries(params);
       expect(texts[1]).toContain('already declined an identical call');
       expect(texts[0]).toContain('The user declined this tool call');
+      // The start hook fires BEFORE the repeat check: the refused repeat (c2) is announced under its attributed id although
+      // the registry is never entered for it, so the node's trace shows the call the user was not asked about again.
+      expect(trace).toEqual([
+        'start:echo',
+        'dispatch', // c1
+        'start:echo', // c2: announced, then refused with no dispatch
+        'start:echo',
+        'dispatch', // c3
+      ]);
     });
 
     it('lets a model that keeps calling denied tools end the turn on the correction budget', async () => {
@@ -3895,4 +3910,616 @@ it('genuine synchronous tool work failure remains a classified turn failure with
   expect(outcome.error).toBeInstanceOf(AgentTurnError);
   expect(outcome.error).toMatchObject({ code: 'tool_failed' });
   expect(outcome.usage).toEqual({ input: 10, output: 5 });
+});
+
+/**
+ * The turn's half of the node's durable `toolActivity` (ADR-0140 §4). The tracker only turns the two streamed tool
+ * events into a durable fact, so what it can store is decided HERE: which id the events carry, and whether the result
+ * carries a duration the turn measured around the registry's dispatch.
+ */
+describe('runAgentTurn — the tool events behind toolActivity (ADR-0140 §4)', () => {
+  const callOf = (name: string, id = 'c1'): StreamChunk[] => [
+    { type: 'tool_call_start', id, name },
+    { type: 'tool_call_delta', id, argsJsonDelta: '{}' },
+    { type: 'tool_call_end', id },
+    STOP('tool_use'),
+  ];
+  const recovered: StreamChunk[] = [{ type: 'text_delta', text: 'recovered' }, STOP()];
+  const RECOVERING = { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true };
+
+  /** An `echo` tool whose dispatch runs `during` — the registry the turn dispatches through is the REAL one. */
+  const echoRegistryWith = (during: () => Promise<void> | void): ToolRegistry =>
+    createToolRegistry({
+      tools: [
+        {
+          id: 'echo',
+          source: 'builtin',
+          description: 'echo',
+          parseArgs: (args) => args,
+          llmVisibleParams: { type: 'object' },
+          policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+          dispatch: async () => {
+            await during();
+            return 'ok';
+          },
+        },
+      ],
+      host: {},
+    });
+
+  const toolEvents = (params: AgentTurnParams) => {
+    const events = eventsOf(params);
+    return {
+      calls: events.filter((event) => event.type === 'agent:tool_call'),
+      results: events.filter((event) => event.type === 'agent:tool_result'),
+    };
+  };
+
+  describe('the duration is measured around the dispatch, not between the two emits', () => {
+    it('puts the span a fake clock advanced during the dispatch on the result, exactly', async () => {
+      let clock = 5_000;
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, {
+        registry: echoRegistryWith(() => {
+          clock += 250; // the tool "takes" 250 ms of the injected clock
+        }),
+        elapsedMs: () => clock,
+      });
+      await runAgentTurn(params);
+      const { calls, results } = toolEvents(params);
+      expect(calls).toHaveLength(1);
+      expect(results).toHaveLength(1);
+      // 250, and not 0: the two events are emitted back to back AFTER the dispatch returned, so a clock read at emit
+      // time (the earlier design) would see no time pass at all.
+      expect(results[0]).toMatchObject({ toolId: 'echo', success: true, durationMs: 250 });
+    });
+
+    it('measures a tool that really waits: about its wait, never about zero', async () => {
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, {
+        registry: echoRegistryWith(() => new Promise<void>((resolve) => setTimeout(resolve, 60))),
+        elapsedMs: () => Date.now(),
+      });
+      await runAgentTurn(params);
+      const result = toolEvents(params).results[0];
+      if (result?.type !== 'agent:tool_result') throw new Error('expected a tool result');
+      // A lower bound a timer cannot undercut (it may fire ~1 ms early), and a generous upper bound for a busy machine.
+      expect(result.durationMs ?? -1).toBeGreaterThanOrEqual(50);
+      expect(result.durationMs ?? Number.POSITIVE_INFINITY).toBeLessThan(10_000);
+    });
+
+    it('gives each call of one response its OWN span', async () => {
+      let clock = 0;
+      const steps = [10, 70];
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 'a', name: 'echo' },
+          { type: 'tool_call_end', id: 'a' },
+          { type: 'tool_call_start', id: 'b', name: 'echo' },
+          { type: 'tool_call_end', id: 'b' },
+          STOP('tool_use'),
+        ],
+        recovered,
+      ]);
+      const params = baseParams(provider, {
+        registry: echoRegistryWith(() => {
+          clock += steps.shift() ?? 0;
+        }),
+        elapsedMs: () => clock,
+      });
+      await runAgentTurn(params);
+      expect(toolEvents(params).results.map((result) => result.durationMs)).toEqual([10, 70]);
+    });
+
+    it('measures a dispatch that RAN and threw: the failed result carries the span, so a failed tool is ok:false WITH a duration', async () => {
+      let clock = 0;
+      // The REAL registry: a tool that throws is wrapped into a recoverable `execution_failed` (an idempotent read), which
+      // the turn hands back to the model as a failed `agent:tool_result`. (A stub registry that returns a failed outcome
+      // exercises nothing real — the registry only ever returns success outcomes and throws for everything else.)
+      const registry = echoRegistryWith(() => {
+        clock += 40; // the tool "takes" 40 ms of the injected clock, then throws
+        throw new Error('boom');
+      });
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, { registry, elapsedMs: () => clock, limits: RECOVERING });
+      await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+      const { calls, results } = toolEvents(params);
+      expect(calls).toHaveLength(1);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ toolId: 'echo', success: false, durationMs: 40 });
+    });
+
+    it('a failed dispatch is measured on the same no-guessing rule: no clock, a throwing clock or a non-finite reading means no duration', async () => {
+      const failing = () =>
+        echoRegistryWith(() => {
+          throw new Error('boom');
+        });
+      const readings: Array<[string, Partial<AgentTurnParams>]> = [
+        ['no clock', {}],
+        [
+          'a clock that throws',
+          {
+            elapsedMs: () => {
+              throw new Error('clock fault');
+            },
+          },
+        ],
+        ['a NaN reading', { elapsedMs: () => Number.NaN }],
+      ];
+      for (const [, clockParams] of readings) {
+        const params = baseParams(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+          registry: failing(),
+          limits: RECOVERING,
+          ...clockParams,
+        });
+        await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+        const [result] = toolEvents(params).results;
+        expect(result).toMatchObject({ toolId: 'echo', success: false });
+        expect(result).not.toHaveProperty('durationMs');
+      }
+    });
+
+    it('a REFUSAL decided before the tool ran carries no duration, even with a clock: invalid arguments are not a measured failure', async () => {
+      let clock = 0;
+      const registry = createToolRegistry({
+        tools: [
+          {
+            id: 'echo',
+            source: 'builtin',
+            description: 'echo',
+            parseArgs: () => {
+              throw new Error('the arguments do not parse');
+            },
+            llmVisibleParams: { type: 'object' },
+            policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+            dispatch: () => Promise.resolve('never reached'),
+          },
+        ],
+        host: {},
+      });
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, {
+        registry,
+        elapsedMs: () => (clock += 5),
+        limits: RECOVERING,
+      });
+      await runAgentTurn(params);
+      const [result] = toolEvents(params).results;
+      expect(result).toMatchObject({ toolId: 'echo', success: false });
+      expect(result).not.toHaveProperty('durationMs');
+    });
+
+    it('records NO duration when the host supplied no clock — absent, never a guessed 0', async () => {
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, { registry: echoRegistryWith(() => undefined) });
+      await runAgentTurn(params);
+      const result = toolEvents(params).results[0];
+      expect(result).toMatchObject({ success: true });
+      expect(result).not.toHaveProperty('durationMs');
+    });
+
+    it('a clock that throws never fails the dispatch: the call succeeds and the result has no duration', async () => {
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, {
+        registry: echoRegistryWith(() => undefined),
+        elapsedMs: () => {
+          throw new Error('clock fault');
+        },
+      });
+      await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+      const result = toolEvents(params).results[0];
+      expect(result).toMatchObject({ success: true });
+      expect(result).not.toHaveProperty('durationMs');
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+      'a clock reading of %s is no reading: the result has no duration',
+      async (reading) => {
+        const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+        const params = baseParams(provider, {
+          registry: echoRegistryWith(() => undefined),
+          elapsedMs: () => reading,
+        });
+        await runAgentTurn(params);
+        expect(toolEvents(params).results[0]).not.toHaveProperty('durationMs');
+      },
+    );
+
+    describe('a clock that read once and failed once measures nothing: half a span is no span', () => {
+      /** A clock that answers each read with the next scripted value: the call reads it once before and once after. */
+      const scripted = (readings: number[]): (() => number) => {
+        let next = 0;
+        return () => readings[next++] ?? Number.NaN;
+      };
+
+      it.each([
+        ['finite at the start, NaN at the end', [5_000, Number.NaN]],
+        ['NaN at the start, finite at the end', [Number.NaN, 5_250]],
+        ['finite at the start, infinite at the end', [5_000, Number.POSITIVE_INFINITY]],
+      ])(
+        '%s: the result, and the tracker entry built from it, carry no duration',
+        async (_label, readings) => {
+          const started: string[] = [];
+          const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+          const params = baseParams(provider, {
+            registry: echoRegistryWith(() => undefined),
+            elapsedMs: scripted(readings),
+            onToolStart: (toolId) => started.push(toolId),
+          });
+          await runAgentTurn(params);
+          const [event] = toolEvents(params).results;
+          expect(event).toMatchObject({ toolId: 'echo', success: true });
+          // Not `durationMs: NaN`: a span with one missing end is not 0 and not a number at all.
+          expect(event).not.toHaveProperty('durationMs');
+          // What the node's durable trace would keep, fed by the same hook and the same event.
+          const tracker = new ToolActivityTracker();
+          for (const toolId of started) tracker.recordCall('n1', toolId);
+          for (const result of toolEvents(params).results)
+            tracker.recordResult('n1', result.toolId, result.success, result.durationMs);
+          expect(tracker.take('n1').toolActivity).toEqual([
+            { toolId: 'echo', ok: true, resultRecorded: true },
+          ]);
+        },
+      );
+
+      it.each([
+        ['finite at the start, NaN at the end', [40, Number.NaN]],
+        ['NaN at the start, finite at the end', [Number.NaN, 80]],
+      ])(
+        'a dispatch that RAN and threw is held to the same rule (%s): the failed result has no duration',
+        async (_label, readings) => {
+          const registry = echoRegistryWith(() => {
+            throw new Error('boom');
+          });
+          const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+          const params = baseParams(provider, {
+            registry,
+            elapsedMs: scripted(readings),
+            limits: RECOVERING,
+          });
+          await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+          const [event] = toolEvents(params).results;
+          expect(event).toMatchObject({ toolId: 'echo', success: false });
+          expect(event).not.toHaveProperty('durationMs');
+        },
+      );
+    });
+
+    it('clamps a clock that stepped back to 0 and truncates a fractional span to whole milliseconds', async () => {
+      const back = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      let clock = 1_000;
+      const backParams = baseParams(back, {
+        registry: echoRegistryWith(() => {
+          clock = 900;
+        }),
+        elapsedMs: () => clock,
+      });
+      await runAgentTurn(backParams);
+      expect(toolEvents(backParams).results[0]).toMatchObject({ durationMs: 0 });
+
+      const fractional = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      let fraction = 10.2;
+      const fractionParams = baseParams(fractional, {
+        registry: echoRegistryWith(() => {
+          fraction = 20.9;
+        }),
+        elapsedMs: () => fraction,
+      });
+      await runAgentTurn(fractionParams);
+      expect(toolEvents(fractionParams).results[0]).toMatchObject({ durationMs: 10 });
+    });
+
+    it('a call that never dispatched (an unknown tool) carries no duration, even with a clock', async () => {
+      let clock = 0;
+      const provider = scriptedProvider('anthropic', [callOf('no_such_tool'), recovered]);
+      const params = baseParams(provider, {
+        registry: echoRegistryWith(() => undefined),
+        elapsedMs: () => (clock += 5),
+        limits: RECOVERING,
+      });
+      await runAgentTurn(params);
+      expect(toolEvents(params).results[0]).toMatchObject({ success: false });
+      expect(toolEvents(params).results[0]).not.toHaveProperty('durationMs');
+    });
+  });
+
+  describe('every attempted call is announced as it STARTS, before any decision about it (ADR-0140 §4)', () => {
+    /** Collect what the hook is told, and where in the turn's own event order each announcement fell. */
+    const recording = () => {
+      const log: string[] = [];
+      return {
+        log,
+        started: log,
+        params: (provider: LlmProvider, overrides: Partial<AgentTurnParams> = {}) => {
+          const base = baseParams(provider, overrides);
+          const params: AgentTurnParams = {
+            ...base,
+            onToolStart: (toolId) => log.push(`start:${toolId}`),
+            emit: (event) => {
+              if (event.type === 'agent:tool_call' || event.type === 'agent:tool_result')
+                log.push(`${event.type}:${event.toolId}`);
+              base.emit(event);
+            },
+          };
+          return params;
+        },
+      };
+    };
+
+    it('announces the call BEFORE the registry is entered and before its events: start, then call, then result', async () => {
+      const seen = recording();
+      const registry = echoRegistryWith(() => {
+        seen.log.push('dispatch');
+      });
+      const params = seen.params(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+        registry,
+      });
+      await runAgentTurn(params);
+      expect(seen.log).toEqual([
+        'start:echo',
+        'dispatch',
+        'agent:tool_call:echo',
+        'agent:tool_result:echo',
+      ]);
+    });
+
+    it('announces each of several calls of one response, once each, in the model’s order', async () => {
+      const seen = recording();
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 'a', name: 'echo' },
+          { type: 'tool_call_end', id: 'a' },
+          { type: 'tool_call_start', id: 'b', name: 'echo' },
+          { type: 'tool_call_end', id: 'b' },
+          STOP('tool_use'),
+        ],
+        recovered,
+      ]);
+      const params = seen.params(provider, { registry: echoRegistryWith(() => undefined) });
+      await runAgentTurn(params);
+      expect(seen.log.filter((entry) => entry.startsWith('start:'))).toEqual([
+        'start:echo',
+        'start:echo',
+      ]);
+    });
+
+    it('announces a call the registry does not know as unknown_tool — never the model’s own text', async () => {
+      const seen = recording();
+      const hostile = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+      const params = seen.params(scriptedProvider('anthropic', [callOf(hostile), recovered]), {
+        registry: echoRegistryWith(() => undefined),
+        limits: RECOVERING,
+      });
+      await runAgentTurn(params);
+      expect(seen.started).toContain('start:unknown_tool');
+      expect(JSON.stringify(seen.log)).not.toContain(hostile);
+    });
+
+    it('announces a refused call too (invalid arguments), under the registered id, ahead of its failed result', async () => {
+      const seen = recording();
+      const registry = createToolRegistry({
+        tools: [
+          {
+            id: 'echo',
+            source: 'builtin',
+            description: 'echo',
+            parseArgs: () => {
+              throw new Error('the arguments do not parse');
+            },
+            llmVisibleParams: { type: 'object' },
+            policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+            dispatch: () => Promise.resolve('never reached'),
+          },
+        ],
+        host: {},
+      });
+      const params = seen.params(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+        registry,
+        limits: RECOVERING,
+      });
+      await runAgentTurn(params);
+      expect(seen.log).toEqual(['start:echo', 'agent:tool_call:echo', 'agent:tool_result:echo']);
+    });
+
+    it('announces a call whose failure ENDS the turn: the call is on the trace although no result is ever emitted', async () => {
+      const seen = recording();
+      const provider = scriptedProvider('anthropic', [callOf('echo')]);
+      const params = seen.params(provider, {
+        registry: echoRegistryWith(() => undefined),
+        // Registered but not granted to this node: a fatal grant refusal.
+        dispatchContext: { ...baseParams(provider).dispatchContext, grantedToolIds: new Set() },
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'tool_denied' });
+      expect(seen.log).toEqual(['start:echo', 'agent:tool_call:echo']);
+    });
+
+    it('announces a call whose tool is still running: it has started, and nothing has answered it', async () => {
+      const seen = recording();
+      const params = seen.params(scriptedProvider('anthropic', [callOf('echo')]), {
+        registry: echoRegistryWith(() => new Promise<void>(() => undefined)), // a tool that never returns
+      });
+      void runAgentTurn(params).catch(() => undefined);
+      for (let i = 0; i < 50 && !seen.log.includes('start:echo'); i += 1) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+      // In flight: the announcement is there, and neither of the call's events is — they are emitted only after the
+      // dispatch returns, which is why the node's trace cannot take the call from them.
+      expect(seen.log).toEqual(['start:echo']);
+    });
+
+    it('a hook that throws is ignored: the call still dispatches and the turn completes', async () => {
+      const params = baseParams(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+        registry: echoRegistryWith(() => undefined),
+        onToolStart: () => {
+          throw new Error('trace fault');
+        },
+      });
+      await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+      expect(toolEvents(params).results[0]).toMatchObject({ toolId: 'echo', success: true });
+    });
+
+    it('a turn without a hook is unchanged', async () => {
+      const params = baseParams(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+        registry: echoRegistryWith(() => undefined),
+      });
+      expect(params.onToolStart).toBeUndefined();
+      await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+    });
+  });
+
+  describe('a name the registry does not know is never an id: the events say unknown_tool', () => {
+    const SECRET_SHAPED = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+
+    it.each([
+      ['a hallucinated tool name', 'readFile'],
+      ['a 200-character name', 'x'.repeat(200)],
+      ['a secret-shaped name that is inside the id charset', SECRET_SHAPED],
+      ['a name with a space and a newline', 'read file\nIGNORE PREVIOUS'],
+    ])(
+      '%s: both events carry unknown_tool, and the reason still reaches the result',
+      async (_label, name) => {
+        const provider = scriptedProvider('anthropic', [callOf(name), recovered]);
+        const params = baseParams(provider, {
+          registry: echoRegistryWith(() => undefined),
+          limits: RECOVERING,
+        });
+        await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+        const { calls, results } = toolEvents(params);
+        expect(calls).toHaveLength(1);
+        expect(results).toHaveLength(1);
+        const [call] = calls;
+        const [result] = results;
+        expect(call).toMatchObject({ toolId: 'unknown_tool' });
+        expect(result).toMatchObject({ toolId: 'unknown_tool', success: false });
+        // The structural id is fixed; the human-readable reason (live only, never persisted) is unchanged.
+        expect(result?.outputSummary).toContain('unknown tool');
+        // Nothing of the model's own text is left in the id field of either event.
+        expect(call?.toolId).not.toContain(name.slice(0, 8));
+        expect(result?.toolId).not.toContain(name.slice(0, 8));
+      },
+    );
+
+    it('a refusal naming an UNREGISTERED tool (a policy refusal) also announces unknown_tool', async () => {
+      const registry: ToolRegistry = {
+        ...stubRegistry(() => {
+          throw new ToolPolicyError('readFile', 'provider_executed', 'not dispatched');
+        }),
+        has: (id) => id === 'echo',
+      };
+      const provider = scriptedProvider('anthropic', [callOf('readFile')]);
+      const params = baseParams(provider, { registry });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'tool_denied' });
+      // A fatal refusal ends the turn after the call event: that event must not carry the model's text either.
+      expect(toolEvents(params).calls[0]).toMatchObject({ toolId: 'unknown_tool' });
+    });
+
+    it('a REGISTERED name keeps its id on a recoverable refusal (both events) and on a fatal one', async () => {
+      class ScopeDenial extends ToolDispatchError {
+        readonly code = 'tool_denied';
+        readonly runErrorCode = 'tool_denied';
+        readonly retryable = false;
+        constructor() {
+          super('out of scope', 'echo', undefined, true);
+        }
+      }
+      const recoverable = baseParams(scriptedProvider('anthropic', [callOf('echo'), recovered]), {
+        registry: stubRegistry(() => {
+          throw new ScopeDenial();
+        }),
+        limits: RECOVERING,
+      });
+      await runAgentTurn(recoverable);
+      expect(toolEvents(recoverable).calls[0]).toMatchObject({ toolId: 'echo' });
+      expect(toolEvents(recoverable).results[0]).toMatchObject({ toolId: 'echo', success: false });
+
+      // Registered but not granted to this node: a fatal grant refusal, still attributed to the registered id.
+      const provider = scriptedProvider('anthropic', [callOf('echo')]);
+      const fatal = baseParams(provider, {
+        registry: echoRegistryWith(() => undefined),
+        dispatchContext: { ...baseParams(provider).dispatchContext, grantedToolIds: new Set() },
+      });
+      await expect(runAgentTurn(fatal)).rejects.toMatchObject({ code: 'tool_denied' });
+      expect(toolEvents(fatal).calls[0]).toMatchObject({ toolId: 'echo' });
+    });
+
+    describe('the id a failed dispatch is attributed to is the error’s own only when the registry knows it', () => {
+      /** A refusal that names `toolId` and carries `code`, whatever the model's call was named. */
+      class NamedRefusal extends ToolDispatchError {
+        readonly code: ToolErrorCode;
+        readonly runErrorCode = 'tool_failed';
+        readonly retryable = false;
+        constructor(code: ToolErrorCode, toolId: string | undefined) {
+          super('refused', toolId, undefined, true);
+          this.code = code;
+        }
+      }
+      const KNOWN = ['echo', 'other_registered'];
+      /** A registry that knows exactly {@link KNOWN} and refuses every dispatch with `error()`. */
+      const refusingWith = (error: () => Error): ToolRegistry => ({
+        ...stubRegistry(() => {
+          throw error();
+        }),
+        has: (id) => KNOWN.includes(id),
+      });
+
+      it.each([
+        [
+          'an id the registry does not know is never echoed, though the model called a registered tool',
+          () => new NamedRefusal('execution_failed', SECRET_SHAPED),
+          'unknown_tool',
+        ],
+        [
+          'an id the registry knows is kept, even when it is not the id the model called',
+          () => new NamedRefusal('execution_failed', 'other_registered'),
+          'other_registered',
+        ],
+        [
+          'an error that names no tool falls back to the registered name the model called',
+          () => new NamedRefusal('execution_failed', undefined),
+          'echo',
+        ],
+        [
+          'an unknown_tool failure is never attributed to a tool, even one the registry knows',
+          () => new NamedRefusal('unknown_tool', 'echo'),
+          'unknown_tool',
+        ],
+      ])('%s', async (_label, error, expectedId) => {
+        const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+        const params = baseParams(provider, {
+          registry: refusingWith(error),
+          limits: RECOVERING,
+          sessionToolCallId: () => 'session-tool:42:0',
+        });
+        const turn = await runAgentTurn(params);
+        const { calls, results } = toolEvents(params);
+        expect(calls).toHaveLength(1);
+        expect(results).toHaveLength(1);
+        // The two events and the session history record the SAME id, so the node's trace pairs them.
+        expect(calls[0]).toMatchObject({ toolId: expectedId });
+        expect(results[0]).toMatchObject({ toolId: expectedId, success: false });
+        expect(turn.toolHistory[0]?.call.name).toBe(expectedId);
+        expect(JSON.stringify([calls, results, turn.toolHistory])).not.toContain(SECRET_SHAPED);
+      });
+
+      it('a throw that is not a dispatch error names no tool, though the model called a registered one', async () => {
+        const provider = scriptedProvider('anthropic', [callOf('echo')]);
+        const params = baseParams(provider, {
+          registry: refusingWith(() => new Error('host fault')),
+        });
+        await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'internal' });
+        // The call event precedes the fatal classification, and says `unknown_tool` — never the call's own name.
+        expect(toolEvents(params).calls[0]).toMatchObject({ toolId: 'unknown_tool' });
+      });
+    });
+
+    it('a successful call keeps the registry’s own id on both events', async () => {
+      const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+      const params = baseParams(provider, { registry: echoRegistryWith(() => undefined) });
+      await runAgentTurn(params);
+      expect(toolEvents(params).calls[0]).toMatchObject({ toolId: 'echo' });
+      expect(toolEvents(params).results[0]).toMatchObject({ toolId: 'echo', success: true });
+    });
+  });
 });

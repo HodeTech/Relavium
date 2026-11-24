@@ -218,3 +218,7 @@ change.
 > Amended 2026-11-19 (Decided, implementation owed: MVP-4 step 2): §7.4's "the full interrupt keymap … Proposed, implemented in MVP-4" is [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), Accepted 2026-11-19. Its confirmation-card row (`Ctrl+C` and `Esc` cancel, never confirm) is kept.
 
 > Implemented 2026-11-19 (MVP-4 step 2): §7.4's full interrupt keymap is in, on the Home, the chat it hosts and the standalone chat alike; the confirmation-card row is unchanged. See [ADR-0115's implementation note](0115-one-interrupt-keymap-for-the-interactive-cli.md#implementation-note--2026-11-19-mvp-4-step-2).
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+§10 is answered by [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) (running a workflow and answering its gates inside the Home, and the Ctrl+C rule of its run) and [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) (the management browsers, the run drill-down and the durable record). The browsers are Home-tree commands and are not offered in the standalone chat's palette, which keeps §10's rule. §7 applies to the run view and its cards ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §3 and §4).

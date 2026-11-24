@@ -131,6 +131,14 @@ const COMMAND_ARGS_MAX_BYTES = 64 * 1024;
 const COMMAND_ARGS_MAX_COUNT = 256;
 const COMMIT_MESSAGE_MAX_BYTES = 16 * 1024;
 
+/**
+ * `search_files` reads one line at a time, so a pattern with a line break matches nothing and the result would read as a complete
+ * search that found nothing. The schema refuses it, and the argument description tells the model why (PR #102, P1-8). A fixed
+ * sentence: it names neither the field's value nor a path.
+ */
+const SEARCH_PATTERN_LINE_BREAK_MESSAGE =
+  'must be a single line: search_files matches one line at a time, so a pattern containing a line break can never match';
+
 /** UTF-16 length is a cheap lower bound; only plausible strings reach the byte measurement. */
 function utf8String(maxBytes: number, minLength = 0): z.ZodEffects<z.ZodString, string, string> {
   return z
@@ -412,11 +420,13 @@ const searchFilesTool = defineBuiltin({
     fields: [{ name: 'pattern', value: args.pattern }],
   }),
   description:
-    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit; results do not confer read-before-edit evidence.',
+    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit: when stats.incomplete is true the matches are only a partial answer, so narrow path or glob before concluding that the literal is absent. Results do not confer read-before-edit evidence.',
   args: z
     .object({
       path: utf8String(4096, 1).default('.'),
-      pattern: utf8String(1024, 1),
+      pattern: utf8String(1024, 1).refine((value) => !/[\r\n]/.test(value), {
+        message: SEARCH_PATTERN_LINE_BREAK_MESSAGE,
+      }),
       caseSensitive: z.boolean().optional(),
       wholeWord: z.boolean().optional(),
       glob: utf8String(4096, 1).optional(),
@@ -433,7 +443,7 @@ const searchFilesTool = defineBuiltin({
       pattern: {
         type: 'string',
         maxLength: 1024,
-        description: 'Nonempty literal, at most 1024 UTF-8 bytes; never a regular expression.',
+        description: String.raw`Nonempty single-line literal, at most 1024 UTF-8 bytes; never a regular expression. The search matches one line at a time, so a pattern containing a line break (\n or \r) is refused: search for one line of it.`,
       },
       caseSensitive: {
         type: 'boolean',

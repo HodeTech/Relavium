@@ -1,94 +1,38 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
-import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
-import { warnTeardown } from '../process/close-quietly.js';
-import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import type { RendererCreationOwner } from './workflow-terminal.js';
 import { WorkflowLifetime } from './workflow-lifetime.js';
-import { EgressWorkScope } from '../engine/egress-work.js';
-import { randomUUID } from 'node:crypto';
+import { finishLeg } from '../run-core/finish-leg.js';
+import { prepareRun } from '../run-core/prepare-run.js';
+import { RunResources } from '../run-core/run-resources.js';
 
-import {
-  type EffectCorrelation,
-  parseWorkflow,
-  resolveAndValidateWorkflowInputs,
-  type WorkflowDefinition,
-  type WorkflowEngine,
-  WorkflowParseError,
-} from '@relavium/core';
-import type { MediaBilledModality } from '@relavium/shared';
+import type { WorkflowDefinition, WorkflowEngine } from '@relavium/core';
 
-import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
-import { loadResolvedConfig } from '../config/load.js';
-import {
-  buildEngine as defaultBuildEngine,
-  RUN_TOOL_PROFILE,
-  type BuildEngineOptions,
-} from '../engine/build-engine.js';
-import { unwiredToolArms } from '../engine/tool-host/assemble.js';
-import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
-import {
-  createEffectJournalPort,
-  createEffectJournalStore,
-  createEffectResumePort,
-  createRunLeasePort,
-} from '@relavium/db';
-
-import { sweepCommittedEffects } from '../engine/effect-retention.js';
-import { createCliHost } from '../engine/host.js';
-import {
-  connectWorkflowMcp,
-  closePreparedMcp,
-  type StdioConsentGate,
-  surfaceMcpSkipped,
-  type WorkflowMcpRuntime,
-} from '../engine/mcp-servers.js';
-import {
-  sweepHostMediaBestEffort as defaultSweepMedia,
-  sweepMediaAtTerminal,
-} from '../engine/media-gc.js';
-import { buildMediaEngineWiring } from '../engine/media-wiring.js';
-import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import {
-  createProviderResolver,
-  neededProviderIds,
-  type ProviderResolver,
-} from '../engine/providers.js';
+import type { BuildEngineOptions } from '../engine/build-engine.js';
+import { type StdioConsentGate } from '../engine/mcp-servers.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
+import type { ProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
-import { storageBoundaryError } from '../process/owned-storage.js';
-import { sourceLabel } from '../process/source-label.js';
-import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
+import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import {
   readSecretFromStdin,
   type StdinSecretContext,
   type StdinSecretSource,
 } from '../secrets/read-secret.js';
-import { resolveWorkflowSource } from '../workflows/resolve.js';
-import {
-  assertWorkflowCatalogValid,
-  assertWorkflowToolArmsWired,
-  driveRun,
-  isTerminalOutcome,
-  outcomeToExitCode,
-} from './drive.js';
-import {
-  assertOrdinaryInputsAllowed,
-  inputAdmissionMessage,
-  parseInputArgs,
-  resolveInputs,
-} from './inputs.js';
+import { driveRun } from './drive.js';
+import { parseInputArgs } from './inputs.js';
 
 export interface RunCommandArgs {
   readonly workflow: string;
@@ -176,23 +120,6 @@ export interface RunCommandDeps {
  * Pre-run faults (config / not-found / bad input / parse) throw a typed {@link CliError} (exit 2); run-time
  * outcomes arrive as events and map to 0/1/3.
  */
-/**
- * Parse the workflow, turning an authored fault into the surface's typed exit-2 invocation error.
- *
- * A `WorkflowParseError` is the author's problem and reads as one; anything else is a bug in the engine and
- * rethrows verbatim rather than being relabelled as an invalid invocation.
- */
-function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
-  try {
-    return parseWorkflow(yaml, { source });
-  } catch (err) {
-    if (err instanceof WorkflowParseError) {
-      throw new CliError('invalid_invocation', err.message, { cause: err });
-    }
-    throw err;
-  }
-}
-
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
   const lifetime = new WorkflowLifetime(deps.invocation, deps.io, deps.subscribeSignals);
   return lifetime.execute(() => runOwned(args, deps, lifetime));
@@ -203,7 +130,6 @@ async function runOwned(
   deps: RunCommandDeps,
   lifetime: WorkflowLifetime,
 ): Promise<ExitCode> {
-  const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
   lifetime.checkpoint();
   if ((deps.global.allowFsRoots?.length ?? 0) > 0) {
     throw new CliError(
@@ -211,295 +137,44 @@ async function runOwned(
       '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
     );
   }
-  const build = deps.buildEngine ?? defaultBuildEngine;
   // Syntax faults do not need even configuration or workflow reads.
   const rawInputs = parseInputArgs(args.input);
-
-  // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery,
-  // homeDir locates `~/.relavium/history.db` (2.H).
-  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
-    cwd: deps.global.cwd,
-    configPath: deps.global.configPath,
-  });
-
-  const source = resolveWorkflowSource(args.workflow, {
-    cwd: deps.global.cwd,
-    projectConfigDir,
-    homeDir,
-  });
-
-  const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
-  assertOrdinaryInputsAllowed(def, rawInputs);
-  const secretInputs = await readRunSecrets(args, deps, def, lifetime);
-  lifetime.checkpoint();
-  const admitted = resolveAndValidateWorkflowInputs(
-    def,
-    resolveInputs(def, rawInputs, secretInputs),
-  );
-  if (!admitted.ok) {
-    // Core owns every value contract; raw names were refused above. Never attach caller payload/cause.
-    throw new CliError('invalid_invocation', inputAdmissionMessage(admitted.issues));
-  }
-  const inputs = admitted.inputs;
-  warnSnapshotLiterals(def, deps.io);
-  // Before any key is resolved: a grant this path cannot serve is refused with nothing read (2.6.A, MVP-1).
-  assertWorkflowToolArmsWired(def, unwiredToolArms(RUN_TOOL_PROFILE));
-  lifetime.checkpoint();
-  const keys = deps.resolveKeys?.();
-  lifetime.checkpoint();
-  // Preserve injected precedence, sharing the admitted run's resolver with provider preflight.
-  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
   const mayPrompt = args.secretInputsStdin !== true;
   const promptIo = mayPrompt ? deps.io : { ...deps.io, stdinIsTty: false };
 
-  // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean
-  // exit-2 invocation error (with the RELAVIUM_<PROVIDER>_API_KEY hint) BEFORE the engine starts, rather
-  // than letting it surface mid-run as run:failed (exit 1) with the hint possibly lost. Scoped to keys
-  // that are guaranteed needed (see neededProviderIds): a fallback-chain or `$ref` agent's key is
-  // conditional and still surfaces at runtime, so the pre-flight never false-fails a valid run. The key
-  // is read only to confirm presence here — never logged, stored, or rendered.
-  for (const id of neededProviderIds(def)) {
-    lifetime.checkpoint();
-    providers.keyFor(id);
-  }
-
-  // Declared here, assigned AFTER the MCP connect below — the shared `finally` closes both resources, and
-  // the store cannot be opened until the definition it must freeze is known.
-  let opened: OpenedHistory | undefined;
-  let closeHistory: (() => void) | undefined;
-  let mcpRuntime: WorkflowMcpRuntime | undefined;
-  let mcpAcknowledged = true;
-  const reportMcpCloseFailure = (_serverId: string, cause: unknown): void => {
-    mcpAcknowledged = false;
-    lifetime.cleanupFailed(cause);
-    warnTeardown(deps.io, 'MCP');
-  };
-  const mcpWork = new EgressWorkScope();
+  // What the preparation acquires — the MCP clients and the history database — is registered here and
+  // released in the `finally` below, so an early refusal and a finished run end the same way.
+  const resources = new RunResources(lifetime, deps.io);
   try {
-    // Inbound MCP (2.R Step 3b): aggregate the `mcp_servers` declared by the workflow's INLINE agents, start
-    // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
-    // workflow so each inline agent's grant includes ONLY its own servers' discovered tools. `undefined` ⇒ no
-    // inline agent declared a server. The spawned children are torn down at the run terminal (the finally).
-    mcpRuntime = await connectWorkflowMcp(def, {
-      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-      cwd: deps.global.cwd,
-      connectSignal: lifetime.signal,
-      assertAdmitting: () => lifetime.checkpoint(),
-      onFailure: (cause) => {
-        if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+    // The shared run core (`prepareRun`) resolves, admits, pre-flights, connects MCP, opens the history,
+    // builds and reconciles. The prompts are ports: the shell reads secrets from bounded stdin and asks
+    // for stdio consent with the clack prompt, exactly as before the core was shared.
+    const prepared = await prepareRun(
+      { workflow: args.workflow, rawInputs },
+      deps,
+      {
+        secretInputs: (def) => readRunSecrets(args, deps, def, lifetime),
+        consentGate: (homeDir) =>
+          deps.consentGate ??
+          createConsentGate({
+            io: promptIo,
+            global: deps.global,
+            homeDir,
+            allowedDigests: args.allowMcpStdio,
+            signal: lifetime.signal,
+            prompt: mayPrompt
+              ? (subject, options) => {
+                  const prompt = createBoundConsentPrompter(promptIo);
+                  return lifetime.terminal.runPrompt(() => prompt(subject, options));
+                }
+              : undefined,
+          }),
       },
-      onCloseError: reportMcpCloseFailure,
-      budget: lifetime.invocation.registry.budget,
-      work: mcpWork,
-      resolveSecret:
-        deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-      registrations: config.mcpServers,
-      // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
-      artifact: source.path,
-      // **Consent before any spawn** (ADR-0084 §1). Injectable so a fixture drives it without a terminal;
-      // the default is the real gate, so an un-wired test path is a decision rather than an accident.
-      consentGate:
-        deps.consentGate ??
-        createConsentGate({
-          io: promptIo,
-          global: deps.global,
-          homeDir,
-          allowedDigests: args.allowMcpStdio,
-          signal: lifetime.signal,
-          prompt: mayPrompt
-            ? (subject, options) => {
-                const prompt = createBoundConsentPrompter(promptIo);
-                return lifetime.terminal.runPrompt(() => prompt(subject, options));
-              }
-            : undefined,
-        }),
-      ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
-    });
-    lifetime.checkpoint();
-    if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
-    const runWorkflow = mcpRuntime?.workflow ?? def;
-
-    // Durable history (2.H): open `~/.relavium/history.db` and run THIS workflow on a host backed by the
-    // SQLite `RunStore`, so every node-boundary/terminal event is persisted before delivery (ADR-0036).
-    // Tests and the 2.K harness omit `openRunStore` → the in-memory default host, no DB touched. `close()`
-    // releases the connection at run end (the shared `finally`). A persist failure rejects out of the engine
-    // (ADR-0050 fatal posture).
-    //
-    // **Opened with `runWorkflow`, and opened HERE, after the MCP connect** (ADR-0083 §5). The store freezes
-    // its argument into `runs.workflow_definition_snapshot` — the graph a resume rebuilds the run from — and
-    // this used to be handed `def`, the PRE-augmentation workflow, while the engine below started on the
-    // augmented one. On every workflow with `mcp_servers` the two differed, so the durable record of "the
-    // exact graph that ran" recorded a graph that did not run. MCP-discovered tool grants are part of
-    // workflow identity: a server that returns a different tool set on resume IS a divergence, and it can
-    // only be seen if what was frozen is what was executed.
-    lifetime.checkpoint();
-    try {
-      const openRunStore = deps.openRunStore;
-      if (openRunStore !== undefined) {
-        opened = acquireNativeResource(
-          (captureClose) =>
-            openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose, {
-              io: deps.io,
-              invocation: lifetime.invocation,
-            }),
-          {
-            assertAdmitting: () => lifetime.checkpoint(),
-            captureClose: (close) => {
-              closeHistory = close;
-            },
-            cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
-            isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
-          },
-        );
-      }
-    } catch (err) {
-      // Classify only this open operation; engine/work faults retain their own boundary.
-      throw storageBoundaryError(err);
-    }
-
-    const mcpOption =
-      mcpRuntime === undefined
-        ? {}
-        : {
-            mcp: {
-              toolDefs: mcpRuntime.client.toolDefs,
-              capability: mcpRuntime.client.capability,
-            },
-          };
-
-    // Media host-wiring (2.S): when durable history is open, the SAME `~/.relavium/history.db` connection
-    // backs the `model_catalog` reader (→ `resolveMediaSurface` routing) + the `media_references` retention
-    // junction, and the host gets the global CAS root (`~/.relavium/media/`) + the project-relative `save_to`
-    // root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
-    // run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
-    // 2.5.A (ADR-0055): wire the read+write fs + process ToolHost arms, jailed to the launch cwd at the
-    // resolved `[defaults].fs_scope` (default sandboxed). The factory feeds BOTH this run path and the chat
-    // path, so a workflow's read_file / write_file / run_command / git_status work (the MCP arm merges on top).
-    const toolEnv = {
-      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-      operatorHomeDir: homeDir,
-      workspaceDir: deps.global.cwd,
-      fsScopeTier: config.fsScope ?? 'sandboxed',
-    };
-    // ADR-0071 §6: an authored `reasoning_effort` the bound model does not accept is WITHHELD — and reported. To
-    // STDERR, never stdout: `--json` owns stdout, and a warning line in the middle of the machine-readable stream
-    // would be a parse error for whatever is consuming the run. Silence was the alternative, and it is worse: the
-    // run succeeds, the knob does nothing, and the bill arrives at the provider's default tier.
-    // `onceEffortNotice`: the gate is consulted on EVERY agent-node execution, so an agent inside a `loop` would
-    // otherwise print the same warning on every iteration. A withheld tier is a standing condition, not an event.
-    const onEffortWithheld = onceEffortNotice(
-      lifetime.notification((note: string): void => deps.io.writeErr(`warning: ${note}\n`)),
+      lifetime,
+      resources,
     );
-    // ADR-0071 §K7: a turn ran on a model we could not price, so `budget.max_cost_microcents` did not apply. The
-    // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
-    const onUnpriced = lifetime.notification(
-      (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]): void =>
-        deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
-        ),
-    );
-    let engineOptions: BuildEngineOptions = {
-      providers,
-      toolEnv,
-      onEffortWithheld,
-      onUnpriced,
-      ...mcpOption,
-    };
-    let mediaCasRoot: string | undefined;
-    if (opened !== undefined) {
-      // Bound to a `const` so the closures below keep the narrowing: `opened` is a `let` assigned inside
-      // this same try, and TypeScript cannot prove it is still set by the time a callback runs.
-      const history = opened;
-      const wiring = buildMediaEngineWiring(
-        history.db,
-        homeDir,
-        deps.global.cwd,
-        config,
-        lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
-      );
-      mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
-      // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
-      // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
-      // (drive.ts), so a fresh run and a resume reject consistently.
-      // Validated against `def`, not `runWorkflow`, and that is still correct: MCP augmentation rewrites only
-      // each inline agent's `tools` grant, which this check does not read — so the verdict is identical
-      // either way. Said here because the sentence that used to carry it covered the store too, and the store
-      // moved to `runWorkflow` a few lines up.
-      assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
-      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
-      // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
-      // realized cost (the agent node). Only wired on this durable-history branch: the in-memory unit/harness
-      // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing). Non-fatal:
-      // a corrupt provider/catalog row degrades to an empty overlay, never failing the run over a pricing read.
-      const resolvePrice = readUserPricingOverlay(history.db);
-      engineOptions = {
-        providers,
-        toolEnv,
-        onEffortWithheld,
-        onUnpriced,
-        // The durable effect journal (ADR-0080), built per node from the run correlation the engine supplies.
-        // A FACTORY because the correlation differs per node and per retry attempt, and only the run loop
-        // knows both — the same reason the realized-cost ledger is threaded this way.
-        effectJournal: (correlation: EffectCorrelation) =>
-          createEffectJournalPort(
-            createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
-            correlation,
-            { providerAttempt: 1, toolCallId: 'run' },
-          ),
-        // …and its READ half. `relavium run` reaches the gate through its own budget-approval resume, so a
-        // write-only wiring here would record effects it could never enforce.
-        effectResume: createEffectResumePort(
-          createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
-        ),
-        host: createCliHost(history.store, {
-          operatorHomeDir: homeDir,
-          media: wiring.media,
-          // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
-          // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
-          // reference the host defaults to survives nothing, which is fatal in a one-shot CLI process.
-          terminalOutboxPath: history.terminalOutboxPath,
-          // ADR-0079: the DURABLE lease, built from the same store the run persists to — the in-memory
-          // reference the host defaults to guards nothing across processes, which is the whole point here.
-          runLeases: createRunLeasePort(history.store),
-        }),
-        resolveMediaSurface: wiring.resolveMediaSurface,
-        ...(wiring.maxTokensEstimate === undefined
-          ? {}
-          : { maxTokensEstimate: wiring.maxTokensEstimate }),
-        ...(wiring.mediaCostEstimate === undefined
-          ? {}
-          : { mediaCostEstimate: wiring.mediaCostEstimate }),
-        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        ...mcpOption,
-      };
-    }
-    lifetime.checkpoint();
-    const engine = await build(engineOptions);
-    lifetime.adoptEngine(engine);
-    lifetime.checkpoint();
-    // **Reconcile before starting (ADR-0078 §4/§5, ADR-0079 §7; 2.6.G liveness).** This is "the next
-    // `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for: `reconcile()`
-    // first drains the terminal outbox (`~/.relavium/terminal-outbox.ndjson`), then settles every run a dead
-    // process left `running` as `run:failed` (`effect_needs_attention` for an unresolved external effect, else
-    // `budget_exceeded` after a recorded budget rejection, else `internal`). It leaves alone a run parked at a
-    // gate, a run younger than one lease TTL and a run whose lease is live — another process is executing it. Best-effort — a run that cannot start because an unrelated run could not be repaired
-    // would be the wrong trade.
-    await engine.reconcile().catch(() => undefined);
-    // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
-    // graph are one thing rather than two that happen to be close.
-    // `toolGrantsFinal`: the MCP servers were connected and the workflow rewritten above, so every inline
-    // agent's `tools` already includes what its servers discovered. That makes the plan-build narrowing
-    // check correct here (ADR-0094) — a node listing a tool its agent lacks is refused before the run id
-    // exists, rather than partway through, after upstream nodes have spent money.
-    lifetime.checkpoint();
-    const handle = engine.start({
-      workflow: runWorkflow,
-      eventConsumption: 'iterated',
-      inputs,
-      planOptions: { toolGrantsFinal: true },
-    });
-
-    lifetime.adoptHandle(handle);
+    const { engine, history } = prepared;
+    const handle = prepared.start();
 
     // Hand the live run and the already-registered command lifetime to the shared driver (2.G). It owns
     // the primary event loop and the reserved renderer lifecycle (output mode per
@@ -520,93 +195,29 @@ async function runOwned(
       json: deps.global.json,
     });
 
-    const departure = await handle.depart();
-    if (departure.kind === 'continue')
-      throw new CliError('internal', 'run departure was not acknowledged');
-    const exitCode = outcomeToExitCode(
+    // The shared epilogue (`finishLeg`): the departure, the exit code, the retention passes and the line a
+    // taken-over run says. This is a `start` leg, so a takeover is said on stderr after the sweeps.
+    return await finishLeg({
+      leg: 'start',
+      runId: handle.runId,
+      lifetime,
+      io: deps.io,
+      json: deps.global.json,
+      handle,
       outcome,
-      handle.durability(),
-      handle.terminalError(),
-      departure,
-      false,
-    );
-
-    // Both retention passes are optional: do not start new maintenance after the original deadline.
-    // Already-entered work and mandatory engine/input/MCP/database joins retain their own barriers.
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
-    // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
-    // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
-    // sweepMediaAtTerminal for the guard + the never-fail-the-run swallow.
-    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
-    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
-    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
-    // survive precisely because its run is over.
-    // `opened` is undefined for an in-memory embedding/test path, which has no journal to sweep.
-    if (
-      isTerminalOutcome(outcome) &&
-      opened !== undefined &&
-      lifetime.invocation.registry.budget.remainingMs() !== 0
-    ) {
-      sweepCommittedEffects(deps.io, opened.db, handle.runId, lifetime.effectNoticeOwner);
-    }
-    await sweepMediaAtTerminal({
-      sweep: deps.sweepMedia ?? defaultSweepMedia,
-      isTerminal: isTerminalOutcome(outcome),
-      db: opened?.db,
-      casRoot: mediaCasRoot,
-      currentRunId: handle.runId,
-      graceMs: config.mediaGcGraceMs,
-      budget: lifetime.invocation.registry.budget,
+      db: history?.db,
+      mediaCasRoot: prepared.mediaCasRoot,
+      mediaGcGraceMs: prepared.mediaGcGraceMs,
+      sweepMedia: deps.sweepMedia ?? defaultSweepMedia,
     });
-
-    // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
-    // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
-    // Off the HANDLE, not a `subscribe()` — see the note in `gate.ts`. `start()`'s ordering happens to be
-    // safe for a subscriber, but the two surfaces must not answer this differently.
-    // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
-    // final summary falls through to a bare "run ended" and the user is left with an exit code and no
-    // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`
-    // hitting the same takeover deserves the same sentence. stderr, so `--json` stdout stays a clean stream.
-    if (exitCode === EXIT_CODES.runOwnedElsewhere) {
-      deps.io.writeErr(
-        `run ${handle.runId} was taken over by another process; this one stopped without recording an outcome — read \`relavium logs ${handle.runId}\` for what actually happened\n`,
-      );
-    }
-    return exitCode;
   } catch (cause) {
     // Record before an entered MCP/DB cleanup tail can hold the rejection from execute().
     if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
     throw cause;
   } finally {
-    // Cleanup is joined directly, never via a registry promise that depends on this finally.
-    // Neither cancellation nor a deadline certifies the engine/MCP/DB or terminal released.
-    try {
-      if (mcpRuntime !== undefined) {
-        await closePreparedMcp(
-          mcpRuntime.client,
-          reportMcpCloseFailure,
-          lifetime.invocation.registry.budget,
-        );
-      }
-    } catch (cause) {
-      mcpAcknowledged = false;
-      lifetime.cleanupFailed(cause);
-      warnTeardown(deps.io, 'MCP');
-    }
-    mcpWork.seal();
-    try {
-      await mcpWork.done;
-    } catch (cause) {
-      mcpAcknowledged = false;
-      lifetime.cleanupFailed(cause);
-    }
-    if (!mcpAcknowledged) await new Promise<never>(() => {});
-    try {
-      closeHistory?.();
-    } catch (cause) {
-      lifetime.cleanupFailed(storageBoundaryError(cause));
-      warnTeardown(deps.io, 'history database');
-    }
+    // An unacknowledged MCP release keeps the process alive for its exit authority: the database stays open.
+    if (!(await resources.releaseMcp())) await new Promise<never>(() => {});
+    resources.closeHistoryDb();
   }
 }
 

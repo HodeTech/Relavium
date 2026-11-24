@@ -1,6 +1,7 @@
 import type { DOMElement } from 'ink';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { reduceEditorMotion, type ChatKey } from './chat-input.js';
+import { selectPageRows } from './native-select-window.js';
 import {
   createMeasuredFrameAcknowledgement,
   fitsTerminalBounds as fitsBounds,
@@ -53,7 +54,9 @@ export function createNativePromptAcknowledgement(
     a.note === b.note &&
     a.options === b.options &&
     a.selected === b.selected &&
-    a.error === b.error;
+    a.error === b.error &&
+    a.escape === b.escape &&
+    a.details === b.details;
   const samePickerPrompt = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
     a.active &&
     b.active &&
@@ -124,6 +127,7 @@ export function createNativePromptAcknowledgement(
     );
   };
   ui.bindVisibility(visible);
+  ui.bindPageRows(() => selectPageRows(ui.getSnapshot(), getSize()));
   return {
     invalidate,
     visible,
@@ -142,8 +146,18 @@ export function createNativePromptAcknowledgement(
         return false;
       return sharedFrame.commit(snapshot, node, flush, () => {
         if (disposed || currentEpoch !== epoch) return;
+        const prior = observed;
         observed = { snapshot, size, epoch: currentEpoch, node };
         pickerEditor = snapshot.kind === 'picker' ? observed : undefined;
+        // Every render commits again; only a frame that was not already acknowledged is a NEW one the person has had no time to
+        // read (a card's dwell restarts for it, and only for it).
+        if (
+          prior?.snapshot !== snapshot ||
+          prior.epoch !== currentEpoch ||
+          prior.node !== node ||
+          !sameSize(prior.size, size)
+        )
+          ui.shown(snapshot);
         notify();
       });
     },
@@ -187,6 +201,7 @@ export function createNativePromptAcknowledgement(
       disposed = true;
       sharedFrame.dispose();
       ui.bindVisibility(undefined);
+      ui.bindPageRows(undefined);
       unsubscribe();
       notify();
       listeners.clear();

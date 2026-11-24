@@ -307,3 +307,11 @@ The keymap is `apps/cli/src/render/tui/interrupt-keymap.ts`, a pure reducer over
 - **§1, beneath the table**: a Home draft is lost on the second press (the decision stands; the reasoning "nothing to lose" did not hold, and the reference now says so). A chat from a draft takes three presses.
 - **Alternatives, "Leave the Home on a single press"**: the same correction.
 - **§4**: the first-SIGINT test it called unpinned exists; the Home's SIGINT exit is `130` and a chat's is `4`.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+§1 gains the run rows of [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §5: a running leg takes two presses (the first arms, the second cancels), and a run view with no leg executing closes on one press and arms nothing. The `Ctrl+D` row narrows: while a leg executes, `Ctrl+D` on an empty prompt opens a confirmation card instead of exiting. §4's 'out of scope' sentence for a run hosted in the Home is answered by ADR-0139 §5.
+
+### Amendment note — 2026-11-24 (PR #102 review)
+
+§2's last sentence says the input guards (dwell, quiet gap, typeahead window, lockout) gate affirmative answers only and "a rejection is never delayed". That holds for what §2 is about, a pending **tool approval**, where the rejection resolves synchronously and ahead of every guard. It does not hold for the Home's **human gate**: there `Ctrl+N` rejects the gate, and a `rejected` decision **continues the run** (the author routes on it, [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §4), so the card holds it to the same lockout as an approval (the maintainer's ruling of 2026-11-23, recorded in ADR-0139's last note). `Esc` and `Ctrl+C` on that card still decide nothing and are never delayed, and a rejection that only denies a tool call is still never delayed. The decision of §2 stands; ADR-0139 amends this section, which its `Amends` line (§1 and §4) does not list.

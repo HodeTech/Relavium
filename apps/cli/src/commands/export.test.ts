@@ -36,9 +36,12 @@ mcp_servers:
 
 describe('exportCommand (2.J)', () => {
   let cwd: string;
+  /** A temporary operator home: the path rules read it, so no test can reach the real one. */
+  let homeDir: string;
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), 'relavium-export-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'relavium-export-home-'));
     mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
     mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'), WORKFLOW);
@@ -46,6 +49,7 @@ describe('exportCommand (2.J)', () => {
   });
   afterEach(() => {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   function deps(json = false): { d: ExportCommandDeps; out: () => string } {
@@ -57,7 +61,7 @@ describe('exportCommand (2.J)', () => {
       configPath: undefined,
       verbosity: 'normal',
     };
-    return { d: { io, global }, out };
+    return { d: { io, global, homeDir }, out };
   }
 
   it('exports a workflow by id to <id>.relavium.yaml in cwd, re-importable + comment-free', () => {
@@ -149,6 +153,22 @@ describe('exportCommand (2.J)', () => {
       if (!isCliError(err)) throw err;
       expect(err.message).toContain('names both a workflow and an agent');
     }
+  });
+
+  it('rejects an id that two valid workflow files declare, naming both paths, and exports neither', () => {
+    writeFileSync(join(cwd, '.relavium', 'workflows', 'code-review-copy.relavium.yaml'), WORKFLOW);
+    const { d } = deps();
+    try {
+      exportCommand({ id: 'code-review', force: false }, d);
+      expect.unreachable('an ambiguous id must throw');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('declared by two workflow files');
+      expect(err.message).toContain('code-review.relavium.yaml');
+      expect(err.message).toContain('code-review-copy.relavium.yaml');
+    }
+    expect(existsSync(join(cwd, 'code-review.relavium.yaml'))).toBe(false);
   });
 
   it('refuses to overwrite an existing target without --force, then overwrites WITH it', () => {

@@ -123,16 +123,17 @@ it('searches literals and applies root ignore rules and confidentiality', async 
 it.each([0, 255])(
   'charges late binary byte %i against the search read budget',
   async (lastByte) => {
+    // The search reads at most 64 MiB, so the 65th one-megabyte file is refused before it is read (ADR-0142).
     const content = Buffer.alloc(1024 * 1024, 97);
     content[content.length - 1] = lastByte;
     await Promise.all(
-      Array.from({ length: 20 }, (_, i) => writeFile(join(root, `candidate-${i}.txt`), content)),
+      Array.from({ length: 66 }, (_, i) => writeFile(join(root, `candidate-${i}.txt`), content)),
     );
     const result = await capability().searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
     expect(result?.matches).toEqual([]);
     expect(result?.stats).toMatchObject({
-      bytesScanned: 16 * 1024 * 1024,
-      skippedBinary: 16,
+      bytesScanned: 64 * 1024 * 1024,
+      skippedBinary: 64,
       unreadable: 0,
       incomplete: true,
       limit: 'bytes',
@@ -511,6 +512,18 @@ it('checks insensitive whole-word boundaries and excerpt position against origin
   expect(result?.matches[0]?.content).toContain('Needle');
 });
 
+it('maps a folded match back to its source span after a character that folds to two units', async () => {
+  // U+0130 lowercases to two UTF-16 units, so every later folded offset is shifted. A match that is only found
+  // through the mapping must still be found, and a whole-word rule must judge the source characters (ADR-0142).
+  await writeFile(join(root, 'dotted'), 'İstanbul needle\nİİ needle\n');
+  const result = await capability().searchFiles?.('.', {
+    pattern: 'needle',
+    caseSensitive: false,
+    wholeWord: true,
+  });
+  expect(result?.matches.map((match) => match.line)).toEqual([1, 2]);
+});
+
 it('visits a thousand ordinary files with a realistic root ignore file', async () => {
   const rules = Array.from({ length: 50 }, (_, i) => `ignored-directory-${i}/`).join('\n');
   await writeFile(join(root, '.gitignore'), rules);
@@ -520,16 +533,62 @@ it('visits a thousand ordinary files with a realistic root ignore file', async (
   const result = await capability().findFiles?.('.', { glob: '*.nomatch' });
   expect(result?.stats.entriesVisited).toBe(1001);
   expect(result?.stats.incomplete).toBe(false);
-});
+}, 30_000);
 
-it('bounds adversarial matcher work and repeated non-word matches', async () => {
+it('keeps find_files at its own 1,000-file ceiling, even though the search ceiling is wider', async () => {
+  // find counts each matching candidate and opens it, even when it is a hard link that is then skipped. Only the
+  // file ceiling stops such a walk, so the search ceiling must not widen it (ADR-0142).
+  await writeFile(join(root, 'target.txt'), 'x');
+  await Promise.all(
+    Array.from({ length: 1000 }, (_, i) =>
+      link(join(root, 'target.txt'), join(root, `alias-${i}.txt`)),
+    ),
+  );
+  const result = await capability().findFiles?.('.', { glob: '*.txt' });
+  expect(result?.files).toEqual([]);
+  expect(result?.stats).toMatchObject({ incomplete: true, limit: 'files', filesScanned: 1000 });
+  // A thousand hard links are a thousand file-system calls, and a Windows runner took 5.7 s for them (the default limit is 5 s).
+}, 30_000);
+
+it('reads a long adversarial line once, and rejects every non-word occurrence without a rescan', async () => {
+  // Every occurrence of the pattern is inside a word, so each is a rejected whole-word match (ADR-0142).
   await writeFile(join(root, 'long'), `${'x'.repeat(200000)}!`);
   const fs = capability();
   const bounded = await fs.searchFiles?.('.', { pattern: 'x'.repeat(100), wholeWord: true });
-  expect(bounded?.stats).toMatchObject({ incomplete: true, limit: 'work' });
+  expect(bounded?.matches).toEqual([]);
+  expect(bounded?.stats.incomplete).toBe(false);
   const repeated = await fs.searchFiles?.('.', { pattern: 'x', wholeWord: true });
   expect(repeated?.matches).toEqual([]);
   expect(repeated?.stats.incomplete).toBe(false);
+});
+
+it('scans several megabytes of ordinary text without reaching the work ceiling', async () => {
+  // Case-sensitive: one unit per UTF-16 unit read, so 4 MiB costs about 4 Mi units, far below the 64 Mi search ceiling.
+  const chunk = `${'ordinary text line\n'.repeat(Math.floor((1024 * 1024) / 20))}`;
+  await Promise.all(
+    Array.from({ length: 4 }, (_, i) => writeFile(join(root, `part-${i}.txt`), chunk)),
+  );
+  const result = await capability().searchFiles?.('.', { pattern: 'absent needle' });
+  expect(result?.stats).toMatchObject({ filesScanned: 4, incomplete: false });
+  expect(result?.stats.bytesScanned).toBe(4 * chunk.length);
+});
+
+it('charges case folding and matching, and stops at the work ceiling', async () => {
+  // Each 18-unit line is read by the fold (18) and by the matcher (18), plus one unit of loop overhead. The 13-unit
+  // pattern is read once per file, to build its failure table. The charge therefore names the file in which the
+  // ceiling is first exceeded, exactly (ADR-0142).
+  const lines = Math.floor((1024 * 1024) / 20);
+  const chunk = `${'ORDINARY text line\n'.repeat(lines)}`;
+  await Promise.all(
+    Array.from({ length: 40 }, (_, i) => writeFile(join(root, `part-${i}.txt`), chunk)),
+  );
+  const pattern = 'absent needle';
+  const perLine = 18 + 18 + 1;
+  const perFile = pattern.length + lines * perLine + 1; // the final empty line costs its one unit
+  const expectedFiles = Math.floor((64 * 1024 * 1024) / perFile) + 1;
+  const result = await capability().searchFiles?.('.', { pattern, caseSensitive: false });
+  expect(result?.stats).toMatchObject({ incomplete: true, limit: 'work' });
+  expect(result?.stats.filesScanned).toBe(expectedFiles);
 });
 
 it('reports an unfinished depth-limited list without claiming the result cap was reached', async () => {

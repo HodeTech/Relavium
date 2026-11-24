@@ -12,6 +12,7 @@ import {
   type CommandGrantStore,
 } from '../permissions/command-grants.js';
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
@@ -112,6 +113,7 @@ import {
   type BuiltResumedChatSession,
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
+import { faultForTranscript } from '../config/config-error-text.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
 import { findProjectConfigDir } from '../config/paths.js';
 import {
@@ -178,11 +180,12 @@ import {
   sanitizeInline,
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
+import { agentNotice } from '../render/tui/agent-sheet.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
-import { stringifyJsonLine } from '../render/sanitize.js';
+import { sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import {
   createEffectJournalPort,
   createEffectJournalStore,
@@ -315,6 +318,10 @@ export interface ChatDriveContext {
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
    *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
+  /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): a typed (or palette-selected) bare `/agent` opens the docked sheet over it. Present on an interactive (TTY, non-`--json`) driver
+   *  only; absent ⇒ `/agent` dispatches and prints the same fields as a notice. */
+  readonly boundAgent?: () => BoundAgentView;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -1782,6 +1789,10 @@ export interface ChatLineHandler extends ChatModeControl {
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
    *  present on an interactive session only, where there is someone to ask and a store to read. */
   readonly permissions: PermissionsPort | undefined;
+  /** The agent this session is bound to, as the `/agent` sheet and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): read from the definition the session holds, never from a file, with the reasoning tier the session is using now; built afresh
+   *  on every call. */
+  readonly boundAgent: () => BoundAgentView;
 }
 
 /**
@@ -1863,6 +1874,18 @@ export function openCommandGrants(
   });
 }
 
+/** The text of an `/export` fault: the person-facing message when a work owner tracks the session, else the thrown error's own message. */
+function exportFailureText(shown: unknown, tracked: boolean): string {
+  if (tracked) return toUserFacing(shown).message;
+  return shown instanceof Error ? shown.message : String(shown);
+}
+
+/** Why `/workflows` could not list, in the fault's own sanitized words, its code when it has none, and a fixed sentence for anything else. */
+function workflowListFailureReason(shown: unknown): string {
+  if (!(shown instanceof CliError)) return 'unexpected error';
+  return shown.message === '' ? shown.code : sanitizeUntrustedInline(shown.message);
+}
+
 /**
  * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
  * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
@@ -1889,6 +1912,16 @@ export function createChatLineHandler(
     loadResolvedConfig({
       cwd: deps.global.cwd,
       configPath: deps.global.configPath,
+    });
+  /**
+   * A fault as this handler's output may draw it (RUNCORE-3): a broken config file is named from the project or `~`, never by its
+   * absolute path, which would ride the transcript (a screen share, a screenshot, a pasted log). The fault itself, which the work owner
+   * and the shell's own stderr message still receive, is unchanged.
+   */
+  const faultToShow = (fault: unknown): unknown =>
+    faultForTranscript(fault, {
+      cwd: deps.global.cwd,
+      homeDir: wiring.startingModes?.homeDir ?? built.operatorHomeDir,
     });
   const workOwner = built.workOwner;
   store.setMemoryPolicy(built.session.memoryPolicy);
@@ -1955,6 +1988,18 @@ export function createChatLineHandler(
     ...(workOwner === undefined ? {} : { onFailure: workOwner.failure }),
   });
 
+  // The bound agent as `/agent` shows it (ADR-0140 §3): the definition THIS session holds (a reseat builds a new session over the swapped
+  // copy, so it is the provider and model the chat runs on now), scrubbed by the `/agents` detail's own builder, and the reasoning tier the
+  // session is using NOW, which is the footer's (`store.getSnapshot().reasoningEffort`): `/effort` changes it on the session and never on
+  // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows. The tools this chat's host does not
+  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the sheet marks a
+  // declared tool that the model is never offered and names the file the person chose.
+  const boundAgent = (): BoundAgentView =>
+    boundAgentView(built.agent, store.getSnapshot().reasoningEffort, {
+      wiredTools: built.wiredTools,
+      sourceLabel: built.agentSourceLabel,
+    });
+
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
   const replCtx: ReplCommandContext = {
@@ -2003,13 +2048,8 @@ export function createChatLineHandler(
       } catch (err) {
         workOwner?.failure(err);
         if (noticesStopped()) return;
-        const message =
-          workOwner === undefined
-            ? err instanceof Error
-              ? err.message
-              : String(err)
-            : toUserFacing(err).message;
-        emitOutput(`export failed: ${message}`);
+        const shown = faultToShow(err);
+        emitOutput(`export failed: ${exportFailureText(shown, workOwner !== undefined)}`);
       }
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
@@ -2022,21 +2062,22 @@ export function createChatLineHandler(
       // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
       // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
       try {
-        const { projectConfigDir } = readLiveConfig();
+        const { projectConfigDir, homeDir } = readLiveConfig();
         if (projectConfigDir === undefined) {
           // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
           emitOutput('No .relavium/ project found from the current directory.');
           return;
         }
         const scan = (kind: CatalogKind): CatalogEntry[] =>
-          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
+          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
         emitOutput(catalogNotice(scan('workflows'), scan('agents')));
       } catch (err) {
         workOwner?.failure(err);
-        // Surface the failure by its CODE — a raw catalog CliError message embeds the absolute `.relavium/` path,
-        // which the REPL transcript / a screenshare need not carry.
-        const reason = err instanceof CliError ? err.code : 'unexpected error';
-        emitOutput(`could not list workflows: ${reason}`);
+        // A catalog fault says why in its own words (the cap: "too many workflow files …"), as the Home's picker and `relavium list` do, so a
+        // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
+        // absolute path stays on the error's `cause`, never in the message.
+        const shown = faultToShow(err);
+        emitOutput(`could not list workflows: ${workflowListFailureReason(shown)}`);
       }
     },
     // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.
@@ -2045,6 +2086,11 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
+    // `/agent` (ADR-0140 §3): the interactive hosts open the docked sheet before dispatch, so this is what a plain, `--json` or one-shot
+    // chat, which has no sheet, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
+    showAgent: () => {
+      emitOutput(agentNotice(boundAgent()));
+    },
     // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
     // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
     // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
@@ -2371,6 +2417,7 @@ export function createChatLineHandler(
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
     commandApprovals: modeControl.commandApprovals,
+    boundAgent,
     permissions: interactive
       ? createPermissionsPort(
           { grants: commandGrants, session: modeControl.commandApprovals },
@@ -3087,6 +3134,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onModeChange,
     onSetEffort,
     permissions,
+    boundAgent,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3198,6 +3246,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {}),
       // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
       ...(interactive && permissions !== undefined ? { permissions } : {}),
+      // The `/agent` sheet opens only in an interactive chat: a plain or `--json` driver has no sheet, and the command prints a notice there.
+      ...(interactive ? { boundAgent } : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside

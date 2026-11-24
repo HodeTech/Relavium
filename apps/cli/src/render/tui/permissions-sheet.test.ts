@@ -1168,3 +1168,26 @@ describe('the action is on the row it acts on, and every answer says how it went
     }
   });
 });
+
+describe('a row says what is true of it alone (the review of the cleanup)', () => {
+  const geometry = { columns: 80, terminalRows: 24 };
+  const rows = snapshot([project('a'), project('b', 'git, 2 arguments')]);
+
+  it('paints only the row that will be withdrawn as armed: the question names one row, so no other row looks asked', () => {
+    const lines = permissionsSheetLines(armedAt(open(rows)), geometry);
+    expect(lines.filter((line) => line.kind === 'armed')).toHaveLength(1);
+    expect(lines.filter((line) => line.kind === 'row')).toHaveLength(1);
+    expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(0);
+    expect(lines.find((line) => line.kind === 'armed')?.text).toContain('npm, 1 argument');
+    expect(lines.find((line) => line.kind === 'row')?.text).toContain('git, 2 arguments');
+  });
+
+  it('keeps a row too narrow for its value to the label alone, with nothing coloured', () => {
+    const narrow = snapshot([project('a', 'npm, 1 argument', 'x'.repeat(70))]);
+    const selected = permissionsSheetLines(open(narrow), geometry).find(
+      (line) => line.kind === 'selected',
+    );
+    expect(selected?.text).toBe('› npm, 1 argument');
+    expect(selected?.spans).toEqual([]);
+  });
+});
