@@ -6,6 +6,7 @@ import type { AgentsPort } from '../../home/agents-port.js';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph } from './glyphs.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import {
   exitKey,
@@ -34,6 +35,7 @@ import {
 import {
   clampSpans,
   clipLine,
+  thinRuleText,
   usableColumns,
   type SheetGeometry,
   type SheetLine,
@@ -800,9 +802,10 @@ export function tabHostCanArm(geometry: SheetGeometry): boolean {
 }
 
 const STRIP_SEPARATOR = '  │  ';
-const CURRENT_MARK = '▸ ';
+/** The current tab's marker and its space: the one selection marker of the glyph table, in the form in force. */
+const currentMark = (): string => `${glyph('selection')} `;
 
-/** The strip of tabs: the current one carries `▸` and is emphasised, so it is told apart by a glyph as well as by style. */
+/** The strip of tabs: the current one carries the selection marker and is emphasised, so it is told apart by a glyph as well as by style. */
 function tabStrip(current: TabId, width: number): SheetLine {
   let text = '';
   const spans: SheetSpan[] = [];
@@ -811,7 +814,7 @@ function tabStrip(current: TabId, width: number): SheetLine {
       spans.push({ from: text.length, to: text.length + STRIP_SEPARATOR.length, role: 'dim' });
       text += STRIP_SEPARATOR;
     }
-    const label = tab.id === current ? `${CURRENT_MARK}${tab.title}` : tab.title;
+    const label = tab.id === current ? `${currentMark()}${tab.title}` : tab.title;
     spans.push({
       from: text.length,
       to: text.length + label.length,
@@ -824,7 +827,7 @@ function tabStrip(current: TabId, width: number): SheetLine {
 }
 
 function rule(width: number): SheetLine {
-  const text = '─'.repeat(width);
+  const text = thinRuleText(width);
   return { kind: 'rule', text, spans: [{ from: 0, to: text.length, role: 'dim' }] };
 }
 

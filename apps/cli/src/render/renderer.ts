@@ -13,6 +13,7 @@ import {
   budgetPromptDetails,
   budgetResumeHints,
 } from '../gate/budget.js';
+import { formatDuration } from './notation.js';
 import { formatRunOutputs } from './run-outputs.js';
 import { formatProducedMedia } from './tui/format.js';
 import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
@@ -169,7 +170,7 @@ function describe(event: RunEvent): string | undefined {
     case 'node:skipped':
       return `  skip ${sanitizeInline(event.nodeId)} (${sanitizeInline(event.reason)})`;
     case 'node:retrying':
-      return `  retry ${sanitizeInline(event.nodeId)} attempt ${String(event.attemptNumber)} in ${String(event.delayMs)}ms (${sanitizeInline(event.error.code)})`;
+      return `  retry ${sanitizeInline(event.nodeId)} attempt ${String(event.attemptNumber)} in ${formatDuration(event.delayMs)} (${sanitizeInline(event.error.code)})`;
     case 'human_gate:paused':
       return `  paused at gate ${sanitizeInline(event.gateId)} (${sanitizeInline(event.gateType)})`;
     case 'run:completed':

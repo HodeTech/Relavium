@@ -147,6 +147,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
+import { formatUsdExact } from '../render/notation.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
@@ -186,6 +187,7 @@ import {
 } from '../render/tui/chat-projection.js';
 import { agentNotice } from '../render/tui/agent-sheet.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { withGlyphForm } from '../render/tui/glyphs.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
@@ -723,7 +725,7 @@ function createChatEffectAttention(
 /** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites, and
  *  through the in-Home chat's own view store — see `drive-home.tsx`). ONE text, so the two surfaces cannot drift. */
 export function budgetWarningText(warning: ChatBudgetWarning): string {
-  return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
+  return `budget warning: ~${warning.thresholdPct}% of the ${formatUsdExact(warning.limitMicrocents)} cap reached`;
 }
 
 export function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
@@ -2176,7 +2178,9 @@ export function createChatLineHandler(
       // the fast tier is instant, so it needs no progress line. Parity with the Home's transient 'checking…'.
       if (deep) emitOutput('doctor: validating providers + MCP…');
       try {
-        emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
+        emitOutput(
+          formatDoctorReport(await runDoctorChecks(deep, doctorProbes), !deps.global.color),
+        );
       } catch (cause) {
         workOwner?.failure(cause);
         // runDoctorChecks should not throw (every probe catches its own faults), so this is a defensive net.
@@ -2971,6 +2975,11 @@ async function buildReseatWiring(
     agentMcpServers: resumed.agent.mcp_servers ?? [],
     mcpSkipped: resumed.mcpSkipped,
   });
+  // The notice that opens the reseated session names the old model; it is built here, where `loaded.session.agentSnapshot` is narrowed.
+  const fromModel = loaded.session.agentSnapshot.model;
+  const modelSwitchIntro = withGlyphForm(!deps.global.color, () =>
+    modelSwitchNotice(fromModel, target.modelId),
+  );
   return {
     startingModes: deps.startingModes,
     built: resumed,
@@ -2995,7 +3004,7 @@ async function buildReseatWiring(
           else return deps.io.writeErrAcknowledged(`${text}\n`);
         },
       }),
-    intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
+    intro: modelSwitchIntro,
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
     modelPicker: buildChatModelsPort(
       deps.opened,

@@ -531,3 +531,25 @@ describe('where a page ends: `finished > 20` and `raw >= limit` are each load-be
     expect(read.hasNext).toBe(false);
   });
 });
+
+describe('the project roots the source hands its rows (ADR-0145 §8)', () => {
+  it('shortens a run root against the directory and the home it was given, in the page and in the pinned section; without them the root is as stored', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-a', state: 'completed', atMs: T0 });
+    inProject('run-a', '/home/ada/other');
+    pins.pinItem({ kind: 'run', projectRoot: '', ref: 'run-a', at: 1 });
+    const rootsOf = (paths: { cwd: string; home: string } | undefined): (string | undefined)[] => {
+      const read = createHistorySource({
+        reader,
+        listRunPins: () => pins.listPins({ kind: 'run' }),
+        projectRoot: HERE,
+        ...(paths === undefined ? {} : { paths }),
+        now: () => NOW,
+      }).read({ scope: 'all', status: undefined, page: 0 });
+      return [...read.pinned, ...read.rows].flatMap((entry) =>
+        entry.kind === 'run' ? [entry.row.projectRoot] : [],
+      );
+    };
+    expect(rootsOf({ cwd: HERE, home: '/home/ada' })).toEqual(['~/other', '~/other']);
+    expect(rootsOf(undefined)).toEqual(['/home/ada/other', '/home/ada/other']);
+  });
+});

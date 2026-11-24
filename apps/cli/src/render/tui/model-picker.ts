@@ -3,6 +3,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 
 import { effortTiersFor, projectEffortToRow } from '../../chat/effort-notice.js';
 
+import { formatPricePair } from '../notation.js';
 import { dropLastCodePoint } from './chat-input.js';
 
 /**
@@ -339,25 +340,15 @@ function initialEffortIndex(
  * Pure display formatters (unit-tested; the ink view is not render-tested, per the repo convention).
  * -------------------------------------------------------------------------------------------------- */
 
-const MICROCENTS_PER_USD = 100_000_000; // 1 USD = 1e8 micro-cents (pricing.ts)
-
-/** A compact USD amount from integer micro-cents-per-Mtok: whole dollars drop the decimals, else up to 2 dp
- *  (`$3`, `$0.15`, `$1.25`). No float pricing is stored; this is display-only. */
-function usdPerMtok(microcents: number): string {
-  const usd = microcents / MICROCENTS_PER_USD;
-  const rounded = Math.round(usd * 100) / 100;
-  return Number.isInteger(rounded) ? `$${rounded}` : `$${rounded.toFixed(2)}`;
-}
-
 /**
- * The per-row price label: `$in/$out per Mtok` from the effective (static/user) pricing, or the ADR-0064 §6
+ * The per-row price label: `$in / $out per M` (the one per-million notation of `render/notation.ts`, every digit the price has) from the effective (static/user) pricing, or the ADR-0064 §6
  * "cost cap will not apply" hint when the price is unknown (`priceKnown === false`) — the picker's honest
  * cost-governance signal that a session cap cannot bound this model.
  */
 export function formatModelPrice(entry: ModelCatalogEntry): string {
   if (!entry.priceKnown || entry.pricing === undefined) return 'no price — cost cap will not apply';
   const { inputPerMtokMicrocents, outputPerMtokMicrocents } = entry.pricing;
-  return `${usdPerMtok(inputPerMtokMicrocents)}/${usdPerMtok(outputPerMtokMicrocents)} per Mtok`;
+  return formatPricePair(inputPerMtokMicrocents, outputPerMtokMicrocents);
 }
 
 /** A compact context-window label (`200K ctx`, `1M ctx`), or `''` when the window is unknown. */
@@ -371,27 +362,18 @@ export function formatContextWindow(tokens: number | undefined): string {
   return `${tokens} ctx`;
 }
 
-/** The "last updated" freshness badge from the newest live-refresh stamp — `never refreshed` when absent, else a
- *  coarse relative age (`just now` / `5m ago` / `3h ago` / `2d ago`). Pure (the caller passes `now`). */
-export function formatRefreshedBadge(refreshedAt: number | undefined, now: number): string {
-  if (refreshedAt === undefined) return 'never refreshed';
-  const ms = Math.max(0, now - refreshedAt);
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return 'updated just now';
-  if (minutes < 60) return `updated ${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `updated ${hours}h ago`;
-  return `updated ${Math.floor(hours / 24)}d ago`;
-}
-
 /**
  * Summarize a refresh report's per-provider failures into a secret-free banner, or `undefined` when every
  * considered provider refreshed/was-skipped cleanly. Names the failed providers + the count of others that
  * kept last-known rows (ADR-0064 §8: drift/failure is visible, non-fatal). The per-provider `error` strings are
- * already seam-redacted; this joins only the provider ids, never an error body.
+ * already seam-redacted; this joins only the provider names, never an error body. A provider is named by its display name
+ * (`OpenAI`, not `openai`: ADR-0145 §8) when the caller passes `providerName`; the id is the fallback.
  */
-export function partialFailureBanner(failedProviders: readonly string[]): string | undefined {
+export function partialFailureBanner(
+  failedProviders: readonly string[],
+  providerName: (id: string) => string = (id) => id,
+): string | undefined {
   if (failedProviders.length === 0) return undefined;
-  const list = failedProviders.join(', ');
+  const list = failedProviders.map(providerName).join(', ');
   return `couldn't refresh ${list} — showing last-known models`;
 }

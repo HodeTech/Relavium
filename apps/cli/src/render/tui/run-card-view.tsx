@@ -1,6 +1,7 @@
 import { Box, Text, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
+import { withGlyphForm } from './glyphs.js';
 import { layoutColumns } from './layout-columns.js';
 import { colorProps, dimProps } from './projection.js';
 import {
@@ -64,11 +65,13 @@ export function RunCardView(props: Readonly<RunCardViewProps>): ReactElement {
   useLayoutEffect(() => {
     props.onFrame?.(frame.current);
   });
-  const projection = projectRunCard(props.snapshot, {
-    columns: props.columns,
-    rows: props.rows,
-    nowMs: props.nowMs,
-  });
+  const projection = withGlyphForm(!props.color, () =>
+    projectRunCard(props.snapshot, {
+      columns: props.columns,
+      rows: props.rows,
+      nowMs: props.nowMs,
+    }),
+  );
   const { color } = props;
   return (
     <Box ref={frame} flexDirection="column" width={layoutColumns(props.columns)}>

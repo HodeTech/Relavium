@@ -275,7 +275,8 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     open: async (m) => {
       await openTab('history')(m);
       await openFailedRunDetail(m);
-      const line = (): string => m.frame().find((row) => row.startsWith('› ')) ?? '';
+      const line = (): string =>
+        m.frame().find((row) => row.startsWith('› ') || row.startsWith('> ')) ?? '';
       for (let presses = 0; presses < 12 && !/completed\s+plan/u.test(line()); presses += 1) {
         const before = line();
         m.key(KEYS.down);

@@ -540,6 +540,6 @@ describe('labels', () => {
       glyph: '◐',
       shortId: 'r',
     });
-    expect(only(classify([run('r', { status: 'paused' })])).glyph).toBe('⏸');
+    expect(only(classify([run('r', { status: 'paused' })])).glyph).toBe('‖');
   });
 });

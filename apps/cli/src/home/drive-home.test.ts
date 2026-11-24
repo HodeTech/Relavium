@@ -2055,6 +2055,35 @@ workflow:
       }
     });
 
+    it('names the root of a pin of another project from ~ when it lies under the operator’s home: the Home gives the tab its directory and its home (ADR-0145 §8)', async () => {
+      // The wired-but-dead field again: the model shortens only when it is handed the roots, so a Home that forgot to hand them would
+      // list the absolute path and every model test would still pass.
+      project();
+      const otherRoot = join(testHomeDir, 'elsewhere-project');
+      createRunPinStore(client.db).pinItem({
+        kind: 'workflow',
+        projectRoot: otherRoot,
+        ref: 'elsewhere',
+        at: 2,
+      });
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+      const row = definedOf(props)?.read.model.rows.find(
+        (candidate) => candidate.slug === 'elsewhere',
+      );
+      expect(row?.projectRoot).toBe(`~${sep}elsewhere-project`);
+      expect(row?.projectRoot).not.toContain(testHomeDir);
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
     it('x opens the export card over the real prepare, naming the destination in this directory; a No writes nothing', async () => {
       project();
       let captured: RootAppProps | undefined;
@@ -2674,6 +2703,36 @@ workflow:
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
+
+    it('names the project of a run of another directory from ~ when it lies under the operator’s home: the Home gives the History tab its directory and its home (ADR-0145 §8)', async () => {
+      // The wired-but-dead field once more: the rows shorten a root only when they are handed the roots, so a Home that forgot to hand them
+      // would draw the absolute path and every row-model test would still pass.
+      const runId = await seedRun(client.db, {
+        slug: 'wf',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000bb',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 60_000,
+      });
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(join(testHomeDir, 'other-app'), runId);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
+      props.controller.handleKey('a', {}); // widen the scope to every project
+      const row = historyOf(props)?.read?.rows.find(
+        (entry) => entry.kind === 'run' && entry.row.id === runId,
+      );
+      expect(row?.kind === 'run' ? row.row.projectRoot : undefined).toBe(`~${sep}other-app`);
+
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
   });
 
   describe('ADR-0140 §2: the bare Home’s Active tab is the Home’s own database, outbox and hosted leg', () => {
@@ -2754,6 +2813,34 @@ workflow:
       live = false;
       await vi.waitFor(() => expect(classOf(props, hosted)).toBe('held'), { timeout: WAIT_MS });
       expect(classOf(props, held)).toBe('held');
+
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('names the root of a paused run of another project from ~ when it lies under the operator’s home: the Home gives the Active tab its directory and its home (ADR-0145 §8)', async () => {
+      const runId = await seedRun(client.db, {
+        slug: 'wf',
+        runId: 'else-paused',
+        state: 'paused',
+        atMs: 1_750_000_000_000 - 5_000,
+        gate: { gateId: 'g1', gateType: 'approval' },
+      });
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(join(testHomeDir, 'other-app'), runId);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
+      await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
+      expect(activeOf(props)?.rows.find((row) => row.runId === runId)?.projectRoot).toBe(
+        `~${sep}other-app`,
+      );
 
       props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);

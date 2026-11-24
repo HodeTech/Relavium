@@ -79,7 +79,7 @@ describe('installed Home asynchronous publication during native suspension', () 
       kind === 'mention'
         ? 'arriving-home-candidate.ts'
         : kind === 'picker'
-          ? "couldn't refresh anthropic"
+          ? "couldn't refresh Anthropic"
           : '! shell command failed unexpectedly';
     const refusal = new CliError('invalid_invocation', 'PRIVATE_CLASSIFIED_HOME_REFUSAL');
     const running = driveHome({

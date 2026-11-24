@@ -11,7 +11,7 @@ import { unpricedModelNote } from './effort-notice.js';
 describe('the price flags of the unpriced-model notice', () => {
   it('names the token pair for a model with no price, in the order the shell takes them', () => {
     expect(unpricedModelNote('m', 5_000_000, 'budget.strict_cost_cap')).toBe(
-      "m has no price, so the cost cap ($0.05) does not apply to it. Price it with `relavium models pricing 'm' --provider PROVIDER_ID --input-price USD_PER_MTOK --output-price USD_PER_MTOK`, or set budget.strict_cost_cap to refuse an unpriced model.",
+      "m has no price, so the cost cap ($0.0500) does not apply to it. Price it with `relavium models pricing 'm' --provider PROVIDER_ID --input-price USD_PER_MTOK --output-price USD_PER_MTOK`, or set budget.strict_cost_cap to refuse an unpriced model.",
     );
   });
 
@@ -28,7 +28,7 @@ describe('the price flags of the unpriced-model notice', () => {
     expect(
       unpricedModelNote('m', 5_000_000, 'budget.strict_cost_cap', ['video', 'image', 'audio']),
     ).toBe(
-      "m has no audio, image, video rate, so the cost cap ($0.05) could not be applied to its audio, image, video output — its token cost still counts. Add one with `relavium models pricing 'm' --provider PROVIDER_ID --audio USD_PER_SECOND --image USD_PER_IMAGE --video USD_PER_SECOND`, or set budget.strict_cost_cap to refuse it instead.",
+      "m has no audio, image, video rate, so the cost cap ($0.0500) could not be applied to its audio, image, video output — its token cost still counts. Add one with `relavium models pricing 'm' --provider PROVIDER_ID --audio USD_PER_SECOND --image USD_PER_IMAGE --video USD_PER_SECOND`, or set budget.strict_cost_cap to refuse it instead.",
     );
   });
 });
@@ -48,7 +48,7 @@ describe('the unpriced-model notice names no shell command inside the TUI', () =
   it('points a chat at /pricing on the Home and names no command, flag or quoting', () => {
     const tui = unpricedModelNote('m', 5_000_000, '[chat] strict_cost_cap', undefined, 'tui');
     expect(tui).toBe(
-      'm has no price, so the cost cap ($0.05) does not apply to it. Price it from the Home with /pricing, or set [chat] strict_cost_cap to refuse an unpriced model.',
+      'm has no price, so the cost cap ($0.0500) does not apply to it. Price it from the Home with /pricing, or set [chat] strict_cost_cap to refuse an unpriced model.',
     );
     const media = unpricedModelNote(
       'm',
@@ -58,7 +58,7 @@ describe('the unpriced-model notice names no shell command inside the TUI', () =
       'tui',
     );
     expect(media).toBe(
-      'm has no audio, image rate, so the cost cap ($0.05) could not be applied to its audio, image output — its token cost still counts. Add one from the Home with /pricing, or set [chat] strict_cost_cap to refuse it instead.',
+      'm has no audio, image rate, so the cost cap ($0.0500) could not be applied to its audio, image output — its token cost still counts. Add one from the Home with /pricing, or set [chat] strict_cost_cap to refuse it instead.',
     );
     for (const note of [tui, media]) expect(note).not.toMatch(/relavium|--|PROVIDER_ID|`/u);
   });

@@ -20,6 +20,7 @@ import { ESLint } from 'eslint';
 const MAIN = 'tools/lint-fixtures/forbidden-vendor-import.ts';
 const CONFIG_NAMED = 'tools/lint-fixtures/forbidden-in-name.config.ts';
 const AUTHORED = 'tools/lint-fixtures/forged-authored-prompt.ts';
+const DATA_MODULE = 'tools/lint-fixtures/forbidden-in-data-module.ts';
 
 const STATIC_RULE = '@typescript-eslint/no-restricted-imports'; // bare, subpath, type-only, 2× re-export
 const SYNTAX_RULE = 'no-restricted-syntax'; // dynamic, non-literal dynamic, import-type query, require
@@ -38,8 +39,15 @@ const EXPECT_SYNTAX = 4;
  */
 const EXPECT_AUTHORED = 7;
 
+/**
+ * The CLI data-module fence's exact spec (ADR-0145 §10): FIVE errors on the fixture — `ink`, `react`, a `node:` module, a bare Node
+ * built-in and a `react` subpath. A drop means a form a data module must not import stopped being policed; a rise means the named list's
+ * entry now catches something the fixture did not mean to (read the fixture before changing this number).
+ */
+const EXPECT_DATA_MODULE = 5;
+
 const eslint = new ESLint();
-const results = await eslint.lintFiles([MAIN, CONFIG_NAMED, AUTHORED]);
+const results = await eslint.lintFiles([MAIN, CONFIG_NAMED, AUTHORED, DATA_MODULE]);
 // Match by basename (not an `endsWith('/…')` suffix) so it works on Windows, where
 // `filePath` uses `\` separators.
 const resultFor = (name) => results.find((r) => basename(r.filePath) === name);
@@ -91,6 +99,17 @@ if (authoredHits !== EXPECT_AUTHORED) {
   );
 }
 
+// 4. The CLI data-module fence must fire EXACTLY five times on its fixture (see EXPECT_DATA_MODULE).
+const dataModule = resultFor('forbidden-in-data-module.ts');
+const dataModuleHits = seamErrors(dataModule, STATIC_RULE);
+if (dataModuleHits !== EXPECT_DATA_MODULE) {
+  fail(
+    `CLI data-module fence count drift on ${DATA_MODULE}: ${dataModuleHits}/${EXPECT_DATA_MODULE}. ` +
+      'Fewer means an ink, react or node: import stopped being policed in the data modules (ADR-0145 §10 regression).',
+    dataModule,
+  );
+}
+
 console.log(
   `✓ Seam fence airtight: ${STATIC_RULE} ${staticHits}/${EXPECT_STATIC}, ` +
     `${SYNTAX_RULE} ${syntaxHits}/${EXPECT_SYNTAX} on the fixture; ` +
@@ -99,4 +118,7 @@ console.log(
 console.log(
   `✓ AuthoredSystemPrompt fence airtight: ${authoredHits}/${EXPECT_AUTHORED} forging forms policed; ` +
     "the two residual forms ADR-0081 §1 names are still uncaught, and legitimate uses of the type aren't.",
+);
+console.log(
+  `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} ink, react and node: imports policed in the named data modules.`,
 );

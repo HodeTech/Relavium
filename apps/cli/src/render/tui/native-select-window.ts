@@ -1,7 +1,8 @@
+import { glyph } from './glyphs.js';
 import { legend, type LegendItem } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import { reviewTerminalFits, type TerminalFrameSize } from './measured-frame-acknowledgement.js';
-import { windowBody } from './sheet-frame.js';
+import { moreAboveText, moreBelowText, windowBody } from './sheet-frame.js';
 import { displayWidth, wrapWords } from './viewport.js';
 
 /**
@@ -14,8 +15,8 @@ import { displayWidth, wrapWords } from './viewport.js';
  * layout never reads either: a windowed card fills the terminal, which is exactly what its own overestimate already reserves.
  */
 
-/** The row the cursor is on, and the gutter every other row of the list keeps under it. */
-const CURSOR = '❯ ';
+/** The row the cursor is on (the glyph table's selection marker and its space, in the form in force), and the gutter every other row of the list keeps under it. */
+const cursor = (): string => `${glyph('selection')} `;
 const GUTTER = '  ';
 
 /**
@@ -42,7 +43,7 @@ export function selectRowText(snapshot: NativePromptSnapshot, index: number): st
   const option = snapshot.options[index];
   if (option === undefined) return '';
   const hint = option.hint ? ` — ${option.hint}` : '';
-  return `${index === snapshot.selected ? CURSOR : GUTTER}${option.label}${hint}`;
+  return `${index === snapshot.selected ? cursor() : GUTTER}${option.label}${hint}`;
 }
 
 export type SelectLine =
@@ -95,9 +96,9 @@ export function selectLayout(
   const lines: SelectLine[] = [];
   for (let index = start; index < end; index += 1) {
     if (marked && index === start && start > 0)
-      lines.push({ kind: 'marker', position: 'above', text: `▲ ${String(start + 1)} more` });
+      lines.push({ kind: 'marker', position: 'above', text: moreAboveText(start + 1) });
     else if (marked && index === end - 1 && end < total)
-      lines.push({ kind: 'marker', position: 'below', text: `▼ ${String(total - end + 1)} more` });
+      lines.push({ kind: 'marker', position: 'below', text: moreBelowText(total - end + 1) });
     else lines.push({ kind: 'option', index });
   }
   // The option rows of a window that hides rows on both sides, the shortest a window gets: a page of that many leaves the rows between the old

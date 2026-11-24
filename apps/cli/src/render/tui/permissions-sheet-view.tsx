@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
+import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   permissionsSheetLines,
@@ -135,9 +136,11 @@ export function SheetLinesView(
 }
 
 export function PermissionsSheetView(props: Readonly<PermissionsSheetViewProps>): ReactElement {
-  const lines = permissionsSheetLines(props.state, {
-    columns: props.columns,
-    terminalRows: props.rows,
-  });
+  const lines = withGlyphForm(!props.color, () =>
+    permissionsSheetLines(props.state, {
+      columns: props.columns,
+      terminalRows: props.rows,
+    }),
+  );
   return <SheetLinesView lines={lines} color={props.color} />;
 }

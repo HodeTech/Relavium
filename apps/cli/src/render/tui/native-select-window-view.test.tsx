@@ -80,18 +80,18 @@ async function close(o: Opened): Promise<void> {
   await o.flow.end();
   o.ui.dispose();
 }
-const cursorRows = (o: Opened): string[] => o.lines().filter((line) => line.startsWith('❯ '));
+const cursorRows = (o: Opened): string[] => o.lines().filter((line) => line.startsWith('> '));
 
 describe('a select card with more options than the terminal holds (LAUNCH-4)', () => {
-  it('draws a window of a 60-workflow list at 80x24, with a `▼` marker and no refusal, and the keys are delivered', async () => {
+  it('draws a window of a 60-workflow list at 80x24, with a `v` marker and no refusal, and the keys are delivered', async () => {
     const o = await open(workflows(60));
     try {
       const frame = o.frame();
       expect(frame).not.toContain('does not fit');
       expect(frame).toContain('Run which workflow?');
-      expect(frame).toContain('❯ wf-00');
-      expect(frame).toContain('▼ 40 more');
-      expect(frame).not.toContain('▲');
+      expect(frame).toContain('> wf-00');
+      expect(frame).toContain('v 40 more');
+      expect(frame).not.toContain('^');
       // 20 rows are drawn, the 21st line is the marker, and the rest are hidden.
       expect(frame).toContain('wf-19');
       expect(frame).not.toContain('wf-20');
@@ -110,7 +110,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     }
   });
 
-  it('reaches the last row with the arrow key, shows it under a `▲` marker, and Enter answers that workflow', async () => {
+  it('reaches the last row with the arrow key, shows it under a `^` marker, and Enter answers that workflow', async () => {
     const o = await open(workflows(60));
     try {
       for (let step = 1; step <= 59; step += 1) {
@@ -123,8 +123,8 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
       }
       const frame = o.frame();
       expect(cursorRows(o)[0]).toContain('wf-59');
-      expect(frame).toContain('▲ 40 more');
-      expect(frame).not.toContain('▼');
+      expect(frame).toContain('^ 40 more');
+      expect(frame).not.toMatch(/^\s*v \d+ more$/mu);
       expect(frame).not.toContain('wf-00');
       expect(o.ui.getSnapshot().selected).toBe(59);
       o.h.stdin.write('\r');
@@ -140,7 +140,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     try {
       await o.press(UP, 59);
       expect(cursorRows(o)[0]).toContain('wf-59');
-      expect(o.frame()).toContain('▲ 40 more');
+      expect(o.frame()).toContain('^ 40 more');
     } finally {
       await close(o);
     }
@@ -152,8 +152,8 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
       // 19 rows: a window that hides both sides draws 19 rows between its markers at 80x24.
       await o.press(PGDN, 19);
       expect(cursorRows(o)[0]).toContain('wf-19');
-      expect(o.frame()).toContain('▲');
-      expect(o.frame()).toContain('▼');
+      expect(o.frame()).toContain('^');
+      expect(o.frame()).toMatch(/^\s*v \d+ more$/mu);
       await o.press(PGDN, 38);
       await o.press(PGDN, 57);
       expect(cursorRows(o)[0]).toContain('wf-57');
@@ -171,7 +171,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
       o.h.stdin.write(PGUP);
       await settleFrames(8);
       expect(o.ui.getSnapshot().selected).toBe(0);
-      expect(o.frame()).not.toContain('▲');
+      expect(o.frame()).not.toContain('^');
     } finally {
       await close(o);
     }
@@ -198,7 +198,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     try {
       expect(o.lines().map((line) => line.trimEnd())).toEqual([
         'Run which workflow?',
-        '❯ wf-00 — .relavium/workflows/wf-00.yaml',
+        '> wf-00 — .relavium/workflows/wf-00.yaml',
         '  wf-01 — .relavium/workflows/wf-01.yaml',
         '  wf-02 — .relavium/workflows/wf-02.yaml',
         '↑/↓ select · Enter continue · Esc close',
@@ -208,7 +208,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
       expect(o.ui.getSnapshot().selected).toBe(0);
       await o.press(DOWN, 1);
       expect(o.lines().map((line) => line.trimEnd())).toContain(
-        '❯ wf-01 — .relavium/workflows/wf-01.yaml',
+        '> wf-01 — .relavium/workflows/wf-01.yaml',
       );
     } finally {
       await close(o);
@@ -227,7 +227,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     const o = await open(workflows(60), { cols: 100, rows: 40 });
     try {
       // 39 rows to use, the question and the legend: 37 list lines, the last a marker.
-      expect(o.frame()).toContain('▼ 24 more');
+      expect(o.frame()).toContain('v 24 more');
       expect(o.frame()).toContain('wf-35');
       expect(o.frame()).not.toContain('wf-36');
       expect(o.lines().length).toBeLessThanOrEqual(39);
@@ -268,7 +268,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     try {
       expect(o.frame()).not.toContain('does not fit');
       expect(o.frame()).toContain('Not offered, the file is not valid');
-      expect(o.frame()).toContain('▼');
+      expect(o.frame()).toMatch(/^\s*v \d+ more$/mu);
       expect(o.frame()).toContain('PgUp/PgDn page · Enter continue · Esc back · [Ctrl+C] close');
       expect(o.visible()).toBe(true);
       await o.press(PGDN, 15);
@@ -394,13 +394,13 @@ describe.each([
     const m = await mount();
     try {
       expect(m.frame()).not.toContain('does not fit');
-      expect(m.frame()).toContain('❯ wf-00');
-      expect(m.frame()).toContain('▼ 40 more');
+      expect(m.frame()).toContain('> wf-00');
+      expect(m.frame()).toContain('v 40 more');
       expect(m.visible()).toBe(true);
       m.h.stdin.write(PGDN);
       await waitFor(() => m.channel.ui.getSnapshot().selected === 19);
       await waitFor(m.visible, 40);
-      expect(m.frame()).toContain('❯ wf-19');
+      expect(m.frame()).toContain('> wf-19');
       m.h.stdin.write(UP);
       await waitFor(() => m.channel.ui.getSnapshot().selected === 18);
       await waitFor(m.visible, 40);

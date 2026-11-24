@@ -13,6 +13,7 @@ import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
+import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { legend } from './legend.js';
 import { QUESTION_STOP, projectQuestionCard, type QuestionRowTone } from './question-card.js';
@@ -114,9 +115,12 @@ export function QuestionCardHost(
       </Text>
     );
   const color = props.color === true;
-  const view = projectQuestionCard(card, props.size.cols, {
-    guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',
-  });
+  // The card's marks are the glyph table's; an absent `color` is the Unicode form (a view mounted without the prop draws as it always did).
+  const view = withGlyphForm(props.color === false, () =>
+    projectQuestionCard(card, props.size.cols, {
+      guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',
+    }),
+  );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">

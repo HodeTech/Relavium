@@ -123,9 +123,9 @@ const permissions = (
 const frame = (state: TabHostState, color: boolean, columns = 80, rows = 24): string =>
   render(<TabHostView state={state} color={color} columns={columns} rows={rows} />).lastFrame() ??
   '';
-/** The frame without them: what a person without styling reads. */
+/** The frame of a terminal that has styling, with the style codes taken out: the Unicode glyphs, read as a person with colour reads them. */
 const text = (state: TabHostState, columns = 80, rows = 24): string =>
-  plain(frame(state, false, columns, rows));
+  plain(frame(state, true, columns, rows));
 
 describe('TabHostView at 80×24', () => {
   it.each(['defined', 'active', 'history', 'permissions'] as const)(
@@ -133,7 +133,7 @@ describe('TabHostView at 80×24', () => {
     (tab) => {
       const lines = text(hostOn(tab)).split('\n');
       expect(lines.length).toBeLessThanOrEqual(23);
-      expect(lines[0]).toContain('▸ ');
+      expect(lines[0]).toContain('› ');
       expect(lines[1]?.startsWith('───')).toBe(true);
       expect(lines.at(-1)).toContain('Esc close');
       for (const line of lines) expect([...line].length, line).toBeLessThanOrEqual(78);
@@ -167,7 +167,7 @@ describe('TabHostView at 80×24', () => {
 
   it('says History cannot be read when nothing feeds it, in a word as well as a glyph', () => {
     const drawn = text(hostOn('history'));
-    expect(drawn).toContain('▸ History');
+    expect(drawn).toContain('› History');
     expect(drawn).toContain('The run history could not be read.');
   });
 });
@@ -197,17 +197,20 @@ describe('TabHostView on the Defined tab', () => {
     const drawn = plain(styled);
     const lines = drawn.split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);
-    expect(lines[0]).toContain('▸ Defined');
+    expect(lines[0]).toContain('> Defined');
     for (const word of [
-      '★ pinned',
+      'P pinned',
       '· unpinned',
       '? not in catalog',
-      '✗ invalid',
+      'x invalid',
       '3 nodes',
       '1 node',
     ])
       expect(drawn, word).toContain(word);
-    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(
+      lines.slice(1).filter((line) => line.startsWith('> ')).length,
+      'one selected row, under the strip',
+    ).toBe(1);
     expect(lines.at(-1)).toContain('↑/↓ select · [r] run · [x] export · [p] pin · Esc close');
   });
 
@@ -278,18 +281,21 @@ describe('TabHostView on the History tab', () => {
     expect(lines.length).toBeLessThanOrEqual(23);
     const drawn = lines.join('\n');
     for (const word of [
-      '✓ completed',
-      '✗ failed',
+      'ok completed',
+      'x  failed',
       '1h ago  unreadable',
-      '⊘ cancelled',
+      '/  cancelled',
       '? missing',
-      '★ pinned',
+      'P pinned',
       '$0.0123',
       'Pinned (1)',
       'this project · every finished run · page 1 (last)',
     ])
       expect(drawn, word).toContain(word);
-    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(
+      lines.slice(1).filter((line) => line.startsWith('> ')).length,
+      'one selected row, under the strip',
+    ).toBe(1);
     expect(lines.at(-1)).toBe(
       '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc close',
     );
@@ -352,22 +358,25 @@ describe('TabHostView on the Active tab', () => {
     const drawn = plain(styled);
     const lines = drawn.split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);
-    expect(lines[0]).toContain('▸ Active');
+    expect(lines[0]).toContain('> Active');
     for (const word of [
-      '◐ running',
-      '⏸ paused',
-      '⚠ stalled',
-      '◇ held',
+      '~  running',
+      '|| paused',
+      '!  stalled',
+      '<> held',
       '… 3 more paused not listed',
     ])
       expect(drawn, word).toContain(word);
-    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(
+      lines.slice(1).filter((line) => line.startsWith('> ')).length,
+      'one selected row, under the strip',
+    ).toBe(1);
     expect(lines.at(-1)).toContain('↑/↓ select · Enter open · [Ctrl+C] close · Esc close');
   });
 
   it('draws the selected row in cyan, a quiet reason dimmed, and the word of a stalled or held run in attention', () => {
     const drawn = frame(activeHost(), true);
-    expect(lineWith(drawn, '› ')).toContain(CYAN);
+    expect(lineWith(drawn.split('\n').slice(1).join('\n'), '› ')).toContain(CYAN);
     expect(lineWith(drawn, 'gaterun1')).toContain(DIM);
     expect(lineWith(drawn, 'stallrun')).toContain(YELLOW);
     expect(lineWith(drawn, 'heldrun1')).toContain(YELLOW);
@@ -465,10 +474,10 @@ describe('TabHostView on the node page', () => {
     expect(styled).not.toMatch(ANY_COLOUR);
     const lines = plain(styled).split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);
-    expect(lines[0]).toContain('▸ History');
+    expect(lines[0]).toContain('> History');
     const drawn = lines.join('\n');
     for (const word of [
-      '✗ failed  review',
+      'x failed  review',
       'Order in the workflow: 3 of 4  ·  type agent',
       'Error (attempt 1)',
       'The review found a problem.',
@@ -478,7 +487,10 @@ describe('TabHostView on the node page', () => {
     ])
       expect(drawn, word).toContain(word);
     expect(drawn).not.toContain('sk-ant-api03');
-    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected line').toBe(1);
+    expect(
+      lines.slice(1).filter((line) => line.startsWith('> ')).length,
+      'one selected line, under the strip',
+    ).toBe(1);
     expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back');
   });
 
@@ -517,8 +529,8 @@ describe('TabHostView below the minimum', () => {
 describe('TabHostView with colour on', () => {
   it('draws the current tab bold and the others dim, the rule dim, the selected row cyan with its key in red, and the allowlist heading bold', () => {
     const drawn = frame(hostOn('permissions', { ...SNAPSHOT, allowlist: ALLOWLIST }), true);
-    const strip = lineWith(drawn, '▸ Permissions');
-    expect(strip).toContain(`${BOLD}▸ Permissions`);
+    const strip = lineWith(drawn, '› Permissions');
+    expect(strip).toContain(`${BOLD}› Permissions`);
     expect(strip).toContain(`${DIM}Defined`);
     expect(lineWith(drawn, '────').startsWith(DIM)).toBe(true);
     const selected = lineWith(drawn, '› npm, 1 argument');
@@ -555,8 +567,8 @@ describe('TabHostView with colour on', () => {
 describe('TabHostView with colour off (NO_COLOR)', () => {
   it('emits no colour at all, and a glyph and a word still tell every state', () => {
     const states: readonly (readonly [string, TabHostState, readonly string[]])[] = [
-      ['the current tab', hostOn('permissions'), ['▸ Permissions']],
-      ['a selected row', hostOn('permissions'), ['› npm, 1 argument', '[d] withdraw']],
+      ['the current tab', hostOn('permissions'), ['> Permissions']],
+      ['a selected row', hostOn('permissions'), ['> npm, 1 argument', '[d] withdraw']],
       [
         'a waiting question',
         permissions(() => ({ armed: true })),
@@ -569,12 +581,12 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
       [
         'a done answer',
         permissions(() => ({ message: { tone: 'done', text: 'Withdrawn.' } })),
-        ['✓ Withdrawn.'],
+        ['ok Withdrawn.'],
       ],
       [
         'a failed answer',
         permissions(() => ({ message: { tone: 'failed', text: 'No room.' } })),
-        ['✗ No room.'],
+        ['x No room.'],
       ],
       [
         'a note',
@@ -594,7 +606,7 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
           },
           session: undefined,
         }),
-        ['▲ ', ' more', '▼ '],
+        ['^ ', ' more', 'v '],
       ],
       [
         'an unreadable tab',
@@ -604,7 +616,7 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
       [
         'an unreadable History tab',
         hostOn('history'),
-        ['▸ History', 'The run history could not be read.'],
+        ['> History', 'The run history could not be read.'],
       ],
       [
         'the allowlist',
@@ -689,7 +701,7 @@ describe.each([
 ] as const)('RootApp in %s', (_name, alternateScreen) => {
   it('draws the tab host in place of the landing at 80×24, in at most 23 rows, with no prompt and no strip', async () => {
     const m = mountTabHost({ alternateScreen });
-    await until(() => m.frame().includes('▸ Permissions'));
+    await until(() => m.frame().includes('> Permissions'));
     const lines = m.frame().split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);
     expect(m.frame()).toContain('This project · remembered (2)');
@@ -701,12 +713,12 @@ describe.each([
 
   it('moves between tabs with the keys a person presses, and Esc leaves for the landing', async () => {
     const m = mountTabHost({ alternateScreen });
-    await until(() => m.frame().includes('▸ Permissions'));
+    await until(() => m.frame().includes('> Permissions'));
     m.harness.stdin.write(`${ESC}[D`); // ←
-    await until(() => m.frame().includes('▸ History'));
+    await until(() => m.frame().includes('> History'));
     expect(m.frame()).toContain('The run history could not be read.');
     m.harness.stdin.write('\t');
-    await until(() => m.frame().includes('▸ Permissions'));
+    await until(() => m.frame().includes('> Permissions'));
     m.harness.stdin.write(ESC);
     await until(() => m.controller.getSnapshot().screen === undefined);
     await until(() => m.frame().includes('[/] for commands'));
@@ -714,7 +726,7 @@ describe.each([
 
   it('drops a paste: it reaches neither the screen nor the prompt behind it', async () => {
     const m = mountTabHost({ alternateScreen });
-    await until(() => m.frame().includes('▸ Permissions'));
+    await until(() => m.frame().includes('> Permissions'));
     const before = m.frame();
     m.harness.stdin.write(bracketed('hello world'));
     await settleFrames();

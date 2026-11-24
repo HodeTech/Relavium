@@ -873,7 +873,7 @@ describe('the 80×24 budget', () => {
         expect(lines.length).toBeLessThanOrEqual(Math.min(TAB_HOST_ROWS, terminalRows - 1));
         for (const line of lines)
           expect(displayWidth(line.text)).toBeLessThanOrEqual(usableColumns(columns));
-        expect(lines[0]?.text).toContain('▸ History');
+        expect(lines[0]?.text).toContain('› History');
         expect(lines.at(-1)?.kind).toBe('legend');
         expect(lines.some((line) => line.kind === 'selected')).toBe(true);
         expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(/Esc close$/u);
@@ -925,6 +925,12 @@ describe('the pin state of a run belongs to the detail and the pin store, not to
   }
   const message = (r: ReturnType<typeof rig>): string | undefined =>
     r.state.history?.detail?.message;
+
+  it('says when the run started as a date, a 24-hour clock time and its zone, not as the stored millisecond timestamp (ADR-0145 §8)', () => {
+    const r = foreignDetail({});
+    expect(r.text()).toContain('Started 2026-11-23 10:00 UTC  ·  took');
+    expect(r.text()).not.toContain('2026-11-23T10:00:00.000Z');
+  });
 
   it('shows `★ pinned` for a pinned run the page does not list, and `p` unpins it, then pins it again', () => {
     const store = new Set([FOREIGN]);

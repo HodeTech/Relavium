@@ -26,7 +26,8 @@ import {
   wrapTranscript,
   liveAnswerRowBudget,
 } from './chat-projection.js';
-import { formatDuration, formatTokens } from './format.js';
+import { formatTokens } from './format.js';
+import { formatDuration } from '../notation.js';
 import {
   initialSessionViewState,
   type TranscriptEntry,
@@ -343,10 +344,10 @@ describe('chat-projection', () => {
   describe('formatToolCall', () => {
     it('marks an unresolved call as pending and a resolved call as done — id only, no arguments', () => {
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: false })).toBe(
-        '→ read_file …',
+        '▸ read_file …',
       );
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: true })).toBe(
-        '→ read_file ? outcome unknown',
+        '▸ read_file ? outcome unknown',
       );
     });
 
@@ -358,7 +359,7 @@ describe('chat-projection', () => {
       });
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(line).not.toMatch(/[\x00-\x1f\x7f]/); // no ESC/CR/NUL/tab/newline survived
-      expect(line).toBe('→ read file …'); // escapes stripped; the bare newline collapsed to a space
+      expect(line).toBe('▸ read file …'); // escapes stripped; the bare newline collapsed to a space
     });
   });
 

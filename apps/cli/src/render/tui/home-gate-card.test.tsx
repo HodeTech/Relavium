@@ -221,7 +221,7 @@ describe('the Attention rows', () => {
     await settleFrames();
     const frame = m.frame();
     expect(frame).toContain('Attention required');
-    expect(frame).toContain('‖ run-0001  ·  approval gate  ·  ↓ select');
+    expect(frame).toContain('|| run-0001  ·  approval gate  ·  ↓ select');
     expect(frame).toContain('↓ open a parked run');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
   });
@@ -230,7 +230,7 @@ describe('the Attention rows', () => {
     const m = mount({ rows: [] });
     await settleFrames();
     const frame = m.frame();
-    expect(frame).not.toContain('‖');
+    expect(frame).not.toContain('||');
     expect(frame).not.toContain('Attention required');
     expect(frame).not.toContain('open a parked run');
     expect(frame).toContain('Welcome to Relavium.');
@@ -240,7 +240,7 @@ describe('the Attention rows', () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('> ‖ run-0001  ·  approval gate  ·  Enter open'));
+    await eventually(() => m.frame().includes('> || run-0001  ·  approval gate  ·  Enter open'));
     expect(m.frame()).toContain('Enter open the gate');
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(RUN);
     m.harness.stdin.write(ESC);
@@ -269,7 +269,7 @@ describe('the Attention rows', () => {
     await settleFrames();
     await eventually(() => m.frame().includes('Continue'), 'the Continue list');
     const frame = m.frame();
-    expect(frame, 'the parked row, once').toContain('‖ run-0001  ·  approval gate');
+    expect(frame, 'the parked row, once').toContain('|| run-0001  ·  approval gate');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
     expect(frame, 'its recent-run row is not repeated under Runs').not.toContain('deploy-flow');
     expect(frame, 'a recent run that is not parked still is').toContain('nightly-flow');
@@ -300,9 +300,9 @@ describe('the Attention rows', () => {
     const lines = m
       .frame()
       .split('\n')
-      .filter((line) => line.includes('⚠') || line.includes('‖'));
+      .filter((line) => /^\s*(?:> )?(?:!|\|\|) /u.test(line));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('‖ run-0001');
+    expect(lines[0]).toContain('|| run-0001');
     expect(m.frame()).not.toContain('Ship the release?');
   });
 });
@@ -330,7 +330,7 @@ describe('the Attention rows keep a row on screen at 80×24, whatever else the H
         `focus on ${expected.runId}`,
       );
       await eventually(
-        () => m.frame().includes(`> ‖ ${expected.runId}`),
+        () => m.frame().includes(`> || ${expected.runId}`),
         `the row of ${expected.runId} drawn when it is focused`,
       );
       seen.push(expected.runId);
@@ -345,7 +345,7 @@ describe('opening the card', () => {
     const m = mount();
     await openCard(m);
     const frame = m.frame();
-    expect(frame).toContain('‖ waiting for you  ·  run run-0001');
+    expect(frame).toContain('|| waiting for you  ·  run run-0001');
     expect(frame).toContain('│ Ship the release?');
     expect(frame).toContain('node review-step · approval gate');
     expect(frame).toContain('[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending');
@@ -494,7 +494,7 @@ describe('Ctrl+Y answers the gate once', () => {
   it('a budget card answers as a budget resume with exactly the frozen allowance', async () => {
     const m = mount({ rows: [{ runId: RUN, kind: 'budget', gates: 1 }], run: BUDGET_RUN });
     await openCard(m);
-    expect(m.frame()).toContain('Frozen allowance: $0.0420 (4200000 microcents)');
+    expect(m.frame()).toContain('Budget allowance: $0.0420');
     await answerOnceThePaintLanded(m);
     expect(m.resume).toHaveBeenCalledOnce();
     expect(m.resume).toHaveBeenCalledWith({
@@ -605,7 +605,7 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     expect(m.resume, 'Esc decides nothing').not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().screen).toBeUndefined();
     await eventually(() => m.frame().includes('Attention required'));
-    expect(m.frame()).toContain('‖ run-0001');
+    expect(m.frame()).toContain('|| run-0001');
     expect(m.controller.getSnapshot().parkedRuns).toEqual([ROW]);
   });
 
@@ -770,7 +770,7 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
       () => m.frame().includes('Enter show how to answer') && m.homePainted(),
       'the focused input row, which says what Enter does',
     );
-    expect(m.frame()).toContain('> ‖ run-0001  ·  input gate  ·  Enter show how to answer');
+    expect(m.frame()).toContain('> || run-0001  ·  input gate  ·  Enter show how to answer');
     expect(m.frame()).toContain('Enter show how');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
@@ -809,9 +809,9 @@ describe('what an Attention row says of the run it names', () => {
     const row = m
       .frame()
       .split('\n')
-      .find((line) => line.includes('‖'));
+      .find((line) => line.includes('||'));
     expect(row?.trimStart()).toBe(
-      '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
+      '|| 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
     );
     m.harness.stdin.write(DOWN);
     await eventually(
@@ -821,9 +821,9 @@ describe('what an Attention row says of the run it names', () => {
     const focused = m
       .frame()
       .split('\n')
-      .find((line) => line.includes('‖'));
+      .find((line) => line.includes('||'));
     expect(focused?.trimStart()).toBe(
-      '> ‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
+      '> || 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
     );
     expect((focused ?? '').length, 'inside the 80 columns').toBeLessThanOrEqual(80);
   });
@@ -842,6 +842,8 @@ describe('what an Attention row says of the run it names', () => {
       ],
     });
     await settleFrames();
-    expect(m.frame()).toContain('‖ run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ select');
+    expect(m.frame()).toContain(
+      '|| run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ select',
+    );
   });
 });

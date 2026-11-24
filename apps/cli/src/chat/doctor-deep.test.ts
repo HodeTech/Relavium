@@ -97,7 +97,8 @@ describe('buildProviderProbe', () => {
       candidateIds: ['anthropic'],
     });
     const [check] = await probe();
-    expect(check).toMatchObject({ id: 'provider:anthropic', status: 'ok' });
+    // The id stays the machine key; the label is the provider as a person reads it (ADR-0145 §8).
+    expect(check).toMatchObject({ id: 'provider:anthropic', label: 'Anthropic', status: 'ok' });
     expect(check?.detail).toContain('key works');
     // The key reached generate but never the detail.
     expect(generate).toHaveBeenCalledWith(expect.anything(), TEST_KEY);

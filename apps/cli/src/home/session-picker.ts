@@ -5,7 +5,7 @@ import {
   type NativePickerOptions,
   type NativePickerResult,
 } from '../render/tui/native-picker.js';
-import { relativeTime } from '../render/tui/home-projection.js';
+import { formatAgeOfIso } from '../render/notation.js';
 
 export interface SessionPickerDeps {
   readonly store: Pick<SessionStore, 'listSessionPage'>;
@@ -41,7 +41,7 @@ export function createSessionPickerSource(deps: SessionPickerDeps): NativePicker
             return {
               options: page.sessions.map((session) => ({
                 value: session.id,
-                label: `${session.title ?? `Untitled — ${session.agentSlug}`} · ${relativeTime(session.updatedAt, now)}`,
+                label: `${session.title ?? `Untitled — ${session.agentSlug}`} · ${formatAgeOfIso(session.updatedAt, now)}`,
                 ...(allDirectories ? { hint: session.workingDir } : {}),
               })),
               ...(page.next === undefined ? {} : { next: () => readPage(page.next, 'forward') }),

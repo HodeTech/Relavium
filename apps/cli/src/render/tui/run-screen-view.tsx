@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import type { RunHostSnapshot } from '../../home/run-host.js';
+import { withGlyphForm } from './glyphs.js';
 import { RunApp } from './RunApp.js';
 import { layoutColumns } from './layout-columns.js';
 import { colorProps, dimProps } from './projection.js';
@@ -39,16 +40,18 @@ export interface RunScreenViewProps {
 }
 
 export function RunScreenView(props: Readonly<RunScreenViewProps>): ReactElement {
-  const model = runScreenModel({
-    runId: props.runId,
-    snapshot: props.hostedRun,
-    notices: props.notices,
-    armed: props.interruptArmed,
-    columns: props.columns,
-    rows: props.rows,
-    openGate: props.openGate,
-    gateOpenFailed: props.gateOpenFailed,
-  });
+  const model = withGlyphForm(!props.color, () =>
+    runScreenModel({
+      runId: props.runId,
+      snapshot: props.hostedRun,
+      notices: props.notices,
+      armed: props.interruptArmed,
+      columns: props.columns,
+      rows: props.rows,
+      openGate: props.openGate,
+      gateOpenFailed: props.gateOpenFailed,
+    }),
+  );
   const { color } = props;
   const card = model.card;
   return (

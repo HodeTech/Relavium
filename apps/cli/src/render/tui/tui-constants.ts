@@ -37,5 +37,5 @@ export const HOSTED_RUN_EXIT_SETTLE_MS = 3_000;
 /** The longest a confirmed exit waits for a leg: the grace and then the host's settle bound. Past it the finite-exit bound ends the process. */
 export const HOSTED_RUN_EXIT_BOUND_MS = HOSTED_RUN_EXIT_GRACE_MS + HOSTED_RUN_EXIT_SETTLE_MS;
 
-/** How often the Home re-reads its run host while a leg is live (the strip's `▶` row, and the wait of a confirmed exit). */
+/** How often the Home re-reads its run host while a leg is live (the strip's run row, and the wait of a confirmed exit). */
 export const HOSTED_RUN_POLL_MS = 250;

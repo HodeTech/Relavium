@@ -167,7 +167,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(frame).toContain('EARLIER-CONVERSATION-LINE');
     expect(frame).toContain('not an approval');
     expect(frame).toContain('Which file should I change?');
-    expect(frame).toContain('\u203a 1 ( ) alpha.ts');
+    expect(frame).toContain('> 1 ( ) alpha.ts');
     expect(frame).toContain('2 ( ) beta.ts');
     expect(frame).toContain('\u270e Type your own answer');
     expect(frame).toContain('The first file'); // the highlighted option's description
@@ -354,7 +354,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('One  [○] ○ ○ · Review'));
+      await vi.waitFor(() => expect(f.text()).toContain('One  [o] o o · Review'));
       await settle();
       // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
       // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
@@ -438,22 +438,22 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○] ○ ○ · Review'));
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  [o] o o · Review'));
       await settle();
       await tap(f, RIGHT); // look at question 2 without answering question 1
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  ○ [○] ○ · Review'),
+        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  o [o] o · Review'),
       );
       await tap(f, RIGHT);
       await tap(f, RIGHT); // the Review tab
       await vi.waitFor(() =>
         expect(f.lastFrameWith('Review your answers') ?? '').toContain(
-          '○ 1 Pick → not answered yet',
+          'o 1 Pick → not answered yet',
         ),
       );
       await tap(f, '\r'); // Enter with holes: goes to the first unanswered question, with a note
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  [○]'),
+        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  [o]'),
       );
       await tap(f, '2'); // beta.ts → question 2
       await tap(f, '1'); // multi-select: tick "one" …
@@ -461,7 +461,7 @@ describe.each(['chat', 'home'] as const)(
       await tap(f, '1'); // yes → the Review tab, which does NOT send
       expect(f.store.getSnapshot().question?.index).toBe(3);
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Review your answers') ?? '').toContain('● 2 Also → one'),
+        expect(f.lastFrameWith('Review your answers') ?? '').toContain('+ 2 Also → one'),
       );
       f.input.push('\r');
       expect(await answer).toEqual({
@@ -501,12 +501,12 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○]'));
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  [o]'));
       await settle();
       await tap(f, '1'); // alpha.ts → question 2
       await tap(f, LEFT);
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which file?') ?? '').toContain('(•) alpha.ts'),
+        expect(f.lastFrameWith('Which file?') ?? '').toContain('(*) alpha.ts'),
       );
       f.store.sealToolPreviews();
       await expect(answer).rejects.toMatchObject({ name: 'AbortError' });

@@ -31,6 +31,7 @@ import {
   LEGEND_SEPARATOR,
   legend,
 } from './legend.js';
+import { glyph } from './glyphs.js';
 import { itemsRow } from './legend-row.js';
 import { displayWidth } from './viewport.js';
 
@@ -86,7 +87,8 @@ const ASCII_LINE = /^[\x20-\x7e]*$/u;
 
 /** The thin rule that opens the card, fixed host text the model cannot touch. */
 export function questionRule(columns: number): string {
-  return `─${RULE_LABEL}${'─'.repeat(Math.max(1, columns - 2 - displayWidth(RULE_LABEL)))}`;
+  const rule = glyph('thinRule');
+  return `${rule}${RULE_LABEL}${rule.repeat(Math.max(1, columns - 2 - displayWidth(RULE_LABEL)))}`;
 }
 
 /**
@@ -150,13 +152,13 @@ function head(text: string, width: number): string {
 
 function mark(multiSelect: boolean, chosen: boolean): string {
   if (multiSelect) return chosen ? '[x]' : '[ ]';
-  return chosen ? '(•)' : '( )';
+  return chosen ? `(${glyph('bullet')})` : '( )';
 }
 
 /** The tab strip: one dot per question (filled once answered, bracketed when on screen) and the Review tab. */
 function tabs(state: QuestionCardState): string {
   const dots = state.request.questions.map((_, index) => {
-    const dot = isAnswered(state, index) ? '●' : '○';
+    const dot = glyph(isAnswered(state, index) ? 'answered' : 'pending');
     return state.index === index ? `[${dot}]` : dot;
   });
   return `${dots.join(' ')} · ${isReview(state) ? '[Review]' : 'Review'}`;
@@ -171,7 +173,7 @@ function optionRow(
   const question = currentQuestion(state);
   const option = question.options[index];
   const chosen = entry.ticked.includes(index);
-  const cursor = entry.highlight === index ? '›' : ' ';
+  const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
   const text = hardWrap(`${prefix}${option?.label ?? ''}`, width)[0] ?? '';
   return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
@@ -180,7 +182,7 @@ function optionRow(
 function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): QuestionCardRow {
   const question = currentQuestion(state);
   const index = question.options.length;
-  const cursor = entry.highlight === index ? '›' : ' ';
+  const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const chosen = entry.own !== undefined;
   const prefix = `${cursor}   ${mark(question.multiSelect, chosen)} ${ASK_USER_OWN_ANSWER_GLYPH} `;
   const room = Math.max(1, width - displayWidth(prefix));
@@ -189,7 +191,10 @@ function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): 
       [...state.field.text].length >= 400
         ? ` ${String([...state.field.text].length)}/${String(ASK_USER_BOUNDS.ownTextCodePoints)}`
         : '';
-    const typed = tail(`${state.field.text}█`, Math.max(1, room - displayWidth(counter)));
+    const typed = tail(
+      `${state.field.text}${glyph('caret')}`,
+      Math.max(1, room - displayWidth(counter)),
+    );
     return { text: `${prefix}${typed}${counter}`, tone: 'field' };
   }
   const label = entry.own ?? OWN_PLACEHOLDER;
@@ -349,7 +354,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   const rest = Math.max(1, width - REVIEW_INDENT.length);
   const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
-    const line = `${answered ? '●' : '○'} ${String(index + 1)} ${question.header} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${question.header} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
     return {
       tone: answered ? ('chosen' as const) : ('pending' as const),
       lines: wrapRows(line, width, rest),

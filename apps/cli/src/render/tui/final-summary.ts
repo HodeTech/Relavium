@@ -1,10 +1,11 @@
 import {
   formatReportedCost,
-  formatDuration,
   formatProducedMedia,
   formatTokens,
-  statusGlyph,
+  NODE_STATUS_ROLE,
 } from './format.js';
+import { statusCell, STATUS_WORD_WIDTH, wordOf } from './glyphs.js';
+import { formatDuration } from '../notation.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
 import { resumeCommandBase } from '../../gate/budget.js';
@@ -75,8 +76,9 @@ export function renderFinalSummary(state: RunViewState): string {
       continue;
     }
     // Reuse the live view's suffix logic (one source of truth) — completed→duration, failed→error code, etc.
+    const role = NODE_STATUS_ROLE[node.status];
     lines.push(
-      `  ${statusGlyph(node.status)} ${sanitizeInline(id)}${sanitizeInline(nodeSuffix(node))}`,
+      `  ${statusCell(role)} ${wordOf(role).padEnd(STATUS_WORD_WIDTH)} ${sanitizeInline(id)}${sanitizeInline(nodeSuffix(node))}`,
     );
   }
 

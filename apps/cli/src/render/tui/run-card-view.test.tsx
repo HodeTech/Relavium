@@ -20,6 +20,7 @@ import {
   type RunCardState,
 } from './run-card-model.js';
 import { RunCardView } from './run-card-view.js';
+import { GLYPH_ROLES, GLYPHS, glyphOf } from './glyphs.js';
 
 afterEach(cleanup);
 
@@ -82,7 +83,7 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a', { message: 'Ship build 42 to production?' })] }),
     });
     const lines = linesOf(lastFrame());
-    expect(lines[0]).toBe('‖ waiting for you  ·  run run-0001');
+    expect(lines[0]).toBe('|| waiting for you  ·  run run-0001');
     expect(lines).toContain(`${RUN_CARD_GUTTER}Ship build 42 to production?`);
     expect(lines).toContain('node node-a · approval gate');
     expect(lines).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
@@ -94,8 +95,8 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a'), gate('b'), gate('c')], cursor: 1 }),
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('‖ waiting for you  ·  gate 2 of 3  ·  run run-0001');
-    expect(frame).toContain('▸ b · approval · node node-b');
+    expect(linesOf(frame)[0]).toBe('|| waiting for you  ·  gate 2 of 3  ·  run run-0001');
+    expect(frame).toContain('> b · approval · node node-b');
     expect(frame).toContain('  a · approval · node node-a');
     expect(frame).toContain('  c · approval · node node-c');
     expect(linesOf(frame).at(-1)).toBe(
@@ -110,7 +111,7 @@ describe('at 80×24', () => {
       nowMs: Date.parse(at) + 1000,
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('⚠ overdue  ·  run run-0001');
+    expect(linesOf(frame)[0]).toBe('! overdue  ·  run run-0001');
     expect(frame).toContain(`Overdue since ${at}.`);
     expect(frame).toContain('On timeout: the gate is approved.');
   });
@@ -187,8 +188,13 @@ describe('with colour off', () => {
     const coloured = view({ color: true }).lastFrame() ?? '';
     expect(plain).not.toMatch(ANSI);
     expect(coloured).toMatch(ANSI);
-    // Strip the styling from the coloured frame: what is left is the plain frame, so colour never carried a meaning of its own.
-    expect(coloured.replace(STYLING, '')).toBe(plain);
+    // Strip the styling from the coloured frame and write its glyphs in their plain forms: what is left is the plain frame, so colour never
+    // carried a meaning of its own.
+    const inPlainForms = GLYPH_ROLES.reduce(
+      (text, role) => text.replaceAll(GLYPHS[role].glyph, GLYPHS[role].ascii),
+      coloured.replace(STYLING, ''),
+    );
+    expect(inPlainForms).toBe(plain);
   });
 });
 
@@ -225,13 +231,17 @@ describe('a glyph and a word for every state', () => {
     (name, state, nowMs) => {
       const appearance = RUN_CARD_APPEARANCE[name];
       const { lastFrame } = view({ snapshot: state, nowMs, color: false });
-      expect(linesOf(lastFrame())[0]).toContain(`${appearance.glyph} ${appearance.word}`);
+      expect(linesOf(lastFrame())[0]).toContain(
+        `${glyphOf(appearance.role, true)} ${appearance.word}`,
+      );
       expect(projectRunCard(state, { columns: 80, rows: 24, nowMs }).state).toBe(name);
     },
   );
 
   it('every state has its own word, and no two states share a glyph and a word', () => {
-    const pairs = Object.values(RUN_CARD_APPEARANCE).map((entry) => `${entry.glyph} ${entry.word}`);
+    const pairs = Object.values(RUN_CARD_APPEARANCE).map(
+      (entry) => `${glyphOf(entry.role, false)} ${entry.word}`,
+    );
     expect(new Set(pairs).size).toBe(pairs.length);
     expect(new Set(Object.values(RUN_CARD_APPEARANCE).map((entry) => entry.word)).size).toBe(
       pairs.length,
@@ -255,7 +265,8 @@ describe('what an author can put in a gate`s message', () => {
     const message = [
       'Approve?',
       'Ctrl+Y approves · Ctrl+N rejects',
-      '▸ z · approval · node forged',
+      '› z · approval · node forged',
+      '▸ y · approval · node forged',
       '\u001b[2J\u001b]0;pwned\u0007done',
     ].join('\n');
     const { lastFrame } = view({ snapshot: snapshot({ gates: [gate('a', { message })] }) });
@@ -267,7 +278,8 @@ describe('what an author can put in a gate`s message', () => {
     expect(lines.filter((line) => /Ctrl\+Y/u.test(line))).toEqual([
       '[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     ]);
-    expect(lines.filter((line) => line.startsWith('▸'))).toEqual([]);
+    // the list cursor is `›` (`>` with colour off): no row of this one-gate card starts with a marker, whatever the author wrote
+    expect(lines.filter((line) => /^[›>▸]/u.test(line))).toEqual([]);
     expect(lastFrame()).not.toContain('\u001b]');
     expect(lastFrame()).not.toContain('pwned\u0007');
   });

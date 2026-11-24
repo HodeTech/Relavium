@@ -680,7 +680,7 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     const out = err();
     expect(out).toContain('doctor: all checks passed');
-    expect(out).toContain('✓ OS keychain: reachable');
+    expect(out).toContain('ok ok · OS keychain: reachable');
     expect(out).not.toContain('anthropic'); // the fast tier never ran the deep provider probe
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
   });
@@ -691,8 +691,8 @@ describe('chatCommand', () => {
     });
     await chatCommand({ agent: undefined }, d);
     const out = err();
-    expect(out).toContain('✓ anthropic: key works'); // the deep provider probe ran
-    expect(out).toContain('⚠ MCP servers: none configured'); // the deep MCP probe ran
+    expect(out).toContain('ok ok · anthropic: key works'); // the deep provider probe ran
+    expect(out).toContain('! warning · MCP servers: none configured'); // the deep MCP probe ran
   });
 
   it('rejects an unknown flag on an arg-taking command (/doctor --bogus)', async () => {
@@ -4039,8 +4039,8 @@ describe('chatResumeCommand (2.N)', () => {
         expect(panel).not.toContain('(0 calls');
         expect(panel).not.toContain('free');
       }
-      expect(panels[0]).toContain('~12345µ¢ estimated, possibly billed');
-      expect(panels[1]).toContain('Released ~12345µ¢');
+      expect(panels[0]).toContain('~$0.00012345 estimated, possibly billed');
+      expect(panels[1]).toContain('Released ~$0.00012345');
       expect(panels[1]).not.toContain('estimated, possibly billed');
       const after = store.loadSessionCostBreakdown('id-0');
       expect(after.totalCostMicrocents).toBe(amount);

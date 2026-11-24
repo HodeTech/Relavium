@@ -14,12 +14,11 @@ import {
   hostedRunLabel,
   HOME_MIN_COLS,
   HOME_MIN_ROWS,
-  relativeTime,
   runLabel,
   sessionLabel,
-  shortId,
   tooSmallMessage,
 } from './home-projection.js';
+import { formatAgeOfIso, shortId } from '../notation.js';
 
 const NOW = Date.parse('2026-06-28T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -40,22 +39,22 @@ describe('homeFitsTerminal / tooSmallMessage', () => {
   });
 });
 
-describe('relativeTime', () => {
+describe('the age of a stamp on a Home row', () => {
   it('buckets sub-minute / minutes / hours / days, and treats a future skew as "just now"', () => {
-    expect(relativeTime(ago(5_000), NOW)).toBe('just now');
-    expect(relativeTime(ahead(5_000), NOW)).toBe('just now'); // clock skew, not a negative count
-    expect(relativeTime(ago(5 * MIN), NOW)).toBe('5m ago');
-    expect(relativeTime(ago(3 * HR), NOW)).toBe('3h ago');
-    expect(relativeTime(ago(2 * DAY), NOW)).toBe('2d ago');
+    expect(formatAgeOfIso(ago(5_000), NOW)).toBe('just now');
+    expect(formatAgeOfIso(ahead(5_000), NOW)).toBe('just now'); // clock skew, not a negative count
+    expect(formatAgeOfIso(ago(5 * MIN), NOW)).toBe('5m ago');
+    expect(formatAgeOfIso(ago(3 * HR), NOW)).toBe('3h ago');
+    expect(formatAgeOfIso(ago(2 * DAY), NOW)).toBe('2d ago');
   });
 
   it('pins the 60-second bucket boundary (59s is "just now", 60s is "1m ago")', () => {
-    expect(relativeTime(ago(59_000), NOW)).toBe('just now');
-    expect(relativeTime(ago(60_000), NOW)).toBe('1m ago');
+    expect(formatAgeOfIso(ago(59_000), NOW)).toBe('just now');
+    expect(formatAgeOfIso(ago(60_000), NOW)).toBe('1m ago');
   });
 
   it('returns "" for an unparseable timestamp (the strip renders nothing, never NaN)', () => {
-    expect(relativeTime('not-a-date', NOW)).toBe('');
+    expect(formatAgeOfIso('not-a-date', NOW)).toBe('');
   });
 });
 
@@ -271,14 +270,14 @@ const ENDED_LAST: RunHostSnapshot = {
 
 describe('the run row of the strip (ADR-0139 §3)', () => {
   it('shows the active run’s id and its state as a word, behind a glyph, in one line', () => {
-    expect(hostedRunLabel(running(false))).toBe(`▶ ${RUN_ID}  ·  running  ·  Enter show it`);
-    expect(hostedRunLabel(running(true))).toBe(`▶ ${RUN_ID}  ·  cancelling  ·  Enter show it`);
+    expect(hostedRunLabel(running(false))).toBe(`◐ ${RUN_ID}  ·  running  ·  Enter show it`);
+    expect(hostedRunLabel(running(true))).toBe(`■ ${RUN_ID}  ·  cancelling  ·  Enter show it`);
     expect(hostedRunLabel(running(false))).not.toContain('\n');
   });
 
   it('says it is starting while the engine has not named the run yet', () => {
     expect(hostedRunLabel({ launching: true, active: undefined, last: undefined })).toBe(
-      '▶ run  ·  starting',
+      '◌ run  ·  starting',
     );
     expect(
       hostedRunLabel({
@@ -286,7 +285,7 @@ describe('the run row of the strip (ADR-0139 §3)', () => {
         active: { leg: 'start', runId: undefined, cancelling: false },
         last: undefined,
       }),
-    ).toBe('▶ run  ·  starting');
+    ).toBe('◌ run  ·  starting');
   });
 
   it('is nothing at all when no run is active: no host, an idle host, and a host whose last leg ended', () => {
@@ -326,7 +325,7 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
   it('says the run is already stopping, and names the wait', () => {
     const lines = exitGuardLines('confirm', running(true), 13);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} The run is stopping: ${RUN_ID}.`);
-    expect(lines[1]).toContain('(about 13 s)');
+    expect(lines[1]).toContain('(about 13s)');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
@@ -339,6 +338,6 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
   it('says it is stopping once the person confirmed, and for how long the Home waits', () => {
     const lines = exitGuardLines('stopping', running(true), 13);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
-    expect(lines[1]).toContain('within about 13 s');
+    expect(lines[1]).toContain('within about 13s');
   });
 });

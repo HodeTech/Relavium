@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 
 import { agentSheetLines } from './agent-sheet.js';
 import type { ChatSheetState } from './chat-sheet.js';
+import { withGlyphForm } from './glyphs.js';
 import { PermissionsSheetView, SheetLinesView } from './permissions-sheet-view.js';
 
 /**
@@ -26,7 +27,9 @@ export function ChatSheetView(props: Readonly<ChatSheetViewProps>): ReactElement
     case 'agent':
       return (
         <SheetLinesView
-          lines={agentSheetLines(state.view, { columns, terminalRows: rows })}
+          lines={withGlyphForm(!color, () =>
+            agentSheetLines(state.view, { columns, terminalRows: rows }),
+          )}
           color={color}
         />
       );

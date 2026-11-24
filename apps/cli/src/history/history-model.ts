@@ -1,7 +1,13 @@
 import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { formatDuration } from '../render/tui/format.js';
+import {
+  displayPath,
+  formatAgeOfIso,
+  formatDuration,
+  type DisplayPathRoots,
+} from '../render/notation.js';
+import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
 import {
   MAX_PROJECT_ROOT_CHARS,
   isFinishedRun,
@@ -21,40 +27,25 @@ import {
  * drawn on its own.
  */
 
-/** The glyph of each run status; the word is the status itself. */
-export const RUN_STATUS_GLYPH: Readonly<Record<RunStatus, string>> = {
-  pending: '○',
-  running: '◐',
-  paused: '⏸',
-  completed: '✓',
-  failed: '✗',
-  cancelled: '⊘',
+/** The glyph-table role of each run status; the word is the status itself. A view draws the role in the form its colour setting asks for. */
+export const RUN_STATUS_ROLE: Readonly<Record<RunStatus, StatusGlyphRole>> = {
+  pending: 'pending',
+  running: 'running',
+  paused: 'paused',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'cancelled',
 };
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-
-/** What a timestamp more than one minute ahead of the clock says: it is not an age, and `now` would be a lie. */
-export const IN_THE_FUTURE = 'in the future';
-
-/**
- * A coarse relative age of an ISO timestamp: `now` (under a minute, and a skew of up to one minute into the future),
- * `5m ago`, `3h ago`, `2d ago`. Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down. A
- * timestamp MORE than one minute ahead of the clock says `in the future` (a clock that moved, or a damaged row), never
- * `now`; exactly one minute ahead is still skew. An unparseable timestamp yields `''`: the row renders nothing rather
- * than `NaN`.
- */
-export function ageText(iso: string, nowMs: number): string {
-  const thenMs = Date.parse(iso);
-  if (Number.isNaN(thenMs)) return '';
-  const delta = nowMs - thenMs;
-  if (delta < -MINUTE_MS) return IN_THE_FUTURE;
-  if (delta < MINUTE_MS) return 'now';
-  if (delta < HOUR_MS) return `${Math.floor(delta / MINUTE_MS)}m ago`;
-  if (delta < DAY_MS) return `${Math.floor(delta / HOUR_MS)}h ago`;
-  return `${Math.floor(delta / DAY_MS)}d ago`;
-}
+/** The Unicode glyph of each run status, from the table (the plain form is {@link RUN_STATUS_ROLE}'s, chosen by the view). */
+export const RUN_STATUS_GLYPH: Readonly<Record<RunStatus, string>> = {
+  pending: glyphOf(RUN_STATUS_ROLE.pending, false),
+  running: glyphOf(RUN_STATUS_ROLE.running, false),
+  paused: glyphOf(RUN_STATUS_ROLE.paused, false),
+  completed: glyphOf(RUN_STATUS_ROLE.completed, false),
+  failed: glyphOf(RUN_STATUS_ROLE.failed, false),
+  cancelled: glyphOf(RUN_STATUS_ROLE.cancelled, false),
+};
 
 export interface HistoryRow {
   /** The run id — the identity a drill-down and a pin use. Draw {@link shortId}. */
@@ -90,6 +81,8 @@ export interface HistoryRowsInput {
   readonly pinnedRunIds: ReadonlySet<string>;
   /** Workflow id → slug (`loadWorkflowSlugs`); a run whose workflow is absent from it shows the id. */
   readonly workflowLabels?: ReadonlyMap<string, string>;
+  /** What a run's project root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
+  readonly paths?: DisplayPathRoots;
 }
 
 /** The rows of one page, in the order given (the page is already newest first). Nothing is dropped here. */
@@ -106,7 +99,7 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       glyph: RUN_STATUS_GLYPH[run.status],
       word: run.status,
       label: scrubbedBounded(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
-      ageText: ageText(run.createdAt, input.nowMs),
+      ageText: formatAgeOfIso(run.createdAt, input.nowMs),
       ...(durationMs === undefined ? {} : { durationMs, durationText: formatDuration(durationMs) }),
       pinned: input.pinnedRunIds.has(run.id),
       ...(Number.isNaN(createdAtMs) ? {} : { createdAtMs }),
@@ -114,7 +107,14 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       totalCostMicrocents: run.totalCostMicrocents,
       ...(run.projectRoot === undefined
         ? {}
-        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
+        : {
+            projectRoot: scrubbedBounded(
+              input.paths === undefined
+                ? run.projectRoot
+                : displayPath(run.projectRoot, input.paths),
+              MAX_PROJECT_ROOT_CHARS,
+            ),
+          }),
     };
   });
 }

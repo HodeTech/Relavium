@@ -5,10 +5,11 @@ import {
   formatReportedCost,
   formatProducedMedia,
   formatTokens,
+  NODE_STATUS_ROLE,
   spinnerFrame,
   statusColor,
-  statusGlyph,
 } from './format.js';
+import { glyphOf, statusCellOf, STATUS_WORD_WIDTH, withGlyphForm, wordOf } from './glyphs.js';
 import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
@@ -26,10 +27,17 @@ function NodeLine(
   props: Readonly<{ node: NodeView; tick: number; useColor: boolean }>,
 ): ReactElement {
   const { node, tick, useColor } = props;
-  const glyph = node.status === 'running' ? spinnerFrame(tick) : statusGlyph(node.status);
+  const role = NODE_STATUS_ROLE[node.status];
+  // A running node animates (the spinner is not a table glyph) in the column the static glyphs use; the others draw the table's glyph, in
+  // its plain form when colour is off. The status word stands beside the glyph, and the row is cut at the terminal's edge from the END, so
+  // a long node id is what is lost, never the word.
+  const mark =
+    node.status === 'running'
+      ? spinnerFrame(tick).padEnd(statusCellOf(role, !useColor).length)
+      : statusCellOf(role, !useColor);
   return (
-    <Text {...colorProps(useColor, statusColor(node.status))}>
-      {glyph} {sanitizeInline(node.nodeId)}
+    <Text {...colorProps(useColor, statusColor(node.status))} wrap="truncate-end">
+      {mark} {wordOf(role).padEnd(STATUS_WORD_WIDTH)} {sanitizeInline(node.nodeId)}
       {sanitizeInline(nodeSuffix(node))}
     </Text>
   );
@@ -78,7 +86,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {activeNode !== undefined && activeLines.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <Text {...colorProps(color, 'cyan')}>
-            ▌ {sanitizeInline(activeNode.nodeId)}
+            {glyphOf('activeBar', !color)} {sanitizeInline(activeNode.nodeId)}
             {state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}
           </Text>
           {/* `truncate-end` bounds each logical line to one terminal row — a newline-free token blast or a
@@ -108,7 +116,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           {state.producedMedia.map((media) => (
             // The content-addressed handle is unique (the view-model dedups by it) + stable — a sound React key.
             <Text key={media.handle} {...colorProps(color, 'magenta')} wrap="truncate-end">
-              {sanitizeInline(formatProducedMedia(media))}
+              {sanitizeInline(withGlyphForm(!color, () => formatProducedMedia(media)))}
             </Text>
           ))}
         </Box>
@@ -119,7 +127,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
             <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              ⚠ {sanitizeInline(w)}
+              {glyphOf('warning', !color)} {sanitizeInline(w)}
             </Text>
           ))}
         </Box>

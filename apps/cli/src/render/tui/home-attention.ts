@@ -25,7 +25,9 @@ import {
   type RunGatesReader,
 } from '../../home/run-gates.js';
 import { sanitizeInline } from '../sanitize.js';
-import { expiryLabel, shortId } from './home-projection.js';
+import { shortId } from '../notation.js';
+import { glyph } from './glyphs.js';
+import { expiryLabel } from './home-projection.js';
 import { keyLabel, type LegendKey } from './legend.js';
 import { clipLine } from './sheet-frame.js';
 import { displayWidth, sliceDisplayColumns } from './viewport.js';
@@ -206,7 +208,7 @@ export function parkedRunLabel(
   const due = nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs);
   const line = (shownId: string, withWorkflow: boolean, withDue: boolean): string =>
     [
-      `‖ ${shownId}`,
+      `${glyph('paused')} ${shownId}`,
       ...(withWorkflow && workflow !== undefined ? [workflow] : []),
       wordsFor(row),
       ...(withDue && due !== undefined ? [due] : []),
@@ -242,14 +244,14 @@ export function hostedEndNotice(
   parked: ParkedRunRow | undefined,
 ): string | undefined {
   const slug = parked?.workflow === undefined ? '' : sanitizeInline(parked.workflow).trim();
-  const name = slug === '' ? `run ${shortId(sanitizeInline(end.runId))}` : slug;
+  const name = slug === '' ? `run ${sanitizeInline(shortId(end.runId))}` : slug;
   switch (end.disposition) {
     case 'paused':
-      return `‖ ${name} ${pausedWords(parked?.kind)} on the Home.`;
+      return `${glyph('paused')} ${name} ${pausedWords(parked?.kind)} on the Home.`;
     case 'completed':
-      return `✓ ${name} completed. Leave this chat to see it on the Home.`;
+      return `${glyph('completed')} ${name} completed. Leave this chat to see it on the Home.`;
     case 'failed':
-      return `✗ ${name} failed. Leave this chat to see it on the Home.`;
+      return `${glyph('failed')} ${name} failed. Leave this chat to see it on the Home.`;
     default:
       return undefined;
   }

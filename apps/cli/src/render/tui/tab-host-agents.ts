@@ -2,6 +2,7 @@ import { agentToolsText, NO_TOOLS_DECLARED, type AgentRow } from '../../history/
 import type { HomeAgentRequest } from '../../home/agent-start.js';
 import type { AgentsRead } from '../../home/agents-port.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph } from './glyphs.js';
 import { exitKey, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
@@ -11,6 +12,8 @@ import {
   wrappedLines,
   type SheetLine,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 
 /**
@@ -75,7 +78,8 @@ export const AGENT_DETAIL_ROWS = 14;
 const TOOL_LINES_MAX = 3;
 const PROMPT_LINES_MAX = 5;
 const LABEL_WIDTH = 18;
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 
 /** The tab opened on `read`, the cursor where it was (kept inside the rows there are now). */
@@ -147,12 +151,12 @@ export function foldAgentsKey(state: AgentsTabState, input: string, key: ChatKey
 
 /** The words after the name that say what the row is: a glyph and a word, so the state reads without colour. */
 function stateWords(row: AgentRow): string {
-  return row.state === 'ready' ? '✓ ready' : '✗ invalid';
+  return row.state === 'ready' ? `${glyph('completed')} ready` : `${glyph('failed')} invalid`;
 }
 
 function rowLine(row: AgentRow, selected: boolean, width: number): SheetLine {
   const name = row.name !== undefined && row.name !== row.slug ? row.name : '';
-  const left = `${selected ? POINTER : INDENT}${[row.slug, name].filter((part) => part !== '').join('  ')}`;
+  const left = `${selected ? pointer() : INDENT}${[row.slug, name].filter((part) => part !== '').join('  ')}`;
   const right = stateWords(row);
   const text = flushRow(left, right, width);
   const spans: SheetSpan[] = [];
@@ -246,10 +250,9 @@ export function agentsBody(
   const list: SheetLine[] = rows
     .slice(start, end)
     .map((row, at) => rowLine(row, start + at === state.cursor, width));
-  if (start > 0 && list.length > 0)
-    list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && list.length > 0) list[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < rows.length && list.length > 0)
-    list[list.length - 1] = { kind: 'marker', text: `▼ ${String(rows.length - end + 1)} more` };
+    list[list.length - 1] = { kind: 'marker', text: moreBelowText(rows.length - end + 1) };
   const selected = rows[state.cursor];
   const detail: SheetLine =
     selected === undefined ? { kind: 'text', text: '' } : detailLine(selected, width);

@@ -821,7 +821,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     });
     await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
     await settle();
-    expect(f.lastFrameWith('Esc stops the turn')).toMatch(/\u2500 Approval needed \u2500+/u);
+    expect(f.lastFrameWith('Esc stops the turn')).toMatch(/- Approval needed -+/u);
   });
 
   it("starts the person's wait clock when the card opens and folds it into the turn when it closes", async () => {
@@ -901,7 +901,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       expect(frame()).toContain('+5 five');
       expect(frame()).not.toContain('EVIL');
       expect(frame().replace(/\s+/gu, ' ')).toContain(
-        '\u26a0 2 changed lines not shown \u2014 press [v] for the full diff.',
+        '! 2 changed lines not shown \u2014 press [v] for the full diff.',
       );
       expect(frame()).toContain('[Ctrl+Y] Allow');
       expect(frame()).toContain('[Ctrl+N] Deny');
@@ -931,7 +931,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
         .filter((row) => /^\+\d+ line /u.test(row)).length;
       expect(drawn).toBeGreaterThan(0);
       expect(frame().replace(/\s+/gu, ' ')).toContain(
-        `\u26a0 ${40 - drawn} changed lines not shown \u2014 press [v] for the full diff.`,
+        `! ${40 - drawn} changed lines not shown \u2014 press [v] for the full diff.`,
       );
       expect(frame()).toContain('[Ctrl+Y] Allow');
       expect(frame()).not.toContain('[Ctrl+G] Allow all');
@@ -988,7 +988,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       expect(hidden, 'the card says its argument vector is cut').not.toBeNull();
       const lines = Number(hidden?.[1]);
       expect(shown.replace(/\s+/gu, ' ')).toContain(
-        `\u26a0 ${lines} line${lines === 1 ? '' : 's'} of this call ${lines === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
+        `! ${lines} line${lines === 1 ? '' : 's'} of this call ${lines === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
       );
       expect(shown).toContain('[Ctrl+Y] Allow');
       expect(shown).toContain('[Ctrl+N] Deny');
@@ -1038,9 +1038,9 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       const full = f.lastFrameWith('Review \u00b7 tool') ?? '';
       const rows = full.split('\n').map((row) => row.trimEnd());
       expect(
-        rows.find((row) => row.startsWith('\u2500')),
+        rows.find((row) => /^- /u.test(row)),
         'the full view says that changed lines are off the page',
-      ).toMatch(/^\u2500 \d+% \u00b7 changed lines off this page: 2 below \u2500+$/u);
+      ).toMatch(/^- \d+% \u00b7 changed lines off this page: 2 below -+$/u);
       expect(full).not.toContain('EVIL');
       expect(rows, 'Allow without the session-wide grant').toContain('[Ctrl+Y] Allow');
       expect(rows).toContain(FULL_DENY_ROW);
@@ -1061,8 +1061,8 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       await settle();
       const full = f.lastFrameWith('Review \u00b7 tool') ?? '';
       const rows = full.split('\n').map((row) => row.trimEnd());
-      expect(rows.find((row) => row.startsWith('\u2500'))).toMatch(
-        /^\u2500 \d+% \u00b7 every changed line is on this page \u2500+$/u,
+      expect(rows.find((row) => /^- /u.test(row))).toMatch(
+        /^- \d+% \u00b7 every changed line is on this page -+$/u,
       );
       expect(rows).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session');
       expect(rows).toContain(FULL_DENY_ROW);
@@ -2102,8 +2102,8 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
         'and says what any other key does, and what Esc and Ctrl+C do',
       ).toBe('Any other key cancels \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
-      expect(asking.findIndex((row) => row.startsWith('\u2500'))).toBe(
-        before.findIndex((row) => row.startsWith('\u2500')),
+      expect(asking.findIndex((row) => /^- /u.test(row))).toBe(
+        before.findIndex((row) => /^- /u.test(row)),
       );
       expect(asking.indexOf('Approval cannot override protected-path or permission denials.')).toBe(
         before.indexOf('Approval cannot override protected-path or permission denials.'),
@@ -2604,7 +2604,7 @@ describe.each(['chat', 'home'] as const)(
     /** The note only the full view of an approval draws: it finds the frame whatever the header says. */
     const FULL_NOTE = 'Approval cannot override protected-path or permission denials.';
     /** The status rule is the one row of the screen that starts with a rule character. */
-    const isRule = (row: string): boolean => row.startsWith('─');
+    const isRule = (row: string): boolean => /^- /u.test(row); // the plain thin rule; a removed diff row is `-12 text`
     const DIFF_ROW = /^[ +-]\d+ /u;
     // Real keystrokes, as a terminal sends them.
     const KEY = {
@@ -2639,7 +2639,7 @@ describe.each(['chat', 'home'] as const)(
       const rule = rows.findIndex(isRule);
       const note = rows.findIndex((row) => row === closing);
       if (rule < 0 || note < 0) return undefined;
-      const percent = /^─ (\d+)%/u.exec(rows[rule] ?? '')?.[1];
+      const percent = /^- (\d+)%/u.exec(rows[rule] ?? '')?.[1];
       const under = rows[rule + 1];
       return {
         rows,
@@ -2768,7 +2768,7 @@ describe.each(['chat', 'home'] as const)(
       expect(rows[0]).toMatch(/\+2 −2 · \d+ bytes · 0 masked values$/u);
       expect(rows[1], 'a target row').toBe('target src/app.ts');
       // The status rule says how far down the page reaches and which changed lines are not on it.
-      expect(rows[screen.rule]).toMatch(/^─ \d+% · changed lines off this page: \d+ below ─+$/u);
+      expect(rows[screen.rule]).toMatch(/^- \d+% · changed lines off this page: \d+ below -+$/u);
       // The legend is the card's `[key] words` style in two groups (movement, then inspection); `[b]` is not in it.
       // The message row is kept (blank here) under the rule, so the body's height never depends on whether there is a message.
       expect(rows[screen.rule + 1], 'the message row, kept blank').toBe('');
@@ -2838,13 +2838,13 @@ describe.each(['chat', 'home'] as const)(
         'action fs_write',
       ]);
       expect(rows.join('\n')).toContain('Allow is locked until the masked value has been revealed');
-      expect(rows.join('\n')).toContain('⚠ Line endings: CRLF → LF.');
+      expect(rows.join('\n')).toContain('! Line endings: CRLF → LF.');
       expect(
-        rows.filter((row) => row.startsWith('⚠')),
+        rows.filter((row) => row.startsWith('!')),
         'both warnings',
       ).toHaveLength(2);
       expect(rows[screen.rule + 1], 'the message').toBe('No earlier change');
-      expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a█/u);
+      expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a_/u);
       // The frame is exactly as tall as with no extra chrome at all (one row under the terminal's 24): the body gave way.
       expect(rows).toHaveLength(24);
       expect(rows[screen.rule - 1], 'and the body it was left is full, not padded').not.toBe('');
@@ -2948,7 +2948,7 @@ describe.each(['chat', 'home'] as const)(
       expect(codes.diff, 'ASCII text stays readable').toEqual(
         expect.arrayContaining([' 27 line 27', '-30 line 30', ' 31 line 31']),
       );
-      expect(codes.rows[codes.rule]).toMatch(/^─ \d+% · Unicode code points · /u);
+      expect(codes.rows[codes.rule]).toMatch(/^- \d+% · Unicode code points · /u);
       expect(legend(codes)).toContain('[p] back to text');
       expect(legend(codes)).not.toContain('[p] Unicode codes');
       const back = await move(f, 'p', (screen) => screen.diff.includes('+30 thirty ü'));
@@ -2972,7 +2972,7 @@ describe.each(['chat', 'home'] as const)(
         const { f } = await openFull(SIXTY());
         const first = view(f);
         expect(first?.diff[0]).toBe(' 27 line 27');
-        expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below ─+$/u);
+        expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
         const percent0 = first?.percent ?? -1;
         // Down and Up move one listed line.
         const down = await move(f, KEY.down, (screen) => screen.diff[0] === ' 28 line 28');
@@ -2981,7 +2981,7 @@ describe.each(['chat', 'home'] as const)(
         expect(up.percent).toBe(percent0);
         // PgDn goes to the row after the page: 3 lines of context, the change, and nine more fill the 14 rows.
         const pageDown = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(pageDown.rows[pageDown.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
+        expect(pageDown.rows[pageDown.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
         expect(pageDown.percent).toBeGreaterThan(percent0);
         // PgUp goes back up a page.
         const pageUp = await move(f, KEY.pageUp, (screen) => screen.diff[0] === ' 27 line 27');
@@ -2990,24 +2990,24 @@ describe.each(['chat', 'home'] as const)(
         const end = await move(f, KEY.end, (screen) => screen.diff[0] === ' 48 line 48');
         expect(end.diff.at(-1)).toBe(' 60 line 60');
         expect(end.percent).toBe(100);
-        expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
+        expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
         // Home is the top.
         const home = await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below ─+$/u);
+        expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below -+$/u);
         expect(home.percent).toBeLessThan(percent0);
         // Tab goes to the next change, with its context; Shift+Tab goes back.
         const tab = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 27 line 27');
         expect(tab.percent).toBe(percent0);
         const tab2 = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
         expect(tab2.diff).toEqual(expect.arrayContaining(['-52 line 52', '+52 fifty two']));
-        expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
+        expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
         // Shift+Tab lands a page up from just below the nearest changed line above the page it leaves, so that line (`+30`) is on the
         // new page and the page lies strictly before the old one; no changed line is stepped over.
         const back = await move(f, KEY.shiftTab, (screen) => screen.diff[0] !== ' 48 line 48');
         expect(back.diff, 'the nearest changed line above is drawn').toContain('+30 thirty');
         expect(firstLine(back) ?? Infinity, 'strictly backward').toBeLessThan(firstLine(tab2) ?? 0);
         expect(back.percent ?? 100, 'and so the status moved up').toBeLessThan(tab2.percent ?? 0);
-        expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below ─+$/u);
+        expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
         expect(back.percent, 'the whole first change is on this page, as at the opening').toBe(
           percent0,
         );
@@ -3069,7 +3069,7 @@ describe.each(['chat', 'home'] as const)(
           (screen) => screen.rows[screen.rule]?.includes('revealed') === true,
         );
         expect(shown.rows[shown.rule]).toMatch(
-          /^\u2500 \d+% \u00b7 masked values revealed \(view only\)/u,
+          /^- \d+% \u00b7 masked values revealed \(view only\)/u,
         );
         expect(legend(shown)).toContain('[r] hide masked');
         expect(legend(shown)).not.toContain('[r] reveal masked');
@@ -3157,13 +3157,13 @@ describe.each(['chat', 'home'] as const)(
         const rows = listRows(f) ?? [];
         expect(rows[0]).toBe('Tool calls');
         expect(rows[1], 'the edit: mark, tool, target, counts').toMatch(
-          /^ {2}\u2713 edit_file +src\/a\.ts +\+2 \u22122$/u,
+          /^ {2}ok edit_file +src\/a\.ts +\+2 \u22122$/u,
         );
         expect(rows[2], 'a call with no target and no preview says nothing more').toBe(
-          '  \u2713 git_status',
+          '  ok git_status',
         );
         expect(rows[3], 'the failed command is the newest, and selected').toMatch(
-          /^> \u2717 run_command +failed$/u,
+          /^> x run_command +failed$/u,
         );
         expect(
           rows.filter((row) => row.startsWith('> ')),
@@ -3182,12 +3182,12 @@ describe.each(['chat', 'home'] as const)(
       it('moves the selection with Up, Home and End', async () => {
         const f = await openList();
         const up = await select(f, KEY.up, 'call 2 of 3');
-        expect(up[2]).toMatch(/^> \u2713 git_status/u);
-        expect(up[3]).toMatch(/^ {2}\u2717 run_command/u);
+        expect(up[2]).toMatch(/^> ok git_status/u);
+        expect(up[3]).toMatch(/^ {2}x run_command/u);
         const home = await select(f, KEY.home, 'call 1 of 3');
-        expect(home[1]).toMatch(/^> \u2713 edit_file/u);
+        expect(home[1]).toMatch(/^> ok edit_file/u);
         const end = await select(f, KEY.end, 'call 3 of 3');
-        expect(end[3]).toMatch(/^> \u2717 run_command/u);
+        expect(end[3]).toMatch(/^> x run_command/u);
         await select(f, KEY.down, 'call 3 of 3'); // the end of the list holds
         expect(f.errors).toEqual([]);
       });
@@ -3212,7 +3212,7 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('b');
         await vi.waitFor(() => expect(listRows(f)?.[4]).toBe('call 1 of 3'));
         await pause(80);
-        expect(listRows(f)?.[1], 'back on the call that was open').toMatch(/^> \u2713 edit_file/u);
+        expect(listRows(f)?.[1], 'back on the call that was open').toMatch(/^> ok edit_file/u);
         // A call that kept no preview: its header has no counts and the screen offers nothing that does not apply.
         await select(f, KEY.down, 'call 2 of 3');
         f.input.push('\r');
@@ -3239,7 +3239,7 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('b');
         await vi.waitFor(() => expect(listRows(f)?.[4]).toBe('call 2 of 3'));
         await pause(80);
-        expect(listRows(f)?.[2], 'back on the same call').toMatch(/^> \u2713 git_status/u);
+        expect(listRows(f)?.[2], 'back on the same call').toMatch(/^> ok git_status/u);
         // Esc closes the details from the list, and from the screen of one call.
         f.input.push('\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review).toBeUndefined());
@@ -3280,7 +3280,7 @@ describe.each(['chat', 'home'] as const)(
         await vi.waitFor(() => expect(listRows(f)).toBeDefined());
         await pause(80);
         const row = (listRows(f) ?? [])[1] ?? '';
-        expect(row, 'the call is listed').toMatch(/^> \u2713 /u);
+        expect(row, 'the call is listed').toMatch(/^> ok /u);
         expect(row).toMatch(/\+1 \u22121$/u);
         for (const char of row) expect(char.codePointAt(0)).toBeGreaterThanOrEqual(0x20);
         f.input.push('\r');
@@ -3778,8 +3778,8 @@ describe.each(['chat', 'home'] as const)(
         expect(rule).toMatch(/code points/u);
         expect(rule, 'the changes off the page are still said').toMatch(/2 above/u);
         expect(rule).toMatch(/2 below/u);
-        expect(rule.startsWith('─ ')).toBe(true);
-        expect(rule.endsWith('─')).toBe(true);
+        expect(rule.startsWith('- ')).toBe(true);
+        expect(rule.endsWith('-')).toBe(true);
         expect(both.rows.length, 'the frame did not grow').toBe(24);
       });
     });
@@ -3834,12 +3834,12 @@ describe.each(['chat', 'home'] as const)(
         await pause(80);
         const rows = listRows(f);
         const [wide, wideEdit, plain] = [rows[1] ?? '', rows[2] ?? '', rows[3] ?? ''];
-        expect(wide, 'a denied command').toMatch(/^ {2}⊘ run_command /u);
+        expect(wide, 'a denied command').toMatch(/^ {2}\/ run_command /u);
         expect(wide.endsWith('denied'), 'keeps its outcome word').toBe(true);
         expect(wide, 'the target is cut in the middle').toContain('…');
-        expect(wideEdit).toMatch(/^ {2}✗ write_file /u);
+        expect(wideEdit).toMatch(/^ {2}x write_file /u);
         expect(wideEdit, 'keeps the counts and the outcome word').toMatch(/\+1 −1 · failed$/u);
-        expect(plain).toMatch(/^> ⊘ write_file +src\/ordinary\.ts +\+1 −1 · denied$/u);
+        expect(plain).toMatch(/^> \/ write_file +src\/ordinary\.ts +\+1 −1 · denied$/u);
         for (const row of rows.slice(1, 4))
           expect(stringWidth(row), 'measured as the renderer does').toBeLessThanOrEqual(78);
       });

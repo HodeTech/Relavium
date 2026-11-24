@@ -48,9 +48,9 @@ async function chooseUseIt(f: {
   readonly stdin: { push(chunk: string): boolean };
   text(): string;
 }): Promise<void> {
-  expect(f.text()).toContain('❯ Not now');
+  expect(f.text()).toContain('> Not now');
   f.stdin.push('\x1b[B');
-  await until(() => f.text().includes('❯ Use it'));
+  await until(() => f.text().includes('> Use it'));
 }
 
 async function until(check: () => boolean): Promise<void> {
@@ -200,7 +200,7 @@ describe('standalone native provider setup lifecycle', () => {
       : undefined;
     const running = f.run();
     await until(() => f.text().includes('Allow this source?'));
-    expect(f.text()).toContain('❯ Not now');
+    expect(f.text()).toContain('> Not now');
     f.stdin.push('\r');
     expect(await running).toBe(0);
     expect(f.outcome()?.status).toBe('deferred');

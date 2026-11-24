@@ -1,10 +1,6 @@
 import type { RunStatus } from '@relavium/shared';
 
-import {
-  RUN_STATUS_GLYPH,
-  nextStatusFilter,
-  type HistoryRow,
-} from '../../history/history-model.js';
+import { RUN_STATUS_ROLE, nextStatusFilter, type HistoryRow } from '../../history/history-model.js';
 import {
   HISTORY_COST_CACHE_MAX,
   type HistoryCost,
@@ -14,9 +10,14 @@ import {
   type HistoryScope,
   type HistorySource,
 } from '../../history/history-source.js';
-import { formatDuration } from './format.js';
+import { formatDateTime, formatDuration } from '../notation.js';
 import { NOT_RECORDED, NO_MESSAGE_RECORDED, NO_NODE_RECORDED, SKIPPED } from '../absence.js';
-import { scrubbedBounded, shortRunId, type NodeRow } from '../../history/run-detail-model.js';
+import {
+  NODE_ROW_ROLE,
+  scrubbedBounded,
+  shortRunId,
+  type NodeRow,
+} from '../../history/run-detail-model.js';
 import type { NodeDetailLoad } from '../../history/node-detail-source.js';
 import {
   RUN_DETAIL_MAX_STEPS,
@@ -42,8 +43,10 @@ import {
   type SheetLine,
   type SheetLineKind,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
-import { HELD_GLYPH } from './tab-host-active.js';
+import { glyph, glyphWithWord, statusCell } from './glyphs.js';
 import {
   NODE_FAULT,
   NODE_KEYS,
@@ -776,7 +779,8 @@ export function foldHistoryKey(
 
 // ---- What is drawn ----------------------------------------------------------------------------------------------------------
 
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 const WORD_WIDTH = 10;
 
@@ -809,17 +813,21 @@ function entryLine(
   state: HistoryTabState,
   width: number,
 ): SheetLine {
-  const lead = selected ? POINTER : INDENT;
+  const lead = selected ? pointer() : INDENT;
   if (entry.kind === 'missing') {
     const left = `${lead}? ${'missing'.padEnd(WORD_WIDTH)} ${entry.label}`;
-    const tail = '★ pinned';
+    const tail = glyphWithWord('pinned');
     const text = flushRow(left, tail, width);
     return { kind: selected ? 'selected' : 'row', text, spans: tailSpan(text, tail, selected) };
   }
   const { row } = entry;
   // The run's own status stays: a log that cannot be read says so in the cost slot, which is where the figure it replaces would be.
-  const left = `${lead}${row.glyph} ${row.word.padEnd(WORD_WIDTH)} ${row.shortId}  ${row.label}`;
-  const tail = [row.ageText, costWords(costOf(state, row)), row.pinned ? '★ pinned' : '']
+  const left = `${lead}${statusCell(RUN_STATUS_ROLE[row.status])} ${row.word.padEnd(WORD_WIDTH)} ${row.shortId}  ${row.label}`;
+  const tail = [
+    row.ageText,
+    costWords(costOf(state, row)),
+    row.pinned ? glyphWithWord('pinned') : '',
+  ]
     .filter((part) => part !== '')
     .join('  ');
   const text = flushRow(left, tail, width);
@@ -934,11 +942,11 @@ function listBody(state: HistoryTabState, width: number, room: number): readonly
   const { start, end } = windowBody(lines.length, Math.max(0, cursorLine), height);
   const shown: SheetLine[] = lines.slice(start, end).map((line) => line.line);
   if (start > 0 && shown.length > 0)
-    shown[0] = { kind: 'marker', text: `▲ ${String(entriesIn(lines, 0, start + 1))} more` };
+    shown[0] = { kind: 'marker', text: moreAboveText(entriesIn(lines, 0, start + 1)) };
   if (end < lines.length && shown.length > 0)
     shown[shown.length - 1] = {
       kind: 'marker',
-      text: `▼ ${String(entriesIn(lines, end - 1, lines.length))} more`,
+      text: moreBelowText(entriesIn(lines, end - 1, lines.length)),
     };
   return [status, ...shown, detailLine(entriesOf(read)[state.cursor], state, width), footer];
 }
@@ -962,7 +970,7 @@ const nodeAttempts = (row: NodeRow): string =>
   `${String(row.attemptCount)} ${row.attemptCount === 1 ? 'attempt' : 'attempts'}`;
 
 function nodeLine(row: NodeRow): DetailLine {
-  const left = `  ${row.glyph} ${row.status.padEnd(WORD_WIDTH)} ${row.label}`;
+  const left = `  ${statusCell(NODE_ROW_ROLE[row.status])} ${row.status.padEnd(WORD_WIDTH)} ${row.label}`;
   const reason = row.skippedReason === undefined ? '' : `${SKIPPED}: ${row.skippedReason}`;
   const parts = [
     nodeAttempts(row),
@@ -984,30 +992,37 @@ function fitParts(left: string, parts: readonly string[], width: number): string
 }
 
 /** The word and the glyph of the run in the header: `held` for a run whose end is in the outbox, else its status. */
-function headerState(read: RunDetailRead): { glyph: string; word: string } {
+function headerState(read: RunDetailRead): { mark: string; word: string } {
   return read.terminalHeld
-    ? { glyph: HELD_GLYPH, word: 'held' }
-    : { glyph: RUN_STATUS_GLYPH[read.status], word: read.status };
+    ? { mark: glyph('held'), word: 'held' }
+    : { mark: glyph(RUN_STATUS_ROLE[read.status]), word: read.status };
+}
+
+/** When a run started, as a person reads it (`2026-11-22 10:00 UTC`); a stored text that is not a time is drawn as it is, and none is `not recorded`. */
+function startedWords(startedAt: string | undefined): string {
+  if (startedAt === undefined) return NOT_RECORDED;
+  const moment = formatDateTime(startedAt);
+  return moment === '' ? startedAt : moment;
 }
 
 /** The run's own lines: the heading, when it started and how long it took, its tokens and cost, and its error. */
 function headerLines(read: RunDetailRead, pinned: boolean): DetailLine[] {
   const { header } = read.model;
-  const { glyph, word } = headerState(read);
+  const { mark, word } = headerState(read);
   // The workflow's name is the part of the heading a narrow terminal cuts: the short id and the pin mark are flushed right and keep their
   // columns (`flushRow` clips the label first), so a run stays identifiable and its pin stays visible at 78 columns.
   const lines: DetailLine[] = [
     {
       kind: 'heading',
-      left: `${glyph} ${word}  ${header.workflow}`,
-      right: `${header.shortId}${pinned ? '  ★ pinned' : ''}`,
+      left: `${mark} ${word}  ${header.workflow}`,
+      right: `${header.shortId}${pinned ? `  ${glyphWithWord('pinned')}` : ''}`,
     },
   ];
   let duration = 'not finished';
   if (header.durationMs !== undefined) duration = formatDuration(header.durationMs);
   else if (read.terminalHeld) duration = 'end held';
   lines.push(
-    { kind: 'text', left: `Started ${header.startedAt ?? NOT_RECORDED}  ·  took ${duration}` },
+    { kind: 'text', left: `Started ${startedWords(header.startedAt)}  ·  took ${duration}` },
     { kind: 'text', left: `Tokens ${header.tokensText}  ·  cost ${header.costText}` },
   );
   if (header.error !== undefined) {
@@ -1097,14 +1112,13 @@ function detailWindow(
   for (let index = start; index < end; index += 1) {
     const line = lineAt(index);
     const selected = index === cursor;
-    const left = `${selected ? POINTER : INDENT}${line.left}`;
+    const left = `${selected ? pointer() : INDENT}${line.left}`;
     const right = line.parts === undefined ? (line.right ?? '') : fitParts(left, line.parts, width);
     lines.push({ kind: selected ? 'selected' : line.kind, text: flushRow(left, right, width) });
   }
-  if (start > 0 && lines.length > 0)
-    lines[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && lines.length > 0) lines[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < total && lines.length > 0)
-    lines[lines.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
+    lines[lines.length - 1] = { kind: 'marker', text: moreBelowText(total - end + 1) };
   return lines;
 }
 

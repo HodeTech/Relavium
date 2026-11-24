@@ -56,6 +56,21 @@ describe('createDefinedPort', () => {
     ]);
   });
 
+  it('names the root of a pin of another project from ~ when it was given the directory and the home (ADR-0145 §8)', () => {
+    const otherPin = { kind: 'workflow' as const, ref: 'deploy', rowid: 9, oversized: false };
+    const read = (paths?: { cwd: string; home: string }) =>
+      createDefinedPort({
+        catalog: { list: () => [] },
+        pins: () => [],
+        allPins: () => [{ ...otherPin, projectRoot: '/home/ada/other' }],
+        ...(paths === undefined ? {} : { paths }),
+      })
+        .read()
+        .model.rows.map((row) => row.projectRoot);
+    expect(read({ cwd: '/home/ada/work/app', home: '/home/ada' })).toEqual(['~/other']);
+    expect(read()).toEqual(['/home/ada/other']);
+  });
+
   it('adds each workflow’s latest run, by slug, to a ready row only, and shows none when no read is given', () => {
     const catalog = { list: () => [entry('alpha'), entry('torn', { valid: false, error: 'bad' })] };
     const lastRuns = vi.fn(

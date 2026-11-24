@@ -99,9 +99,9 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       expect(listing?.mediaVideoCostMicrocents).toBe(50_000_000); // $0.50 × 1e8, per SECOND
       // NULL, not 0 — the column's whole purpose is to hold "nobody said" distinctly from "free".
       expect(listing?.mediaAudioCostMicrocents).toBeNull();
-      // Echoed in the billed unit; "$0.04/Mtok" would read as a price a million times off.
-      expect(out).toContain('image $0.04/image');
-      expect(out).toContain('video $0.5/s');
+      // Echoed in the billed unit; "$0.04 per M" would read as a price a million times off.
+      expect(out).toContain('image $0.04 per image');
+      expect(out).toContain('video $0.5 per second');
     });
 
     it('writes a stated ZERO as 0, never as NULL', () => {
@@ -124,7 +124,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     it('renders every combination of optional price parts as one clean list', () => {
       // Each part is independently optional now that media-only and cache-only invocations are legal, so no
       // part may carry its own separator or assume another precedes it. Stitching them with ad-hoc separators
-      // produced `): , cached $0.5/Mtokimage $0.04/image` for `--cached` + `--image` — a stray comma and two
+      // produced `): , cached $0.5 per Mimage $0.04 per image` for `--cached` + `--image` — a stray comma and two
       // clauses run together. Every earlier test spread `baseArgs`, which always carries token rates, so the
       // one shape that breaks the stitching was the one shape nothing exercised.
       // A CATALOG-PRICED model, deliberately: a media-only invocation on a model nothing prices for tokens is
@@ -136,17 +136,17 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
         cachedInputUsdPerMtok: 0.5,
         imageUsdPerCount: 0.04,
       });
-      expect(cachedPlusMedia.out).toContain('(openai): cached $0.5/Mtok, image $0.04/image.');
+      expect(cachedPlusMedia.out).toContain('(openai): cached $0.5 per M, image $0.04 per image.');
       expect(cachedPlusMedia.out).not.toContain('): ,'); // no leading separator
       expect(cachedPlusMedia.out).not.toContain('Mtokimage'); // no run-together clauses
 
       const mediaOnly = run({ model: 'gpt-4', provider: 'openai', videoUsdPerSecond: 0.5 });
-      expect(mediaOnly.out).toContain('(openai): video $0.5/s.');
+      expect(mediaOnly.out).toContain('(openai): video $0.5 per second.');
       expect(mediaOnly.out).not.toContain('input $');
 
       const everything = run({ ...baseArgs, cachedInputUsdPerMtok: 1, audioUsdPerSecond: 0.001 });
       expect(everything.out).toContain(
-        '(openai): input $3/Mtok, output $9/Mtok, cached $1/Mtok, audio $0.001/s.',
+        '(openai): input $3 per M, output $9 per M, cached $1 per M, audio $0.001 per second.',
       );
     });
 
@@ -190,7 +190,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     });
   });
 
-  it('rounds a fractional USD price correctly ($0.15/Mtok → 15_000_000µ¢)', () => {
+  it('rounds a fractional USD price correctly ($0.15 per M → 15_000_000µ¢)', () => {
     run({ ...baseArgs, inputUsdPerMtok: 0.15, outputUsdPerMtok: 0.6 });
     const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
     expect(listing?.inputCostPerMtokMicrocents).toBe(15_000_000);
@@ -244,7 +244,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
 
     it('prints the stored price, never the digits as typed (one micro-cent is not "1e-8")', () => {
       const { out } = run({ ...baseArgs, inputUsdPerMtok: 1e-8, outputUsdPerMtok: 0.5 });
-      expect(out).toContain('(openai): input $0.00000001/Mtok, output $0.5/Mtok.');
+      expect(out).toContain('(openai): input $0.00000001 per M, output $0.5 per M.');
       expect(out).not.toMatch(/\de-\d/u); // no exponent form
     });
 
@@ -272,7 +272,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
         outputPerMtokMicrocents: 12_345_678,
         cachedInputPerMtokMicrocents: 1,
       };
-      expect(catalogTokenRates(shipped)).toBe('input $0.00000001/Mtok, output $0.12345678/Mtok');
+      expect(catalogTokenRates(shipped)).toBe('input $0.00000001 per M, output $0.12345678 per M');
     });
   });
 

@@ -5,6 +5,7 @@ import type { McpServerRef } from '@relavium/shared';
 import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
+  providerDisplayName,
   validateProviderKey,
   type ProviderResolver,
 } from '../engine/providers.js';
@@ -72,7 +73,7 @@ async function probeProvider(
 ): Promise<DoctorCheck> {
   const provider = deps.resolver.resolveProvider(id);
   if (provider === undefined) {
-    return failCheck(`provider:${id}`, id, 'no adapter');
+    return failCheck(`provider:${id}`, providerDisplayName(id), 'no adapter');
   }
   // `validateProviderKey` is bounded internally (AbortController + hard race), so no outer race is needed here.
   const result = await validateProviderKey(
@@ -83,8 +84,8 @@ async function probeProvider(
     deps.workOwner,
   );
   return result.ok
-    ? okCheck(`provider:${id}`, id, result.detail)
-    : failCheck(`provider:${id}`, id, sanitizeInline(result.detail));
+    ? okCheck(`provider:${id}`, providerDisplayName(id), result.detail)
+    : failCheck(`provider:${id}`, providerDisplayName(id), sanitizeInline(result.detail));
 }
 
 // ── MCP status (read-only — reports the live session, never connects) ────────────

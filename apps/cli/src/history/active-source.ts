@@ -2,6 +2,7 @@ import type { RunHistoryReader, RunLeaseSummary, RunSummaryRecord } from '@relav
 import type { RunStatus } from '@relavium/shared';
 
 import { gatesOfRun, type RunGatesReader } from '../home/run-gates.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
 import type { ReadSnapshot } from './change-probe.js';
 import { keysetCursorOf } from './keyset-cursor.js';
@@ -92,6 +93,8 @@ export interface ActiveSourceInput {
   /** Epoch milliseconds: a lease is compared with it. */
   readonly nowMs: number;
   readonly leaseTtlMs: number;
+  /** What a run's project root is shortened against; absent, a root is shown as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /**
@@ -267,6 +270,7 @@ export function readActive(input: ActiveSourceInput): ActiveRead {
       ? {}
       : { pendingGateCounts: parkCounts.gates, pendingMediaJobCounts: parkCounts.media }),
     workflowLabels: readLabels(reader, runs),
+    ...(input.paths === undefined ? {} : { paths: input.paths }),
   });
   return { rows, more, heldUnread: input.heldUnread === true };
 }
@@ -288,6 +292,8 @@ export interface ActiveReaderDeps {
   /** Epoch milliseconds. */
   readonly now: () => number;
   readonly leaseTtlMs: number;
+  /** What a run's project root is shortened against; absent, a root is shown as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
   /**
    * Runs the database reads as ONE snapshot (`readSnapshotOf(db)`): the three status pages, the leases and the gate reads are then of one
    * moment, so another process's run is never listed twice or missing for a tick because it changed state between two of them. Absent, the
@@ -343,6 +349,7 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
         nowMs: deps.now(),
         leaseTtlMs: deps.leaseTtlMs,
         gateCache,
+        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
       }),
     );
   };

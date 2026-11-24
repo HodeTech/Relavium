@@ -1,5 +1,5 @@
 /**
- * The Home's `▶` run row and its exit-guard card, as drawn
+ * The Home's run row and its exit-guard card, as drawn
  * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §6): present only while a run is
  * active, a glyph and a word with colour off, and never more than the 80×24 floor of
  * [ADR-0122](../../../../../docs/decisions/0122-the-home-is-the-interactive-product.md) §7.
@@ -79,7 +79,12 @@ function frameOf(props: {
 }
 
 const rowsOf = (frame: string): string[] => frame.split('\n');
-const runRows = (frame: string): string[] => rowsOf(frame).filter((line) => line.includes('▶'));
+/**
+ * The strip's run row, in the form the colour setting draws (these frames are drawn with colour off): the running glyph `~`, the cancelling
+ * `#` or the starting `..`, then the run's id (or `run`), then its state as a word.
+ */
+const RUN_ROW = /^\s*(?:~|#|\.\.) \S+ {2}· {2}(?:running|cancelling|starting)/u;
+const runRows = (frame: string): string[] => rowsOf(frame).filter((line) => RUN_ROW.test(line));
 
 const hintRow = (frame: string): string =>
   rowsOf(frame).find((line) => line.includes('[Ctrl+C] exit (twice)')) ?? '';
@@ -107,11 +112,11 @@ describe('the landing hint while a leg executes', () => {
   });
 });
 
-describe('the ▶ row', () => {
+describe('the run row', () => {
   it('is present with an active run: the glyph, the id and a state word, with colour off', () => {
     const rows = runRows(frameOf({ hostedRun: running() }));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toContain(`▶ ${RUN_ID}`);
+    expect(rows[0]?.trimStart()).toMatch(new RegExp(`^~ ${RUN_ID}`, 'u'));
     expect(rows[0]).toContain('running');
   });
 
@@ -131,7 +136,7 @@ describe('the ▶ row', () => {
     ['an idle host', IDLE],
   ] as const)('is absent with %s: no row, no glyph', (_name, hostedRun) => {
     const frame = frameOf({ hostedRun });
-    expect(frame).not.toContain('▶');
+    expect(runRows(frame)).toEqual([]);
     expect(frame).not.toContain('running');
   });
 
@@ -159,7 +164,7 @@ describe('the ▶ row', () => {
     expect(rowsOf(frame).length).toBeLessThanOrEqual(24);
     // (The harness draws on a 100-column stream, so a long session title is not the line to measure: the run row and the card are.)
     for (const line of [...runRows(frame)]) expect(line.length, line).toBeLessThanOrEqual(80);
-    expect(frame).toContain('▶');
+    expect(runRows(frame)).toHaveLength(1);
     // `Enter` at the empty prompt shows the run before it sets a provider up, so the setup line is not drawn beside `Enter show it`.
     expect(frame).not.toContain('Connect a provider');
     expect(frame).toContain('Enter show it');
@@ -172,7 +177,7 @@ describe('the ▶ row', () => {
     const notice = Array.from({ length: 60 }, (_, n) => `line ${String(n)}`).join('\n');
     const withRow = frameOf({ hostedRun: running(), notice, showBanner: false });
     expect(rowsOf(withRow).length).toBeLessThanOrEqual(24);
-    expect(withRow).toContain('▶');
+    expect(runRows(withRow)).toHaveLength(1);
     expect(withRow).toContain('[Ctrl+C] exit (twice)');
     expect(withRow).toContain('PgUp/PgDn read');
     expect(rowsOf(frameOf({ notice, showBanner: false })).length).toBeLessThanOrEqual(24);
@@ -204,17 +209,17 @@ describe('the exit-guard card', () => {
     expect(frame, 'the notice waits behind the card').not.toContain('notice notice');
     expect(rowsOf(frame).length).toBeLessThanOrEqual(24);
     for (const line of rowsOf(frame).filter((row) =>
-      /Ctrl\+Y|workflow run|▶|cannot be resumed/u.test(row),
+      /Ctrl\+Y|workflow run|^\s*(?:~|#|\.\.) |cannot be resumed/u.test(row),
     ))
       expect(line.length, line).toBeLessThanOrEqual(80);
-    expect(frame, 'the run row stays').toContain('▶');
+    expect(runRows(frame), 'the run row stays').toHaveLength(1);
   });
 
   it('says it is stopping once confirmed', () => {
     const frame = frameOf({ hostedRun: running(true), exitGuard: 'stopping' });
     expect(frame).toContain('Stopping the run…');
     expect(frame).toContain(
-      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)} s`, // the grace and then the host's settle bound
+      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)}s`, // the grace and then the host's settle bound
     );
   });
 

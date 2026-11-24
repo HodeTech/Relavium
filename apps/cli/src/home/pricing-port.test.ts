@@ -43,11 +43,11 @@ import {
   modelIdFault,
   pairingSentence,
   pricingField,
-  usdTextOfMicrocents,
   type PricingField,
   type PricingFieldId,
 } from '../commands/pricing-fields.js';
 import { isCliError } from '../process/errors.js';
+import { formatPrice } from '../render/notation.js';
 import type { GlobalOptions } from '../process/options.js';
 import {
   PRICING_MODEL_ID_FAULTS,
@@ -198,11 +198,11 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(result.offer.model).toBe('acme-custom-1');
     expect(result.offer.provider).toBe('openai');
     expect(result.offer.prices.map((price) => [price.id, price.amount, price.microcents])).toEqual([
-      ['input', '$3/Mtok', 300_000_000],
-      ['output', '$9/Mtok', 900_000_000],
-      ['cached', '$0.03/Mtok', 3_000_000],
-      ['image', '$0.04/image', 4_000_000],
-      ['video', '$0.5/s', 50_000_000],
+      ['input', '$3 per M', 300_000_000],
+      ['output', '$9 per M', 900_000_000],
+      ['cached', '$0.03 per M', 3_000_000],
+      ['image', '$0.04 per image', 4_000_000],
+      ['video', '$0.5 per second', 50_000_000],
     ]);
     expect(result.offer.keeps, 'audio was left empty, so it keeps what is stored').toBe(true);
     expect(rowsFor('acme-custom-1'), 'preparing writes nothing').toHaveLength(0);
@@ -226,12 +226,12 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
   it('shows the amount the store will hold: eight decimals are exact, and the written sentence says the stored price', () => {
     const result = prepared('acme-custom-1', { input: '0.12345679', output: '1e-8' });
     expect(result.offer.prices.map((price) => [price.amount, price.microcents])).toEqual([
-      ['$0.12345679/Mtok', 12_345_679],
-      ['$0.00000001/Mtok', 1],
+      ['$0.12345679 per M', 12_345_679],
+      ['$0.00000001 per M', 1],
     ]);
     const attempt = result.commit();
     if (!attempt.ok) throw new Error(`expected a write, got a refusal: ${attempt.reason}`);
-    expect(attempt.written).toContain('input $0.12345679/Mtok, output $0.00000001/Mtok.');
+    expect(attempt.written).toContain('input $0.12345679 per M, output $0.00000001 per M.');
     const [row] = rowsFor('acme-custom-1');
     expect([row?.inputCostPerMtokMicrocents, row?.outputCostPerMtokMicrocents]).toEqual([
       12_345_679, 1,
@@ -240,9 +240,9 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
 
   it('names the catalog price a token price replaces, and not when only a media price is given', () => {
     expect(prepared('gpt-5.5', { input: '3', output: '9' }).offer.replaces).toBe(
-      'input $5/Mtok, output $30/Mtok',
+      'input $5 per M, output $30 per M',
     );
-    expect(prepared('gpt-5.5', { cached: '0.1' }).offer.replaces).toBe('cached $0.5/Mtok');
+    expect(prepared('gpt-5.5', { cached: '0.1' }).offer.replaces).toBe('cached $0.5 per M');
     expect(prepared('gpt-5.5', { image: '0.04' }).offer.replaces).toBeUndefined();
     expect(prepared('acme-custom-1', { input: '3', output: '9' }).offer.replaces).toBeUndefined();
   });
@@ -257,7 +257,7 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(result.commit()).toEqual({
       ok: true,
       written:
-        'Set user pricing for acme-custom-1 (OpenAI): input $3/Mtok, output $9/Mtok, cached $0.03/Mtok, audio $0.001/s. It applies to your next run/chat and survives a model refresh.',
+        'Set user pricing for acme-custom-1 (OpenAI): input $3 per M, output $9 per M, cached $0.03 per M, audio $0.001 per second. It applies to your next run/chat and survives a model refresh.',
     });
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
@@ -280,8 +280,8 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(row?.cachedInputStated).toBe(true);
     // The card's amounts are the stored integers, printed.
     expect(result.offer.prices.map((price) => price.amount)).toEqual(
-      result.offer.prices.map(
-        (price) => `$${usdTextOfMicrocents(price.microcents)}${pricingField(price.id).suffix}`,
+      result.offer.prices.map((price) =>
+        formatPrice(price.microcents, pricingField(price.id).priceUnit),
       ),
     );
   });
@@ -390,12 +390,12 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
         const form = refused(model, above);
         expect(shell).toBe(
           field.unit === 'mtok'
-            ? `${field.flag} ($${ceiling + 0.01}/Mtok) is implausibly large — the maximum is $${ceiling}/Mtok`
+            ? `${field.flag} ($${ceiling + 0.01} per M) is implausibly large — the maximum is $${ceiling} per M`
             : `${field.flag} ($${ceiling + 0.01}) is implausibly large — the maximum is $${ceiling} per unit`,
         );
         expect(form).toBe(
           field.unit === 'mtok'
-            ? `${field.label} ($${ceiling + 0.01}/Mtok) is implausibly large — the maximum is $${ceiling}/Mtok`
+            ? `${field.label} ($${ceiling + 0.01} per M) is implausibly large — the maximum is $${ceiling} per M`
             : `${field.label} ($${ceiling + 0.01}) is implausibly large — the maximum is $${ceiling} per unit`,
         );
       },
@@ -496,10 +496,10 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
         {
           id: 'input',
           label: 'Input price',
-          amount: '$99999.99999999/Mtok',
+          amount: '$99999.99999999 per M',
           microcents: 9_999_999_999_999,
         },
-        { id: 'output', label: 'Output price', amount: '$1/Mtok', microcents: 100_000_000 },
+        { id: 'output', label: 'Output price', amount: '$1 per M', microcents: 100_000_000 },
       ]);
       const spellings = ['3', '3.0', '3.', '+3', '03', '0.3e1', '30e-1', '3E0', ' 3 '];
       for (const text of spellings)
@@ -511,10 +511,10 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
 
     it('says the stored price on every line the shell prints, and never the digits as typed', () => {
       expect(shellOutput('acme-custom-1', { input: '1e-8', output: ' 0.50 ' })).toContain(
-        'input $0.00000001/Mtok, output $0.5/Mtok.',
+        'input $0.00000001 per M, output $0.5 per M.',
       );
       expect(shellOutput('gpt-4', { image: '4E-2', audio: '0.0010', video: '+.5' })).toContain(
-        'image $0.04/image, audio $0.001/s, video $0.5/s.',
+        'image $0.04 per image, audio $0.001 per second, video $0.5 per second.',
       );
       // The `--json` record carries the same stored integers.
       client.sqlite.exec('DELETE FROM model_catalog');
@@ -556,7 +556,7 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
       for (const text of ['0', '0.0', '0e5', '-0', '.0']) {
         const form = prepared('acme-custom-1', { input: text, output: '1' });
         expect(form.offer.prices[0]?.microcents, text).toBe(0);
-        expect(form.offer.prices[0]?.amount, text).toBe('$0/Mtok');
+        expect(form.offer.prices[0]?.amount, text).toBe('$0 per M');
       }
     });
   });
@@ -755,13 +755,13 @@ describe('--clear', () => {
       kind: 'clear',
       model: 'gpt-5.5',
       prices: [],
-      fallback: 'input $5/Mtok, output $30/Mtok',
+      fallback: 'input $5 per M, output $30 per M',
     });
     expect(rowsFor('gpt-5.5'), 'the card asked; nothing is removed yet').toHaveLength(1);
     expect(result.commit()).toEqual({
       ok: true,
       written:
-        'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
+        'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5 per M, output $30 per M.',
     });
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
   });
@@ -1175,13 +1175,13 @@ describe('the catalog the form reads is the database-backed one, as the shell re
     clearCatalogRefresh();
     client.sqlite.exec('DROP TABLE model_metadata');
     const result = prepared('gpt-5.5', { input: '3', output: '9' });
-    expect(result.offer.replaces).toBe('input $5/Mtok, output $30/Mtok');
+    expect(result.offer.replaces).toBe('input $5 per M, output $30 per M');
   });
 
   it('reads nothing when the database has no refreshed model, and leaves the snapshot answering', () => {
     clearCatalogRefresh();
     expect(prepared('gpt-5.5', { input: '3', output: '9' }).offer.replaces).toBe(
-      'input $5/Mtok, output $30/Mtok',
+      'input $5 per M, output $30 per M',
     );
   });
 });

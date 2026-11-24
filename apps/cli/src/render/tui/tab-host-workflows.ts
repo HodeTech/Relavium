@@ -1,5 +1,7 @@
 import type { DefinedModel, DefinedRow } from '../../history/defined-model.js';
+import { RUN_STATUS_ROLE } from '../../history/history-model.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph, glyphWithWord } from './glyphs.js';
 import { keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
@@ -8,6 +10,8 @@ import {
   windowBody,
   type SheetLine,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 import {
   PIN_KEY,
@@ -246,7 +250,8 @@ export function pinOnDefined(
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 
 /** `1 node`, `5 nodes`. */
@@ -254,7 +259,7 @@ const nodes = (count: number): string => `${String(count)} ${count === 1 ? 'node
 
 /** The words after the name that say what the row is: a node count, or why the row is not a workflow that runs. */
 function stateWords(row: DefinedRow): string {
-  if (row.state === 'invalid') return '✗ invalid';
+  if (row.state === 'invalid') return `${glyph('failed')} invalid`;
   if (row.state === 'not-in-catalog') return '? not in catalog';
   if (row.state === 'other-project') return '? other project';
   return row.nodeCount === undefined ? '' : nodes(row.nodeCount);
@@ -263,16 +268,16 @@ function stateWords(row: DefinedRow): string {
 /** Both a glyph and a word for the pin and, when known, the latest run: the right-hand side of a row. */
 function trailingWords(row: DefinedRow): string {
   const last =
-    row.lastRunGlyph === undefined || row.lastRunStatus === undefined
+    row.lastRunStatus === undefined
       ? ''
-      : `${row.lastRunGlyph} ${row.lastRunStatus}`;
-  const pin = row.pinned ? '★ pinned' : '· unpinned';
+      : `${glyph(RUN_STATUS_ROLE[row.lastRunStatus])} ${row.lastRunStatus}`;
+  const pin = row.pinned ? glyphWithWord('pinned') : '· unpinned';
   return [last, pin].filter((part) => part !== '').join('  ');
 }
 
 function rowLine(row: DefinedRow, selected: boolean, width: number): SheetLine {
   const name = row.name !== undefined && row.name !== row.slug ? row.name : '';
-  const left = `${selected ? POINTER : INDENT}${[row.slug, name, stateWords(row)].filter((part) => part !== '').join('  ')}`;
+  const left = `${selected ? pointer() : INDENT}${[row.slug, name, stateWords(row)].filter((part) => part !== '').join('  ')}`;
   const text = flushRow(left, trailingWords(row), width);
   // The trailing words are the quieter part of the row; the selected row keeps its one colour.
   const spans: SheetSpan[] = [];
@@ -329,10 +334,9 @@ export function definedBody(
   const list: SheetLine[] = rows
     .slice(start, end)
     .map((row, at) => rowLine(row, start + at === state.cursor, width));
-  if (start > 0 && list.length > 0)
-    list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && list.length > 0) list[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < rows.length && list.length > 0)
-    list[list.length - 1] = { kind: 'marker', text: `▼ ${String(rows.length - end + 1)} more` };
+    list[list.length - 1] = { kind: 'marker', text: moreBelowText(rows.length - end + 1) };
   const selected = rows[state.cursor];
   const detail: SheetLine =
     selected === undefined ? { kind: 'text', text: '' } : detailLine(selected, width);

@@ -27,12 +27,9 @@ import {
   toolOkIn,
 } from '../render/absence.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
-import {
-  formatCostShort,
-  formatDuration,
-  formatReportedCost,
-  formatTokens,
-} from '../render/tui/format.js';
+import { formatCostShort, formatReportedCost, formatTokens } from '../render/tui/format.js';
+import { formatDuration, shortId } from '../render/notation.js';
+import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
 import { UNVERIFIED_USAGE, createUsageAccumulator } from './usage-coverage.js';
 
 /**
@@ -102,14 +99,24 @@ export type AbsenceText =
 /** A node's status as the table shows it. `stopped` is a step row left `running` under a finished run. */
 export type NodeRowStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'stopped';
 
-/** The glyph of each node status; the word is the status itself (colour is never the only signal). */
+/** The glyph-table role of each node status; the word is the status itself (colour is never the only signal). `stopped` takes `stopping`'s square. */
+export const NODE_ROW_ROLE: Readonly<Record<NodeRowStatus, StatusGlyphRole>> = {
+  pending: 'pending',
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+  skipped: 'skipped',
+  stopped: 'stopping',
+};
+
+/** The Unicode glyph of each node status, from the table (the plain form is {@link NODE_ROW_ROLE}'s, chosen by the view). */
 export const NODE_ROW_GLYPH: Readonly<Record<NodeRowStatus, string>> = {
-  pending: '○',
-  running: '◐',
-  completed: '✓',
-  failed: '✗',
-  skipped: '⊘',
-  stopped: '■',
+  pending: glyphOf(NODE_ROW_ROLE.pending, false),
+  running: glyphOf(NODE_ROW_ROLE.running, false),
+  completed: glyphOf(NODE_ROW_ROLE.completed, false),
+  failed: glyphOf(NODE_ROW_ROLE.failed, false),
+  skipped: glyphOf(NODE_ROW_ROLE.skipped, false),
+  stopped: glyphOf(NODE_ROW_ROLE.stopped, false),
 };
 
 const FINISHED_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
@@ -171,7 +178,7 @@ export const MAX_PROJECT_ROOT_CHARS = 4096;
  * one-line floor — a run id is read back from `history.db`, which accepts any text in that column.
  */
 export function shortRunId(id: string): string {
-  return sanitizeInline(id.slice(0, 8));
+  return sanitizeInline(shortId(id));
 }
 
 // ---------------------------------------------------------------------------------------------------------

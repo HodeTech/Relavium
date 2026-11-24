@@ -187,6 +187,7 @@ import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
 import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
+import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
 import { keyToken } from './legend.js';
@@ -322,7 +323,7 @@ export interface HomeControllerState {
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
   readonly interruptArmed: boolean;
-  /** The run host's snapshot, as of the last read (ADR-0139 §3): the strip's `▶` row and the exit-guard card show it. `undefined`
+  /** The run host's snapshot, as of the last read (ADR-0139 §3): the strip's run row and the exit-guard card show it. `undefined`
    *  with no host wired. It is re-read when a native action ends, while a leg is live, and when the Home is asked to end. */
   readonly hostedRun: RunHostSnapshot | undefined;
   /** The exit-guard card (ADR-0139 §6): `confirm` asks whether to leave with a run executing, `stopping` waits (bounded) for the
@@ -578,6 +579,11 @@ export interface HomeControllerDeps {
   readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
   /** The `/doctor` probes (2.5.C S5) — the Home palette's `/doctor` runs the fast tier over these into `notice`. */
   readonly doctorProbes: DoctorProbes;
+  /**
+   * The text the controller writes itself (the doctor's report, a chat's end notice) carries glyphs of the glyph table, so it is written in
+   * their plain forms when colour is off (ADR-0145 §5): `true` ⇒ the plain forms. Absent ⇒ the Unicode glyphs.
+   */
+  readonly plainGlyphs?: boolean;
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
@@ -1309,7 +1315,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (chat === undefined || tearingDown === chat) return;
     if (state.screen?.kind === 'run-view' && state.screen.runId === end.runId) return;
     const row = state.parkedRuns.find((parked) => parked.runId === end.runId);
-    const line = hostedEndNotice({ runId: end.runId, disposition: end.terminal.disposition }, row);
+    const line = withGlyphForm(deps.plainGlyphs === true, () =>
+      hostedEndNotice({ runId: end.runId, disposition: end.terminal.disposition }, row),
+    );
     if (line !== undefined) chat.store.note(line);
   };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
@@ -1925,7 +1933,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           .catch(() => undefined);
         cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
         next.store.notice(
-          modelSwitchNotice(old.store.getSnapshot().state.model ?? '(unknown)', target.modelId),
+          withGlyphForm(deps.plainGlyphs === true, () =>
+            modelSwitchNotice(old.store.getSnapshot().state.model ?? '(unknown)', target.modelId),
+          ),
         );
         set({
           session: next,
@@ -2674,7 +2684,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
       set({ input: emptyEditor() });
-      if (openRunView()) return; // the strip's `▶` row: `Enter` brings back the view of the run that is executing
+      if (openRunView()) return; // the strip's run row: `Enter` brings back the view of the run that is executing
       if (state.keyless) openProviderSetup();
       return;
     }
@@ -2789,7 +2799,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       view = deps.models.load(); // a DB read — never crash the REPL (parity with runDoctor / acceptModel's guard)
     } catch {
       // Keep the last-shown entries; just drop the spinner and surface the refresh status.
-      set({ modelPicker: { ...open, loading: false, banner: partialFailureBanner(failed) } });
+      set({
+        modelPicker: {
+          ...open,
+          loading: false,
+          banner: partialFailureBanner(failed, providerDisplayName),
+        },
+      });
       return;
     }
     // Keep the user's filter/selection + any transient hint; the view clamps a selection past the (shrunk) end.
@@ -2799,7 +2815,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         entries: view.entries,
         refreshedAt: view.refreshedAt,
         loading: false,
-        banner: partialFailureBanner(failed),
+        banner: partialFailureBanner(failed, providerDisplayName),
       },
     });
   };
@@ -3305,7 +3321,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ notice: 'doctor: checking…' });
         let text: string;
         try {
-          text = formatDoctorReport(await runDoctorChecks(deep, deps.doctorProbes));
+          text = formatDoctorReport(
+            await runDoctorChecks(deep, deps.doctorProbes),
+            deps.plainGlyphs === true,
+          );
         } catch (cause) {
           deps.workOwner?.failure(cause);
           text = 'doctor: check failed';
@@ -3923,7 +3942,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   /**
    * What `Enter` does on a focused strip row (ADR-0140 §6): a parked run opens its gate or budget card, a session is resumed, and a failed or
-   * recent run opens its detail in History (nothing is resumed or answered from it). The run this Home hosts opens its view instead, as the `▶` row does.
+   * recent run opens its detail in History (nothing is resumed or answered from it). The run this Home hosts opens its view instead, as the run row does.
    */
   const activateStripRow = (row: StripRow): void => {
     if (row.role === 'session') {

@@ -122,7 +122,7 @@ describe('PermissionsSheetView with colour off', () => {
     const styled = frame(open(), false);
     expect(styled).not.toMatch(ANY_COLOUR);
     const text = plain(styled);
-    expect(text).toContain('› npm, 1 argument');
+    expect(text).toContain('> npm, 1 argument');
     expect(text).toContain('[d] withdraw');
     expect(text).toContain('This project · remembered (2)');
     expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
@@ -142,7 +142,7 @@ describe('PermissionsSheetView with colour off', () => {
       const answerStyled = frame(withMessage(message), false);
       expect(answerStyled, message.tone).not.toMatch(ANY_COLOUR);
       expect(plain(answerStyled), message.tone).toContain(
-        `${message.tone === 'done' ? '✓ ' : message.tone === 'failed' ? '✗ ' : ''}${message.text}`,
+        `${message.tone === 'done' ? 'ok ' : message.tone === 'failed' ? 'x ' : ''}${message.text}`,
       );
     }
   });

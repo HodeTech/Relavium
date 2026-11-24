@@ -38,6 +38,7 @@ import {
   type FullChrome,
   type InspectionPending,
 } from './tool-review-screen.js';
+import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { itemsRow, rowSegments, type LegendRow } from './legend-row.js';
 import type { SheetRole } from './sheet-frame.js';
@@ -166,11 +167,11 @@ export function ToolReviewHost(
     props.store.invalidateToolReview();
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
   const identity = reviewIdentity(snapshot, props.size.cols);
-  const { page, chrome } = reviewScreen(
-    snapshot,
-    props.size,
-    props.clipboard !== undefined,
-    identity,
+  // The rows the card is built from carry glyphs of the table: the plain forms when colour is explicitly off (an absent `color` is the Unicode
+  // form, as a view mounted without the prop always drew), and none of them is wider than its Unicode glyph, so the measured frame is the same.
+  const plain = props.color === false;
+  const { page, chrome } = withGlyphForm(plain, () =>
+    reviewScreen(snapshot, props.size, props.clipboard !== undefined, identity),
   );
   pageRef.current = page;
   useLayoutEffect(() => {
@@ -215,6 +216,7 @@ export function ToolReviewHost(
           columns={props.size.cols}
           rows={props.size.rows}
           color={props.color === true}
+          plain={plain}
         />
       </Box>
     );
@@ -228,6 +230,7 @@ export function ToolReviewHost(
           columns={props.size.cols}
           rows={props.size.rows}
           color={props.color === true}
+          plain={plain}
         />
       ) : (
         chrome !== undefined && (
@@ -238,6 +241,7 @@ export function ToolReviewHost(
             columns={props.size.cols}
             rows={props.size.rows}
             color={props.color === true}
+            plain={plain}
           />
         )
       )}
@@ -396,7 +400,8 @@ export function cardTitleRows(input: {
 
 /** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
 function approvalRule(columns: number): string {
-  return `\u2500${RULE_LABEL}${'\u2500'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+  const rule = glyph('thinRule');
+  return `${rule}${RULE_LABEL}${rule.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
 }
 
 /** Colour a key legend by the role its builder gave each stretch: allow green, deny red, a stop yellow, other keys cyan, the words dim. */
@@ -495,7 +500,24 @@ function rowTone(kind: ReviewPage['kinds'][number], color: boolean): Record<stri
  * Title, diff body, one summary row, only the warnings that apply, and two key rows. Everything it shows comes from
  * the same projected page the safety machinery acknowledges; this component only chooses the words and colours.
  */
-function ReviewCard({
+interface ReviewCardProps {
+  readonly snapshot: ChatStoreSnapshot;
+  readonly review: ToolReviewState;
+  readonly page: ReviewPage | undefined;
+  readonly identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
+  readonly columns: number;
+  readonly rows: number;
+  readonly color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  readonly plain: boolean;
+}
+
+/** The card, its rows built in the glyph form the colour setting asks for. */
+function ReviewCard(props: Readonly<ReviewCardProps>): ReactElement {
+  return withGlyphForm(props.plain, () => ReviewCardBody(props));
+}
+
+function ReviewCardBody({
   snapshot,
   review,
   page,
@@ -503,15 +525,8 @@ function ReviewCard({
   columns,
   rows,
   color,
-}: Readonly<{
-  snapshot: ChatStoreSnapshot;
-  review: ToolReviewState;
-  page: ReviewPage | undefined;
-  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
-  columns: number;
-  rows: number;
-  color: boolean;
-}>): ReactElement {
+  plain,
+}: Readonly<ReviewCardProps>): ReactElement {
   const request = snapshot.approval?.request;
   const toolId = request?.toolId ?? '';
   const document = review.document;
@@ -591,7 +606,7 @@ function ReviewCard({
         <Text
           key={key}
           {...(review.facts !== undefined &&
-          !warning.startsWith('\u26a0') &&
+          !warning.startsWith(glyph('warning')) &&
           !warning.startsWith(' ')
             ? dimProps(color)
             : colorProps(color, 'yellow'))}
@@ -604,7 +619,7 @@ function ReviewCard({
           <Text {...dimProps(color)}>
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
-          <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
+          <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}${glyphOf('caret', plain)}`}</Text>
           <Text wrap="truncate-end">
             {legend(
               [{ keys: 'Enter', verb: 'deny and continue' }, STOP_KEY],
@@ -663,19 +678,24 @@ function ReviewCallList({
   columns,
   rows,
   color,
+  plain,
 }: Readonly<{
   snapshot: ChatStoreSnapshot;
   review: ToolReviewState;
   columns: number;
   rows: number;
   color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  plain: boolean;
 }>): ReactElement {
-  const view = callListView({
-    calls: [...snapshot.toolDisplays.values()],
-    selected: review.selected,
-    columns,
-    terminalRows: rows,
-  });
+  const view = withGlyphForm(plain, () =>
+    callListView({
+      calls: [...snapshot.toolDisplays.values()],
+      selected: review.selected,
+      columns,
+      terminalRows: rows,
+    }),
+  );
   return (
     <>
       <Text bold wrap="truncate-end">
@@ -740,6 +760,7 @@ function ReviewScreen({
   columns,
   rows,
   color,
+  plain,
 }: Readonly<{
   review: ToolReviewState;
   page: ReviewPage | undefined;
@@ -747,6 +768,8 @@ function ReviewScreen({
   columns: number;
   rows: number;
   color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  plain: boolean;
 }>): ReactElement {
   const document = review.document;
   const target = chrome.hasTarget ? toolReviewTarget(review, columns, rows) : undefined;
@@ -791,20 +814,24 @@ function ReviewScreen({
         <Text key={`pad-${index}`}> </Text>
       ))}
       <Text wrap="truncate-end" {...dimProps(color)}>
-        {fullStatusRow({
-          page,
-          document,
-          revealed: review.reveal,
-          numeric: review.numeric,
-          columns,
-        })}
+        {withGlyphForm(plain, () =>
+          fullStatusRow({
+            page,
+            document,
+            revealed: review.reveal,
+            numeric: review.numeric,
+            columns,
+          }),
+        )}
       </Text>
       <Text wrap="truncate-end">{review.message === '' ? ' ' : escaped(review.message)}</Text>
       {review.searching && (
         <Text wrap="truncate-end">
           {
             itemsRow([
-              { text: `Search visible source: ${inputDisplay(review.query ?? '')}█` },
+              {
+                text: `Search visible source: ${inputDisplay(review.query ?? '')}${glyphOf('caret', plain)}`,
+              },
               { keys: 'Enter', verb: 'find' },
             ]).text
           }

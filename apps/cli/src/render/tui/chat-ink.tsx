@@ -164,6 +164,7 @@ import {
   type OpenPalette,
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
+import { glyphOf, withGlyphForm } from './glyphs.js';
 import {
   formatBusyLine,
   formatReasoningPanel,
@@ -643,7 +644,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             .filter((call) => state.liveObserver !== true || !call.resolved)
             .map((call) => (
               <Text key={call.id} {...colorProps(color, 'yellow')}>
-                {formatToolCall(call, props.toolDisplays?.get(call.id))}
+                {withGlyphForm(!color, () =>
+                  formatToolCall(call, props.toolDisplays?.get(call.id)),
+                )}
               </Text>
             ))}
           {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
@@ -695,7 +698,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           key (two identical warning strings) and an array-index key. */}
       {state.warnings.length > 0 && (
         <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-          {state.warnings.map((w) => `⚠ ${stripTerminalControls(w)}`).join('\n')}
+          {state.warnings
+            .map((w) => `${glyphOf('warning', !color)} ${stripTerminalControls(w)}`)
+            .join('\n')}
         </Text>
       )}
 
@@ -1127,7 +1132,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     try {
       view = port.load(); // a DB read — never crash the REPL (parity with the Home)
     } catch {
-      applyModelPicker({ ...open, loading: false, banner: partialFailureBanner(failed) });
+      applyModelPicker({
+        ...open,
+        loading: false,
+        banner: partialFailureBanner(failed, providerDisplayName),
+      });
       return;
     }
     applyModelPicker({
@@ -1135,7 +1144,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       entries: view.entries,
       refreshedAt: view.refreshedAt,
       loading: false,
-      banner: partialFailureBanner(failed),
+      banner: partialFailureBanner(failed, providerDisplayName),
     });
   };
   const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {

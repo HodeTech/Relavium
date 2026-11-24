@@ -161,13 +161,13 @@ describe('the table is well formed', () => {
   });
 
   it('echoes each price in the unit the table says', () => {
-    expect(PRICING_FIELDS.map((field) => field.suffix)).toEqual([
-      '/Mtok',
-      '/Mtok',
-      '/Mtok',
-      '/image',
-      '/s',
-      '/s',
+    expect(PRICING_FIELDS.map((field) => field.priceUnit)).toEqual([
+      'M',
+      'M',
+      'M',
+      'image',
+      'second',
+      'second',
     ]);
   });
 });
@@ -445,7 +445,7 @@ describe('a price is read as an exact decimal and stored as the whole micro-cent
 
   it('refuses a value past the ceiling in the ceiling sentence, however large, and never converts it', () => {
     expect(() => microcentsOfText('1e30')).toThrow(
-      '--input ($1e+30/Mtok) is implausibly large — the maximum is $100000/Mtok',
+      '--input ($1e+30 per M) is implausibly large — the maximum is $100000 per M',
     );
     expect(() => microcentsOfText('100000.00000001')).toThrow(/implausibly large/);
     expect(() => priceToMicrocents(input, Number.MAX_VALUE)).toThrow(/implausibly large/);

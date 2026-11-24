@@ -8,6 +8,8 @@ import type { HumanGatePausedEvent } from '@relavium/shared';
 import { approvalDecision, inputDecision, rejectionDecision, DECIDED_BY_CLI } from './decision.js';
 import type { GatePrompter } from './prompter.js';
 import { budgetIdentifier, budgetPromptDetails, type BudgetPromptContext } from './budget.js';
+import { formatUsdExact } from '../render/notation.js';
+import { glyphOf } from '../render/tui/glyphs.js';
 import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
@@ -36,6 +38,8 @@ export interface ClackPromptDeps {
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
+  /** Draw the glyph table's plain forms (colour is off: ADR-0145 §5); absent ⇒ the Unicode glyphs. */
+  readonly plainGlyphs?: boolean;
   /**
    * Run one prompt and report whether Ctrl-C ended it. Clack answers Ctrl-C and Esc with the same cancel, but at the
    * optional rejection reason they differ: Esc skips the reason and the rejection stands, while Ctrl-C cancels the
@@ -93,9 +97,10 @@ const defaultDeps: ClackPromptDeps = {
 };
 
 /** Workflow defaults retain the original invocation's terminal, including cards and prompt input. */
-export function createBoundClackGatePrompter(io: CliIo): GatePrompter {
+export function createBoundClackGatePrompter(io: CliIo, plainGlyphs = false): GatePrompter {
   const streams = nativePromptIo(io);
   return createClackGatePrompter({
+    plainGlyphs,
     note: (message, title) => note(message, title, { output: streams.output }),
     confirm: (options) => confirm({ ...options, ...streams }),
     text: (options) => text({ ...options, ...streams }),
@@ -139,7 +144,7 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       if (budget !== undefined) return promptBudget(deps, event, budget, signal);
       deps.note(
         cardBody(event),
-        `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
+        `${glyphOf('paused', deps.plainGlyphs === true)} ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
       );
 
       if (event.gateType === 'input') {
@@ -189,9 +194,9 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
 /** Render each recorded budget state without deriving or recalculating its authority. */
 function budgetPromptBody(budget: BudgetPromptContext): string {
   if (budget.kind === 'amount')
-    return `Frozen allowance: ${budget.microcents} microcents. Approval funds this agent execution only.`;
+    return `Budget allowance: ${formatUsdExact(budget.microcents)}. Approval funds this agent execution only.`;
   if (budget.kind === 'legacy')
-    return 'Legacy budget gate: no frozen allowance. Continuing grants no allowance; current budget checks still apply.';
+    return 'Legacy budget gate: no budget allowance. Continuing grants no allowance; current budget checks still apply.';
   if (budget.reason === 'unpriced') return 'Reject only: this execution has no priced allowance.';
   return 'Reject only: this execution allowance cannot be represented safely.';
 }
@@ -208,7 +213,7 @@ async function promptBudget(
   if (event.expiresAt !== undefined) lines.push(`Expires at ${budgetIdentifier(event.expiresAt)}`);
   deps.note(
     lines.join('\n'),
-    `⏸ Budget gate · ${budgetIdentifier(event.gateId)} · ${budgetIdentifier(event.nodeId)}`,
+    `${glyphOf('paused', deps.plainGlyphs === true)} Budget gate · ${budgetIdentifier(event.gateId)} · ${budgetIdentifier(event.nodeId)}`,
   );
   if (budget.kind === 'reject_only') {
     const rejected = await deps.confirm({
@@ -222,7 +227,7 @@ async function promptBudget(
   const approved = await deps.confirm({
     message:
       budget.kind === 'amount'
-        ? `Approve exactly ${budget.microcents} microcents?`
+        ? `Approve exactly ${formatUsdExact(budget.microcents)}?`
         : 'Continue without a budget allowance?',
     active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
     inactive: 'Reject',

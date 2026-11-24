@@ -83,7 +83,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   it('a failed run takes the marker, and the hint bar says Enter opens the run', () => {
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 0));
-    expect(frame).toContain('> ✗ wf-f1');
+    expect(frame).toContain('> x wf-f1');
     expect(frame).toContain('↑/↓ select · Enter open the run · Esc return to prompt');
     expect(frame).not.toContain('Enter resume');
   });
@@ -92,7 +92,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 2));
     expect(frame).toContain('> wf-r1');
-    expect(frame).not.toContain('> ✗');
+    expect(frame).not.toContain('> x');
     expect(frame).toContain('Enter open the run');
   });
 
@@ -172,8 +172,8 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
   const lineStart = (index: number): string => {
     const row = rows[index];
     if (row === undefined) throw new Error(`no row ${String(index)}`);
-    if (row.role === 'parked') return `> ‖ ${row.id}`;
-    if (row.role === 'failed') return `> ✗ wf-${row.id.slice('run-'.length)}`;
+    if (row.role === 'parked') return `> || ${row.id}`;
+    if (row.role === 'failed') return `> x wf-${row.id.slice('run-'.length)}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return `> wf-${row.id.slice('run-'.length)}`;
   };
@@ -209,11 +209,11 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     .map((n) => `report line ${String(n + 1)}`)
     .join('\n');
   const needle = [
-    '> ‖ run-p0',
-    '> ‖ run-p1',
-    '> ‖ run-p2',
-    '> ✗ wf-f0',
-    '> ✗ wf-f1',
+    '> || run-p0',
+    '> || run-p1',
+    '> || run-p2',
+    '> x wf-f0',
+    '> x wf-f1',
     '> Conversation 0',
     '> Conversation 1',
     '> wf-r0',
@@ -249,10 +249,10 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     .map((n) => `report line ${String(n + 1)}`)
     .join('\n');
   const marker = (row: { readonly role: string; readonly id: string }): string => {
-    if (row.role === 'parked') return `> ‖ ${row.id}`;
+    if (row.role === 'parked') return `> || ${row.id}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return row.role === 'failed'
-      ? `> ✗ wf-${row.id.slice('run-'.length)}`
+      ? `> x wf-${row.id.slice('run-'.length)}`
       : `> wf-${row.id.slice('run-'.length)}`;
   };
   const strips: readonly (readonly [string, HomeSnapshot, readonly ParkedRunRow[]])[] = [

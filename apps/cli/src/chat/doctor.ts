@@ -1,6 +1,7 @@
 import type { ToolHost } from '@relavium/core';
 
 import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
 
 /**
  * The `/doctor` health-check core (2.5.C S5) — a staged check of the local setup, surfaced as a notice (chat) or
@@ -135,26 +136,36 @@ export async function runDoctorChecks(deep: boolean, probes: DoctorProbes): Prom
 
 // ── rendering ────────────────────────────────────────────────────────────────
 
-const GLYPH: Record<DoctorStatus, string> = { ok: '✓', warn: '⚠', fail: '✗' };
+/** The glyph-table role of each check status, and the word that stands beside its glyph (the check's own, not the table's: a check is not `completed`). */
+const DOCTOR_APPEARANCE: Readonly<
+  Record<DoctorStatus, { readonly role: StatusGlyphRole; readonly word: string }>
+> = {
+  ok: { role: 'completed', word: 'ok' },
+  warn: { role: 'warning', word: 'warning' },
+  fail: { role: 'failed', word: 'failed' },
+};
 
 /** The one-line heading, prefixed with the dominant-severity glyph so the outcome is scannable WITHOUT reading
  *  the words (parity with the Home strip's at-a-glance status). `warn` is visible here so a glanceable read can't
  *  mistake "no keys configured" for healthy; a failure outranks a warning. */
-function doctorHeading(failures: number, warnings: number): string {
-  if (failures > 0) return `${GLYPH.fail} doctor: ${failures} check(s) failed`;
-  if (warnings > 0) return `${GLYPH.warn} doctor: ${warnings} warning(s)`;
-  return `${GLYPH.ok} doctor: all checks passed`;
+function doctorHeading(failures: number, warnings: number, ascii: boolean): string {
+  const mark = (status: DoctorStatus): string => glyphOf(DOCTOR_APPEARANCE[status].role, ascii);
+  if (failures > 0) return `${mark('fail')} doctor: ${failures} check(s) failed`;
+  if (warnings > 0) return `${mark('warn')} doctor: ${warnings} warning(s)`;
+  return `${mark('ok')} doctor: all checks passed`;
 }
 
-/** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <label>: <detail>` row per check.
+/** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <word> · <label>: <detail>` row per check, in the plain
+ *  glyph forms when `ascii` (colour is off: ADR-0145 §5).
  *  Both the label AND the detail are sanitized — the Home renders these rows verbatim (no outer scrub like the
  *  chat notice channel), so a label carrying a control char (e.g. a crafted MCP server id) is neutralized here. */
-export function formatDoctorReport(report: DoctorReport): string {
-  const rows = report.checks.map(
-    (check) =>
-      `  ${GLYPH[check.status]} ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`,
-  );
+export function formatDoctorReport(report: DoctorReport, ascii = false): string {
+  const rows = report.checks.map((check) => {
+    const { role, word } = DOCTOR_APPEARANCE[check.status];
+    // The glyph is never alone: the check's word stands beside it, and the label and the detail follow.
+    return `  ${glyphOf(role, ascii)} ${word} · ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`;
+  });
   const failures = report.checks.filter((check) => check.status === 'fail').length;
   const warnings = report.checks.filter((check) => check.status === 'warn').length;
-  return [doctorHeading(failures, warnings), ...rows].join('\n');
+  return [doctorHeading(failures, warnings, ascii), ...rows].join('\n');
 }

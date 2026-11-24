@@ -5,11 +5,17 @@ import type {
   NodeDetailRequest,
   NodePosition,
 } from '../../history/node-detail-source.js';
-import { absenceText, scrubbedBounded, type NodeRow } from '../../history/run-detail-model.js';
+import {
+  absenceText,
+  NODE_ROW_ROLE,
+  scrubbedBounded,
+  type NodeRow,
+} from '../../history/run-detail-model.js';
 import { EMPTY_OUTPUT, NOT_RECORDED, NO_OUTPUT, SKIPPED, UNAVAILABLE } from '../absence.js';
 import { sanitizeInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
-import { formatDuration } from './format.js';
+import { formatDuration } from '../notation.js';
+import { glyph, statusCell } from './glyphs.js';
 import { exitKey, keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clipLine,
@@ -17,6 +23,8 @@ import {
   windowBody,
   type SheetLine,
   type SheetLineKind,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
@@ -124,7 +132,8 @@ export function firstFailedAttempt(
 
 const WORD_WIDTH = 10;
 const INDENT = '  ';
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 
 /** `text` broken into rows of at most `width` display columns, at a code point, never in the middle of one. */
 function wrapText(text: string, width: number): readonly string[] {
@@ -246,7 +255,7 @@ function attemptLines(model: NodeDetailModel): readonly NodeLine[] {
         .join('  ');
       return {
         kind: 'row',
-        left: `${INDENT}${attempt.glyph} attempt ${String(attempt.attempt)}  ${attempt.status.padEnd(WORD_WIDTH)}`,
+        left: `${INDENT}${statusCell(NODE_ROW_ROLE[attempt.status])} attempt ${String(attempt.attempt)}  ${attempt.status.padEnd(WORD_WIDTH)}`,
         right,
       };
     }),
@@ -285,7 +294,10 @@ function readyLines(read: NodeDetailRead): readonly NodeLine[] {
     ? []
     : [{ kind: 'notice', left: NODE_LOG_PARTIAL }];
   return [
-    { kind: 'heading', left: `${model.glyph} ${model.status}  ${model.label}` },
+    {
+      kind: 'heading',
+      left: `${glyph(NODE_ROW_ROLE[model.status])} ${model.status}  ${model.label}`,
+    },
     { kind: 'text', left: `${positionText(read.position)}  ·  type ${typeText(read)}` },
     ...authoredLine,
     ...ranOn,
@@ -315,7 +327,7 @@ function noAttemptLines(
   const skippedWhy = row.skippedReason === undefined ? SKIPPED : `${SKIPPED}: ${row.skippedReason}`;
   const why = row.status === 'skipped' ? skippedWhy : absence;
   return [
-    { kind: 'heading', left: `${row.glyph} ${row.status}  ${row.label}` },
+    { kind: 'heading', left: `${glyph(NODE_ROW_ROLE[row.status])} ${row.status}  ${row.label}` },
     { kind: 'text', left: `${positionText(load.position)}  ·  type ${type}` },
     { kind: 'text', left: why },
     { kind: 'text', left: `Tokens ${row.tokens.text}  ·  cost ${row.cost.text}` },
@@ -428,24 +440,26 @@ export function foldNodeKey(
  * for the lines it hides), and the message row, which keeps its line whether or not it has anything to say.
  */
 export function nodeBody(state: NodeTabState, width: number, room: number): readonly SheetLine[] {
-  const total = state.lines.length;
+  // The lines are derived from the row and the load, so they are written again here, in the glyph form the frame is drawn in: the copy the
+  // state holds was written when the page opened, outside any frame, and a key only needs its length (which does not depend on the form).
+  const lines = linesOf(state.row, state.load);
+  const total = lines.length;
   const height = Math.max(3, room - 1);
   const { start, end } = windowBody(total, state.cursor, height);
   const shown: SheetLine[] = [];
   for (let index = start; index < end; index += 1) {
-    const line = state.lines[index];
+    const line = lines[index];
     if (line === undefined) continue;
     const selected = index === state.cursor;
-    const left = `${selected ? POINTER : INDENT}${sanitizeInline(line.left)}`;
+    const left = `${selected ? pointer() : INDENT}${sanitizeInline(line.left)}`;
     shown.push({
       kind: selected ? 'selected' : line.kind,
       text: flushRow(left, sanitizeInline(line.right ?? ''), width),
     });
   }
-  if (start > 0 && shown.length > 0)
-    shown[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && shown.length > 0) shown[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < total && shown.length > 0)
-    shown[shown.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
+    shown[shown.length - 1] = { kind: 'marker', text: moreBelowText(total - end + 1) };
   const footer: SheetLine =
     state.message === undefined
       ? { kind: 'hint', text: clipLine(NODE_CHANGES_NO_RUN, width) }

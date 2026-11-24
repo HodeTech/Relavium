@@ -23,6 +23,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { hostSleep } from '../process/sleep.js';
+import { formatUsdExact } from '../render/notation.js';
 import { writeRecordLines } from '../render/records.js';
 import { formatRunOutputs } from '../render/run-outputs.js';
 import { sanitizeInline } from '../render/sanitize.js';
@@ -573,7 +574,7 @@ function detailOf(event: RunEvent): string {
     case 'budget:estimate_committed':
       // ADR-0074 §1 — an ESTIMATE, said in those words. `logs` was the only human surface that showed the event
       // existed at all, and it showed no amount.
-      return ` — ~${event.estimateMicrocents}µ¢ estimated, possibly billed (~${event.cumulativeConservativeMicrocents}µ¢ total)`;
+      return ` — ~${formatUsdExact(event.estimateMicrocents)} estimated, possibly billed (~${formatUsdExact(event.cumulativeConservativeMicrocents)} total)`;
     case 'run:completed':
       return ' — completed';
     case 'run:cancelled':

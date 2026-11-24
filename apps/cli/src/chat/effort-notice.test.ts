@@ -163,16 +163,17 @@ describe('onceEffortNotice — a standing condition is not an event', () => {
 });
 
 describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', () => {
-  it('formats a cap as fixed-decimal USD, never scientific notation', () => {
-    expect(capUsd(5_000_000)).toBe('$0.05'); // the workflow-yaml-spec's own example cap
-    expect(capUsd(1_000_000_000)).toBe('$10.00');
-    expect(capUsd(1)).toBe('$0.00'); // a sub-cent cap rounds to $0.00 — NOT `$1e-8`, the bug this fixed
+  it('formats a cap as the exact USD of the integer, never scientific notation and never rounded', () => {
+    expect(capUsd(5_000_000)).toBe('$0.0500'); // the workflow-yaml-spec's own example cap
+    expect(capUsd(1_000_000_000)).toBe('$10.0000');
+    // A sub-cent cap keeps its digits: it reads $0.00000001, NOT `$1e-8` and NOT $0.00, which would say the cap is zero.
+    expect(capUsd(1)).toBe('$0.00000001');
   });
 
   it('names the model, the cap, the fix, AND the surface-specific strict setting', () => {
     const chat = unpricedModelNote('my-local-model', 5_000_000, '[chat] strict_cost_cap');
     expect(chat).toContain('my-local-model');
-    expect(chat).toContain('$0.05');
+    expect(chat).toContain('$0.0500');
     // QUOTED in the command — the id is pasted into a shell, and it is not ours (it comes from the live
     // catalog or a user's config). The prose occurrence above is unquoted; only the argument is escaped.
     expect(chat).toContain("models pricing 'my-local-model'");

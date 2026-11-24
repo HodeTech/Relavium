@@ -1934,7 +1934,9 @@ describe('a request while the host already hosts a leg is answered before the fo
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const { r, launch, list, begin, start } = stubbed(() => executing);
     const notice = await launch.open();
-    expect(notice).toBe('A run is already executing (01234567). Enter on its ▶ row opens it.');
+    expect(notice).toBe(
+      'A run is already executing (01234567). Enter on its row in the strip opens it.',
+    );
     expect(notice.length, 'one row of the notice line').toBeLessThanOrEqual(78);
     expect(begin, 'no flow was begun').not.toHaveBeenCalled();
     expect(r.channel.ui.getSnapshot().active).toBe(false);

@@ -140,7 +140,7 @@ describe('the permissions sheet in the standalone chat', () => {
     const text = frame(view);
     expect(text).toContain('Permissions · ask mode');
     expect(text).toContain('This project · remembered (2)');
-    expect(text).toContain('› npm, 1 argument');
+    expect(text).toContain('> npm, 1 argument');
     expect(text).toContain('This session · approved (1)');
     expect(text).toContain('git status');
     expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
@@ -247,7 +247,7 @@ describe('the permissions sheet in the standalone chat', () => {
     await until(() => frame(view).includes('Any other key keeps it.'));
     await afterDwell();
     view.stdin.write(ENTER);
-    await until(() => frame(view).includes('✗ Could not withdraw that row; nothing changed.'));
+    await until(() => frame(view).includes('x Could not withdraw that row; nothing changed.'));
     expect(frame(view)).toContain('Permissions ·');
   });
 

@@ -9,7 +9,7 @@ import {
   type MaskedCut,
 } from '../render/output-masking.js';
 import { stripTerminalControls } from '../render/sanitize.js';
-import { formatCostUsd, formatDuration } from '../render/tui/format.js';
+import { formatDuration, formatUsd } from '../render/notation.js';
 import {
   NODE_ROW_GLYPH,
   absenceText,
@@ -429,7 +429,7 @@ function timelineDraft(event: RunEvent, nodeId: string): TimelineDraft | undefin
         ...base,
         label: 'Model call settled',
         detail: () =>
-          `${scrubbedBounded(model)} · ${priced ? formatCostUsd(costMicrocents) : 'price unknown'}`,
+          `${scrubbedBounded(model)} · ${priced ? formatUsd(costMicrocents) : 'price unknown'}`,
       };
     }
     case 'human_gate:paused': {

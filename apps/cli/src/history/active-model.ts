@@ -1,6 +1,7 @@
 import type { RunLeaseSummary, RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
+import { displayPath, type DisplayPathRoots } from '../render/notation.js';
 import { RUN_STATUS_GLYPH } from './history-model.js';
 import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detail-model.js';
 
@@ -97,6 +98,8 @@ export interface ClassifyActiveInput {
   readonly pendingMediaJobCounts?: ReadonlyMap<string, number>;
   /** Workflow id to slug (`loadWorkflowSlugs`). */
   readonly workflowLabels?: ReadonlyMap<string, string>;
+  /** What a run's project root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
+  readonly paths?: DisplayPathRoots;
 }
 
 const ACTIVE_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
@@ -242,7 +245,14 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       createdAt: run.createdAt,
       ...(run.projectRoot === undefined
         ? {}
-        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
+        : {
+            projectRoot: scrubbedBounded(
+              input.paths === undefined
+                ? run.projectRoot
+                : displayPath(run.projectRoot, input.paths),
+              MAX_PROJECT_ROOT_CHARS,
+            ),
+          }),
     });
   }
   return rows.sort((a, b) => groupRank(a.class) - groupRank(b.class) || newestFirst(a, b));

@@ -1,6 +1,8 @@
 import { STALLED_REASON, type ActiveRow } from '../../history/active-model.js';
 import type { ActiveRead } from '../../history/active-source.js';
+import { RUN_STATUS_ROLE } from '../../history/history-model.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph, statusCell } from './glyphs.js';
 import { keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
@@ -9,6 +11,8 @@ import {
   windowBody,
   type SheetLine,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 
 /**
@@ -18,7 +22,7 @@ import {
  * this module says what a key does and which lines to draw.
  *
  * - **Four groups, in this order: running, paused, stalled, held.** A group is a word on every row as well as an order, so the list reads
- *   without colour: `◐ running`, `○ pending`, `⏸ paused`, `⚠ stalled`, `◇ held`. The leg this Home runs is in `running` and says so; a
+ *   without colour: `◐ running`, `○ pending`, `‖ paused`, `⚠ stalled`, `◇ held`. The leg this Home runs is in `running` and says so; a
  *   paused run says what it waits for (a gate here, a media job, another project, or `gate state not read`, which a damaged log gets and
  *   never "media job").
  * - **Three kinds of row act.** `Enter` on the leg this Home hosts asks the host to reopen its view; `Enter` on a run paused at a gate in THIS
@@ -44,9 +48,6 @@ const GROUP_ORDER: Readonly<Record<ActiveGroup, number>> = {
   stalled: 2,
   held: 3,
 };
-
-const STALLED_GLYPH = '⚠';
-export const HELD_GLYPH = '◇';
 
 /** The group a row is listed under. A held terminal outranks the rest; the hosted leg is always `running`. */
 export function activeGroupOf(row: ActiveRow): ActiveGroup {
@@ -253,14 +254,16 @@ export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 const WORD_WIDTH = 9;
 
-function glyphOf(row: ActiveRow, group: ActiveGroup): string {
-  if (group === 'stalled') return STALLED_GLYPH;
-  if (group === 'held') return HELD_GLYPH;
-  return row.glyph;
+/** The glyph of a row, in the column the list gives a status: a stalled run is a warning and a held terminal is the held diamond. */
+function rowGlyph(row: ActiveRow, group: ActiveGroup): string {
+  if (group === 'stalled') return statusCell('warning');
+  if (group === 'held') return statusCell('held');
+  return statusCell(RUN_STATUS_ROLE[row.status]);
 }
 
 /** The word of a row: the status for a run that is running or pending, else its group. A glyph never stands alone. */
@@ -277,7 +280,7 @@ function qualifierOf(row: ActiveRow): string {
 function rowLine(row: ActiveRow, selected: boolean, width: number): SheetLine {
   const group = activeGroupOf(row);
   const word = wordOf(row, group).padEnd(WORD_WIDTH);
-  const lead = `${selected ? POINTER : INDENT}${glyphOf(row, group)} `;
+  const lead = `${selected ? pointer() : INDENT}${rowGlyph(row, group)} `;
   const left = `${lead}${word}${row.shortId}  ${row.label}`;
   const tail = qualifierOf(row);
   const text = flushRow(left, tail, width);
@@ -337,12 +340,11 @@ export function activeBody(
     .map((row, at) =>
       rowLine(row, start + at === state.cursor && state.focus !== undefined, width),
     );
-  if (start > 0 && list.length > 0)
-    list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && list.length > 0) list[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < state.rows.length && list.length > 0)
     list[list.length - 1] = {
       kind: 'marker',
-      text: `▼ ${String(state.rows.length - end + 1)} more`,
+      text: moreBelowText(state.rows.length - end + 1),
     };
   const selected = state.focus === undefined ? undefined : state.rows[state.cursor];
   const detail: SheetLine =

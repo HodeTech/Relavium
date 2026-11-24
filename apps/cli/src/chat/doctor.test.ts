@@ -123,7 +123,25 @@ describe('formatDoctorReport', () => {
       checks: [{ id: 'keychain', label: 'OS keychain', status: 'ok', detail: 'reachable' }],
     });
     expect(out).toContain('doctor: all checks passed');
-    expect(out).toContain('✓ OS keychain: reachable');
+    expect(out).toContain('✓ ok · OS keychain: reachable');
+  });
+
+  it('writes the plain glyph forms when colour is off, with the check’s word beside each', () => {
+    const out = formatDoctorReport(
+      {
+        checks: [
+          { id: 'keychain', label: 'OS keychain', status: 'ok', detail: 'reachable' },
+          { id: 'provider', label: 'providers', status: 'warn', detail: 'no keys configured' },
+          { id: 'config', label: 'config', status: 'fail', detail: 'bad' },
+        ],
+      },
+      true,
+    );
+    expect(out).toContain('x doctor: 1 check(s) failed');
+    expect(out).toContain('ok ok · OS keychain: reachable');
+    expect(out).toContain('! warning · providers: no keys configured');
+    expect(out).toContain('x failed · config: bad');
+    expect(out).not.toMatch(/[✓✗⚠]/u);
   });
 
   it('counts failures in the heading and marks them with ✗', () => {
@@ -134,7 +152,7 @@ describe('formatDoctorReport', () => {
       ],
     });
     expect(out).toContain('doctor: 1 check(s) failed');
-    expect(out).toContain('✗ config: bad');
+    expect(out).toContain('✗ failed · config: bad');
   });
 
   it('uses the warn glyph and reports warnings in the heading when there are no failures', () => {
@@ -147,7 +165,7 @@ describe('formatDoctorReport', () => {
     // A warn-only report must NOT read "all checks passed" — the heading surfaces the warning count.
     expect(out).toContain('doctor: 2 warning(s)');
     expect(out).not.toContain('all checks passed');
-    expect(out).toContain('⚠ providers: no keys configured');
+    expect(out).toContain('⚠ warning · providers: no keys configured');
   });
 
   it('a failure outranks warnings in the heading', () => {

@@ -59,6 +59,7 @@ import {
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
+import { displayRoots } from '../render/display-roots.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
@@ -2006,6 +2007,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
         // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
         allPins: () => definedPins.listPins(),
+        // Another project's root is shortened against this Home's directory and the operator's home (never an absolute path inside either).
+        paths: displayRoots(deps.global.cwd, homeDir),
       });
       // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
       // its project root and slug, a run under its full id); nothing is written until the key is pressed.
@@ -2021,6 +2024,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           reader: runReader,
           listRunPins: () => definedPins.listPins({ kind: 'run' }),
           projectRoot: deps.global.cwd,
+          paths: displayRoots(deps.global.cwd, homeDir),
           now,
         }),
         loadDetail: createRunDetailLoader({
@@ -2049,6 +2053,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         models: () => models.load().entries,
       });
       controller = createHomeController({
+        plainGlyphs: !deps.global.color,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
         launchRun: (slug, path) => runLaunch.open(slug, path),
@@ -2080,6 +2085,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             isClosed: () => dbClosed,
             now,
             leaseTtlMs: RUN_LEASE_TTL_MS,
+            paths: displayRoots(deps.global.cwd, homeDir),
             // The three reads of one tick (the page, the gate states, the leases) are one snapshot of the database.
             snapshot: readSnapshotOf(opened.db),
           }),

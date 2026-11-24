@@ -1,7 +1,8 @@
 import type { Text } from 'ink';
 import type { ComponentProps } from 'react';
 import type { DisplayLine } from './viewport.js';
-import { formatDuration, type StatusColor } from './format.js';
+import { formatDuration } from '../notation.js';
+import type { StatusColor } from './format.js';
 import type { NodeView } from './run-view-model.js';
 
 /**

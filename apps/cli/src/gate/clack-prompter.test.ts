@@ -40,6 +40,15 @@ describe('createClackGatePrompter', () => {
     expect(body).toContain('Ship it?');
   });
 
+  it('opens the card with the paused glyph of the glyph table, in its plain form when colour is off (ADR-0145 §5)', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note })).prompt(gate());
+    expect(note.mock.calls[0]?.[1]).toBe('‖ Approval gate · review');
+    const plainNote = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note: plainNote, plainGlyphs: true })).prompt(gate());
+    expect(plainNote.mock.calls[0]?.[1]).toBe('|| Approval gate · review');
+  });
+
   it('sanitizes the card body and title while retaining readable multiline gate text (G44)', async () => {
     const attack = '\x1b[2J\x1b]52;c;Zm9v\x07\x1bPtmux;\x1b\\\x9b2J\r\b\u202E';
     const note = vi.fn<(message: string, title: string) => void>();
@@ -286,8 +295,13 @@ describe('createClackGatePrompter', () => {
 });
 
 describe('budget confirmation from recorded scalar context', () => {
-  for (const amount of [0, 20, Number.MAX_SAFE_INTEGER]) {
-    it(`binds exactly ${amount} and does not request input/comment`, async () => {
+  // The prompt says the exact USD of the recorded integer (never rounded, never raw micro-cents); the decision carries the integer.
+  for (const [amount, shown] of [
+    [0, '$0.0000'],
+    [20, '$0.0000002'],
+    [Number.MAX_SAFE_INTEGER, '$90071992.54740991'],
+  ] as const) {
+    it(`binds exactly ${amount} (${shown}) and does not request input/comment`, async () => {
       const d = deps();
       const result = await createClackGatePrompter(d).prompt(
         gate({
@@ -303,12 +317,12 @@ describe('budget confirmation from recorded scalar context', () => {
       });
       expect(d.confirm).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: `Approve exactly ${amount} microcents?`,
+          message: `Approve exactly ${shown}?`,
           initialValue: false, // a bare Enter rejects the spend
         }),
       );
       expect(d.note).toHaveBeenCalledWith(
-        expect.stringContaining(`${amount} microcents`),
+        expect.stringContaining(`Budget allowance: ${shown}.`),
         expect.stringContaining('Budget gate'),
       );
       expect(d.note).not.toHaveBeenCalledWith(
@@ -316,6 +330,16 @@ describe('budget confirmation from recorded scalar context', () => {
         expect.anything(),
       );
       expect(d.text).not.toHaveBeenCalled();
+      // Raw micro-cents are machine output: no sentence a person reads at this prompt carries the integer or its unit.
+      for (const word of amount === Number.MAX_SAFE_INTEGER
+        ? ['microcents', String(amount)]
+        : ['microcents']) {
+        expect(d.note).not.toHaveBeenCalledWith(expect.stringContaining(word), expect.anything());
+        const containing: unknown = expect.stringContaining(word);
+        expect(d.confirm).not.toHaveBeenCalledWith(
+          expect.objectContaining({ message: containing }),
+        );
+      }
     });
   }
   for (const reason of ['unpriced', 'unrepresentable'] as const) {

@@ -122,7 +122,7 @@ function mount() {
     landingFrameAcknowledged,
     frame: () => harness.lastFrame() ?? '',
     selectedLine: () =>
-      (harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('› ')) ?? '',
+      (harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('> ')) ?? '',
   };
 }
 
@@ -143,7 +143,7 @@ describe('Enter on a screen opened from a focused failed run', () => {
 
     // `↓` onto the failed run: the row is drawn with its marker before `Enter` is sent, so this one is a row the person has seen.
     m.harness.stdin.write(DOWN);
-    await until(() => m.frame().includes('> ✗ ship-it'));
+    await until(() => m.frame().includes('> x ship-it'));
     await until(m.landingFrameAcknowledged);
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(FIXTURE_RUN_IDS.failed);
 
@@ -182,7 +182,7 @@ describe('Enter on a screen opened from a focused failed run', () => {
     // One chunk: the focus moves onto the row and `Enter` arrives with it, before that frame can be on screen.
     m.harness.stdin.write(`${DOWN}\r`);
     await until(() => m.controller.getSnapshot().stripFocus?.id === FIXTURE_RUN_IDS.failed);
-    await until(() => m.frame().includes('> ✗ ship-it'));
+    await until(() => m.frame().includes('> x ship-it'));
     expect(m.controller.getSnapshot().screen, 'the unseen row was not opened').toBeUndefined();
   });
 });

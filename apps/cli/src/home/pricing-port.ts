@@ -20,12 +20,12 @@ import {
   PRICING_FIELDS,
   priceArgsFromText,
   pricingField,
-  usdTextOfMicrocents,
   type PricingFieldId,
 } from '../commands/pricing-fields.js';
 import { installCatalogFromDb } from '../engine/catalog-metadata.js';
 import { providerDisplayName } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
+import { formatPrice } from '../render/notation.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   PRICING_MODEL_ID_FAULTS,
@@ -96,9 +96,7 @@ function replacedRates(plan: PricingPlan): string | undefined {
   const shipped: ModelPricing = plan.shipped;
   const parts = [
     ...(stated('input') ? [catalogTokenRates(shipped)] : []),
-    ...(stated('cached')
-      ? [`cached $${usdTextOfMicrocents(shipped.cachedInputPerMtokMicrocents)}/Mtok`]
-      : []),
+    ...(stated('cached') ? [`cached ${formatPrice(shipped.cachedInputPerMtokMicrocents)}`] : []),
   ];
   return parts.length === 0 ? undefined : parts.join(', ');
 }
@@ -128,7 +126,7 @@ function offerOf(plan: PricingPlan): PricingOffer {
       return {
         id: price.id,
         label: field.label,
-        amount: `$${usdTextOfMicrocents(price.microcents)}${field.suffix}`,
+        amount: formatPrice(price.microcents, field.priceUnit),
         microcents: price.microcents,
       };
     }),

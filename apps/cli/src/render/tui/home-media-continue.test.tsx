@@ -161,11 +161,11 @@ describe('the row of a media park', () => {
   it('says it waits for media, and its focused key says it asks: not "no gate to decide", not "Enter say why"', async () => {
     const m = mount();
     await settleFrames();
-    expect(m.frame()).toContain('‖ run-0001  ·  waiting for media  ·  ↓ select');
+    expect(m.frame()).toContain('|| run-0001  ·  waiting for media  ·  ↓ select');
     expect(m.frame()).not.toContain('no gate to decide');
     m.harness.stdin.write(DOWN);
     await eventually(() =>
-      m.frame().includes('> ‖ run-0001  ·  waiting for media  ·  Enter ask to continue'),
+      m.frame().includes('> || run-0001  ·  waiting for media  ·  Enter ask to continue'),
     );
     expect(m.frame()).toContain('Enter continue it');
     expect(m.frame()).not.toContain('Enter say why');

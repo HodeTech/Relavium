@@ -190,10 +190,10 @@ describe('every class of run is drawn with a glyph and a word', () => {
     [IDS.hosted, '◐', 'running', 'this Home'],
     [IDS.other, '◐', 'running', 'running in another process'],
     [IDS.pending, '○', 'pending', 'running in another process'],
-    [IDS.gate, '⏸', 'paused', 'gate waiting here'],
-    [IDS.media, '⏸', 'paused', 'waiting for a media job'],
-    [IDS.unknown, '⏸', 'paused', 'gate state not read'],
-    [IDS.elsewhere, '⏸', 'paused', 'another project'],
+    [IDS.gate, '‖', 'paused', 'gate waiting here'],
+    [IDS.media, '‖', 'paused', 'waiting for a media job'],
+    [IDS.unknown, '‖', 'paused', 'gate state not read'],
+    [IDS.elsewhere, '‖', 'paused', 'another project'],
     [IDS.stalled, '⚠', 'stalled', 'settled by the next start'],
     [IDS.held, '◇', 'held', 'terminal held in the outbox'],
   ])('%s: %s %s, and says why (%s)', (id, glyph, word, why) => {
@@ -1124,7 +1124,7 @@ describe('the keys of the tab host still work around it', () => {
     if (host === undefined) throw new Error('no tab host');
     const drawn = textOf(host);
     expect(drawn.length).toBeLessThanOrEqual(TAB_HOST_ROWS);
-    expect(drawn[0]).toContain('▸ Active');
+    expect(drawn[0]).toContain('› Active');
     expect(drawn.join('\n')).toContain(IDS.hosted);
   });
 });

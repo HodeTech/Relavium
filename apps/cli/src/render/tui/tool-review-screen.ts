@@ -1,6 +1,7 @@
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { ToolDisplay } from './tool-display.js';
 import type { CommandCardFacts } from '../../chat/command-facts.js';
+import { glyph } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
 import {
@@ -33,7 +34,6 @@ export const FULL_SPARE_ROWS = 1;
 export const FULL_DEFAULT_CHROME_ROWS = 12;
 
 const SEPARATOR = ' · ';
-const RULE = '─';
 
 /** The columns a row may use: the card's rule, a margin on each side. */
 function usableColumns(columns: number): number {
@@ -121,21 +121,21 @@ export function fullWarnings(input: FullWarningInput): readonly string[] {
         (input.document?.masks.some((mask) => mask.field === targetField) ?? false);
       warnings.push(
         masked
-          ? `⚠ Allow is locked until the whole target has been on screen — press ${keyToken('Home')}, reveal its masked value with ${keyToken('r')}, and page through it (${keyToken('PgDn')}).`
-          : `⚠ Allow is locked until the whole target has been on screen — press ${keyToken('Home')} and page through it (${keyToken('PgDn')}).`,
+          ? `${glyph('warning')} Allow is locked until the whole target has been on screen — press ${keyToken('Home')}, reveal its masked value with ${keyToken('r')}, and page through it (${keyToken('PgDn')}).`
+          : `${glyph('warning')} Allow is locked until the whole target has been on screen — press ${keyToken('Home')} and page through it (${keyToken('PgDn')}).`,
       );
     }
     if (input.pending.masks > 0) {
       const one = input.pending.masks === 1;
       warnings.push(
-        `⚠ Allow is locked until ${one ? 'the masked value has' : 'every masked value has'} been revealed — press ${keyToken('r')}, then scroll over ${one ? 'it' : 'each'}.`,
+        `${glyph('warning')} Allow is locked until ${one ? 'the masked value has' : 'every masked value has'} been revealed — press ${keyToken('r')}, then scroll over ${one ? 'it' : 'each'}.`,
       );
     }
   }
   const diff = input.document?.preview.diff;
   if (diff !== undefined) {
     const endings = endingsWarning(diff);
-    if (endings !== undefined) warnings.push(`⚠ Line endings: ${endings}.`);
+    if (endings !== undefined) warnings.push(`${glyph('warning')} Line endings: ${endings}.`);
   }
   return warnings.flatMap((warning) => wrapWords(warning, usableColumns(input.columns)));
 }
@@ -184,7 +184,8 @@ export function fullStatusRow(input: FullStatusInput): string {
       ...(changes === undefined ? [] : [changes]),
     ];
     const text = parts.length === 0 ? '' : ` ${parts.join(SEPARATOR)} `;
-    return `${RULE}${text}${RULE.repeat(Math.max(1, width - RULE.length - displayWidth(text)))}`;
+    const rule = glyph('thinRule');
+    return `${rule}${text}${rule.repeat(Math.max(1, width - rule.length - displayWidth(text)))}`;
   };
   const longModes = [
     ...(input.revealed ? ['masked values revealed (view only)'] : []),
@@ -550,14 +551,27 @@ export interface CallListView {
 /** What a call list entry needs from a {@link ToolDisplay}. */
 export type CallListEntry = Pick<ToolDisplay, 'callId' | 'toolId' | 'outcome' | 'target' | 'stats'>;
 
-const OUTCOME_MARK: Record<ToolDisplay['outcome'], { mark: string; word: string; tone: CallTone }> =
-  {
-    success: { mark: '✓', word: '', tone: 'ok' },
-    failure: { mark: '✗', word: 'failed', tone: 'bad' },
-    denied: { mark: '⊘', word: 'denied', tone: 'warn' },
-    unknown: { mark: '?', word: 'outcome unknown', tone: 'warn' },
-    running: { mark: '…', word: 'running', tone: 'dim' },
-  };
+/** A call's mark, its word (the glyph is never alone) and its tone; the marks are the glyph table's, in the form in force. */
+function outcomeMark(outcome: ToolDisplay['outcome']): {
+  mark: string;
+  word: string;
+  tone: CallTone;
+} {
+  switch (outcome) {
+    case 'success':
+      // A success carries no word of its own here: the row already says what the call was (its tool, its target and its change), and a word
+      // on every success row would take the target's columns on each of them (the call list's one status glyph without a word, ADR-0145 §5).
+      return { mark: glyph('completed'), word: '', tone: 'ok' };
+    case 'failure':
+      return { mark: glyph('failed'), word: 'failed', tone: 'bad' };
+    case 'denied':
+      return { mark: glyph('cancelled'), word: 'denied', tone: 'warn' };
+    case 'unknown':
+      return { mark: '?', word: 'outcome unknown', tone: 'warn' };
+    case 'running':
+      return { mark: '…', word: 'running', tone: 'dim' };
+  }
+}
 
 /** The widest the tool-name column grows, so one long name cannot take the targets' room. */
 const TOOL_COLUMN_MAX = 22;
@@ -614,7 +628,7 @@ export function callListView(input: {
     ),
   );
   const rows = visible.map((call, index): CallListRow => {
-    const outcome = OUTCOME_MARK[call.outcome];
+    const outcome = outcomeMark(call.outcome);
     const tool = escapedFit(sanitizeUntrustedInline(call.toolId), toolWidth);
     const right = [
       call.stats === undefined ? '' : `+${call.stats.addedLines} −${call.stats.removedLines}`,
@@ -622,7 +636,7 @@ export function callListView(input: {
     ]
       .filter((part) => part.length > 0)
       .join(SEPARATOR);
-    const head = `${start + index === selected ? '>' : ' '} ${outcome.mark} ${tool}${' '.repeat(Math.max(0, toolWidth - displayWidth(tool)))}`;
+    const head = `${start + index === selected ? glyph('selection') : ' '} ${outcome.mark} ${tool}${' '.repeat(Math.max(0, toolWidth - displayWidth(tool)))}`;
     const room = width - displayWidth(head) - (right.length > 0 ? displayWidth(right) + 2 : 0) - 2;
     const target =
       call.target !== undefined && room >= TARGET_MIN

@@ -1,5 +1,6 @@
 import type { RunStatus } from '@relavium/shared';
 
+import { displayPath, type DisplayPathRoots } from '../render/notation.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { RUN_STATUS_GLYPH } from './history-model.js';
 import { scrubbedBounded } from './run-detail-model.js';
@@ -123,6 +124,8 @@ export interface DefinedModelInput {
   readonly otherPins?: readonly DefinedOtherPin[];
   /** Workflow slug to the status of its latest run in this project. */
   readonly lastRuns?: ReadonlyMap<string, RunStatus>;
+  /** What another project's root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
+  readonly paths?: DisplayPathRoots;
 }
 
 interface Ranked {
@@ -188,12 +191,16 @@ function missingRow(
   };
 }
 
-function otherProjectRow(pin: DefinedOtherPin): DefinedRow {
+function otherProjectRow(pin: DefinedOtherPin, paths: DisplayPathRoots | undefined): DefinedRow {
   return {
     state: 'other-project',
     slug: pin.oversized ? `${scrubbedBounded(pin.ref)}…` : scrubbedBounded(pin.ref),
     note: OTHER_PROJECT,
-    projectRoot: scrubbedBounded(pin.projectRoot, MAX_DETAIL_CHARS),
+    // Shortened first (project-relative or from ~, never an absolute path inside either), then scrubbed and bounded: the root is stored text.
+    projectRoot: scrubbedBounded(
+      paths === undefined ? pin.projectRoot : displayPath(pin.projectRoot, paths),
+      MAX_DETAIL_CHARS,
+    ),
     ...pinPart(pin),
     ...(pin.oversized ? { pinOversized: true } : {}),
   };
@@ -234,7 +241,7 @@ export function buildDefinedModel(input: DefinedModelInput): DefinedModel {
     ranked.push({ rank: index, row: missingRow(pin, input.lastRuns) });
   });
   otherPins.forEach((pin, index) => {
-    ranked.push({ rank: pins.length + index, row: otherProjectRow(pin) });
+    ranked.push({ rank: pins.length + index, row: otherProjectRow(pin, input.paths) });
   });
   ranked.sort((a, b) => a.rank - b.rank);
 

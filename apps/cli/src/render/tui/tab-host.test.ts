@@ -589,9 +589,9 @@ describe('what is drawn', () => {
         columns: 80,
         terminalRows: 24,
       });
-      expect(lines[0]?.text).toContain(`▸ ${tab.title}`);
-      expect(lines[0]?.text.match(/▸/gu), 'exactly one tab carries the glyph').toHaveLength(1);
-      expect(lines[0]?.text.startsWith('Defined') || lines[0]?.text.startsWith('▸ Defined')).toBe(
+      expect(lines[0]?.text).toContain(`› ${tab.title}`);
+      expect(lines[0]?.text.match(/›/gu), 'exactly one tab carries the glyph').toHaveLength(1);
+      expect(lines[0]?.text.startsWith('Defined') || lines[0]?.text.startsWith('› Defined')).toBe(
         true,
       );
       expect(lines[1]?.kind).toBe('rule');

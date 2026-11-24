@@ -5,7 +5,9 @@ import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projec
 import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
+import { formatUsdExact } from '../render/notation.js';
 import { formatReportedCost } from '../render/tui/format.js';
+import { glyph } from '../render/tui/glyphs.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -53,7 +55,9 @@ export function costNotice(
   // when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
   const notes: string[] = [];
   if (opts.released !== undefined && opts.released > 0) {
-    notes.push(`Released ~${opts.released}µ¢ of estimated-but-unconfirmed spend back to the cap.`);
+    notes.push(
+      `Released ~${formatUsdExact(opts.released)} of estimated-but-unconfirmed spend back to the cap.`,
+    );
   }
   if (opts.durabilityBroken === true) {
     // Says only what is true: the cap IS still being enforced in this process; what is broken is the record's
@@ -92,7 +96,7 @@ export function costNotice(
     // `$0.0000` session can see why. Same wording as `relavium logs`, so the two surfaces cannot drift.
     const held =
       r.conservativeMicrocents > 0
-        ? `  — ~${r.conservativeMicrocents}µ¢ estimated, possibly billed`
+        ? `  — ~${formatUsdExact(r.conservativeMicrocents)} estimated, possibly billed`
         : '';
     // A commitment made BEFORE any realized egress on this model leaves a row with no calls and no tokens. Saying
     // "(0 calls, 0 tok)" would assert the model was used zero times for zero money, while an estimate against it
@@ -243,7 +247,7 @@ export function clearedNotice(surface: ClearedNoticeSurface = 'home'): string {
  */
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
-    `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
+    `${glyph('modelSwitch')} model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
     `transcript plus content-free records of earlier tool calls (tool name and outcome), and for the question tool ` +
     `what you were asked and how you answered. Prior tool arguments and results (including files a tool read) are ` +
     `not carried; text you sent — @-attached file contents included — is.`

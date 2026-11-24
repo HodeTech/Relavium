@@ -13,8 +13,9 @@
  * answers nothing, and every other key is consumed.
  */
 
-import { formatElapsed } from './format.js';
+import { formatElapsed } from '../notation.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph } from './glyphs.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { exitKey, legend, type LegendExit } from './legend.js';
 import { itemsRow } from './legend-row.js';
@@ -80,7 +81,8 @@ export function projectCheckpointCard(
   columns: number,
 ): CheckpointCardView {
   const width = Math.max(1, columns - 2);
-  const rule = `─${RULE_LABEL}${'─'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+  const line = glyph('thinRule');
+  const rule = `${line}${RULE_LABEL}${line.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
   const rounds = `${String(state.rounds)} tool round${state.rounds === 1 ? '' : 's'}`;
   return {
     rule: head(rule, columns),

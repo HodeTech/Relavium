@@ -2,7 +2,7 @@
   "set input and output": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3 per M, output $9 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -50,7 +50,7 @@
   "set a fractional price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $0.15/Mtok, output $0.6/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $0.15 per M, output $0.6 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -74,7 +74,7 @@
   "set a zero price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $0/Mtok, output $0/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $0 per M, output $0 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -98,7 +98,7 @@
   "set cached input with the pair": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok, cached $0.03/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3 per M, output $9 per M, cached $0.03 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -122,7 +122,7 @@
   "set cached input alone": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -170,7 +170,7 @@
   "set cached input to zero": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -194,7 +194,7 @@
   "set an image price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -242,7 +242,7 @@
   "set an audio price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -266,7 +266,7 @@
   "set a video price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): video $0.5/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): video $0.5 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -290,7 +290,7 @@
   "set a zero media price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -314,7 +314,7 @@
   "set cached input and an image price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5/Mtok, image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5 per M, image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -338,7 +338,7 @@
   "set every field": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok, cached $1/Mtok, image $0.04/image, audio $0.001/s, video $0.5/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3 per M, output $9 per M, cached $1 per M, image $0.04 per image, audio $0.001 per second, video $0.5 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -386,7 +386,7 @@
   "override a catalog price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-5.5 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n  Overrides the catalog price for this model: input $5/Mtok, output $30/Mtok. Yours wins. Run `relavium models pricing 'gpt-5.5' --clear` to go back to the catalog's.\n",
+    "stdout": "Set user pricing for gpt-5.5 (openai): input $3 per M, output $9 per M. It applies to your next run/chat and survives `relavium models refresh`.\n  Overrides the catalog price for this model: input $5 per M, output $30 per M. Yours wins. Run `relavium models pricing 'gpt-5.5' --clear` to go back to the catalog's.\n",
     "stderr": "",
     "rows": [
       {
@@ -458,7 +458,7 @@
   "re-price keeps the stored cached and media rates": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $4/Mtok, output $12/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $4 per M, output $12 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -482,7 +482,7 @@
   "a media-only re-price keeps the stated token rates": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -506,7 +506,7 @@
   "re-price keeps a discovered display name and limits": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $1/Mtok, output $2/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $1 per M, output $2 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -530,7 +530,7 @@
   "the token ceiling is accepted": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $100000/Mtok, output $100000/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $100000 per M, output $100000 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -554,7 +554,7 @@
   "the cached ceiling is accepted": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $100000/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): cached $100000 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -578,7 +578,7 @@
   "the media ceiling is accepted": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): image $1000/image, audio $1000/s, video $1000/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-4 (openai): image $1000 per image, audio $1000 per second, video $1000 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -602,7 +602,7 @@
   "clear an override of a catalog model": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Cleared the user price for gpt-5.5 (openai). It falls back to the catalog: input $5/Mtok, output $30/Mtok.\n",
+    "stdout": "Cleared the user price for gpt-5.5 (openai). It falls back to the catalog: input $5 per M, output $30 per M.\n",
     "stderr": "",
     "rows": []
   },
@@ -782,7 +782,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--input ($100000.01/Mtok) is implausibly large — the maximum is $100000/Mtok"
+      "message": "--input ($100000.01 per M) is implausibly large — the maximum is $100000 per M"
     },
     "stdout": "",
     "stderr": "",
@@ -792,7 +792,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--output ($1000000/Mtok) is implausibly large — the maximum is $100000/Mtok"
+      "message": "--output ($1000000 per M) is implausibly large — the maximum is $100000 per M"
     },
     "stdout": "",
     "stderr": "",
@@ -802,7 +802,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--cached ($100001/Mtok) is implausibly large — the maximum is $100000/Mtok"
+      "message": "--cached ($100001 per M) is implausibly large — the maximum is $100000 per M"
     },
     "stdout": "",
     "stderr": "",
@@ -971,7 +971,7 @@
   "an unknown model with a token price is priced": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for brand-new-model (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for brand-new-model (openai): input $3 per M, output $9 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -1015,7 +1015,7 @@
   "an unknown model that already stated token rates takes a media price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for brand-new-model (openai): image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for brand-new-model (openai): image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -1059,7 +1059,7 @@
   "a model id with a control byte is echoed without it": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-1 (openai): input $3 per M, output $9 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
@@ -1130,7 +1130,7 @@
   "re-pricing the same model under the same provider is an update": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for acme-custom-1 (openai): input $4/Mtok, output $12/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $4 per M, output $12 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {

@@ -1,4 +1,5 @@
 import type { ChatKey } from './chat-input.js';
+import { glyph } from './glyphs.js';
 import type { LegendItem, LegendKey } from './legend.js';
 import {
   clampSpans,
@@ -7,6 +8,8 @@ import {
   windowBody,
   type SheetLine,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 
 /**
@@ -76,7 +79,8 @@ export const SESSIONS_MORE = '… older conversations are not listed; /resume se
 /** What `Enter` says when the Home cannot resume a conversation: nothing was opened. */
 export const SESSIONS_RESUME_UNAVAILABLE = 'Session resume is unavailable here.';
 
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 
 /** The tab opened on `read`, the cursor where it was (kept inside the rows there are now). */
@@ -114,7 +118,7 @@ export function foldSessionsKey(state: SessionsTabState, key: ChatKey): Sessions
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
 function rowLine(row: SessionRow, selected: boolean, width: number): SheetLine {
-  const left = `${selected ? POINTER : INDENT}${row.title}  ${row.agent}`;
+  const left = `${selected ? pointer() : INDENT}${row.title}  ${row.agent}`;
   const text = flushRow(left, row.age, width);
   const spans: SheetSpan[] = [];
   // The age is the quieter part of the row; the selected row keeps its one colour.
@@ -150,10 +154,9 @@ export function sessionsBody(
   const list: SheetLine[] = rows
     .slice(start, end)
     .map((row, at) => rowLine(row, start + at === state.cursor, width));
-  if (start > 0 && list.length > 0)
-    list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && list.length > 0) list[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < rows.length && list.length > 0)
-    list[list.length - 1] = { kind: 'marker', text: `▼ ${String(rows.length - end + 1)} more` };
+    list[list.length - 1] = { kind: 'marker', text: moreBelowText(rows.length - end + 1) };
   const selected = rows[state.cursor];
   const title: SheetLine =
     selected === undefined

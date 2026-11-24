@@ -36,7 +36,7 @@ export interface HomeNoticeOptions {
    */
   readonly hasRecentRuns?: boolean;
   readonly page?: number;
-  /** Rows the Home spends above the notice that this layout does not know about (the `▶` run row, ADR-0139 §3). Default 0. */
+  /** Rows the Home spends above the notice that this layout does not know about (the run row, ADR-0139 §3). Default 0. */
   readonly reservedRows?: number;
 }
 export interface HomeNoticeLayout {

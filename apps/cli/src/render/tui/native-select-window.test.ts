@@ -165,10 +165,10 @@ describe('the rows and the legend of a select card', () => {
   it('draws the cursor, or the gutter under it, then the label and its hint', () => {
     const snapshot = card(3, { selected: 1 });
     expect(selectRowText(snapshot, 0)).toBe('  wf-00 — .relavium/workflows/wf-00.yaml');
-    expect(selectRowText(snapshot, 1)).toBe('❯ wf-01 — .relavium/workflows/wf-01.yaml');
+    expect(selectRowText(snapshot, 1)).toBe('› wf-01 — .relavium/workflows/wf-01.yaml');
     expect(selectRowText(snapshot, 9)).toBe('');
     const bare = card(1, { options: [{ value: 'yes', label: 'Yes' }] });
-    expect(selectRowText(bare, 0)).toBe('❯ Yes');
+    expect(selectRowText(bare, 0)).toBe('› Yes');
   });
 
   it('says what the keys do, and adds the page keys only to a windowed list', () => {

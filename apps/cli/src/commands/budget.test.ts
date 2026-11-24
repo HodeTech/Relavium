@@ -28,6 +28,7 @@ import { createCliHost } from '../engine/host.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { budgetCommand, gateCommand, type GateCommandDeps } from './gate.js';
 import { statusCommand } from './status.js';
+import { formatUsdExact } from '../render/notation.js';
 import { createPlainRenderer } from '../render/renderer.js';
 import { initialRunViewState, reduceRunEvent } from '../render/tui/run-view-model.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
@@ -582,14 +583,19 @@ it('native authority and companions render one scalar notice in plain and TUI vi
   const rows = reader().loadRunEventLogForReplay(paused.runId);
   const state = rows.reduce(reduceRunEvent, initialRunViewState());
   const notices = state.warnings.filter((line) => line.startsWith('budget gate '));
-  expect(notices).toEqual([`budget gate ${paused.gateId} at agent — ${paused.amount} microcents`]);
+  // The notice says the exact USD of the recorded integer; the integer itself is in the `--approve-amount` command only.
+  expect(notices).toEqual([
+    `budget gate ${paused.gateId} at agent — allowance ${formatUsdExact(paused.amount)}`,
+  ]);
   expect(state.warnings.join(' ')).not.toContain(MODEL);
   expect(state.warnings.join(' ')).not.toContain('awaiting input');
   const { io, out } = captureIo();
   const renderer = createPlainRenderer(io);
   for (const row of rows) renderer.onEvent(row);
   expect(out().split('pending budget gate ')).toHaveLength(2);
-  expect(out()).toContain(`${paused.amount} microcents`);
+  expect(out()).toContain(`allowance ${formatUsdExact(paused.amount)}`);
+  expect(out()).not.toContain('microcents');
+  expect(out()).toContain(`--approve-amount ${paused.amount}`);
   expect(out()).not.toContain(MODEL);
   expect(out()).not.toContain('provenance');
 });

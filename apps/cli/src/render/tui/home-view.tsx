@@ -7,6 +7,7 @@ import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { StatusColor } from './format.js';
+import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import {
   agentLabel,
   exitGuardLines,
@@ -98,7 +99,7 @@ interface HomeViewProps {
   readonly noticePage?: number;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` exits the Home, and the hint says so. */
   readonly interruptArmed?: boolean | undefined;
-  /** The run host's snapshot (ADR-0139 §3): the `▶` row shows the active run, and nothing when none is active. */
+  /** The run host's snapshot (ADR-0139 §3): the run row shows the active run, and nothing when none is active. */
   readonly hostedRun?: RunHostSnapshot | undefined;
   /** The exit-guard card (ADR-0139 §6), open while the person is asked whether to leave with a run executing. It owns the bottom of
    *  the view, so the prompt and the hint bar are not drawn, and it holds the notice back until it is closed. */
@@ -129,7 +130,9 @@ export function ExitGuardCard(
     color: boolean;
   }>,
 ): ReactElement {
-  const lines = exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000);
+  const lines = withGlyphForm(!props.color, () =>
+    exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000),
+  );
   return (
     <Box flexDirection="column">
       {lines.map((line, row) => (
@@ -173,7 +176,7 @@ function Section(
             {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
             wrap="truncate-end"
           >
-            {row.selected === true ? '> ' : '  '}
+            {row.selected === true ? `${glyphOf('selection', !props.color)} ` : '  '}
             {row.line}
           </Text>
           {row.hint !== undefined && (
@@ -237,7 +240,7 @@ function homeHint(state: {
   readonly hasParkedRuns: boolean;
   /** What the focused parked row waits on, when that is the focused row: `Enter` opens its gate, or says why it cannot. */
   readonly parkedFocusKind: ParkedRunKind | undefined;
-  /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
+  /** A leg is executing and has a run `Enter` shows (the run row says so too). */
   readonly runCanBeShown: boolean;
   /** No provider key: `Enter` connects one (and keeps what is typed), so the bar says so wherever `Enter` does nothing else first. */
   readonly keyless: boolean;
@@ -287,7 +290,7 @@ function homeHint(state: {
     return fitted([{ keys: 'Enter', verb: 'connect a provider' }, SLASH_COMMANDS]);
   if (state.runCanBeShown) {
     // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
-    // The cue is the one the `▶` row carries, so the row and the bar cannot say different things.
+    // The cue is the one the run row carries, so the row and the bar cannot say different things.
     return fitted(
       [SLASH_COMMANDS],
       [
@@ -318,7 +321,16 @@ function homeHint(state: {
       );
 }
 
+/**
+ * The Home's strip, exit guard and prompt block. The rows are built in the glyph form the colour setting asks for (the plain forms when colour
+ * is off, ADR-0145 §5): the body runs inside {@link withGlyphForm}, so every table glyph a row carries is the form that is drawn and every
+ * row is measured on it.
+ */
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
+  return withGlyphForm(!props.color, () => HomeViewBody(props));
+}
+
+function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
   const { snapshot, editor, notice, nowMs, cols, rows, color, paletteOpen } = props;
   const interruptArmed = props.interruptArmed === true;
   const exitGuard = props.exitGuard;
@@ -369,7 +381,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     rows,
   });
   const promptHeight = homePromptRows(editor, cols);
-  // The `▶` row costs one row above the strip; the exit-guard card takes the place of the prompt block and holds the notice back.
+  // The run row costs one row above the strip; the exit-guard card takes the place of the prompt block and holds the notice back.
   const runRow = hostedRunLabel(props.hostedRun);
   const runRows = runRow === undefined ? 0 : 1;
   const guardRows =
@@ -441,7 +453,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     parked.slice(parkedStart),
   ).map((row) => ({
     key: `parked:${row.runId}`,
-    line: `${runFocused(row.runId) ? '> ' : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
+    line: `${runFocused(row.runId) ? `${glyph('selection')} ` : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
     overdue: parkedRunOverdue(row, nowMs),
   }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
@@ -449,7 +461,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     snapshot.attention.gates.filter((g) => !parkedIds.has(g.runId)),
   ).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
-    line: `⚠ ${gateLabel(g, nowMs)}`,
+    line: `${glyph('warning')} ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
   attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
@@ -457,7 +469,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const failed: StripRow[] = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map(
     (r) => ({
       key: r.runId,
-      line: `✗ ${runLabel(r, nowMs)}`,
+      line: `${glyph('failed')} ${runLabel(r, nowMs)}`,
       selected: runFocused(r.runId),
     }),
   );
@@ -589,7 +601,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
                     wrap="truncate-end"
                   >
                     {'  '}
-                    {`⚠ ${unreadableRunLabel(runId)}`}
+                    {`${glyph('warning')} ${unreadableRunLabel(runId)}`}
                   </Text>
                 ))}
                 {gateRows.map((g) => (
@@ -604,7 +616,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
                 ))}
                 {failed.map((f) => (
                   <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-                    {f.selected === true ? '> ' : '  '}
+                    {f.selected === true ? `${glyph('selection')} ` : '  '}
                     {f.line}
                   </Text>
                 ))}

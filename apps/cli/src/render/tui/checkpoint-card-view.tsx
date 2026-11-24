@@ -10,6 +10,7 @@ import {
 
 import type { ChatStoreController } from './chat-store.js';
 import { CHECKPOINT_STOP, projectCheckpointCard } from './checkpoint-card.js';
+import { withGlyphForm } from './glyphs.js';
 import { legend } from './legend.js';
 import {
   createMeasuredFrameAcknowledgement,
@@ -101,7 +102,9 @@ export function CheckpointCardHost(
       </Text>
     );
   const color = props.color === true;
-  const view = projectCheckpointCard(card, props.size.cols);
+  const view = withGlyphForm(props.color === false, () =>
+    projectCheckpointCard(card, props.size.cols),
+  );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">

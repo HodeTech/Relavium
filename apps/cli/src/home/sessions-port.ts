@@ -1,7 +1,7 @@
 import type { SessionStore } from '@relavium/db';
 
 import { scrubbedBounded } from '../history/run-detail-model.js';
-import { relativeTime } from '../render/tui/home-projection.js';
+import { formatAgeOfIso } from '../render/notation.js';
 import type { SessionRow, SessionsPort } from '../render/tui/tab-host-sessions.js';
 
 /**
@@ -44,7 +44,7 @@ export function createSessionsPort(deps: SessionsPortDeps): SessionsPort {
             id: session.id,
             title: titleOf(session.title),
             agent: scrubbedBounded(session.agentSlug),
-            age: relativeTime(session.updatedAt, now),
+            age: formatAgeOfIso(session.updatedAt, now),
           }),
         ),
         more: page.next !== undefined,

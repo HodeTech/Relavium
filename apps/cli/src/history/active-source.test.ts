@@ -903,3 +903,24 @@ describe('one read, one snapshot (ADR-0140 §2)', () => {
     other.sqlite.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run('run-x');
   });
 });
+
+describe('the project roots the reader hands its rows (ADR-0145 §8)', () => {
+  it('names the root of a run of another project from ~ when it was given the directory and the home; without them the root is as stored', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-else', state: 'paused', atMs: T0 });
+    inProject('run-else', '/home/ada/other');
+    const rootOf = async (paths: { cwd: string; home: string } | undefined) => {
+      const read = createActiveReader({
+        reader,
+        projectRoot: HERE,
+        hostedRunId: () => undefined,
+        listHeld: () => Promise.resolve([]),
+        now: () => NOW,
+        leaseTtlMs: TTL,
+        ...(paths === undefined ? {} : { paths }),
+      });
+      return (await read()).rows.find((row) => row.runId === 'run-else')?.projectRoot;
+    };
+    expect(await rootOf({ cwd: HERE, home: '/home/ada' })).toBe('~/other');
+    expect(await rootOf(undefined)).toBe('/home/ada/other');
+  });
+});

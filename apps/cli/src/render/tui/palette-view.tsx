@@ -5,6 +5,7 @@ import { sanitizeInline } from './chat-projection.js';
 import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';
+import { glyphOf, withGlyphForm } from './glyphs.js';
 import { paletteLines } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 
@@ -55,7 +56,7 @@ function EntryRow(
       {...(selected ? colorProps(color, 'cyan') : entry.enabled ? {} : dimProps(color))}
       wrap="truncate-end"
     >
-      {`${selected ? '›' : ' '} /${sanitizeInline(entry.command.name)}  `}
+      {`${selected ? glyphOf('selection', !color) : ' '} /${sanitizeInline(entry.command.name)}  `}
       <Text {...dimProps(color)}>{words}</Text>
     </Text>
   );
@@ -80,12 +81,14 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
         no matching command
       </Text>
     ) : (
-      paletteLines(
-        rows.length,
-        state.index,
-        props.maxRows,
-        rows.map((entry) => entry.groupStart),
-        list.layout,
+      withGlyphForm(!color, () =>
+        paletteLines(
+          rows.length,
+          state.index,
+          props.maxRows,
+          rows.map((entry) => entry.groupStart),
+          list.layout,
+        ),
       ).map((line, position) => {
         if (line.kind === 'gap') return <Text key={`gap-${String(position)}`}> </Text>;
         if (line.kind === 'marker')

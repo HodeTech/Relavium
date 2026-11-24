@@ -81,10 +81,12 @@ function fixture(
 }
 
 describe('the allowance is the structured field, and only that', () => {
-  it('shows the frozen allowance in USD and in microcents, the words that say what approving funds, and the keys of the amount case', () => {
+  it('shows the budget allowance as exact USD and not as raw micro-cents, the words that say what approving funds, and the keys of the amount case', () => {
     const f = fixture(AMOUNT);
     const text = f.text();
-    expect(text).toContain('Frozen allowance: $0.0420 (4200000 microcents)');
+    expect(text).toContain('Budget allowance: $0.0420');
+    expect(text).not.toContain('microcents');
+    expect(text).not.toContain('4200000');
     expect(text).toContain('Approval funds this agent execution only, for exactly this amount.');
     expect(text).toContain('node writer · budget gate');
     expect(text).toContain('Aborting dispatches no agent and fails the run (budget_exceeded).');
@@ -103,10 +105,10 @@ describe('the allowance is the structured field, and only that', () => {
       ),
     });
     const rows = f.rows();
-    const allowanceRows = rows.filter((row) => row.startsWith('Frozen allowance'));
-    expect(allowanceRows).toEqual(['Frozen allowance: $0.0420 (4200000 microcents)']);
+    const allowanceRows = rows.filter((row) => row.startsWith('Budget allowance'));
+    expect(allowanceRows).toEqual(['Budget allowance: $0.0420']);
     // The decoy appears only where it was quoted (the node row and, behind the gutter, the excluded notice), never as the allowance.
-    expect(rows.filter((row) => row.includes('Frozen allowance'))).toHaveLength(1);
+    expect(rows.filter((row) => row.includes('Budget allowance'))).toHaveLength(1);
     f.show();
     f.at(10_000);
     expect(f.chord('y')).toMatchObject({
@@ -117,13 +119,59 @@ describe('the allowance is the structured field, and only that', () => {
   });
 
   it.each([
-    [0, '$0.0000 (0 microcents)'],
-    [1, '$0.0000 (1 microcents)'],
-    [100_000_000, '$1.0000 (100000000 microcents)'],
-    [123_456_789, '$1.2346 (123456789 microcents)'],
+    [0, '$0.0000'],
+    [1, '$0.00000001'], // a micro-cent is not shown as zero
+    [4_999_999, '$0.04999999'],
+    [5_000_001, '$0.05000001'],
+    [100_000_000, '$1.0000'],
+    [123_456_789, '$1.23456789'],
   ])('shows the exact amount %i from the structured field: %s', (microcents, expected) => {
     const f = fixture({ kind: 'amount', microcents });
-    expect(f.text()).toContain(`Frozen allowance: ${expected}`);
+    expect(f.text()).toContain(`Budget allowance: ${expected}`);
+  });
+
+  it('shows exactly the amount that Ctrl+Y approves: the figure on the card, read back as micro-cents, is the integer in the decision', () => {
+    const amounts = [
+      0,
+      1,
+      9,
+      49_999,
+      50_000,
+      50_001,
+      4_999_999,
+      5_000_000,
+      5_000_001,
+      99_999_999,
+      100_000_001,
+      2 ** 31,
+      2 ** 40 + 12_345,
+      10 ** 13 + 1,
+      Number.MAX_SAFE_INTEGER,
+    ];
+    for (const microcents of amounts) {
+      const f = fixture({ kind: 'amount', microcents });
+      const row = f.rows().find((text) => text.startsWith('Budget allowance: '));
+      const match = /^Budget allowance: \$(\d+)\.(\d{4,8})$/u.exec(row ?? '');
+      expect(match, `${microcents}: ${row}`).not.toBeNull();
+      const shown =
+        BigInt(match?.[1] ?? '-1') * 100_000_000n + BigInt((match?.[2] ?? '').padEnd(8, '0'));
+      f.show();
+      f.at(10_000);
+      const answer = f.chord('y');
+      expect(answer).toMatchObject({
+        kind: 'answered',
+        decision: { decision: 'approved', approvedAmountMicrocents: microcents },
+      });
+      expect(shown, `${microcents} is shown as ${row}`).toBe(BigInt(microcents));
+    }
+  });
+
+  it('keeps the card inside the 80-column and 24-row bound for the longest amount', () => {
+    const f = fixture({ kind: 'amount', microcents: Number.MAX_SAFE_INTEGER });
+    const row = f.rows().find((text) => text.startsWith('Budget allowance: '));
+    expect(row).toBe('Budget allowance: $90071992.54740991');
+    for (const text of f.rows()) expect([...text].length).toBeLessThanOrEqual(80);
+    expect(f.rows().length).toBeLessThanOrEqual(24);
   });
 
   it('quotes excluded candidates behind the host gutter, strips host glyphs and answer chords from them, and counts the ones it does not show', () => {
@@ -210,7 +258,7 @@ describe('an allowance that cannot be approved offers Abort only', () => {
     const f = fixture(UNPRICED);
     const text = f.text();
     expect(text).toContain('This execution has no priced allowance, so it can only be aborted.');
-    expect(text).not.toContain('Frozen allowance');
+    expect(text).not.toContain('Budget allowance');
     expect(text).not.toContain('Approval funds');
     expect(f.rows().at(-1)).toBe('[Ctrl+N] Abort · Esc leaves it pending');
     expect(f.rows().at(-1)).not.toContain('Ctrl+Y');
@@ -228,11 +276,11 @@ describe('an allowance that cannot be approved offers Abort only', () => {
   it.each([
     ['an unpriced quote', UNPRICED, 'no priced allowance'],
     ['an unrepresentable amount', UNREPRESENTABLE, 'cannot be represented safely'],
-    ['a legacy gate with no frozen allowance', LEGACY, 'no frozen allowance'],
+    ['a legacy gate with no budget allowance', LEGACY, 'no budget allowance'],
   ] as const)('%s: only Ctrl+N answers, and it aborts', async (_name, allowance, words) => {
     const f = fixture(allowance);
     expect(f.text()).toContain(words);
-    expect(f.text()).not.toContain('Frozen allowance:');
+    expect(f.text()).not.toContain('Budget allowance:');
     f.show();
     f.at(10_000);
     expect(f.chord('y')).toEqual({ kind: 'ignored' });
@@ -314,7 +362,7 @@ describe('an overdue budget gate, and a run with a human gate and a budget gate'
     expect(text).toContain('Overdue since 2026-11-23T10:00:00.000Z.');
     expect(text).not.toContain('On timeout');
     expect(text).not.toContain('No timeout policy');
-    expect(text).toContain('Frozen allowance: $0.0420');
+    expect(text).toContain('Budget allowance: $0.0420');
     f.show();
     f.at(10_000);
     expect(f.chord('y')).toMatchObject({ kind: 'answered' });

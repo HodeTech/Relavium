@@ -52,7 +52,9 @@ import {
   type ChordHistory,
   type ChordStamp,
 } from './chord-guard.js';
-import { formatCostUsd, type StatusColor } from './format.js';
+import type { StatusColor } from './format.js';
+import { blankHostGlyphs, glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
+import { formatUsdExact } from '../notation.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import { exitKey, legend, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
@@ -484,20 +486,21 @@ export type RunCardState =
   | 'not-answered'
   | 'none';
 
+/** A state's glyph-table role, its own word (more exact than the table's) and its colour. */
 interface Appearance {
-  readonly glyph: string;
+  readonly role: StatusGlyphRole;
   readonly word: string;
   readonly tone: StatusColor;
 }
 
 export const RUN_CARD_APPEARANCE: Readonly<Record<RunCardState, Appearance>> = {
-  waiting: { glyph: '‖', word: 'waiting for you', tone: 'yellow' },
-  overdue: { glyph: '⚠', word: 'overdue', tone: 'red' },
-  answering: { glyph: '◌', word: 'answering', tone: 'cyan' },
-  answered: { glyph: '✓', word: 'answered', tone: 'green' },
-  decided: { glyph: '○', word: 'already decided', tone: 'gray' },
-  'not-answered': { glyph: '✗', word: 'not answered', tone: 'red' },
-  none: { glyph: '○', word: 'no open gate', tone: 'gray' },
+  waiting: { role: 'paused', word: 'waiting for you', tone: toneOf('paused') },
+  overdue: { role: 'warning', word: 'overdue', tone: 'red' },
+  answering: { role: 'starting', word: 'answering', tone: toneOf('starting') },
+  answered: { role: 'completed', word: 'answered', tone: toneOf('completed') },
+  decided: { role: 'ended', word: 'already decided', tone: toneOf('ended') },
+  'not-answered': { role: 'failed', word: 'not answered', tone: toneOf('failed') },
+  none: { role: 'ended', word: 'no open gate', tone: toneOf('ended') },
 };
 
 export type RunCardRole =
@@ -537,8 +540,6 @@ export interface RunCardProjectionInput {
   readonly nowMs: number;
 }
 
-/** Host glyphs and card-drawing characters, none of which an author's text may carry (`HOST_GLYPH` of the ask-user tool, widened). */
-const HOST_GLYPHS = /[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu;
 /**
  * The letters of `ctrl` and `control`, each with the Cyrillic and Greek letters that read as it (capital and small). They are
  * spelled into the chord word below and nowhere else, so ordinary Cyrillic or Greek prose is never rewritten or matched: only a word
@@ -613,9 +614,12 @@ function foldAuthorText(text: string): string {
 
 /** One line of author text, safe to put behind the gutter: untrusted-text floor, folded, no host glyph, no answer chord. */
 export function authorLine(text: string): string {
-  return foldAuthorText(sanitizeUntrustedInline(text))
-    .replace(HOST_GLYPHS, ' ')
-    .replace(CHORD_TOKENS, '[chord]');
+  // Host glyphs and card-drawing characters, none of which an author's text may carry: the core's refusal set, the box-drawing block and
+  // every glyph of the table, so a gate's message cannot draw a status, a marker or a rule of the host's own (ADR-0145 §5, "Host glyphs").
+  return blankHostGlyphs(foldAuthorText(sanitizeUntrustedInline(text))).replace(
+    CHORD_TOKENS,
+    '[chord]',
+  );
 }
 
 /** The author's message as rows of `width` columns, each one a row of author text, with nothing cut. */
@@ -798,7 +802,7 @@ function abortOnlyWords(
   allowance: Exclude<RunBudgetGate['allowance'], { kind: 'amount' }>,
 ): string {
   if (allowance.kind === 'legacy')
-    return 'This legacy budget gate has no frozen allowance, so it can only be aborted here.';
+    return 'This legacy budget gate has no budget allowance, so it can only be aborted here.';
   return allowance.reason === 'unpriced'
     ? 'This execution has no priced allowance, so it can only be aborted.'
     : 'This execution allowance cannot be represented safely, so it can only be aborted.';
@@ -817,10 +821,9 @@ function budgetRows(gate: RunBudgetGate, width: number): readonly RunCardRow[] {
     rows.push(
       {
         role: 'amount',
-        text: clipLine(
-          `Frozen allowance: ${formatCostUsd(allowance.microcents)} (${String(allowance.microcents)} microcents)`,
-          width,
-        ),
+        // The exact USD of the recorded integer (ADR-0145 §8: display rounding never understates an amount being authorised). The
+        // integer itself is not drawn: it stays in the structured field the answer is taken from.
+        text: clipLine(`Budget allowance: ${formatUsdExact(allowance.microcents)}`, width),
       },
       {
         role: 'fact',
@@ -884,7 +887,7 @@ function listRows(snapshot: RunCardSnapshot, width: number): readonly RunCardRow
     return {
       role: here ? 'cursor' : 'list',
       text: clipLine(
-        `${here ? '▸' : ' '} ${sanitizeInline(gate.gateId)} · ${gateKind(gate)} · node ${sanitizeInline(gate.nodeId)}`,
+        `${here ? glyph('selection') : ' '} ${sanitizeInline(gate.gateId)} · ${gateKind(gate)} · node ${sanitizeInline(gate.nodeId)}`,
         width,
       ),
     };
@@ -914,6 +917,8 @@ export function projectRunCard(
   const fits = homeFitsTerminal(input.columns, input.rows);
   const state = stateOf(snapshot, gate, input.nowMs);
   const appearance = RUN_CARD_APPEARANCE[state];
+  const { word, tone } = appearance;
+  const mark = glyph(appearance.role);
   const overdue = state === 'overdue';
   const width = Math.max(1, Math.floor(input.columns) - 2);
   const keys: RunCardRow = { role: 'keys', text: clipLine(keysFor(snapshot, gate, fits), width) };
@@ -922,7 +927,9 @@ export function projectRunCard(
       fits,
       tooSmall: tooSmallMessage(input.columns, input.rows),
       state,
-      ...appearance,
+      glyph: mark,
+      word,
+      tone,
       rows: [keys],
       overdue,
     };
@@ -943,11 +950,8 @@ export function projectRunCard(
       : messageBlock(open, width, messageRoom(input.rows, 2 + facts.length + notice.length));
   const title: RunCardRow = {
     role: 'title',
-    text: clipLine(
-      `${appearance.glyph} ${appearance.word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
-      width,
-    ),
+    text: clipLine(`${mark} ${word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`, width),
   };
   const rows: readonly RunCardRow[] = [title, ...message, ...facts, ...notice, keys];
-  return { fits, tooSmall: undefined, state, ...appearance, rows, overdue };
+  return { fits, tooSmall: undefined, state, glyph: mark, word, tone, rows, overdue };
 }

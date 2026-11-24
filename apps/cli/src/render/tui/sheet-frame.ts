@@ -1,3 +1,4 @@
+import { glyph } from './glyphs.js';
 import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
 
 /**
@@ -50,6 +51,21 @@ export function clampSpans(spans: readonly SheetSpan[], length: number): readonl
     .map((span) => (span.to <= length ? span : { ...span, to: length }));
 }
 
+/** The marker row that stands for `count` hidden rows above a window: `▲ 3 more`. One word and one glyph for every list of every surface. */
+export function moreAboveText(count: number): string {
+  return `${glyph('moreAbove')} ${String(count)} more`;
+}
+
+/** The marker row that stands for `count` hidden rows below a window: `▼ 3 more`. */
+export function moreBelowText(count: number): string {
+  return `${glyph('moreBelow')} ${String(count)} more`;
+}
+
+/** A rule of `width` columns drawn with the thin rule of the glyph table. */
+export function thinRuleText(width: number): string {
+  return glyph('thinRule').repeat(Math.max(0, width));
+}
+
 export interface SheetGeometry {
   readonly columns: number;
   readonly terminalRows: number;
@@ -91,8 +107,9 @@ export function wrappedLines(text: string, width: number, max: number): readonly
  */
 export function titleRule(title: string, width: number): SheetLine {
   const shown = clipLine(title, Math.max(1, width - 5));
-  const lead = `─ ${shown} `;
-  const text = `${lead}${'─'.repeat(Math.max(2, width - displayWidth(lead)))}`;
+  const rule = glyph('thinRule');
+  const lead = `${rule} ${shown} `;
+  const text = `${lead}${rule.repeat(Math.max(2, width - displayWidth(lead)))}`;
   return {
     kind: 'rule',
     text,

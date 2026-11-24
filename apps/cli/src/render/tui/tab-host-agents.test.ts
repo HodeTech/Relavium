@@ -212,17 +212,17 @@ const legendKeys = (state: TabHostState): readonly (string | readonly string[])[
 describe('the /agents strip is its own: Defined │ Sessions', () => {
   it('draws two tabs, the current one with a glyph, and none of the workflows strip’s', () => {
     const r = rig();
-    expect(r.lines()[0]).toBe('▸ Defined  │  Sessions');
+    expect(r.lines()[0]).toBe('› Defined  │  Sessions');
     expect(AGENT_TABS.map((tab) => tab.title)).toEqual(['Defined', 'Sessions']);
     r.press('', RIGHT);
-    expect(r.lines()[0]).toBe('Defined  │  ▸ Sessions');
+    expect(r.lines()[0]).toBe('Defined  │  › Sessions');
     for (const word of ['Active', 'History', 'Permissions'])
       expect(r.lines()[0], word).not.toContain(word);
   });
 
   it('leaves the workflows strip as it was: four tabs, none of them the agents strip’s', () => {
     const r = rig({ tab: 'defined' });
-    expect(r.lines()[0]).toBe('▸ Defined  │  Active  │  History  │  Permissions');
+    expect(r.lines()[0]).toBe('› Defined  │  Active  │  History  │  Permissions');
     expect(TABS.map((tab) => tab.id)).toEqual(['defined', 'active', 'history', 'permissions']);
   });
 
@@ -734,11 +734,11 @@ describe('both tabs fit the 23-row budget at the sizes a terminal has', () => {
             r.state = { ...r.state, sessions: { ...r.state.sessions, cursor: at } };
           const lines = r.lines(columns, terminalRows);
           expect(lines.length, `${tab} cursor ${String(at)}`).toBeLessThanOrEqual(TAB_HOST_ROWS);
-          expect(lines[0]).toContain('▸ ');
+          expect(lines[0]).toContain('› ');
           expect(lines.at(-1)).toContain('Esc close');
           for (const line of lines)
             expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));
-          expect(lines.filter((line) => line.startsWith('› '))).toHaveLength(1);
+          expect(lines.slice(1).filter((line) => line.startsWith('› '))).toHaveLength(1);
         }
       }
     },
@@ -771,7 +771,7 @@ describe('both tabs fit the 23-row budget at the sizes a terminal has', () => {
         const lines = r.lines(columns, terminalRows);
         expect(lines.length).toBeLessThanOrEqual(TAB_HOST_ROWS);
         expect(lines.length).toBeLessThanOrEqual(AGENT_DETAIL_ROWS + 3);
-        expect(lines[0]).toContain('▸ Defined');
+        expect(lines[0]).toContain('› Defined');
         expect(lines.at(-1)).toContain('Esc back');
         for (const line of lines)
           expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));

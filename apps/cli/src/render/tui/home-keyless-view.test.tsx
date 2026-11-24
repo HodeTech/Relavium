@@ -291,7 +291,7 @@ describe('the focused parked row at 80 columns', () => {
     );
     const frame = view.lastFrame() ?? '';
     view.unmount();
-    const line = frame.split('\n').find((candidate) => candidate.includes('‖'));
+    const line = frame.split('\n').find((candidate) => candidate.includes('||'));
     if (line === undefined) throw new Error(`no parked row in:\n${frame}`);
     return line;
   };

@@ -266,7 +266,7 @@ describe('costNotice — the per-model breakdown', () => {
       }),
     ]);
     expect(out).toContain('estimated, possibly billed');
-    expect(out).toContain('900');
+    expect(out).toContain('~$0.000009 estimated, possibly billed');
     // NOT "(0 calls, 0 tok)" — that asserts a model was used zero times for zero money while an estimate
     // against it is holding the cap.
     expect(out).toContain('(no completed call)');
@@ -381,7 +381,7 @@ describe('costNotice — the per-model breakdown', () => {
 describe('costNotice — the §1 release and durability state', () => {
   it('reports what a release actually cleared', () => {
     const text = costNotice(500, [], { released: 1_200 });
-    expect(text).toContain('Released ~1200µ¢');
+    expect(text).toContain('Released ~$0.000012');
   });
 
   it('says nothing about a release that cleared nothing', () => {

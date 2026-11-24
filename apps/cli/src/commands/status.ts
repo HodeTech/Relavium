@@ -25,6 +25,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { glyph, withGlyphForm } from '../render/tui/glyphs.js';
 import { batchedStateEvents } from '../history/batched-state-events.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
@@ -190,7 +191,9 @@ export async function statusCommand(
       return EXIT_CODES.success;
     }
     for (const status of statuses) {
-      renderRun(deps.io, status);
+      withGlyphForm(!deps.global.color, () => {
+        renderRun(deps.io, status);
+      });
     }
     return EXIT_CODES.success;
   } finally {
@@ -313,14 +316,16 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     `run ${sanitizeInline(status.run.id)} — ${sanitizeInline(status.run.status)} (workflow ${sanitizeInline(status.run.workflowId)})\n`,
   );
   if (status.usageUnavailable) {
-    io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
+    io.writeOut(
+      `  ${glyph('warning')} usage coverage unavailable — this run's event log could not be read\n`,
+    );
   }
   renderSteps(io, status, finished);
   if (status.terminalHeld) {
     // The run reads `running` because its terminal never became durable; without this line the exit-5
     // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
     io.writeOut(
-      '  ⚠ this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n' +
+      `  ${glyph('warning')} this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n` +
         '    Recovery is attempted by `relavium run`, `relavium gate`, `relavium budget resume` and opening the\n' +
         '    `relavium` Home; the next one retries it.\n',
     );
@@ -329,7 +334,9 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // NOT silence (#W15-15). Without this line a run whose gates were lost to a damaged `run_events` row
     // rendered identically to a paused run with nothing pending — the reader's own listing being the place
     // they would come to find out which run is broken.
-    io.writeOut("  ⚠ pending gates unavailable — this run's event log could not be read\n");
+    io.writeOut(
+      `  ${glyph('warning')} pending gates unavailable — this run's event log could not be read\n`,
+    );
   }
   renderPendingGates(io, status);
 }
@@ -358,7 +365,7 @@ function renderPendingGates(io: CliIo, status: ActiveRunStatus): void {
   for (const gate of status.pendingBudgetGates) {
     const gateId = budgetIdentifier(gate.gateId);
     io.writeOut(
-      `  ⏸ pending budget gate ${gateId} at ${budgetIdentifier(gate.nodeId)} — ${budgetPromptLabel(gate.allowance)}\n`,
+      `  ${glyph('paused')} pending budget gate ${gateId} at ${budgetIdentifier(gate.nodeId)} — ${budgetPromptLabel(gate.allowance)}\n`,
     );
     for (const detail of budgetPromptDetails(gate.allowance)) io.writeOut(`    ${detail}\n`);
     for (const hint of budgetResumeHints(status.run.id, gate.gateId, gate.allowance))
@@ -371,7 +378,7 @@ function renderPendingGates(io: CliIo, status: ActiveRunStatus): void {
     // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class).
     const message = gate.message === '' ? '' : ` — "${sanitizeInline(gate.message)}"`;
     io.writeOut(
-      `  ⏸ pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
+      `  ${glyph('paused')} pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
     );
     // The command that continues it: a resumed run's final summary sends a gate it cannot classify here.
     for (const hint of humanGateResumeHints(status.run.id, gate.gateId, gate.gateType))

@@ -2,6 +2,7 @@ import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { sanitizeInline } from '../sanitize.js';
+import { glyph } from './glyphs.js';
 import { exitKey, keyToken, type LegendItem } from './legend.js';
 import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
 import type { ReviewDocument } from './tool-review-projection.js';
@@ -206,9 +207,13 @@ export function commandFactRows(
   }
   // One row each: the key that is not offered is already missing from the legend, so these say why in few words.
   if (facts.runsCode)
-    rows.push('\u26a0 Runs code: a shell, an inline script or a wrapper. Remember is not offered.');
+    rows.push(
+      `${glyph('warning')} Runs code: a shell, an inline script or a wrapper. Remember is not offered.`,
+    );
   if (facts.protectedPath)
-    rows.push('\u26a0 Names a protected path (its output goes to the model). Allow once only.');
+    rows.push(
+      `${glyph('warning')} Names a protected path (its output goes to the model). Allow once only.`,
+    );
   return rows;
 }
 
@@ -247,8 +252,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   if (input.shortenedTarget) {
     warnings.push(
       input.inspected
-        ? `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
-        : `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press ${keyToken('v')} to read all of it; Allow stays locked until you do.`,
+        ? `${glyph('warning')} Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
+        : `${glyph('warning')} Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press ${keyToken('v')} to read all of it; Allow stays locked until you do.`,
     );
   }
   if (document !== undefined && document.required.length > 0) {
@@ -257,15 +262,15 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const values = `${count} masked value${count === 1 ? '' : 's'} in this ${input.commandFacts === undefined ? 'change' : 'command'}.`;
     warnings.push(
       input.inspected
-        ? `\u26a0 ${values}`
-        : `\u26a0 ${values} Press ${keyToken('v')}, then ${keyToken('r')} to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
+        ? `${glyph('warning')} ${values}`
+        : `${glyph('warning')} ${values} Press ${keyToken('v')}, then ${keyToken('r')} to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
     );
   }
   // A change the body cannot reach is the one thing the person must not approve unseen, so it is named — with the
   // way to read it — whenever it is true. (The card also offers no Allow-all then: `cardKeyRows`' caller.)
   if (input.changesNotShown > 0) {
     warnings.push(
-      `\u26a0 ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press ${keyToken('v')} for the full diff.`,
+      `${glyph('warning')} ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press ${keyToken('v')} for the full diff.`,
     );
   }
   const linesNotShown = input.linesNotShown ?? 0;
@@ -275,19 +280,19 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const verb = linesNotShown === 1 ? 'is' : 'are';
     warnings.push(
       input.commandFacts === undefined
-        ? `\u26a0 ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press ${keyToken('v')} for the full view.`
-        : `\u26a0 ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press ${keyToken('v')}${commandRowsOfferNote(input.commandFacts.offers)}`,
+        ? `${glyph('warning')} ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press ${keyToken('v')} for the full view.`
+        : `${glyph('warning')} ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press ${keyToken('v')}${commandRowsOfferNote(input.commandFacts.offers)}`,
     );
   }
   const diff = document?.preview.diff;
   if (diff !== undefined) {
     const endings = endingsWarning(diff);
-    if (endings !== undefined) warnings.push(`\u26a0 Line endings: ${endings}.`);
+    if (endings !== undefined) warnings.push(`${glyph('warning')} Line endings: ${endings}.`);
   }
   // The generic lock sentence only when nothing above already explained the lock (a command's own fact rows never do).
   if (warnings.length === factRows && !input.inspected) {
     warnings.push(
-      `\u26a0 Allow is locked until the required content has been inspected (${keyToken('v')}).`,
+      `${glyph('warning')} Allow is locked until the required content has been inspected (${keyToken('v')}).`,
     );
   }
   return warnings.flatMap((warning) => wrapWords(warning, input.columns));

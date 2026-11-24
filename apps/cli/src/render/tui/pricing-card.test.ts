@@ -347,13 +347,13 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(card.message).toBe("Record your price for 'gpt-5.5' under OpenAI?");
     expect(card.details).toEqual([
       'model       gpt-5.5 (OpenAI)',
-      'input       $3/Mtok',
-      'output      $9/Mtok',
-      'cached      $0.03/Mtok',
-      'image       $0.04/image',
-      'audio       $0.001/s',
-      'video       $0.5/s',
-      'Replaces the catalog price: input $5/Mtok, output $30/Mtok, cached $0.5/Mtok.',
+      'input       $3 per M',
+      'output      $9 per M',
+      'cached      $0.03 per M',
+      'image       $0.04 per image',
+      'audio       $0.001 per second',
+      'video       $0.5 per second',
+      'Replaces the catalog price: input $5 per M, output $30 per M, cached $0.5 per M.',
       PRICING_SET_OWNERSHIP,
     ]);
     expect(card.details.at(-1)).toContain("belongs to this machine's operator");
@@ -374,7 +374,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     const offer = r.offers.at(-1);
     if (offer === undefined) throw new Error('no plan was prepared');
     expect(r.snap().details).toEqual(pricingCardText(offer).details);
-    expect(r.snap().details).toContain('input       $0.12345679/Mtok');
+    expect(r.snap().details).toContain('input       $0.12345679 per M');
     expect(
       r.snap().details.some((line) => /^(cached|image|audio)/u.test(line)),
       'a price that was left empty is not on the card',
@@ -382,7 +382,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(r.snap().details).toContain('A price you left empty keeps what is stored now.');
     r.ui.input('y', ctrl);
     expect(await r.result).toContain(
-      'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679/Mtok',
+      'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679 per M',
     );
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
@@ -407,9 +407,9 @@ describe('the card shows exactly what will be recorded, and whose override it is
       kind: 'set',
       model: 'm'.repeat(400),
       provider: 'openai',
-      prices: [{ id: 'input', label: 'Input price', amount: '$3/Mtok', microcents: 300_000_000 }],
+      prices: [{ id: 'input', label: 'Input price', amount: '$3 per M', microcents: 300_000_000 }],
       keeps: true,
-      replaces: `input $${'9'.repeat(400)}/Mtok`,
+      replaces: `input $${'9'.repeat(400)} per M`,
       fallback: undefined,
     });
     expect(text.message.length).toBeLessThan(140);
@@ -432,7 +432,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(r.snap().message).toBe("Remove your price override for 'gpt-5.5' under OpenAI?");
     expect(r.snap().details).toEqual([
       'model       gpt-5.5 (OpenAI)',
-      'Afterwards it falls back to the catalog: input $5/Mtok, output $30/Mtok.',
+      'Afterwards it falls back to the catalog: input $5 per M, output $30 per M.',
       PRICING_CLEAR_OWNERSHIP,
     ]);
     expect(r.snap().options.map((option) => option.label)).toEqual([
@@ -442,7 +442,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(rowsFor('gpt-5.5'), 'asking removes nothing').toHaveLength(1);
     r.ui.input('y', ctrl);
     expect(await r.result).toBe(
-      'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
+      'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5 per M, output $30 per M.',
     );
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
@@ -574,7 +574,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await atCard(r);
     r.ui.input('y', ctrl);
     expect(await r.result).toBe(
-      'Set user pricing for acme-custom-1 (OpenAI): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives a model refresh.',
+      'Set user pricing for acme-custom-1 (OpenAI): input $3 per M, output $9 per M. It applies to your next run/chat and survives a model refresh.',
     );
     expect(r.commits).toHaveBeenCalledTimes(1);
     const [row] = rowsFor('acme-custom-1');
@@ -708,9 +708,9 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     r.choose(PRICING_EDIT_LABEL);
     await r.fill({ input: '3', output: '9' });
     await r.cardUp();
-    expect(r.snap().details).toContain('output      $9/Mtok');
+    expect(r.snap().details).toContain('output      $9 per M');
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('input $3/Mtok, output $9/Mtok');
+    expect(await r.result).toContain('input $3 per M, output $9 per M');
     expect(rowsFor('acme-custom-1')).toHaveLength(1);
   });
 

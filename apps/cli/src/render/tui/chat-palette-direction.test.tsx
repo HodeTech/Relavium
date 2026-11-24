@@ -51,7 +51,7 @@ function mountChat() {
   /** The highlighted entry's slash word, or `undefined`. */
   const highlighted = (): string | undefined =>
     frame()
-      .map((line) => /^› \/([a-z]+)(?: |$)/u.exec(line)?.[1])
+      .map((line) => /^> \/([a-z]+)(?: |$)/u.exec(line)?.[1])
       .find((name) => name !== undefined);
   return { h, store, submitted, onExit, frame, highlighted };
 }
@@ -65,7 +65,7 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     await settleFrames();
     const rows = frame();
     const at = (word: string): number =>
-      rows.findIndex((line) => new RegExp(`^[› ] /${word}( |$)`, 'u').test(line));
+      rows.findIndex((line) => new RegExp(`^[> ] /${word}( |$)`, 'u').test(line));
     expect(rows.some((line) => line === '↑/↓ select · Enter run · Esc close')).toBe(true);
     expect(
       rows.indexOf('↑/↓ select · Enter run · Esc close'),
@@ -90,7 +90,7 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     await waitFor(() => (h.lastFrame() ?? '').includes('Enter run'));
     await settleFrames();
     const shown = frame().flatMap((line) => {
-      const match = /^[› ] \/([a-z]+)(?: |$)/u.exec(line);
+      const match = /^[> ] \/([a-z]+)(?: |$)/u.exec(line);
       return match?.[1] === undefined ? [] : [match[1]];
     });
     // The window may hide the far end of a 24-row terminal's list; what is drawn is the declared order, reversed, and it starts at /models.
@@ -132,7 +132,7 @@ describe('`/` then `Enter` in a chat', () => {
     await waitFor(() => highlighted() === 'exit');
     await settleFrames();
     expect(
-      frame().filter((line) => line.startsWith('› ')),
+      frame().filter((line) => line.startsWith('> ')),
       'one highlighted row',
     ).toHaveLength(1);
     expect(submitted, 'the highlight alone sends nothing').toEqual([]);

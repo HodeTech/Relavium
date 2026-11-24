@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from '../sanitize.js';
+import { withGlyphForm } from './glyphs.js';
 import { SheetLinesView } from './permissions-sheet-view.js';
 import { clampSpans, type SheetLine } from './sheet-frame.js';
 import { tabHostLines, type TabHostState } from './tab-host.js';
@@ -34,8 +35,9 @@ function drawable(line: SheetLine): SheetLine {
 }
 
 export function TabHostView(props: Readonly<TabHostViewProps>): ReactElement {
-  const lines = tabHostLines(props.state, { columns: props.columns, terminalRows: props.rows }).map(
-    drawable,
-  );
+  // The model builds its rows (and measures them) in the glyph form the colour setting asks for: the plain forms when colour is off.
+  const lines = withGlyphForm(!props.color, () =>
+    tabHostLines(props.state, { columns: props.columns, terminalRows: props.rows }),
+  ).map(drawable);
   return <SheetLinesView lines={lines} color={props.color} />;
 }

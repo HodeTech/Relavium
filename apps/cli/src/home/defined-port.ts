@@ -11,6 +11,7 @@ import {
 } from '../history/defined-model.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   type ExportAttempt,
@@ -41,6 +42,8 @@ export interface DefinedPortDeps {
   readonly allPins?: (() => readonly (DefinedPin & { readonly projectRoot: string })[]) | undefined;
   /** The status of each workflow's latest run in this project, by slug (`loadLatestRunPerWorkflowInProject`). May throw. Absent ⇒ none is shown. */
   readonly lastRuns?: (() => ReadonlyMap<string, RunStatus>) | undefined;
+  /** What another project's root is shortened against. Absent, the root is listed as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /** The Defined tab's read: the catalog and the pins, read now, as rows that name their entries by index. */
@@ -59,6 +62,7 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
         entries,
         pins,
         otherPins,
+        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
         ...(lastRuns === undefined ? {} : { lastRuns }),
       });
       // The entries are held by the read, so a row's index names the entry that was listed and not whatever sits there later.

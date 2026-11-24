@@ -5,7 +5,9 @@ import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
-import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
+import { formatReportedCost, formatTokens } from './format.js';
+import { glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
+import { formatDuration, formatElapsed } from '../notation.js';
 import type {
   SessionViewState,
   ToolCallView,
@@ -337,7 +339,8 @@ function wrapEntry(
   displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
   const wrapped: DisplayLine[] = [];
-  const source = entryLines(entry, displays);
+  // The rows are built in the form the colour setting asks for: the plain glyph forms when colour is off (ADR-0145 §5).
+  const source = withGlyphForm(!color, () => entryLines(entry, displays));
   let offset = 0;
   if (color && entry.role === 'assistant') {
     let blocks = entryParseCache.get(entry);
@@ -696,10 +699,11 @@ export function formatReasoningPanel(input: {
  */
 export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
   const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
+  // A mark is never alone: the word stands beside the glyph (`denied` is the cancelled glyph with the call's own word).
   const marks = {
-    success: '✓',
-    failure: '✗ failed',
-    denied: '⊘ denied',
+    success: glyphWithWord('completed'),
+    failure: glyphWithWord('failed'),
+    denied: `${glyph('cancelled')} denied`,
     unknown: '? outcome unknown',
     running: '…',
   };
@@ -708,7 +712,7 @@ export function formatToolCall(call: ToolCallView, display?: ToolDisplay): strin
     display?.stats === undefined
       ? ''
       : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
-  return `→ ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+  return `${glyph('toolCall')} ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
 }
 
 function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {

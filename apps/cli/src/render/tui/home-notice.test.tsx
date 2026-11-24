@@ -122,7 +122,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
-        expect(h.frame('doctor:')).toContain('> Saved conversation 0');
+        expect(h.frame('doctor:')).toContain(`${color ? '›' : '>'} Saved conversation 0`);
         expect(h.frame('doctor:')).toContain('No provider key yet · Enter connect');
         expect(h.frame('doctor:')).toContain('PgUp/PgDn');
         expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);

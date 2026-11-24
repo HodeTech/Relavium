@@ -90,13 +90,13 @@ const press = async (controller: HomeController, key: Record<string, boolean>): 
 /** The entries a frame names, by their slash words, in the order drawn. */
 const entriesOf = (frame: readonly string[]): string[] =>
   frame.flatMap((line) => {
-    const match = /^[› ] \/([a-z]+)(?: |$)/u.exec(line);
+    const match = /^[> ] \/([a-z]+)(?: |$)/u.exec(line);
     return match?.[1] === undefined ? [] : [match[1]];
   });
 const markersOf = (frame: readonly string[]): string[] =>
-  frame.filter((line) => /^ {2}[▲▼] \d+ more$/u.test(line));
+  frame.filter((line) => /^ {2}[\^v] \d+ more$/u.test(line));
 const highlightedOf = (frame: readonly string[]): string | undefined =>
-  frame.map((line) => /^› \/([a-z]+)(?: |$)/u.exec(line)?.[1]).find((name) => name !== undefined);
+  frame.map((line) => /^> \/([a-z]+)(?: |$)/u.exec(line)?.[1]).find((name) => name !== undefined);
 /** The blank rows between the query line and the legend: the gaps between the groups (the palette's own, not the landing's). */
 const gapsOf = (frame: readonly string[]): number => {
   const from = frame.findIndex((line) => line === '/');
@@ -123,7 +123,7 @@ describe.each([
       23,
     );
     expect(frame.at(-1)).toBe(FOOTER);
-    expect(markersOf(frame)).toEqual(['  ▼ 4 more']);
+    expect(markersOf(frame)).toEqual(['  v 4 more']);
     expect(entriesOf(frame)).toEqual(
       HOME_PALETTE_COMMANDS.slice(0, 11).map((command) => command.name),
     );
@@ -143,7 +143,7 @@ describe.each([
     expect(entriesOf(frame)).toEqual(
       HOME_PALETTE_COMMANDS.slice(0, 13).map((command) => command.name),
     );
-    expect(markersOf(frame), '/clear and /exit are behind the marker').toEqual(['  ▼ 2 more']);
+    expect(markersOf(frame), '/clear and /exit are behind the marker').toEqual(['  v 2 more']);
     expect(
       highlightedOf(frame),
       'there is something to resume, so /resume is the default row',
@@ -247,7 +247,7 @@ describe.each([
     const end = m.frame();
     expect(highlightedOf(end)).toBe('exit');
     expect(entriesOf(end).at(-1)).toBe('exit');
-    expect(markersOf(end).map((line) => line.trim().slice(0, 1))).toEqual(['▲']);
+    expect(markersOf(end).map((line) => line.trim().slice(0, 1))).toEqual(['^']);
     for (let step = 1; step <= 16; step += 1) {
       await press(m.controller, { upArrow: true });
       const frame = m.frame();

@@ -117,7 +117,7 @@ describe('the states of the view', () => {
       snapshot: running(),
       phase: 'running',
       leg: 'executing',
-      glyph: '▶',
+      glyph: '◐',
       word: 'running',
     },
     {
@@ -192,14 +192,14 @@ describe('the states of the view', () => {
       active: { leg: 'resume', runId: RUN, cancelling: false },
       last: undefined,
     };
-    expect(model({ snapshot }).header).toBe('▶ running  ·  run run-0001  ·  resumed');
-    expect(model({ snapshot: running() }).header).toBe('▶ running  ·  run run-0001');
+    expect(model({ snapshot }).header).toBe('◐ running  ·  run run-0001  ·  resumed');
+    expect(model({ snapshot: running() }).header).toBe('◐ running  ·  run run-0001');
   });
 
   it('says what the view is waiting for, and for how long a stop can take', () => {
     expect(model({ snapshot: preparing() }).status).toContain('no longer held by the Home');
     expect(model({ snapshot: running(RUN, true) }).status).toBe(
-      'Cancelling · the run stops at its next safe point (up to 10 s)',
+      'Cancelling · the run stops at its next safe point (up to 10s)',
     );
     expect(model({ snapshot: running() }).status).toBeUndefined();
     expect(model({ snapshot: IDLE }).status).toContain('no longer held by the Home');

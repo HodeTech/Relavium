@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { glyphOf } from './glyphs.js';
 import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
 import { colorProps, dimProps } from './projection.js';
@@ -78,7 +79,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
           {...(isSelected ? colorProps(color, 'cyan') : {})}
           wrap="truncate-end"
         >
-          {`${isSelected ? '›' : ' '} ${sanitizeInline(candidate.name)}${marker}`}
+          {`${isSelected ? glyphOf('selection', !color) : ' '} ${sanitizeInline(candidate.name)}${marker}`}
         </Text>
       );
     });

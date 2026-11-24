@@ -125,9 +125,9 @@ describe('standalone rewrite visibility at actual publication', () => {
         stdout.emit('resize');
       };
       // The consent opens on `Not now` (ADR-0146 §6): one Down wraps to `Use it`, and Enter is read once the card has drawn it.
-      expect(stdout.frames.join('')).toContain('❯ Not now');
+      expect(stdout.frames.join('')).toContain('> Not now');
       stdin.push('\x1b[B');
-      await until(() => stdout.frames.join('').includes('❯ Use it'));
+      await until(() => stdout.frames.join('').includes('> Use it'));
       stdin.push('\r');
       await until(() => changedSize && stdout.frames.join('').includes('Terminal too small'));
       expect(readFileSync(selected, 'utf8')).toBe(initial);

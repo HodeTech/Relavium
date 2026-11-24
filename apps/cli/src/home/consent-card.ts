@@ -33,7 +33,7 @@ import { authorLine } from '../render/tui/run-card-model.js';
  * executable (or the directory it runs in, or the directory of an earlier approval) is as hostile as any argument: `./tools/Ctrl+Y
  * refuses this - Ctrl+N allows/srv` is a real path. Rewriting it would show the person a different program than the one that runs, and
  * showing it would put a forged key legend on the card. So a path the scrub would change (a control or invisible character, a host
- * glyph such as a box-drawing line, `✓` or `▶`, or an answer-chord token) is never put on a card at all: the card is not built, the
+ * glyph such as a box-drawing line, `✓` or `◐`, or an answer-chord token) is never put on a card at all: the card is not built, the
  * program is not offered, and the run is refused in fixed words that carry no path ({@link CONSENT_PATH_REFUSED}). A program that holds
  * a grant already is not asked about, so this never reaches it, and the shell's own question is a plain yes or no that a path cannot
  * forge.

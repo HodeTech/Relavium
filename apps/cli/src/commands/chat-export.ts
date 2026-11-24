@@ -10,6 +10,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { displayPathHere } from '../render/display-roots.js';
 import { sanitizeInline, stringifyJsonLine } from '../render/sanitize.js';
 
 /**
@@ -70,12 +71,15 @@ export function chatExportCommand(
 
     deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);
 
+    // A human line names the file project-relative or from ~ (ADR-0145 §8); the machine event below keeps the path as written.
+    const shownPath = displayPathHere(result.path, deps.global.cwd, homeDir);
+
     // A session with no captured `agentSnapshot` exports an `agents:`-less scaffold (the CLI persister always
     // captures one, so this only bites a NULL-snapshot row from another surface/migration): warn that its
     // `agent_ref` must resolve against the workspace registry before `relavium run` will accept it.
     if (result.record.agentSnapshot === undefined) {
       deps.io.writeErr(
-        `note: this session has no stored agent — set agent_ref in ${sanitizeInline(result.path)} to a workspace agent before running it.\n`,
+        `note: this session has no stored agent — set agent_ref in ${sanitizeInline(shownPath)} to a workspace agent before running it.\n`,
       );
     }
 
@@ -108,7 +112,7 @@ export function chatExportCommand(
       deps.io.writeOut(`${stringifyJsonLine(event)}\n`);
     } else {
       // The path comes from `--out` or the launch directory, text a person typed or a repository named: one row, no terminal controls.
-      deps.io.writeOut(`Exported session ${args.sessionId} to ${sanitizeInline(result.path)}\n`);
+      deps.io.writeOut(`Exported session ${args.sessionId} to ${sanitizeInline(shownPath)}\n`);
     }
     return EXIT_CODES.success;
   } finally {

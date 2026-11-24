@@ -14,7 +14,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { settleFrames, waitFor } from './harness-util.js';
-import { EXIT_GUARD_GLYPH } from './home-projection.js';
+import { glyphOf } from './glyphs.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 afterEach(cleanup);
@@ -74,7 +74,7 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('A workflow run is executing: run-0001.');
-    expect(frame).toContain('▶ run-0001');
+    expect(frame).toContain('~ run-0001');
     expect(frame).not.toContain('[Ctrl+C] exit (twice)');
     expect(onExit).not.toHaveBeenCalled();
   });
@@ -88,7 +88,7 @@ describe('the exit-guard card through RootApp', () => {
     const lines = (harness.lastFrame() ?? '').split('\n');
     const title = lines.find((line) => line.includes('A workflow run is executing'));
     expect(title?.trim(), 'a glyph, then the words, on one row').toBe(
-      `${EXIT_GUARD_GLYPH.warning} A workflow run is executing: run-0001.`,
+      `${glyphOf('warning', true)} A workflow run is executing: run-0001.`,
     );
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
     harness.stdin.write(CTRL_Y);
@@ -99,7 +99,7 @@ describe('the exit-guard card through RootApp', () => {
         .find((line) => line.includes('Stopping the run…'))
         ?.trim(),
       'the waiting card has its glyph too',
-    ).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
+    ).toBe(`${glyphOf('stopping', true)} Stopping the run…`);
   });
 
   it('Ctrl+N closes it and the Home is back: the prompt hint returns', async () => {
@@ -125,7 +125,7 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(harness.lastFrame()).toContain(
-      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)} s`, // the grace and then the host's settle bound
+      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)}s`, // the grace and then the host's settle bound
     );
     expect(onExit, 'the leg has not settled and the grace has not run out').not.toHaveBeenCalled();
   });

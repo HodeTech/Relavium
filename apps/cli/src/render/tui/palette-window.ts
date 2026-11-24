@@ -1,5 +1,5 @@
 import type { PaletteLayout } from './palette-reducer.js';
-import { windowBody } from './sheet-frame.js';
+import { moreAboveText, moreBelowText, windowBody } from './sheet-frame.js';
 
 /**
  * The window of the `/` command palette when its entries do not all fit the rows the terminal leaves for it. The palette had no row cap, so
@@ -139,7 +139,7 @@ export function paletteLines(
     return {
       kind: 'marker',
       position: above ? 'above' : 'below',
-      text: `${above ? '▲' : '▼'} ${String(line.hidden)} more`,
+      text: above ? moreAboveText(line.hidden) : moreBelowText(line.hidden),
     };
   });
 }

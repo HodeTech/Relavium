@@ -233,6 +233,39 @@ const enginePurityImportEntry = /** @type {const} */ ([
     ],
   },
 ]);
+// The CLI's DATA MODULES (ADR-0145 §10): the registry, the glyph table, the legend builder, the notation helpers and the other word
+// tables are pure data and pure functions. They import nothing from `ink`, `react` or `node:` — so a later move into a shared package is
+// mechanical and a test needs no renderer to read them. Seam fence included (this entry replaces the general one for these files).
+const DATA_MODULE_MESSAGE =
+  'A CLI data module (the registry, the glyph table, the legend builder, the notation helpers) imports nothing from ink, react or node: ' +
+  '(ADR-0145 §10): keep it pure data and pure functions, and let the view that draws it do the importing.';
+const dataModuleImportEntry = /** @type {const} */ ([
+  'error',
+  {
+    paths: [
+      ...seamImportOptions.paths,
+      ...['ink', 'react', 'react-dom', 'chalk'].map((name) => ({
+        name,
+        message: DATA_MODULE_MESSAGE,
+      })),
+    ],
+    patterns: [
+      ...seamImportOptions.patterns,
+      { group: ['node:*'], message: DATA_MODULE_MESSAGE },
+      { group: NODE_BUILTINS, message: DATA_MODULE_MESSAGE },
+      { group: ['ink/*', 'ink-*', 'react/*', 'react-dom/*'], message: DATA_MODULE_MESSAGE },
+    ],
+  },
+]);
+// The named list. A module joins it when it is written as data; the fixture proves the fence fires.
+const CLI_DATA_MODULES = [
+  'apps/cli/src/commands/repl-commands.ts',
+  'apps/cli/src/render/tui/legend.ts',
+  'apps/cli/src/render/tui/legend-row.ts',
+  'apps/cli/src/render/tui/glyphs.ts',
+  'apps/cli/src/render/notation.ts',
+  'tools/lint-fixtures/forbidden-in-data-module.ts',
+];
 const ENGINE_NODE_GLOBALS = [
   'process',
   'Buffer',
@@ -383,6 +416,11 @@ export default tseslint.config(
         ...ENGINE_NODE_GLOBALS.map((name) => ({ name, message: ENGINE_PURITY_MESSAGE })),
       ],
     },
+  },
+  {
+    // The CLI data modules (ADR-0145 §10): no ink, react or node: import. After the general TS block, whose entry this replaces.
+    files: CLI_DATA_MODULES,
+    rules: { '@typescript-eslint/no-restricted-imports': dataModuleImportEntry },
   },
   {
     // The seam's ONE legal zone: provider SDKs are imported only inside the adapters,

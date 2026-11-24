@@ -2818,7 +2818,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       expect(rows.map((row) => /tool_(\d)/u.exec(row.text)?.[1])).toEqual(['0', '1', '2', '3']);
     });
 
-    it('marks the selected row with `>` and no other, and flags it in the row data', () => {
+    it('marks the selected row with `›` and no other, and flags it in the row data', () => {
       const calls = [0, 1, 2].map((index) => call(index));
       for (const selected of [0, 1, 2]) {
         const rows = view(calls, selected).rows;
@@ -2826,7 +2826,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
           [0, 1, 2].map((index) => index === selected),
         );
         expect(rows.map((row) => row.text.slice(0, 2))).toEqual(
-          [0, 1, 2].map((index) => (index === selected ? '> ' : '  ')),
+          [0, 1, 2].map((index) => (index === selected ? '› ' : '  ')),
         );
       }
     });
@@ -2849,7 +2849,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 
       it.each(cases)('%s reads `%s %s` and is toned %s', (outcome, mark, word, tone) => {
         const [bare] = view([call(0, { outcome })]).rows;
-        const left = `> ${mark} edit_file  src/file0.ts`;
+        const left = `› ${mark} edit_file  src/file0.ts`;
         expect(bare?.text).toBe(word === '' ? left : flushed(left, word, usable(80)));
         expect(bare?.tone).toBe(tone);
         const [counted] = view([call(0, { outcome, stats: stats(3, 2) })]).rows;
@@ -2861,7 +2861,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 
     it('draws `+a −r` flush right for a call that changed a file, and nothing for one that did not', () => {
       const [changed, untouched] = view([call(0, { stats: stats(12, 0) }), call(1)], 0).rows;
-      expect(changed?.text).toBe(flushed('> ✓ edit_file  src/file0.ts', '+12 −0', usable(80)));
+      expect(changed?.text).toBe(flushed('› ✓ edit_file  src/file0.ts', '+12 −0', usable(80)));
       expect(displayWidth(changed?.text ?? '')).toBe(usable(80));
       expect(untouched?.text).toBe('  ✓ edit_file  src/file1.ts');
     });
@@ -2873,7 +2873,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         summary: 'RESULT-BODY-WITH-A-SECRET',
       };
       const [row] = view([display]).rows;
-      expect(row?.text).toBe(flushed('> ✗ edit_file  src/file0.ts', '+1 −1 · failed', usable(80)));
+      expect(row?.text).toBe(flushed('› ✗ edit_file  src/file0.ts', '+1 −1 · failed', usable(80)));
       expect(row?.text).not.toContain('RESULT');
     });
   });
@@ -2884,7 +2884,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         call(0, { toolId: 'edit_file', target: 'a.ts' }),
         call(1, { toolId: 'write_file', target: 'b.ts' }),
       ]).rows;
-      expect(rows.map((row) => row.text)).toEqual(['> ✓ edit_file   a.ts', '  ✓ write_file  b.ts']);
+      expect(rows.map((row) => row.text)).toEqual(['› ✓ edit_file   a.ts', '  ✓ write_file  b.ts']);
       expect(rows[0]?.text.indexOf('a.ts')).toBe(rows[1]?.text.indexOf('b.ts'));
     });
 
@@ -2896,14 +2896,14 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       ]).rows;
       const cut = `${long.slice(0, 21)}…`;
       expect(displayWidth(cut)).toBe(22);
-      expect(rows[0]?.text).toBe(`> ✓ ${cut}  a.ts`);
+      expect(rows[0]?.text).toBe(`› ✓ ${cut}  a.ts`);
       expect(rows[1]?.text).toBe(`  ✓ edit_file${' '.repeat(22 - 'edit_file'.length)}  b.ts`);
       expect(rows[0]?.text.indexOf('a.ts')).toBe(rows[1]?.text.indexOf('b.ts'));
     });
 
     it('does not widen the column for a name of exactly 22 columns', () => {
       const exact = 'a'.repeat(22);
-      expect(view([call(0, { toolId: exact, target: 't' })]).rows[0]?.text).toBe(`> ✓ ${exact}  t`);
+      expect(view([call(0, { toolId: exact, target: 't' })]).rows[0]?.text).toBe(`› ✓ ${exact}  t`);
     });
   });
 
@@ -2913,9 +2913,9 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       view([call(0, { target: wide })], 0, { columns }).rows[0]?.text;
 
     it('is left out at 7 columns of room and drawn, cut to its 8, at 8', () => {
-      // `> ✓ edit_file` is 13 columns; the target needs a two-column gap and then its room.
-      expect(lone(24)).toBe('> ✓ edit_file');
-      expect(lone(25)).toBe('> ✓ edit_file  sr…th.ts');
+      // `› ✓ edit_file` is 13 columns; the target needs a two-column gap and then its room.
+      expect(lone(24)).toBe('› ✓ edit_file');
+      expect(lone(25)).toBe('› ✓ edit_file  sr…th.ts');
       expect(displayWidth(lone(25) ?? '')).toBe(usable(25));
     });
 
@@ -2923,11 +2923,11 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       // 80 columns: width 78, head 13, `+3 −2` 5 plus its 2-column gap, 2-column gap before the target: room 56.
       const fits = 'a'.repeat(56);
       const [exact] = view([call(0, { target: fits, stats: stats(3, 2) })]).rows;
-      expect(exact?.text).toBe(flushed(`> ✓ edit_file  ${fits}`, '+3 −2', usable(80)));
+      expect(exact?.text).toBe(flushed(`› ✓ edit_file  ${fits}`, '+3 −2', usable(80)));
       const [over] = view([call(0, { target: `${fits}b`, stats: stats(3, 2) })]).rows;
       // A third of the 55 columns that are not the ellipsis for the start, the rest for the end.
       expect(over?.text).toBe(
-        flushed(`> ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 −2', usable(80)),
+        flushed(`› ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 −2', usable(80)),
       );
       expect(displayWidth(over?.text ?? '')).toBe(usable(80));
     });
@@ -2938,13 +2938,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       it('keeps its basename and its head, with one ellipsis between', () => {
         // 47 columns: width 45, head 13, no right text: room 30.
         const text = view([call(0, { target: path })], 0, { columns: 47 }).rows[0]?.text;
-        expect(text).toBe('> ✓ edit_file  src/compo…der/ReviewScreen.tsx');
+        expect(text).toBe('› ✓ edit_file  src/compo…der/ReviewScreen.tsx');
         expect(text?.endsWith('ReviewScreen.tsx')).toBe(true);
         expect(displayWidth(text ?? '')).toBe(usable(47));
       });
 
       it('shows the whole path when it fits', () => {
-        expect(view([call(0, { target: path })]).rows[0]?.text).toBe(`> ✓ edit_file  ${path}`);
+        expect(view([call(0, { target: path })]).rows[0]?.text).toBe(`› ✓ edit_file  ${path}`);
       });
 
       it('keeps the basename at every width that has room for it, beside the stats and the outcome word', () => {
@@ -3014,13 +3014,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 
     it('gives a call with no target no target column at all', () => {
       const [row] = view([{ callId: 'c0', toolId: 'edit_file', outcome: 'success' }]).rows;
-      expect(row?.text).toBe('> ✓ edit_file');
+      expect(row?.text).toBe('› ✓ edit_file');
     });
 
     it('keeps a call’s outcome word when there is no room left for a target', () => {
       // 28 columns: width 26, head 13, `failed` 6 plus its gap 2 and the target gap 2 leave 3: under the 8 a target needs.
       const [row] = view([call(0, { outcome: 'failure', target: wide })], 0, { columns: 28 }).rows;
-      expect(row?.text).toBe(flushed('> ✗ edit_file', 'failed', usable(28)));
+      expect(row?.text).toBe(flushed('› ✗ edit_file', 'failed', usable(28)));
     });
   });
 

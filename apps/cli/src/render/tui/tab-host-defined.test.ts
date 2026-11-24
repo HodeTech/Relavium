@@ -596,11 +596,11 @@ describe('the Defined tab fits the 23-row budget', () => {
         );
         const lines = r.lines(columns, terminalRows);
         expect(lines.length, `cursor ${String(at)}`).toBeLessThanOrEqual(TAB_HOST_ROWS);
-        expect(lines[0]).toContain('▸ Defined');
+        expect(lines[0]).toContain('› Defined');
         expect(lines.at(-1)).toContain('Esc close');
         for (const line of lines)
           expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));
-        const selected = lines.filter((line) => line.startsWith('› '));
+        const selected = lines.slice(1).filter((line) => line.startsWith('› '));
         expect(selected.length, 'exactly one selected row is drawn').toBe(1);
         expect(selected[0]).toContain(`workflow-${String(at).padStart(3, '0')}`);
       }

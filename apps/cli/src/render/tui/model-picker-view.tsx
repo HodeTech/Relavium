@@ -3,13 +3,14 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { datedPinBase, type ModelCatalogEntry } from '@relavium/llm';
 
+import { formatRefreshed } from '../notation.js';
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
+import { blankStatusCell, glyphOf, statusCellOf } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import {
   formatContextWindow,
   formatModelPrice,
-  formatRefreshedBadge,
   visibleModels,
   type ModelPickerState,
 } from './model-picker.js';
@@ -145,7 +146,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
   const { start, end } = modelWindow(visible.length, selected);
   const windowed = visible.slice(start, end);
-  const badge = `${formatRefreshedBadge(state.refreshedAt, nowMs)}${state.loading ? ' · refreshing…' : ''}`;
+  const badge = `${formatRefreshed(state.refreshedAt, nowMs)}${state.loading ? ' · refreshing…' : ''}`;
   // One status line: the transient user-action `hint` (a dimmed/save note) takes priority over the async refresh
   // `banner` (partial-failure) so a completing refresh can never silently wipe the feedback the user just triggered.
   const status = state.hint ?? state.banner;
@@ -186,6 +187,8 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       const ctx = formatContextWindow(entry.contextWindowTokens);
       const parts = [
         sanitizeInline(entry.displayName),
+        // The tick is never alone: the word `default` stands beside the name, ahead of the columns the row is cut from.
+        ...(isDefault ? ['default'] : []),
         providerName(entry.provider),
         ...(ctx.length > 0 ? [ctx] : []),
         formatModelPrice(entry),
@@ -195,7 +198,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       const rowColor = rowColorFor(entry, isSelected, color);
       return (
         <Text key={`${entry.provider}:${entry.modelId}`} {...rowColor} wrap="truncate-end">
-          {`${isSelected ? '›' : ' '} ${isDefault ? '✓' : ' '} ${parts.join(' · ')}`}
+          {`${isSelected ? glyphOf('selection', !color) : ' '} ${isDefault ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${parts.join(' · ')}`}
         </Text>
       );
     });

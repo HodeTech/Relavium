@@ -69,7 +69,7 @@ function lines(
     <PaletteView
       list={listOf(entries, layout, state.query)}
       state={state}
-      color={false}
+      color
       {...(maxRows === undefined ? {} : { maxRows })}
     />,
   );

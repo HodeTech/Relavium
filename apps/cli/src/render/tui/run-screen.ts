@@ -17,8 +17,10 @@
 
 import type { HostedRunDisposition } from '../../home/hosted-run-terminal.js';
 import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
+import { formatElapsed } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
 import type { StatusColor } from './format.js';
+import { glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import { boundedNotice } from './home-notice.js';
 import type { HostedLegState } from './interrupt-keymap.js';
@@ -53,28 +55,31 @@ export type RunScreenPhase =
   /** The host no longer holds this run: another run started or ended since, or it never held it. */
   | 'replaced';
 
-/** The words and glyphs of a state, colour apart. */
+/** The words and glyph role of a state, colour apart; the colour is the role's own unless the state is graver or lighter than it. */
 interface Appearance {
-  readonly glyph: string;
+  readonly role: StatusGlyphRole;
   readonly word: string;
-  readonly tone: StatusColor;
+  readonly tone?: StatusColor;
 }
 
 const PHASE_APPEARANCE: Readonly<Record<Exclude<RunScreenPhase, 'settled'>, Appearance>> = {
-  running: { glyph: '▶', word: 'running', tone: 'cyan' },
-  cancelling: { glyph: '■', word: 'cancelling', tone: 'yellow' },
-  replaced: { glyph: '○', word: 'not held', tone: 'gray' },
+  running: { role: 'running', word: 'running' },
+  cancelling: { role: 'stopping', word: 'cancelling' },
+  replaced: { role: 'ended', word: 'not held' },
 };
 
 const DISPOSITION_APPEARANCE: Readonly<Record<HostedRunDisposition, Appearance>> = {
-  completed: { glyph: '✓', word: 'completed', tone: 'green' },
-  failed: { glyph: '✗', word: 'failed', tone: 'red' },
-  cancelled: { glyph: '⊘', word: 'cancelled', tone: 'gray' },
-  paused: { glyph: '‖', word: 'paused', tone: 'yellow' },
-  uncertain: { glyph: '⚠', word: 'needs attention', tone: 'red' },
-  taken_over: { glyph: '⚠', word: 'taken over', tone: 'yellow' },
-  settled: { glyph: '✓', word: 'already settled', tone: 'gray' },
+  completed: { role: 'completed', word: 'completed' },
+  failed: { role: 'failed', word: 'failed' },
+  cancelled: { role: 'cancelled', word: 'cancelled' },
+  paused: { role: 'paused', word: 'paused' },
+  uncertain: { role: 'warning', word: 'needs attention', tone: 'red' },
+  taken_over: { role: 'warning', word: 'taken over' },
+  settled: { role: 'completed', word: 'already settled', tone: 'gray' },
 };
+
+const toneOfAppearance = (appearance: Appearance): StatusColor =>
+  appearance.tone ?? toneOf(appearance.role);
 
 /** Where the view's run is, and (once it ended here) how. The one place "is it this run's" is decided. */
 type Location =
@@ -216,7 +221,7 @@ function cardOf(end: HostedLegEnd, width: number): RunScreenCard {
   if (end.fault !== undefined) rows.push(clipLine(`Reason: ${sanitizeInline(end.fault)}`, width));
   return {
     disposition: terminal.disposition,
-    tone: appearance.tone,
+    tone: toneOfAppearance(appearance),
     rows: rows.slice(0, RUN_SCREEN_CARD_ROWS),
   };
 }
@@ -252,7 +257,7 @@ function keysFor(
 function statusFor(phase: RunScreenPhase): string | undefined {
   switch (phase) {
     case 'cancelling':
-      return `Cancelling · the run stops at its next safe point (up to ${String(HOSTED_RUN_EXIT_GRACE_MS / 1000)} s)`;
+      return `Cancelling · the run stops at its next safe point (up to ${formatElapsed(HOSTED_RUN_EXIT_GRACE_MS)})`;
     case 'replaced':
       return 'This run is no longer held by the Home. Its record is in the history.';
     case 'running':
@@ -283,7 +288,8 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
   const status = statusFor(phase);
   const resumed = (end?.leg ?? input.snapshot?.active?.leg) === 'resume';
   const resumedMark = resumed ? `${SEPARATOR}resumed` : '';
-  const header = `${appearance.glyph} ${appearance.word}${SEPARATOR}run ${sanitizeInline(input.runId)}${resumedMark}`;
+  const mark = glyph(appearance.role);
+  const header = `${mark} ${appearance.word}${SEPARATOR}run ${sanitizeInline(input.runId)}${resumedMark}`;
   const fixed =
     1 + // the header
     (status === undefined ? 0 : 1) +
@@ -296,9 +302,9 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
     leg,
     fits,
     tooSmall: fits ? undefined : tooSmallMessage(input.columns, input.rows),
-    glyph: appearance.glyph,
+    glyph: mark,
     word: appearance.word,
-    tone: appearance.tone,
+    tone: toneOfAppearance(appearance),
     header,
     status,
     notices: shown,

@@ -134,7 +134,7 @@ describe('at 80×24', () => {
     await waitFor(() => (lastFrame() ?? '').includes('streamed line 3'));
     const frame = lastFrame() ?? '';
     const lines = linesOf(frame);
-    expect(lines[0]).toBe('▶ running  ·  run run-0001');
+    expect(lines[0]).toBe('~ running  ·  run run-0001');
     expect(frame).toContain('node-00');
     expect(frame).toContain('streamed line 3');
     expect(frame).toContain('note: a withheld-effort warning');
@@ -152,7 +152,7 @@ describe('at 80×24', () => {
     const frame = lastFrame() ?? '';
     const lines = linesOf(frame);
     expect(lines.length).toBeLessThanOrEqual(23);
-    expect(lines[0]).toBe('▶ running  ·  run run-0001');
+    expect(lines[0]).toBe('~ running  ·  run run-0001');
     expect(lines.at(-1)).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
     // The newest of the output and its cost footer stay; the oldest node rows are what scrolled off the top.
     expect(frame).toContain('node-39');
@@ -170,7 +170,7 @@ describe('at 80×24', () => {
     const { lastFrame } = view({ store: storeWithNodes(2) });
     await waitFor(() => (lastFrame() ?? '').includes('streamed line 3'));
     const lines = linesOf(lastFrame());
-    expect(lines[0]).toBe('▶ running  ·  run run-0001');
+    expect(lines[0]).toBe('~ running  ·  run run-0001');
     expect(lines[1], 'the first node row, with no gap between').toContain('node-00');
   });
 
@@ -187,8 +187,8 @@ describe('at 80×24', () => {
       '[Ctrl+C] cancel the run (again) · Esc leaves it running',
     );
     const stopping = view({ hostedRun: running(true), armed: true }).lastFrame() ?? '';
-    expect(stopping).toContain('■ cancelling  ·  run run-0001');
-    expect(stopping).toContain('Cancelling · the run stops at its next safe point (up to 10 s)');
+    expect(stopping).toContain('# cancelling  ·  run run-0001');
+    expect(stopping).toContain('Cancelling · the run stops at its next safe point (up to 10s)');
     expect(stopping).toContain('Waiting for the run to stop · Esc leaves the view');
     expect(stopping).not.toContain('[Ctrl+C] cancel the run');
   });
@@ -211,7 +211,7 @@ describe('at 80×24', () => {
     });
     const frame = lastFrame() ?? '';
     const lines = linesOf(frame);
-    expect(lines[0]).toBe('✗ failed  ·  run run-0001');
+    expect(lines[0]).toBe('x failed  ·  run run-0001');
     expect(frame).toContain('Run run-0001 failed.');
     expect(frame).toContain('Read `relavium logs run-0001`');
     expect(frame).toContain('Reason: the provider refused');
@@ -232,7 +232,7 @@ describe('the card is the end of a leg', () => {
         },
         store: storeWithNodes(2),
       }).lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('▶ running  ·  run run-0001  ·  resumed');
+    expect(linesOf(frame)[0]).toBe('~ running  ·  run run-0001  ·  resumed');
     expect(frame).not.toContain('Open the run to continue it.');
     expect(frame).not.toContain('Esc / [Ctrl+C] close');
   });
@@ -252,23 +252,23 @@ describe('every state has a glyph and a word, with colour off', () => {
         active: { leg: 'start', runId: undefined, cancelling: false },
         last: undefined,
       },
-      title: '○ not held',
+      title: 'o not held',
     },
-    { name: 'running', hostedRun: running(), title: '▶ running' },
-    { name: 'cancelling', hostedRun: running(true), title: '■ cancelling' },
-    { name: 'completed', hostedRun: settled(ended('completed')), title: '✓ completed' },
-    { name: 'failed', hostedRun: settled(ended('failed')), title: '✗ failed' },
-    { name: 'cancelled', hostedRun: settled(ended('cancelled')), title: '⊘ cancelled' },
+    { name: 'running', hostedRun: running(), title: '~ running' },
+    { name: 'cancelling', hostedRun: running(true), title: '# cancelling' },
+    { name: 'completed', hostedRun: settled(ended('completed')), title: 'ok completed' },
+    { name: 'failed', hostedRun: settled(ended('failed')), title: 'x failed' },
+    { name: 'cancelled', hostedRun: settled(ended('cancelled')), title: '/ cancelled' },
     {
       name: 'paused',
       hostedRun: settled(ended('paused', 'Open the run to continue it.')),
-      title: '‖ paused',
+      title: '|| paused',
     },
-    { name: 'needs attention', hostedRun: settled(ended('uncertain')), title: '⚠ needs attention' },
-    { name: 'taken over', hostedRun: settled(ended('taken_over')), title: '⚠ taken over' },
-    { name: 'already settled', hostedRun: settled(ended('settled')), title: '✓ already settled' },
-    { name: 'not held', hostedRun: IDLE, title: '○ not held' },
-    { name: 'no host', hostedRun: undefined, title: '○ not held' },
+    { name: 'needs attention', hostedRun: settled(ended('uncertain')), title: '! needs attention' },
+    { name: 'taken over', hostedRun: settled(ended('taken_over')), title: '! taken over' },
+    { name: 'already settled', hostedRun: settled(ended('settled')), title: 'ok already settled' },
+    { name: 'not held', hostedRun: IDLE, title: 'o not held' },
+    { name: 'no host', hostedRun: undefined, title: 'o not held' },
   ];
 
   it.each(STATES)('$name: "$title" and not one escape sequence', ({ hostedRun, title }) => {
@@ -284,7 +284,7 @@ describe('every state has a glyph and a word, with colour off', () => {
     // ink-testing-library strips nothing: with colour enabled the title carries SGR codes, and the same text.
     const coloured = view({ color: true }).lastFrame() ?? '';
     // eslint-disable-next-line no-control-regex -- the assertion is about escape sequences
-    expect(coloured.replace(/\x1b\[[0-9;]*m/g, '')).toContain('▶ running  ·  run run-0001');
+    expect(coloured.replace(/\x1b\[[0-9;]*m/g, '')).toContain('◐ running  ·  run run-0001');
   });
 });
 
@@ -452,7 +452,7 @@ describe.each([
       store: storeWithNodes(2),
       size: { cols: 80, rows: 24 },
     });
-    await waitFor(() => (harness.lastFrame() ?? '').includes('▶ running'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('~ running'));
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('note: a departure diagnostic');
     expect(frame).toContain('streamed line 3');
@@ -475,25 +475,25 @@ describe.each([
       alternateScreen,
       size: { cols: 100, rows: 30 },
     });
-    await waitFor(() => (harness.lastFrame() ?? '').includes('▶ running'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('~ running'));
     harness.stdin.write(ESC); // a lone ESC is held back a moment while the input layer rules out an escape sequence
     await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined(), {
       timeout: WAIT_MS,
     });
-    await vi.waitFor(() => expect(harness.lastFrame()).toContain('▶ run-0001'), {
+    await vi.waitFor(() => expect(harness.lastFrame()).toContain('~ run-0001'), {
       timeout: WAIT_MS,
     });
     expect(harness.lastFrame()).toContain('[Ctrl+C] exit (twice)');
     expect(cancel).not.toHaveBeenCalled();
     harness.stdin.write('\r');
     await waitFor(() => controller.getSnapshot().screen !== undefined);
-    await waitFor(() => (harness.lastFrame() ?? '').includes('▶ running  ·  run run-0001'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('~ running  ·  run run-0001'));
     // `waitFor` only waits: what it waited for is asserted here, or the test would end on a stale frame.
     expect(controller.getSnapshot().screen, 'Enter brought the run view back').toMatchObject({
       kind: 'run-view',
       runId: 'run-0001',
     });
-    expect(harness.lastFrame()).toContain('▶ running  ·  run run-0001');
+    expect(harness.lastFrame()).toContain('~ running  ·  run run-0001');
     expect(cancel, 'coming back to the view cancels nothing').not.toHaveBeenCalled();
   });
 

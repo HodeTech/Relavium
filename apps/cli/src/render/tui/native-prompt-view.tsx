@@ -1,5 +1,6 @@
 import { Box, Text, useApp, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import { glyphOf, withGlyphForm } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
@@ -101,7 +102,13 @@ export function NativePromptView({
   if (blocked)
     return <Text>{refusal(snapshot, 'Prompt does not fit — enlarge the terminal')}</Text>;
   // A select whose options do not all fit the terminal draws a window of them (LAUNCH-4); every other card, and a select that fits, is drawn whole.
-  const selectWindow = snapshot.kind === 'select' ? selectLayout(snapshot, size) : undefined;
+  const selectWindow =
+    snapshot.kind === 'select'
+      ? withGlyphForm(!color, () => selectLayout(snapshot, size))
+      : undefined;
+  // A row's text is built in the glyph form the colour setting asks for (the cursor is the table's selection marker).
+  const rowText = (index: number): string =>
+    withGlyphForm(!color, () => selectRowText(snapshot, index));
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       {snapshot.note !== '' && <Text wrap="wrap">{snapshot.note}</Text>}
@@ -127,7 +134,7 @@ export function NativePromptView({
           {snapshot.options.map((option, index) => (
             <Box key={option.value} flexDirection="column">
               <Text wrap="truncate-end">
-                {index === snapshot.selected ? '❯ ' : '  '}
+                {index === snapshot.selected ? `${glyphOf('selection', !color)} ` : '  '}
                 {option.label}
               </Text>
               {option.hint !== undefined && (
@@ -161,7 +168,7 @@ export function NativePromptView({
       {snapshot.kind === 'select' &&
         (selectWindow === undefined
           ? snapshot.options.map((option, index) => (
-              <Text key={option.value}>{selectRowText(snapshot, index)}</Text>
+              <Text key={option.value}>{rowText(index)}</Text>
             ))
           : selectWindow.lines.map((line) =>
               line.kind === 'marker' ? (
@@ -171,7 +178,7 @@ export function NativePromptView({
                 </Text>
               ) : (
                 <Text key={snapshot.options[line.index]?.value ?? line.index} wrap="truncate-end">
-                  {selectRowText(snapshot, line.index)}
+                  {rowText(line.index)}
                 </Text>
               ),
             ))}

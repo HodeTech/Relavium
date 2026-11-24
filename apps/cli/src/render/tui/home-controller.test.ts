@@ -2168,9 +2168,28 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       // Assert the rendered ROWS, not just the heading — so a malformed/missing check row would fail the test.
       const notice = c.getSnapshot().notice;
       expect(notice).toContain('doctor: all checks passed');
-      expect(notice).toContain('✓ OS keychain: reachable');
-      expect(notice).toContain('✓ config: valid');
-      expect(notice).toContain('✓ wired tools: none'); // the STUB toolHost wires no arms
+      expect(notice).toContain('✓ ok · OS keychain: reachable');
+      expect(notice).toContain('✓ ok · config: valid');
+      expect(notice).toContain('✓ ok · wired tools: none'); // the STUB toolHost wires no arms
+    });
+
+    it('writes the doctor report in the plain glyph forms when the controller is told colour is off (ADR-0145 §5)', async () => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        plainGlyphs: true,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER);
+      await flush();
+      const notice = c.getSnapshot().notice;
+      expect(notice).toContain('ok doctor: all checks passed');
+      expect(notice).toContain('ok ok · OS keychain: reachable');
+      expect(notice).not.toMatch(/[✓✗⚠]/u);
     });
 
     it('the Home /doctor notice clears on the next keystroke', async () => {
@@ -2233,7 +2252,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       await flush();
       const notice = c.getSnapshot().notice;
       expect(notice).toContain('doctor: 1 check(s) failed');
-      expect(notice).toContain('✗ OS keychain: keychain locked');
+      expect(notice).toContain('✗ failed · OS keychain: keychain locked');
     });
 
     it('a report does NOT land if the prompt is edited during the run (the stale-run token guard)', async () => {
@@ -2961,7 +2980,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     await flush();
     const picker = c.getSnapshot().modelPicker;
     expect(picker?.loading).toBe(false);
-    expect(picker?.banner).toContain('openai'); // names the failed provider, not the (redacted) error body
+    expect(picker?.banner).toContain('OpenAI'); // names the failed provider, not the (redacted) error body
     expect(picker?.banner).not.toContain('redacted');
   });
 

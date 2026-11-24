@@ -6,6 +6,7 @@ import type {
   WithdrawAnswer,
 } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
+import { glyph } from './glyphs.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import {
   exitKey,
@@ -20,6 +21,8 @@ import {
   clampSpans,
   clipLine,
   flushRow,
+  moreAboveText,
+  moreBelowText,
   usableColumns,
   titleRule,
   windowBody,
@@ -108,7 +111,8 @@ export const SHEET_MIN_ROWS = 24;
 const FIXED_ROWS = 3;
 const NOTE_ROWS = 1;
 /** The column the row's marker takes, and the gap between a row's value and its action. */
-const MARKER = '› ';
+/** The selected row's marker and its space: the glyph table's selection marker, in the form in force. */
+const marker = (): string => `${glyph('selection')} `;
 const NO_MARKER = '  ';
 const CHIP_GAP = '   ';
 
@@ -401,7 +405,7 @@ function rowLine(
   const armed = selected && state.armed;
   const chip = rowChip(selected, armed);
   const right = rowRight(chip, tail);
-  const text = flushRow(`${selected ? MARKER : NO_MARKER}${label}`, right, width);
+  const text = flushRow(`${selected ? marker() : NO_MARKER}${label}`, right, width);
   return {
     kind: rowKind(selected, armed),
     text,
@@ -679,11 +683,11 @@ export function permissionsSheetBody(
     };
   });
   if (topMarker && body.length > 0)
-    body[0] = { kind: 'marker', text: `▲ ${String(rowsIn(all.slice(0, start + 1)))} more` };
+    body[0] = { kind: 'marker', text: moreAboveText(rowsIn(all.slice(0, start + 1))) };
   if (bottomMarker && body.length > 0)
     body[body.length - 1] = {
       kind: 'marker',
-      text: `▼ ${String(rowsIn(all.slice(end - 1)))} more`,
+      text: moreBelowText(rowsIn(all.slice(end - 1))),
     };
   // A windowed list keeps one height: a window that had to be shorter is padded below, so the sheet does not change size under the cursor.
   while (all.length > height && body.length < height) body.push({ kind: 'text', text: '' });
@@ -735,8 +739,9 @@ function hintLine(entry: SheetEntry, width: number): SheetLine {
   };
 }
 
-/** The glyph a result carries, so a done and a failed answer differ without colour. */
-const TONE_GLYPH = { done: '✓ ', failed: '✗ ', note: '' } as const;
+/** The glyph a result carries, so a done and a failed answer differ without colour: the table's `completed` and `failed`, in the form in force. */
+const toneGlyph = (tone: SheetMessage['tone']): string =>
+  tone === 'done' ? `${glyph('completed')} ` : tone === 'failed' ? `${glyph('failed')} ` : '';
 const TONE_KIND = { done: 'done', failed: 'failed', note: 'notice' } as const;
 
 /**
@@ -763,7 +768,7 @@ function messageLine(state: PermissionsSheetState, width: number): SheetLine {
   if (message !== undefined)
     return {
       kind: TONE_KIND[message.tone],
-      text: clipLine(`${TONE_GLYPH[message.tone]}${escaped(message.text)}`, width),
+      text: clipLine(`${toneGlyph(message.tone)}${escaped(message.text)}`, width),
     };
   return entry === undefined ? { kind: 'message', text: '' } : hintLine(entry, width);
 }

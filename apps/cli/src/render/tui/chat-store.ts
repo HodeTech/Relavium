@@ -54,6 +54,7 @@ import {
   type ChatMode,
 } from '../../chat/chat-mode.js';
 import { formatSessionFooter, sanitizeInline, stripTerminalControls } from './chat-projection.js';
+import { withGlyphForm } from './glyphs.js';
 import {
   appendNotice,
   appendUserMessage,
@@ -512,7 +513,9 @@ export function createChatStore(
     // The transcript entry is built from the answer the card already holds — never from an event (ADR-0132 §6).
     state = appendNotice(
       state,
-      stripTerminalControls(questionTranscriptText(open.request, answer)),
+      stripTerminalControls(
+        withGlyphForm(!color, () => questionTranscriptText(open.request, answer)),
+      ),
     );
     settling.resolve(answer);
     flush();

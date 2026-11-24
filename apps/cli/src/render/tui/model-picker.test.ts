@@ -6,7 +6,6 @@ import {
   foldModelPickerKey,
   formatContextWindow,
   formatModelPrice,
-  formatRefreshedBadge,
   partialFailureBanner,
   visibleModels,
   type ModelPickerState,
@@ -374,26 +373,28 @@ describe('display formatters', () => {
       },
       priceKnown: true,
     });
-    expect(formatModelPrice(priced)).toBe('$3/$15 per Mtok');
+    expect(formatModelPrice(priced)).toBe('$3 / $15 per M');
     const unpriced = entry({ modelId: 'y', priceKnown: false, pricingSource: 'none' });
     expect(formatModelPrice(unpriced)).toBe('no price — cost cap will not apply');
   });
 
-  it('formats a fractional price to 2 decimals', () => {
-    const priced = entry({
-      modelId: 'z',
-      pricing: {
-        provider: 'openai',
-        nativeId: 'z',
-        displayName: 'Z',
-        contextWindowTokens: 1000,
-        maxOutputTokens: 100,
-        inputPerMtokMicrocents: 15_000_000, // $0.15
-        outputPerMtokMicrocents: 125_000_000, // $1.25
-        cachedInputPerMtokMicrocents: 0,
-      },
-    });
-    expect(formatModelPrice(priced)).toBe('$0.15/$1.25 per Mtok');
+  it('keeps every digit of a fractional price (the old two-digit label showed $0.075 as $0.08)', () => {
+    const priced = (input: number, output: number) =>
+      entry({
+        modelId: 'z',
+        pricing: {
+          provider: 'openai',
+          nativeId: 'z',
+          displayName: 'Z',
+          contextWindowTokens: 1000,
+          maxOutputTokens: 100,
+          inputPerMtokMicrocents: input,
+          outputPerMtokMicrocents: output,
+          cachedInputPerMtokMicrocents: 0,
+        },
+      });
+    expect(formatModelPrice(priced(15_000_000, 125_000_000))).toBe('$0.15 / $1.25 per M');
+    expect(formatModelPrice(priced(7_500_000, 43_500_000))).toBe('$0.075 / $0.435 per M');
   });
 
   it('formats the context window compactly (K / M), or empty when unknown', () => {
@@ -404,16 +405,6 @@ describe('display formatters', () => {
     expect(formatContextWindow(0)).toBe(''); // the "unknown" sentinel reads as empty, never "0 ctx"
   });
 
-  it('formats the freshness badge from the newest live-refresh stamp', () => {
-    expect(formatRefreshedBadge(undefined, 1_000_000)).toBe('never refreshed');
-    expect(formatRefreshedBadge(1_000_000, 1_000_000)).toBe('updated just now');
-    expect(formatRefreshedBadge(0, 5 * 60_000)).toBe('updated 5m ago');
-    expect(formatRefreshedBadge(0, 3 * 60 * 60_000)).toBe('updated 3h ago');
-    expect(formatRefreshedBadge(0, 2 * 24 * 60 * 60_000)).toBe('updated 2d ago');
-    // A future/negative delta clamps to "just now", never a negative age.
-    expect(formatRefreshedBadge(2_000_000, 1_000_000)).toBe('updated just now');
-  });
-
   it('summarizes partial refresh failures into a secret-free banner (or undefined when clean)', () => {
     expect(partialFailureBanner([])).toBeUndefined();
     expect(partialFailureBanner(['openai'])).toBe(
@@ -421,6 +412,10 @@ describe('display formatters', () => {
     );
     expect(partialFailureBanner(['openai', 'gemini'])).toBe(
       "couldn't refresh openai, gemini — showing last-known models",
+    );
+    // A provider is named by its display name where the caller supplies one (ADR-0145 §8).
+    expect(partialFailureBanner(['openai', 'gemini'], (id) => id.toUpperCase())).toBe(
+      "couldn't refresh OPENAI, GEMINI — showing last-known models",
     );
   });
 });

@@ -7,6 +7,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { writeRecordLines } from '../render/records.js';
+import { formatPrice } from '../render/notation.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
   PRICING_FIELDS,
@@ -17,7 +18,6 @@ import {
   pairingSentence,
   priceToMicrocents,
   pricingField,
-  usdTextOfMicrocents,
   type PriceArgs,
   type PriceColumn,
   type PricingFieldId,
@@ -98,7 +98,7 @@ export interface CommitPricingDeps {
 
 /**
  * One price a SET states: the field and the integer micro-cents that will be stored. The USD as it was typed is not kept: every line
- * that names a price says the stored integer ({@link usdTextOfMicrocents}), so no sentence can say a price the database does not hold.
+ * that names a price says the stored integer ({@link formatPrice}), so no sentence can say a price the database does not hold.
  */
 export interface PlannedPrice {
   readonly id: PricingFieldId;
@@ -400,8 +400,7 @@ function pricingJsonRecord(plan: SetPricingPlan): Record<string, unknown> {
 export function pricingPriceNote(plan: SetPricingPlan): string {
   return plan.prices
     .map(
-      (price) =>
-        `${price.id} $${usdTextOfMicrocents(price.microcents)}${pricingField(price.id).suffix}`,
+      (price) => `${price.id} ${formatPrice(price.microcents, pricingField(price.id).priceUnit)}`,
     )
     .join(', ');
 }
@@ -436,9 +435,9 @@ export function catalogDivergence(plan: SetPricingPlan): { readonly shipped: str
   return { shipped: catalogTokenRates(shipped) };
 }
 
-/** `input $5/Mtok, output $30/Mtok`: what the catalog charges. */
+/** `input $5 per M, output $30 per M`: what the catalog charges. */
 export function catalogTokenRates(shipped: ModelPricing): string {
-  return `input $${usdTextOfMicrocents(shipped.inputPerMtokMicrocents)}/Mtok, output $${usdTextOfMicrocents(shipped.outputPerMtokMicrocents)}/Mtok`;
+  return `input ${formatPrice(shipped.inputPerMtokMicrocents)}, output ${formatPrice(shipped.outputPerMtokMicrocents)}`;
 }
 
 /** The sentence for a CLEAR, as a flat if/else so no nested ternary decides the message. */

@@ -16,6 +16,7 @@ import {
 
 import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pricing-fields.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
+import { formatUsdExact } from '../render/notation.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { keyToken } from '../render/tui/legend.js';
 
@@ -284,12 +285,11 @@ export function onceEffortNotice(sink: (note: string) => void): (note: string) =
 }
 
 /**
- * Integer micro-cents → a plain USD string (1 USD = 1e8 micro-cents), fixed-decimal so a tiny cap reads `$0.00`
- * rather than `$1e-8`. Two decimals is the granularity a cost cap is ever set at; a sub-cent cap rounds to `$0.00`,
- * which is honest — it is effectively "block everything".
+ * A cost cap as a person reads it: the exact USD of the integer micro-cents (`$0.0500`, never `$1e-8`). A cap is an amount the
+ * session is held against, so it is never rounded: a sub-cent cap reads `$0.00000001`, not `$0.00`, which would say the cap is zero.
  */
 export function capUsd(microcents: number): string {
-  return `$${(microcents / 100_000_000).toFixed(2)}`;
+  return formatUsdExact(microcents);
 }
 
 /**

@@ -875,7 +875,7 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
   const runId = snapshot.active?.runId;
   return runId === undefined
     ? 'A run is already starting.'
-    : `A run is already executing (${shortRunId(runId)}). ${keyToken('Enter')} on its ▶ row opens it.`;
+    : `A run is already executing (${shortRunId(runId)}). ${keyToken('Enter')} on its row in the strip opens it.`;
 }
 
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {

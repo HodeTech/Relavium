@@ -48,9 +48,9 @@ describe('MVP-2 truthful feedback', () => {
     const call = store.getSnapshot().state.liveToolCalls[0];
     expect(call).toBeDefined();
     if (call === undefined) return;
-    expect(formatToolCall(call)).toBe('→ read_file ✗ failed');
-    expect(formatToolCall({ ...call, success: true })).toBe('→ read_file ✓');
-    expect(formatToolCall({ ...call, resolved: false })).toBe('→ read_file …');
+    expect(formatToolCall(call)).toBe('▸ read_file ✗ failed');
+    expect(formatToolCall({ ...call, success: true })).toBe('▸ read_file ✓ completed');
+    expect(formatToolCall({ ...call, resolved: false })).toBe('▸ read_file …');
   });
 
   it('turns a local clipboard failure into a content-free failed outcome', async () => {
