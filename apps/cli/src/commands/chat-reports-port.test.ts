@@ -109,11 +109,17 @@ describe('the report port a chat driver is handed', () => {
   }
 
   it('an interactive chat is handed all four members, on the stand-alone surface', async () => {
-    await drive(true, false, ({ reports, boundAgent }) => {
+    await drive(true, false, async ({ reports, boundAgent }) => {
       expect(reports?.surface).toBe('standalone-chat');
       expect(reports?.agent).toBeDefined();
       expect(reports?.cost).toBeDefined();
       expect(reports?.workflows).toBeDefined();
+      // `[c] copy` rides the driver's one clipboard closure (the same OSC 52 path as `/copy` and the doctor's `[c]`), and the plain glyph form follows colour.
+      expect(reports?.plainGlyphs).toBe(true);
+      expect(await reports?.clipboard?.('copied text')).toEqual({
+        kind: 'written',
+        characters: 'copied text'.length,
+      });
       expect(reports?.help?.keys.map((key) => key.keys)).toEqual([
         'Enter',
         'Ctrl+J',

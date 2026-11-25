@@ -112,6 +112,41 @@ describe.each(HOSTS)('the reports in the %s host', (host) => {
       },
     );
 
+    it.each(LINES)(
+      '%s: [c] copy writes the report to the host’s clipboard and says so, and writes nothing into the transcript, the warnings line or the Home’s notice',
+      async (line, id, state) => {
+        const written: string[] = [];
+        const port: ReportsPort = {
+          ...reportsPortFor('standalone-chat', state),
+          clipboard: (text) => {
+            written.push(text);
+            return { kind: 'written', characters: text.length };
+          },
+        };
+        const m = await mountWith(host, variant, port);
+        try {
+          const before = residue(m);
+          await m.typeLine(line);
+          await opens(m, id);
+          await vi.waitFor(() => expect(m.text()).toContain('[c] copy'));
+          await m.settle();
+          m.skip(600);
+          m.key('c');
+          await vi.waitFor(() => expect(written).toHaveLength(1));
+          expect(written[0]?.length).toBeGreaterThan(20);
+          const said = `${{ agent: 'Agent', cost: 'Cost', workflows: 'Workflows', help: 'Help' }[id as 'agent']} report: sent ${String(written[0]?.length)} characters to the terminal clipboard.`;
+          expect(m.submitted).toEqual([]);
+          m.key(KEYS.escape);
+          await closes(m);
+          // One notification, and it is the whole of what the copy left (the inline block hides the hint row, so it is drawn once the popup is gone).
+          await vi.waitFor(() => expect(m.notifications.getSnapshot().current?.text).toBe(said));
+          expect(residue(m)).toEqual(before);
+        } finally {
+          m.unmount();
+        }
+      },
+    );
+
     it('a line selected in the palette opens the popup as the same line typed does', async () => {
       const m = await mountWith(host, variant, reportsPortFor('standalone-chat', 'cost-held'));
       try {

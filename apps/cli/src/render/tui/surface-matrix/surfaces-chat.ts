@@ -331,6 +331,18 @@ function chatDoctorSurface(
   };
 }
 
+/**
+ * The legend row of a report popup's report state, whole on one row of every cell (ADR-0148 §1: every report offers `[c] copy`, and the copy is
+ * the control the legend keeps longest). The states that are not a report (loading, a failure, the release line and its result) name no copy.
+ */
+const REPORT_LEGEND_ROW: Readonly<Partial<Record<ReportState, string>>> = {
+  agent: '↑/↓ scroll · [c] copy · Esc close',
+  cost: '↑/↓ scroll · [c] copy · Esc close',
+  'cost-held': '↑/↓ scroll · [r] release held estimates · [c] copy · Esc close',
+  workflows: '↑/↓ scroll · [c] copy · Esc close',
+  help: '↑/↓ scroll · [c] copy · Esc close',
+};
+
 /** A chat's report popup (`/agent`, `/cost`, `/workflows`, `/help`) in one state: the short exchange behind it, the command typed and routed by the host. */
 function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefinition {
   return {
@@ -338,6 +350,7 @@ function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefini
     title,
     exitKey: 'Esc',
     landmark: REPORT_LANDMARKS[state],
+    ...(REPORT_LEGEND_ROW[state] === undefined ? {} : { legendRow: REPORT_LEGEND_ROW[state] }),
     belowFloor: /too small for this popup/iu,
     popup: reportPopupBox,
     setup: () => ({

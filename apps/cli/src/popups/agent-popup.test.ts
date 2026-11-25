@@ -107,11 +107,12 @@ describe('the fields', () => {
     expect(lines.length).toBeGreaterThan(18);
   });
 
-  it('is a report of one step with no control, and an agent whose view cannot be made is an error state', () => {
+  it('is a report of one step whose only control is [c] copy, and an agent whose view cannot be made is an error state with none', () => {
     const spec = agentSpec('chat', agentContent(boundAgentView(definition(), undefined)));
     expect(spec.steps).toHaveLength(1);
-    expect(spec.steps[0]?.controls).toBeUndefined();
+    expect(spec.steps[0]?.controls).toEqual([{ key: 'c', verb: 'copy' }]);
     expect(spec.steps[0]?.enter).toBeUndefined();
+    expect(agentSpec('chat', agentUnreadableContent()).steps[0]?.controls).toEqual([]);
     expect(agentUnreadableContent()).toMatchObject({
       kind: 'error',
       what: 'The agent could not be shown.',
@@ -155,9 +156,9 @@ describe('every string is scrubbed with the full floor, whatever the view was bu
         expect(text, field).not.toContain(SECRET);
         expect(text, field).not.toContain('✓');
         expect(text, field).not.toContain('›');
-        // The only ` · ` of the content is the host's own: the title's (and, drawn, the legend's), never a field's.
+        // The only ` · ` of the content is the host's own: the title's (and, drawn, the legend's two), never a field's.
         const separators = text.split(' · ').length - 1;
-        expect(separators, field).toBeLessThanOrEqual(text === drawnText ? 2 : 1);
+        expect(separators, field).toBeLessThanOrEqual(text === drawnText ? 3 : 1);
       }
     },
   );

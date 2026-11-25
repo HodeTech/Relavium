@@ -52,6 +52,7 @@ import {
 } from '../../../../popups/cost-popup.js';
 import { costReadFailedContent } from '../../../../popups/cost-session.js';
 import { helpContent, helpSpec } from '../../../../popups/help-popup.js';
+import { copyControlsFor } from '../../../../popups/report-copy.js';
 import type { CostReading } from '../../../../popups/report-port.js';
 import {
   workflowsContent,
@@ -515,8 +516,9 @@ const recordCost: Recorder = (): StateRows => {
 
 /** The `/workflows` popup: the catalog, nothing in it, no project, the fault, and the scan. */
 const recordWorkflows: Recorder = (): StateRows => {
+  // As the session lands it: `[c] copy` arrives with a catalog, and not with the loading, empty or failed states.
   const frame = (content: PopupContent): PopupFrame =>
-    withContent(openFrame(workflowsSpec('chat'), 1), 0, content);
+    withContent(openFrame(workflowsSpec('chat'), 1), 0, content, copyControlsFor(content));
   const entry = (slug: string, valid = true) => ({
     slug,
     name: undefined,

@@ -10,7 +10,7 @@
  *
  * **Every field is untrusted** (an agent's name, id, model, tool names and prompt come from a project's YAML or a shared database), and this
  * is one of the report popups whose builders share the FULL scrub of the run cards ({@link reportText}): the view's own scrub is a floor under
- * it, not the scrub. The popup has no controls: `Esc` (and `Ctrl+C`) close it.
+ * it, not the scrub. Its one control is `[c] copy`; `Esc` (and `Ctrl+C`) close it.
  */
 
 import type { BoundAgentView } from '../chat/bound-agent-view.js';
@@ -25,6 +25,7 @@ import {
 } from '../render/tui/agent-sheet.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
+import { copyControlsFor } from './report-copy.js';
 import { REPORT_TEXT_COLUMNS, reportText, wrapHanging } from './report-text.js';
 
 /** The width of a field's label, and so the column its value starts in (the same two as the `/agents` detail and the retired sheet). */
@@ -120,12 +121,15 @@ export function agentUnreadableContent(): PopupContent {
   return { kind: 'error', ...AGENT_REPORT_UNREADABLE };
 }
 
-/** The popup's spec: one read-only step with no control, so `Esc` is the only key it adds to the arrows. */
+/**
+ * The popup's spec: one read-only step whose only control is `[c] copy` (listed while the content is a report, not when the view could not be
+ * made), so `Esc` and the copy are the keys it adds to the arrows. `legendKeep` keeps the copy on the legend row ahead of the scroll hint.
+ */
 export function agentSpec(origin: PopupOrigin, content: PopupContent): PopupSpec {
   return {
     id: 'agent',
     title: '/agent',
     origin,
-    steps: [{ name: 'Agent', content }],
+    steps: [{ name: 'Agent', content, controls: copyControlsFor(content), legendKeep: ['c'] }],
   };
 }

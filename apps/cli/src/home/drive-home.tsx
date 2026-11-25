@@ -1319,6 +1319,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   ...reports,
                   surface: 'home-chat' as const,
                   ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+                  // `[c] copy` rides the Home's one clipboard closure, as `/copy` and the doctor's `[c]` do.
+                  clipboard,
                   plainGlyphs: !deps.global.color,
                 },
               }),

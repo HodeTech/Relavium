@@ -13,14 +13,34 @@
 
 import { agentContent, agentSpec, agentUnreadableContent } from './agent-popup.js';
 import { openCostPopup } from './cost-session.js';
-import type { PopupContext, PopupOpenResult } from './popup-host.js';
+import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
+import { copyControlsFor, copyReport } from './report-copy.js';
 import { helpContent, helpSpec } from './help-popup.js';
-import type { ReportOpenRequest } from './report-port.js';
+import type { ReportOpenRequest, ReportsPort } from './report-port.js';
+import type { PopupContent } from './frame-model.js';
 import { macrotask, startReportWork } from './report-work.js';
-import { workflowsContent, workflowsFailedContent, workflowsSpec } from './workflows-popup.js';
+import {
+  workflowsContent,
+  workflowsFailedContent,
+  workflowsSpec,
+  WORKFLOWS_LOADING_CONTENT,
+} from './workflows-popup.js';
 
 /** Why a report that the host asked for could not open at all: the port lacks what the report needs (a host's wiring mistake, never reachable from a typed line). */
 const MISSING: PopupOpenResult = { opened: false, reason: 'closed' };
+
+/** The handler of `[c] copy` for a step whose lines are known when it opens: what the step shows is what is copied. */
+function copyHandlers(
+  port: Pick<ReportsPort, 'clipboard' | 'plainGlyphs'>,
+  label: string,
+  content: PopupContent,
+): PopupHandlers {
+  return {
+    control: (context, key) => {
+      if (key === 'c' && content.kind === 'report') copyReport(context, port, label, content.lines);
+    },
+  };
+}
 
 function openAgent(request: ReportOpenRequest): PopupOpenResult {
   const { host, port, origin } = request;
@@ -34,14 +54,15 @@ function openAgent(request: ReportOpenRequest): PopupOpenResult {
     port.workOwner?.failure(cause);
     content = agentUnreadableContent();
   }
-  return host.openForUser(agentSpec(origin, content));
+  return host.openForUser(agentSpec(origin, content), copyHandlers(port, 'Agent', content));
 }
 
 function openHelp(request: ReportOpenRequest): PopupOpenResult {
   const { host, port, origin } = request;
   const help = port.help;
   if (help === undefined) return MISSING;
-  return host.openForUser(helpSpec(origin, helpContent(port.surface, help.keys)));
+  const content = helpContent(port.surface, help.keys);
+  return host.openForUser(helpSpec(origin, content), copyHandlers(port, 'Help', content));
 }
 
 function openWorkflows(request: ReportOpenRequest): PopupOpenResult {
@@ -49,7 +70,14 @@ function openWorkflows(request: ReportOpenRequest): PopupOpenResult {
   const workflows = port.workflows;
   if (workflows === undefined) return MISSING;
   const pause = request.yieldToLoop ?? macrotask;
-  const opened = host.openForUser(workflowsSpec(origin));
+  // What the step shows now, for `[c] copy`: the catalog once it has landed (the control is offered only then).
+  let shown: PopupContent = WORKFLOWS_LOADING_CONTENT;
+  const opened = host.openForUser(workflowsSpec(origin), {
+    control: (context, key) => {
+      if (key === 'c' && shown.kind === 'report')
+        copyReport(context, port, 'Workflows', shown.lines);
+    },
+  });
   if (!opened.opened) return opened;
   const context: PopupContext = opened.context;
   const live = (): boolean => !context.signal.aborted;
@@ -60,10 +88,13 @@ function openWorkflows(request: ReportOpenRequest): PopupOpenResult {
       if (!live()) return;
       const reading = await workflows.read();
       if (!live()) return;
-      context.setContent(0, workflowsContent(reading));
+      shown = workflowsContent(reading);
+      context.setContent(0, shown, copyControlsFor(shown));
     },
     () => {
-      if (live()) context.setContent(0, workflowsFailedContent());
+      if (!live()) return;
+      shown = workflowsFailedContent();
+      context.setContent(0, shown, copyControlsFor(shown));
     },
   );
   return opened;

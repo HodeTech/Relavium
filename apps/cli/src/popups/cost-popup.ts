@@ -21,6 +21,7 @@ import { keyToken } from '../render/tui/legend.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { ChordRefusal } from './popup-host.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
+import { COPY_CONTROL } from './report-copy.js';
 import type { CostReading, CostRelease } from './report-port.js';
 import { REPORT_TEXT_COLUMNS, reportText, wrapHanging, wrapReport } from './report-text.js';
 
@@ -76,9 +77,12 @@ export function releasable(reading: CostReading): boolean {
   return heldMicrocents(reading) > 0 || reading.governor?.durabilityBroken === true;
 }
 
-/** The controls of the report step for `reading`: the release control when something is held, none otherwise. */
+/**
+ * The controls of the report step once `reading` has landed: the release control when something is held, and `[c] copy` always (the report is
+ * there to copy). While the step loads or says the read failed it has neither: the session sets `[]` for those.
+ */
 export function costControls(reading: CostReading): readonly PopupControl[] {
-  return releasable(reading) ? [RELEASE_CONTROL] : [];
+  return releasable(reading) ? [RELEASE_CONTROL, COPY_CONTROL] : [COPY_CONTROL];
 }
 
 /** The `costParts` of a reading, as the notice computes them (the same call, the same options). */
@@ -196,7 +200,8 @@ export function costSpec(origin: PopupOrigin, onRelease: boolean): PopupSpec {
     rail: 'path',
     initialStep: onRelease ? COST_STEP.release : COST_STEP.cost,
     steps: [
-      { name: 'Cost', content: COST_LOADING_CONTENT },
+      // The copy stays on the legend row ahead of the release and the scroll hint when the row is short: it is the one control every report has.
+      { name: 'Cost', content: COST_LOADING_CONTENT, legendKeep: ['c', 'r'] },
       {
         name: 'Release',
         content: COST_LOADING_CONTENT,

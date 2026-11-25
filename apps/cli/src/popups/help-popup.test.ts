@@ -80,10 +80,10 @@ describe('the keys', () => {
     expect(lines.slice(lines.indexOf('Keys') + 1)).toEqual(['  Enter  send it']);
   });
 
-  it('is a report of one step, read-only: no control and no Enter', () => {
+  it('is a report of one step, read-only: its only control is [c] copy, and no Enter', () => {
     const spec = helpSpec('chat', helpContent('standalone-chat', KEYS));
     expect(spec.steps).toHaveLength(1);
-    expect(spec.steps[0]?.controls).toBeUndefined();
+    expect(spec.steps[0]?.controls).toEqual([{ key: 'c', verb: 'copy' }]);
     expect(spec.steps[0]?.enter).toBeUndefined();
   });
 });

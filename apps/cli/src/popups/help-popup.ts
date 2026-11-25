@@ -19,6 +19,7 @@ import { inertLegendText } from '../render/tui/legend.js';
 import { buildPaletteEntries } from '../render/tui/palette-entries.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
+import { copyControlsFor } from './report-copy.js';
 import type { HelpPort, ReportSurface } from './report-port.js';
 import { REPORT_TEXT_COLUMNS, reportText, wrapHanging } from './report-text.js';
 
@@ -76,7 +77,12 @@ export function helpContent(surface: ReportSurface, keys: HelpPort['keys']): Pop
   return { kind: 'report', lines: helpLines(surface, keys) };
 }
 
-/** The popup's spec: one read-only step with no control. */
+/** The popup's spec: one read-only step whose only control is `[c] copy`, kept on the legend row ahead of the scroll hint. */
 export function helpSpec(origin: PopupOrigin, content: PopupContent): PopupSpec {
-  return { id: 'help', title: '/help', origin, steps: [{ name: 'Help', content }] };
+  return {
+    id: 'help',
+    title: '/help',
+    origin,
+    steps: [{ name: 'Help', content, controls: copyControlsFor(content), legendKeep: ['c'] }],
+  };
 }

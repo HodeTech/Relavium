@@ -1795,6 +1795,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     const reports = props.controller.getSnapshot().session?.reports;
     expect(reports?.surface, 'the session carries the port of the Home’s chat').toBe('home-chat');
+    // `[c] copy` rides the Home's one clipboard closure, as `/copy` and the doctor's `[c]` do.
+    expect(typeof reports?.clipboard).toBe('function');
     const view = reports?.agent?.();
     expect(view?.id, 'the session carries the view of its own agent').toBe('relavium-chat');
     expect(view?.builtIn).toBe(true);

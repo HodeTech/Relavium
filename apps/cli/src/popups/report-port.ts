@@ -15,6 +15,7 @@ import type { SessionCostRow } from '@relavium/db';
 import type { UsageCoverage } from '@relavium/shared';
 
 import type { BoundAgentView } from '../chat/bound-agent-view.js';
+import type { ClipboardWriter } from '../render/clipboard.js';
 import type { Surface } from '../render/surface.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
@@ -101,7 +102,12 @@ export interface ReportsPort {
   readonly workflows?: WorkflowsPort | undefined;
   readonly help?: HelpPort | undefined;
   readonly workOwner?: ReportWorkOwner | undefined;
-  /** The glyphs' plain forms are in force (colour is off, ADR-0145 §5). */
+  /**
+   * `[c] copy` puts the report on the clipboard through this, as `/copy` and the doctor's `[c]` do (OSC 52). Absent ⇒ `[c]` says copying is not
+   * available here.
+   */
+  readonly clipboard?: ClipboardWriter | undefined;
+  /** The copied report is written in the glyphs' plain forms (colour is off, ADR-0145 §5). */
   readonly plainGlyphs?: boolean | undefined;
 }
 

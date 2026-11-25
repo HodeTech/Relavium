@@ -5,7 +5,7 @@
  * dropped; the no-project line; the fault's own words). On the Home `/workflows` stays the tab host's screen; this is a chat's.
  *
  * **Every slug is untrusted** (it is a file's name in a project) and passes the FULL scrub of the run cards ({@link reportText}); so does the
- * reason of a fault, which can carry a project file's text. The popup has no control: `Esc` closes it.
+ * reason of a fault, which can carry a project file's text. Its one control is `[c] copy`, offered with the catalog; `Esc` closes it.
  */
 
 import { catalogParts, CATALOG_EMPTY_NOTICE, NO_PROJECT_NOTICE } from '../chat/repl-info.js';
@@ -70,12 +70,16 @@ export function workflowsFailedContent(): PopupContent {
   };
 }
 
-/** The popup's spec: one read-only step with no control, starting on the loading state. */
+/**
+ * The popup's spec: one read-only step starting on the loading state, with no control yet. `[c] copy` arrives with the catalog
+ * ({@link copyControlsFor}: only a report is offered a copy, not the loading, empty or failed states), and `legendKeep` keeps it on the legend
+ * row ahead of the scroll hint.
+ */
 export function workflowsSpec(origin: PopupOrigin): PopupSpec {
   return {
     id: 'workflows',
     title: '/workflows',
     origin,
-    steps: [{ name: 'Workflows', content: WORKFLOWS_LOADING_CONTENT }],
+    steps: [{ name: 'Workflows', content: WORKFLOWS_LOADING_CONTENT, legendKeep: ['c'] }],
   };
 }

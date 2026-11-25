@@ -32,6 +32,7 @@ import {
   COST_STEP,
   costControls,
   costReportContent,
+  costReportLines,
   costSpec,
   releaseContent,
   releaseDoneContent,
@@ -41,6 +42,7 @@ import {
   turnInFlightContent,
 } from './cost-popup.js';
 import { type CostPort, type CostReading, type ReportOpenRequest } from './report-port.js';
+import { copyReport } from './report-copy.js';
 import { faultCode, macrotask, startReportWork } from './report-work.js';
 
 /** What the report says when the session's cost cannot be read: the fault's CODE, never its message. */
@@ -114,9 +116,12 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
 
   const handlers: PopupHandlers = {
     control: (context, key) => {
-      if (key !== 'r' || context.stepIndex() !== COST_STEP.cost) return;
-      // Offered only when something is held, and the report only lists the control then: a key the report does not list never gets here.
-      if (reading !== undefined) context.goToStep(COST_STEP.release);
+      if (context.stepIndex() !== COST_STEP.cost || reading === undefined) return;
+      // Each control is listed only when it applies (`[r]` when something is held, `[c]` when a reading has landed), and the report lists no
+      // control while it loads or says the read failed: a key the step does not list never gets here.
+      if (key === 'r') context.goToStep(COST_STEP.release);
+      // The report as it is at this moment: the lines of the reading the step shows, which is what is drawn.
+      else if (key === 'c') copyReport(context, port, 'Cost', costReportLines(reading));
     },
     chord: (context) => {
       if (released) return;

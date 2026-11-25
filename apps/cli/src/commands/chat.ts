@@ -3436,6 +3436,10 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
               ...reports,
               surface: 'standalone-chat' as const,
               ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+              // `[c] copy` rides the same clipboard closure as `/copy` and the doctor's `[c]`.
+              ...(hatchPortsForClipboard === undefined
+                ? {}
+                : { clipboard: hatchPortsForClipboard.clipboard }),
               plainGlyphs: !deps.global.color,
             },
           }

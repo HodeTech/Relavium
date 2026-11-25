@@ -119,12 +119,12 @@ describe('the popup', () => {
     await settleWork();
     expect(flows.read).toHaveBeenCalledTimes(1);
     expect(r.words()).toContain('Workflows (1):');
-    // Drawing it again reads nothing more; it has no control, so a letter does nothing.
+    // Drawing it again reads nothing more; its one control is the copy, so another letter does nothing.
     r.clock.advance(600);
     r.press('r');
     r.show();
     expect(flows.read).toHaveBeenCalledTimes(1);
-    expect(r.controls()).toEqual([]);
+    expect(r.controls()).toEqual(['c']);
   });
 
   it('shows no project, an empty project and a fault in their own states, and tells the owner of a read that threw', async () => {

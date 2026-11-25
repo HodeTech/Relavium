@@ -106,9 +106,12 @@ describe('what is held, and when the release is offered', () => {
 
   it('offers the release for a held estimate or a record known not to be durable, and for nothing else', () => {
     expect(releasable(costReading(0, undefined, []))).toBe(false);
-    expect(costControls(costReading(0, undefined, []))).toEqual([]);
+    expect(costControls(costReading(0, undefined, []))).toEqual([{ key: 'c', verb: 'copy' }]);
     expect(releasable(costReading(450))).toBe(true);
-    expect(costControls(costReading(450))).toEqual([{ key: 'r', verb: 'release held estimates' }]);
+    expect(costControls(costReading(450))).toEqual([
+      { key: 'r', verb: 'release held estimates' },
+      { key: 'c', verb: 'copy' },
+    ]);
     expect(releasable(costReading(0, { microcents: 0, durabilityBroken: true }, []))).toBe(true);
     expect(releasable(costReading(0, { microcents: 0, durabilityBroken: false }, []))).toBe(false);
   });
@@ -160,5 +163,7 @@ describe('the spec', () => {
     expect(costSpec('chat', true).initialStep).toBe(COST_STEP.release);
     // The report is not offered a control before its reading says something is held.
     expect(spec.steps[COST_STEP.cost]?.controls).toBeUndefined();
+    // The copy outlasts the release and the scroll hint on a short legend row.
+    expect(spec.steps[COST_STEP.cost]?.legendKeep).toEqual(['c', 'r']);
   });
 });

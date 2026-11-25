@@ -1773,18 +1773,18 @@
     "step=checks content=error colour=on [2]": " ⟦bold: [r]⟧⟦dim:  quick check · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   },
   "agent-popup": {
-    "content=report colour=off [1]": " ↑/↓ scroll · Esc close",
-    "content=report colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=report colour=off [1]": " ↑/↓ scroll · [c] copy · Esc close",
+    "content=report colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "content=error colour=off [1]": " Esc close",
     "content=error colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧"
   },
   "cost-popup": {
     "step=cost content=loading colour=off [1]": " Esc cancel",
     "step=cost content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
-    "step=cost content=nothing-held colour=off [1]": " ↑/↓ scroll · Esc close",
-    "step=cost content=nothing-held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
-    "step=cost content=held colour=off [1]": " ↑/↓ scroll · [r] release held estimates · Esc close",
-    "step=cost content=held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [r]⟧⟦dim:  release held estimates · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=cost content=nothing-held colour=off [1]": " ↑/↓ scroll · [c] copy · Esc close",
+    "step=cost content=nothing-held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=cost content=held colour=off [1]": " ↑/↓ scroll · [r] release held estimates · [c] copy · Esc close",
+    "step=cost content=held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [r]⟧⟦dim:  release held estimates · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "step=cost content=error colour=off [1]": " Esc close",
     "step=cost content=error colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧",
     "step=release content=line colour=off [1]": " [Ctrl+Y] release · Esc cancel",
@@ -1807,8 +1807,8 @@
   "workflows-popup": {
     "content=loading colour=off [1]": " Esc cancel",
     "content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
-    "content=catalog colour=off [1]": " ↑/↓ scroll · Esc close",
-    "content=catalog colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=catalog colour=off [1]": " ↑/↓ scroll · [c] copy · Esc close",
+    "content=catalog colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "content=empty-project colour=off [1]": " Add a workflow or an agent to the project. Esc closes.",
     "content=empty-project colour=off [2]": " Esc close",
     "content=empty-project colour=on [1]": "⟦dim:  Add a workflow or an agent to the project. Esc closes.             ⟧",
@@ -1830,18 +1830,18 @@
     "surface=standalone-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=standalone-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
     "surface=standalone-chat colour=off [3]": "                 session; [d] withdraws one.",
-    "surface=standalone-chat colour=off [4]": " ↑/↓ scroll · Esc close",
+    "surface=standalone-chat colour=off [4]": " ↑/↓ scroll · [c] copy · Esc close",
     "surface=standalone-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=standalone-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
     "surface=standalone-chat colour=on [3]": "                 session; [d] withdraws one.",
-    "surface=standalone-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "surface=standalone-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "surface=home-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=home-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
     "surface=home-chat colour=off [3]": "                 session; [d] withdraws one.",
-    "surface=home-chat colour=off [4]": " ↑/↓ scroll · Esc close",
+    "surface=home-chat colour=off [4]": " ↑/↓ scroll · [c] copy · Esc close",
     "surface=home-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=home-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
     "surface=home-chat colour=on [3]": "                 session; [d] withdraws one.",
-    "surface=home-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
+    "surface=home-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   }
 }

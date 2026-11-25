@@ -77,7 +77,7 @@ describe('the report (ADR-0148 §10)', () => {
 
   it('offers [r] release held estimates only when something is held', async () => {
     const held = await opened(450);
-    expect(held.r.controls()).toEqual(['r']);
+    expect(held.r.controls()).toEqual(['r', 'c']);
     const frame = held.r.host.getSnapshot().frame;
     expect(frame && popupLegend(frame).items).toContainEqual({
       keys: 'r',
@@ -85,7 +85,8 @@ describe('the report (ADR-0148 §10)', () => {
     });
 
     const none = await opened(0);
-    expect(none.r.controls()).toEqual([]);
+    // Nothing held: the copy is the report's only control, and the release is not listed.
+    expect(none.r.controls()).toEqual(['c']);
     const bare = none.r.host.getSnapshot().frame;
     expect(bare && JSON.stringify(popupLegend(bare).items)).not.toContain('release');
     expect(none.r.words()).not.toContain('release');
@@ -98,7 +99,7 @@ describe('the report (ADR-0148 §10)', () => {
 
   it('offers [r] for a record known not to be durable, even where the rows hold nothing', async () => {
     const { r } = await opened(0, { durabilityBroken: true });
-    expect(r.controls()).toEqual(['r']);
+    expect(r.controls()).toEqual(['r', 'c']);
     expect(r.words()).toContain('could not be written durably');
   });
 
@@ -167,7 +168,7 @@ describe('the report (ADR-0148 §10)', () => {
     release(costReading(9_999));
     await settleWork();
     expect(r.words()).toBe(before);
-    expect(r.controls()).toEqual([]);
+    expect(r.controls()).toEqual(['c']);
   });
 
   it('writes nothing into a notification: open, use and close leave the hint row empty', async () => {
