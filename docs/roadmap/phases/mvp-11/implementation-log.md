@@ -161,3 +161,58 @@ One eager `report-port.ts` (`parseReportLine`, `ReportsPort`, `openReport`) in t
 | 9 | Real-terminal rows for the four popups are not run; the matrix covers both chat hosts, both renderers, both colour settings | review round (observation) |
 
 Counts at `e1af9a85`: 823 test files, 18,638 passed, 14 skipped; the golden has 74 producers (4.4 added `agent-popup`, `cost-popup`, `workflows-popup`, `help-popup` and removed `agent-sheet`, `agent-sheet-roles`; the copy follow-up changed only the legend rows of six states, each by the inserted `[c] copy ·`); typecheck, lint, prettier, `assert-fence` (17 data modules) and the tools pin tests clean; the pins hold (583, 185, 85).
+
+### Step 4, review round 1 (2026-11-25, on `d986f569`; fixes `81f45119` and `2daed02e`)
+
+Five new reviewers (correctness; an opus security sitting; a real-terminal observer in tmux; a 632-mutant test sweep in its own worktree; architecture and the truth of the documents) found **no blocker and no high**; three mediums, one consent-path low and about forty lows, every one verified against the code or a capture before it was fixed. The security sitting's verdict on the six attacks (consent, egress, release, untrusted text, custody, clipboard) was HELD for all six; its one consent finding was the held `Ctrl+Y` below.
+
+**What the round changed in the product:**
+
+| Finding | Fix |
+|---|---|
+| A held `Ctrl+Y` whose key-repeat began before the line was armed could answer it (the approval card refuses the same pattern) | A `Ctrl+Y` on a step that is not a confirmation line is a refused affirmative and restarts the lockout on every repeat; a letter control no longer locks the answer (it resolved nothing) |
+| A premature `Ctrl+Y` was silent and the retry was refused as "a key was typed" | A dropped `Ctrl+Y` (not shown yet, inside the settle time, loading) disarms the line at once and says why; a stray letter, `Enter` or paste says `typed`; `Esc` and `Ctrl+C` stay silent |
+| The line's 5 s window ended invisibly and was short for four origins | 10 s (`SHEET_CONFIRM_WINDOW_MS`), counted from each acknowledged frame, and the host's own unref'd timer closes the line at expiry with the reason (never a line that says `[Ctrl+Y] send` and cannot answer) |
+| On the bare Home the popup covers the hint row, so `[c]` feedback and refusal reasons were invisible; inline popups hide the row entirely | The notification is drawn in the popup's own legend row (part of the frame identity, both placements); no notification on the hint row behind an overlay; popup-composed texts fit 66 columns |
+| `empty` and `error` texts clipped to one row ("…so there is nothing t…") | wrapped; the ellipsis only when the popup is out of rows |
+| `[c]` after a failed quick check copied "✓ doctor: all checks passed" | `[c]` is offered only with rows on screen; the copy refuses otherwise |
+| After a failed quick check `[d]` then a landed deep result showed "Checking your setup" for ever | an explicit `quickFailed` state shows the error with `[r]`/`[d]` |
+| U+2028/U+2029 survived the scrub and left cells undimmed at a row's edge | folded to a space in every drawn row and notification; the notification floor is the author-text scrub (the product's own `[d]` and ` · ` stay) |
+| Detail said "Press [r]" where `[r]` does nothing; "Deep check, 0s ago" never aged; `/agent` cut long tool ids; `/cost` offered `[r]` with nothing held; `/help` lacked the chat's real keys | fixed (D2, D3, R1, R4, R5) |
+| Final step's legend said `Enter / Esc close` but `Enter` did nothing on an error; `Esc cancel` on empty steps; `↑/↓ scroll` on content that fits; no gutter on the rules; stray fragment on the below-floor notice; cursor lit while a popup owns the keys | fixed (H5–H12, W7) |
+
+**What it changed in the code:** one scrub, wrap, work starter, copy path and refusal-phrase table (`popup-text`, `popup-work`, `popup-copy`, `chord-refusal`) instead of two copies; `routePopupLine`, `bindPopupHost` and `popupRefusal` (a 512-combination table test) instead of the same logic in both hosts; a host that never bound a gate now **refuses** (it used to open over a running turn); the Home controller's dead `/doctor` notice path and its required `doctorProbes` dependency are deleted (68 fixtures); the agent sheet's module is `chat/agent-notice.ts` with a one-line shim for the frozen `chat.test.ts`; `turn-in-flight.ts` and `popup-refusal.ts` joined the data-module fence (19). About 480 new tests, each mutation-proven; the 632-mutant sweep's real holes (the guard numbers by literal, depth two, the clipboard and detail sinks, the endpoint check, `parseDoctorLine`, the work owner, the gate branches, the sheet-arrival sources) are closed.
+
+**Rulings of the lead and the maintainer:**
+- **The `/cost` release gets a durable content-free record (maintainer, 2026-11-25).** It folds into **unit 5's** session row (kind `cost-release` plus the released micro-cents; not drawn in the transcript, never sent to the model, skipped when a resume rebuilds the context), in the same additive migration as the mode change. Until unit 5 lands, a release leaves only the cleared columns; the security sitting called this a fifth case of ADR-0148 §6 rule 16 with no record, and it is a limit of 4.4 until then.
+- The confirmation window is 10 s with a visible expiry (lead; replaces limit #1 of 4.3's table).
+- Depth two: a failing child or a `close()` of the opener closes the **whole stack** (the existing behaviour, now pinned); nothing opens a child before unit 6, which decides the rule if it wants another.
+- No file splits (`popup-host.ts` 731 lines, `doctor-session.ts` a 352-line closure): cohesion is acceptable and a split would churn the consent machinery for no behaviour; revisit only if unit 6 grows them.
+
+**Accepted limits and findings left, with owners:**
+
+| # | What | Owner |
+|---|---|---|
+| 1 | `BudgetGovernor.releaseConservativeCommitments` never resets `#durabilityBroken`, so the warning's own advice ("Use /cost --release to clear it deliberately") cannot clear it (pre-existing, `packages/core`); the popup no longer offers `[r]` for a broken record with nothing held | a core task, not MVP-11 |
+| 2 | A healthy first deep run gets a `⚠ doctor: 1 warning` heading because "MCP servers: none configured" is a `warn` (existing semantics of the text report) | unit 7 (wording) |
+| 3 | `plainGlyphs` on `ReportsPort` has no observable effect (no report line carries a form-dependent glyph; mutants C92/C99); depth-two behaviours are pinned but not reachable until unit 6; a failing doctor/report chunk load ends the Home with exit 9 at the person's next exit | none |
+| 4 | W7 hides the composer's cursor by giving the prompt an out-of-range cursor (`composerEditor`); an explicit `cursor?: boolean` on `PromptEditor` would be cleaner | unit 7 (`prompt-view.tsx`) |
+| 5 | Network-failure rows differ by provider wording (`Connection error.` vs `fetch failed`); `/workflows` shows `broken (invalid)` with no reason; `/agent` ends a long prompt with `...` where the plain path says `…` | unit 7 |
+| 6 | The `Ctrl+Y` repeat finding assumes an OS key-repeat interval ≥ 0.85 s (a slow-repeat accessibility setting); fixed regardless | none |
+| 7 | The matrix `popup()` does not thread the live notification and the native framed prompt draws no notice (the channel is held by `prompt.active`) | unit 6 |
+
+**Documents that now lie** (the docs pass is at the end of the MVP; this is the inventory the architecture reviewer made, updated for the fixes):
+
+| Where | Says | Should say |
+|---|---|---|
+| `docs/reference/cli/chat-session.md` ~294–304 (`/help`, `/agent`, `/workflows`, `/cost`, `/doctor`) | each prints "as an in-view notice"; `/agent` "docks it under the conversation as a sheet … at most twelve rows" | in an interactive chat each is a centred popup (ADR-0148 §10): scrollable, `[c]` copies, `Esc` closes; `/cost` has `[r] release held estimates` (a `Ctrl+Y` chord step; a typed `/cost --release` opens on it); `/doctor` has `[r]`/`[d]`/`[c]`, the deep line names the origins and is answered by `Ctrl+Y`; plain, `--json` and one-shot chats print today's text |
+| `docs/reference/cli/home.md` ~310, 312, 329 | `/agent`: "a docked sheet on the chat's one sheet slot (`chatSheet`, which holds `/permissions` or `/agent`)"; `/doctor` "with anything after it: `<word> accepts no arguments here.`" | `/agent` is a popup and `chatSheet` holds `/permissions` only; `/doctor` and `/doctor --deep` open the popup, anything else answers `/doctor accepts only --deep.` |
+| `docs/reference/cli/accessibility.md` ~112; `docs/runbooks/windows-interrupt-evidence.md` ~64 (row 35, which also has no popup rows) | "the `/agent` sheet"; "a docked sheet" | "the `/agent` popup"; add the popup rows (ADR-0148 §9 condition 3) |
+| `docs/decisions/0140-…` ~54, 185; `0148` line 3 ("Nothing is implemented."); `0148` §4 (dim "applied to bold, inverse and coloured spans"); `0148` §10 vs §7 (`/permissions` a popup vs a sheet) | | dated notes: superseded for `/agent`; 4.1–4.4 are on `development`; a dimmed backdrop draws no bold; `/permissions` stays a sheet; the window is 10 s and the line closes itself; the lead sentence names providers; the host's chord step, final step and per-result controls |
+| `docs/roadmap/phases/mvp-11.md` ~278, 285, 289 | `/cost --release` "applies directly"; the line names `<providers>` and counts 800 ms "after it appeared"; `[r]` after a deep result replaces the deep rows; `Esc` lets the work continue | it opens the popup on the confirmation step; origins, dwell from the acknowledged frame; `[r]` keeps the deep rows; `Esc` aborts the run |
+| `CLAUDE.md` ~93, `AGENTS.md` ~45, `docs/roadmap/current.md` ~86 | MVP-11 "is next, planned, its ADRs not yet written" | ADRs 0145–0148 Accepted; units 2–4 on `development` |
+| `apps/cli/CHANGELOG.md` ~8–11 | `[Unreleased]` stops at MVP-2 | UX entries for units 2–4 (OD-16: a "UX" heading listing renamed labels and changed keys) |
+| the log's own 4.3 section | "a 21 KB chunk of its own, measured"; limit #1 "5 s"; limit #8 "dead path or keep"; limit #9 `[c]` hidden at 80 columns | measured 11.2 KB (doctor) and 9.2 KB (reports); 10 s; deleted; fixed |
+| missing | no page documents the popup host's contract (opening rules, guards, timings) | `docs/reference/cli/popups.md` (project rule 8) |
+
+Counts after the round: 840 test files, 19,074 passed, 14 skipped; the golden has 74 producers (the round changed only legend rows of the doctor, agent, cost, workflows and frame producers); typecheck, lint, prettier, `assert-fence` (19 data modules) and the tools pin tests clean; the pins hold (583, 185, 85). The architecture reviewer measured the bundle against `e51ff4cd`: the entry chunk +28 B, the Home's static closure +44 KB (+2.4%), the two lazy chunks 11.2 KB (doctor) and 9.2 KB (reports) loaded only on first use.
