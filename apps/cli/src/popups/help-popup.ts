@@ -8,7 +8,7 @@
  * - **The keys are the host's `CHAT_KEYS`** (`render/tui/chat-keys.ts`), each with the press a test makes of it on a mounted chat, so the
  *   popup cannot list a key the chat does not have or say it does something else.
  *
- * What the host's port hands in is scrubbed like every other string a report draws: a key's verb with the full scrub ({@link reportText}), a
+ * What the host's port hands in is scrubbed like every other string a report draws: a key's verb with the full scrub ({@link scrubPopupText}), a
  * key's name with the floor that keeps it from being something else ({@link keyLabel}: a name such as `Ctrl+J` is not an answer chord), so a host
  * that wired a wrong or hostile label cannot forge a key token or a separator of the popup's own.
  */
@@ -18,10 +18,10 @@ import { blankHostGlyphs } from '../render/tui/glyphs.js';
 import { inertLegendText } from '../render/tui/legend.js';
 import { buildPaletteEntries } from '../render/tui/palette-entries.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
+import { copyControlsFor } from './popup-copy.js';
 import type { PopupSpec } from './popup-reducer.js';
-import { copyControlsFor } from './report-copy.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js';
 import type { HelpPort, ReportSurface } from './report-port.js';
-import { REPORT_TEXT_COLUMNS, reportText, wrapHanging } from './report-text.js';
 
 /** The two headings of the report. */
 export const HELP_HEADINGS = { commands: 'Commands', keys: 'Keys' } as const;
@@ -38,7 +38,7 @@ function keyLabel(keys: string): string {
 /** A row of a two-column list: the label padded to `width`, two spaces, the words, continued indented under themselves. */
 function labelled(label: string, width: number, words: string): string[] {
   const lead = `  ${label.padEnd(width)}  `;
-  return wrapHanging(`${lead}${words}`, REPORT_TEXT_COLUMNS, lead.length);
+  return wrapHanging(`${lead}${words}`, POPUP_TEXT_COLUMNS, lead.length);
 }
 
 /**
@@ -68,7 +68,9 @@ export function helpLines(surface: ReportSurface, keys: HelpPort['keys']): reado
     ),
     '',
     HELP_HEADINGS.keys,
-    ...keys.flatMap((key, index) => labelled(labels[index] ?? '', keyWidth, reportText(key.verb))),
+    ...keys.flatMap((key, index) =>
+      labelled(labels[index] ?? '', keyWidth, scrubPopupText(key.verb)),
+    ),
   ];
 }
 

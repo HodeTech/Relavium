@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import * as agentSheet from './agent-sheet.js';
+import * as noticeModule from '../../chat/agent-notice.js';
+import * as agentSheetShim from './agent-sheet.js';
 import { PRODUCERS } from './legend-golden/producers.js';
 import { PRODUCT_SURFACES } from './surface-matrix/product-surfaces.js';
 import { ALL_SURFACES } from './surface-matrix/all-surfaces.js';
@@ -68,7 +69,7 @@ describe('nothing of the sheet is left in the source', () => {
   });
 
   it('the module that remains exports the pure field formatting and no sheet', () => {
-    expect(Object.keys(agentSheet).sort()).toEqual(
+    expect(Object.keys(noticeModule).sort()).toEqual(
       [
         'BUILT_IN_AGENT_NOTE',
         'EMPTY_PROMPT',
@@ -88,6 +89,12 @@ describe('nothing of the sheet is left in the source', () => {
         'wrappedTools',
       ].sort(),
     );
+  });
+
+  it('the old path is a shim of exactly the two names the frozen pins still import, the same bindings', () => {
+    expect(Object.keys(agentSheetShim).sort()).toEqual(['NOT_WIRED_MARK', 'agentNotice']);
+    expect(agentSheetShim.agentNotice).toBe(noticeModule.agentNotice);
+    expect(agentSheetShim.NOT_WIRED_MARK).toBe(noticeModule.NOT_WIRED_MARK);
   });
 
   it('the chat’s one sheet slot holds one kind: the permissions sheet', () => {

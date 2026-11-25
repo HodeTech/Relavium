@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest';
 
 import { legend } from '../render/tui/legend.js';
 import { displayWidth } from '../render/tui/viewport.js';
-import { consentContent, DOCTOR_TEXT_COLUMNS, doctorSpec } from './doctor-popup.js';
+import { consentContent, doctorSpec } from './doctor-popup.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
 import { popupFrameLines } from './frame-model.js';
 import { POPUP_NOTICE_MAX_COLUMNS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
 import {
@@ -241,7 +242,7 @@ describe('the legend a step keeps longest', () => {
     if (!floor.fits) throw new Error('fits');
     // The number the geometry itself computes, not a fixture measured against itself.
     expect(floor.innerWidth).toBe(66);
-    expect(DOCTOR_TEXT_COLUMNS).toBe(floor.innerWidth);
+    expect(POPUP_TEXT_COLUMNS).toBe(floor.innerWidth);
     expect(POPUP_NOTICE_MAX_COLUMNS).toBe(floor.innerWidth);
     // A real line the doctor draws, with four origins and an unnamed provider, at its longest: every row of it fits whole.
     const line = consentContent(

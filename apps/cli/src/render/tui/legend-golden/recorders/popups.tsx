@@ -54,7 +54,7 @@ import {
 } from '../../../../popups/cost-popup.js';
 import { costReadFailedContent } from '../../../../popups/cost-session.js';
 import { helpContent, helpSpec } from '../../../../popups/help-popup.js';
-import { copyControlsFor } from '../../../../popups/report-copy.js';
+import { copyControlsFor } from '../../../../popups/popup-copy.js';
 import type { CostReading } from '../../../../popups/report-port.js';
 import {
   workflowsContent,

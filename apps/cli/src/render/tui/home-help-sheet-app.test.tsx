@@ -38,7 +38,6 @@ function mountHelp(
   const onExit = vi.fn();
   const startChat = vi.fn(() => new Promise<never>(() => {}));
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},

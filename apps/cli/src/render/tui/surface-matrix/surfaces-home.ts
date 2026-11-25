@@ -32,6 +32,7 @@ import {
 import {
   DOCTOR_FIXTURE,
   DOCTOR_LANDMARKS,
+  DOCTOR_LEGEND_ROW,
   doctorPopupBox,
   doctorPortFor,
   driveDoctor,
@@ -94,6 +95,7 @@ function homeDoctorSurface(state: DoctorState, title: string): HomeSurface {
     title,
     exitKey: 'Esc',
     landmark: DOCTOR_LANDMARKS[state],
+    ...(DOCTOR_LEGEND_ROW[state] === undefined ? {} : { legendRow: DOCTOR_LEGEND_ROW[state] }),
     ...(state === 'checks' ? { selectedRow: 'OS keychain' } : {}),
     belowFloor: /too small for this popup/iu,
     popup: doctorPopupBox,

@@ -131,7 +131,6 @@ function mount() {
     withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
   };
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: vi.fn(() => new Promise<HomeChatSession>(() => {})),
     homeStore: { read: () => EMPTY },
     permissions,

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { COST_STEP } from './cost-popup.js';
 import type { ReportWorkOwner } from './report-port.js';
-import { faultCode, startReportWork } from './report-work.js';
+import { faultCode, startPopupWork } from './popup-work.js';
 import { CliError } from '../process/errors.js';
 import {
   catalogEntry,
@@ -31,11 +31,11 @@ function countingOwner() {
   return { owner, entered, failure };
 }
 
-describe('startReportWork', () => {
+describe('startPopupWork', () => {
   it('enters the operation on the owner, once, and does not run it any other way', async () => {
     const { owner, entered } = countingOwner();
     let ran = 0;
-    startReportWork(
+    startPopupWork(
       owner,
       () => {
         ran += 1;
@@ -50,7 +50,7 @@ describe('startReportWork', () => {
 
   it('runs an operation that has no owner directly', async () => {
     let ran = 0;
-    startReportWork(
+    startPopupWork(
       undefined,
       () => {
         ran += 1;
@@ -65,7 +65,7 @@ describe('startReportWork', () => {
   it('goes through an owner that does not run it: the owner decides whether and when', async () => {
     let ran = 0;
     let entries = 0;
-    startReportWork(
+    startPopupWork(
       {
         enter: <T>(): Promise<T> => {
           entries += 1;
@@ -88,7 +88,7 @@ describe('startReportWork', () => {
     const { owner, failure } = countingOwner();
     const failed = vi.fn();
     const cause = new Error('boom');
-    startReportWork(owner, () => Promise.reject(cause), failed);
+    startPopupWork(owner, () => Promise.reject(cause), failed);
     await settleWork();
     expect(failure).toHaveBeenCalledExactlyOnceWith(cause);
     expect(failed).toHaveBeenCalledExactlyOnceWith(cause);
@@ -102,7 +102,7 @@ describe('startReportWork', () => {
       throw cause;
     });
     expect(() => {
-      startReportWork({ enter, failure }, () => Promise.resolve(), failed);
+      startPopupWork({ enter, failure }, () => Promise.resolve(), failed);
     }).not.toThrow();
     expect(failure).toHaveBeenCalledExactlyOnceWith(cause);
     expect(failed).toHaveBeenCalledExactlyOnceWith(cause);
@@ -112,7 +112,7 @@ describe('startReportWork', () => {
     const { owner, failure } = countingOwner();
     const first = new Error('read failed');
     const second = new Error('the handler threw');
-    startReportWork(
+    startPopupWork(
       owner,
       () => Promise.reject(first),
       () => {

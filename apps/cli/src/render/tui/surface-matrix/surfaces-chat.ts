@@ -26,7 +26,13 @@ import {
   testPopupBox,
   testReportPopup,
 } from './popup-fixture.js';
-import { DOCTOR_LANDMARKS, doctorPopupBox, doctorPortFor, driveDoctor } from './doctor-fixture.js';
+import {
+  DOCTOR_LANDMARKS,
+  DOCTOR_LEGEND_ROW,
+  doctorPopupBox,
+  doctorPortFor,
+  driveDoctor,
+} from './doctor-fixture.js';
 import {
   driveReport,
   REPORT_LANDMARKS,
@@ -315,6 +321,7 @@ function chatDoctorSurface(
     title,
     exitKey: 'Esc',
     landmark: DOCTOR_LANDMARKS[state],
+    ...(DOCTOR_LEGEND_ROW[state] === undefined ? {} : { legendRow: DOCTOR_LEGEND_ROW[state] }),
     ...(state === 'checks' ? { selectedRow: 'OS keychain' } : {}),
     belowFloor: /too small for this popup/iu,
     popup: doctorPopupBox,

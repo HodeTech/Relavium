@@ -27,6 +27,7 @@ describe('revokeCardCustodyOnPopup', () => {
     let now = 0;
     const host = createPopupHost({ placement: 'overlay', now: () => now, settleMs: 0 });
     host.bindVisibility(() => true);
+    host.bindOpenGate(() => undefined); // an unbound gate opens nothing
     const revoke = vi.fn();
     const stop = revokeCardCustodyOnPopup(host, revoke);
     expect(revoke).not.toHaveBeenCalled();
@@ -51,6 +52,7 @@ describe('revokeCardCustodyOnPopup', () => {
 
   it('resets at once when it starts watching a host that already has a popup open', () => {
     const host = createPopupHost({ placement: 'overlay' });
+    host.bindOpenGate(() => undefined); // an unbound gate opens nothing
     host.openForUser(spec('one'));
     const revoke = vi.fn();
     revokeCardCustodyOnPopup(host, revoke);

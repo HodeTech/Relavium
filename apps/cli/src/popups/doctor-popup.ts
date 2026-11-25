@@ -5,13 +5,14 @@
  * checks and answers the keys is `doctor-session.ts`; neither is loaded until the person first opens the popup (`doctor-port.ts`).
  *
  * **Every label and detail is untrusted** (a check's detail can carry a configuration error, a provider's answer, an MCP server's skip reason,
- * an id from an agent's YAML), and this surface has a chord step, so the FULL scrub of the run cards applies ({@link doctorText}, ADR-0145 §5):
- * the untrusted-text floor with secrets scrubbed, folded, host glyphs blanked, answer chords replaced, and bracketed key tokens and legend
- * separators made inert, so a repository's text cannot draw `[Ctrl+Y]` where the person decides. The provider check's own redaction (the key
- * replaced by its last-four hint, `validateProviderKey`) runs before it.
+ * an id from an agent's YAML), and this surface has a chord step, so the FULL scrub of the run cards applies ({@link scrubPopupText}, the one
+ * scrub of every popup, `popup-text.ts`, ADR-0145 §5): the untrusted-text floor with secrets scrubbed, folded, host glyphs blanked, answer chords
+ * replaced, and bracketed key tokens and legend separators made inert, so a repository's text cannot draw `[Ctrl+Y]` where the person decides.
+ * The provider check's own redaction (the key replaced by its last-four hint, `validateProviderKey`) runs before it.
  *
- * **No line is ever cut.** A report line the frame draws wider than the popup is clipped, so every line written here is wrapped to the width a
- * popup has at the smallest terminal it is drawn on ({@link DOCTOR_TEXT_COLUMNS}): an origin the confirmation line names is never shown in part.
+ * **No line is ever cut.** A report line the frame draws wider than the popup is clipped, so every line written here is wrapped
+ * ({@link wrapPopupText}) to the width a popup has at the smallest terminal it is drawn on ({@link POPUP_TEXT_COLUMNS}): an origin the
+ * confirmation line names is never shown in part.
  */
 
 import type { ProviderId } from '@relavium/llm';
@@ -25,27 +26,16 @@ import { doctorAppearance, type DoctorCheck } from '../chat/doctor.js';
 import { KNOWN_PROVIDER_IDS, providerDisplayName } from '../engine/providers.js';
 import { formatElapsed } from '../render/notation.js';
 import { glyphOf, markWithWord } from '../render/tui/glyphs.js';
-import { inertLegendText, keyToken } from '../render/tui/legend.js';
-import { authorLine } from '../render/tui/run-card-model.js';
-import { wrapWords } from '../render/tui/viewport.js';
+import { keyToken } from '../render/tui/legend.js';
 import type { DoctorRemedy, DoctorSurface } from './doctor-port.js';
 import type { PopupContent, PopupHeading, PopupListRow, PopupOrigin } from './frame-model.js';
-import {
-  POPUP_FLOOR,
-  POPUP_MAX_WIDTH,
-  POPUP_SIDE_MARGIN,
-  popupGeometry,
-  popupMargin,
-} from './geometry.js';
+import { POPUP_FLOOR, popupGeometry } from './geometry.js';
+import { COPY_CONTROL } from './popup-copy.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapPopupText } from './popup-text.js';
 
 /** The popup's steps: the checks (its first), a row's detail and the deep tier's confirmation line, both reached from the checks. */
 export const DOCTOR_STEP = { checks: 0, detail: 1, line: 2 } as const;
-
-/** The columns a popup's text has at the smallest terminal it is drawn on (80 columns): every line written here fits it whole. */
-export const DOCTOR_TEXT_COLUMNS =
-  Math.min(POPUP_FLOOR.columns - 2 * popupMargin(POPUP_FLOOR.columns), POPUP_MAX_WIDTH) -
-  2 * POPUP_SIDE_MARGIN;
 
 /**
  * The rows of body the doctor popup has at the smallest terminal it is drawn on (80×24, overlay, with its rail): the most a confirmation line
@@ -67,24 +57,6 @@ export const CONSENT_LEAD = 'Sends one small request per provider, with its key,
 export const CONSENT_MCP = 'MCP servers are only reported, never contacted.';
 /** What the line says when the destinations it would name do not fit the page whole: nothing is offered and nothing is sent. */
 export const CONSENT_TOO_LONG = 'These destinations are too long to confirm, so nothing is sent.';
-
-/**
- * The full scrub of a surface with a chord step (ADR-0145 §5): the run cards' author-text floor (secrets scrubbed, folded, host glyphs blanked,
- * answer chords replaced) and then key tokens and legend separators made inert. For every label and detail the popup shows or copies.
- */
-export function doctorText(text: string): string {
-  return inertLegendText(authorLine(text));
-}
-
-/**
- * `text` in lines of at most `columns`, nothing cut, a long word broken where it must be. `wrapWords` keeps the white space it breaks at, so a
- * line that ended just before a space would start the next one with it: every continuation line starts where the first does.
- */
-function wrap(text: string, columns = DOCTOR_TEXT_COLUMNS): string[] {
-  return wrapWords(text, columns).map((line, index) =>
-    index === 0 ? line.trimEnd() : line.trim(),
-  );
-}
 
 /** The checks' heading: the dominant outcome, a failure before a warning, in the words of the text report (and their plural). */
 export function doctorHeading(checks: readonly DoctorCheck[]): PopupHeading {
@@ -122,8 +94,8 @@ function rowOf(tier: DoctorTier, check: DoctorCheck): PopupListRow {
   const { role, word } = doctorAppearance(check.status);
   return {
     id: doctorRowId(tier, check),
-    label: doctorText(check.label),
-    detail: doctorText(check.detail),
+    label: scrubPopupText(check.label),
+    detail: scrubPopupText(check.detail),
     status: role,
     statusWord: word,
   };
@@ -176,7 +148,7 @@ export function doctorCopyText(view: DoctorView, ascii: boolean): string {
   const lines = [`${mark === heading.statusWord ? '' : `${mark} `}${heading.text}`];
   const line = (check: DoctorCheck): string => {
     const { role, word } = doctorAppearance(check.status);
-    return `  ${markWithWord(glyphOf(role, ascii), word)}  ${doctorText(check.label)}  ${doctorText(check.detail)}`;
+    return `  ${markWithWord(glyphOf(role, ascii), word)}  ${scrubPopupText(check.label)}  ${scrubPopupText(check.detail)}`;
   };
   lines.push(...view.quick.map(line));
   if (view.deep !== undefined) {
@@ -319,14 +291,14 @@ export function detailContent(
   options: { readonly deepAgeMs?: number | undefined; readonly offered: boolean },
 ): PopupContent {
   const { word } = doctorAppearance(check.status);
-  const lines: string[] = [...wrap(`${doctorText(check.label)}: ${word}`), ''];
-  lines.push(...wrap(doctorText(check.detail)));
+  const lines: string[] = [...wrapPopupText(`${scrubPopupText(check.label)}: ${word}`), ''];
+  lines.push(...wrapPopupText(scrubPopupText(check.detail)));
   if (tier === 'deep' && options.deepAgeMs !== undefined)
-    lines.push(...wrap(`From the ${deepSectionLabel(options.deepAgeMs).toLowerCase()}.`));
+    lines.push(...wrapPopupText(`From the ${deepSectionLabel(options.deepAgeMs).toLowerCase()}.`));
   const todo = whatToDo(tier, check, surface, options.offered);
   if (todo.length > 0) {
     lines.push('');
-    for (const text of todo) lines.push(...wrap(text));
+    for (const text of todo) lines.push(...wrapPopupText(text));
   }
   return { kind: 'report', lines };
 }
@@ -347,13 +319,13 @@ export function consentContent(
       next: providersRemedy(surface, false),
     };
   const origins = [...new Set(targets.map((target) => target.origin))];
-  const lines: string[] = [...wrap(CONSENT_LEAD)];
+  const lines: string[] = [...wrapPopupText(CONSENT_LEAD)];
   for (const origin of origins)
-    lines.push(...wrap(origin, DOCTOR_TEXT_COLUMNS - 2).map((part) => `  ${part}`));
-  lines.push(...wrap(CONSENT_MCP));
+    lines.push(...wrapPopupText(origin, POPUP_TEXT_COLUMNS - 2).map((part) => `  ${part}`));
+  lines.push(...wrapPopupText(CONSENT_MCP));
   if (unknownOrigin.length > 0)
     lines.push(
-      ...wrap(
+      ...wrapPopupText(
         `Not contacted (its key or its endpoint could not be read): ${unknownOrigin.map(providerDisplayName).join(', ')}.`,
       ),
     );
@@ -376,9 +348,20 @@ export const DOCTOR_LOADING = {
   deep: 'Asking each provider with its key',
 } as const;
 
-const QUICK_CONTROL: PopupControl = { key: 'r', verb: 'quick check' };
+/** The checks step when the quick tier could not run: the way out is `[r]` (or `[d]`, which does not need it). */
+export function quickFailedContent(): PopupContent {
+  return {
+    kind: 'error',
+    what: 'The checks could not run.',
+    next: `${keyToken('r')} runs them again.`,
+  };
+}
+
+// `[r]` runs the quick tier again (the step is listed only after a first run has landed or failed), and its verb is as short as the legend needs:
+// at 80 columns the whole row `Enter details · [r] again · [d] deep check · [c] copy · Esc close` must fit the 66 columns of a popup, so that
+// `[c] copy` is not the key that goes first where copying is most useful.
+const QUICK_CONTROL: PopupControl = { key: 'r', verb: 'again' };
 const DEEP_CONTROL: PopupControl = { key: 'd', verb: 'deep check' };
-const COPY_CONTROL: PopupControl = { key: 'c', verb: 'copy' };
 
 /**
  * The letters the checks step answers to: the quick check and the deep check always, and `[c] copy` only while the step shows rows. While it

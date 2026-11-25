@@ -2,7 +2,6 @@ import type { ModelCatalogEntry } from '@relavium/llm';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore } from './chat-store.js';
 import { RootApp } from './home-app.js';
@@ -66,7 +65,6 @@ describe('ModelPickerView scope', () => {
 });
 
 describe('the hosts say which picker it is', () => {
-  const probes: DoctorProbes = { keychain: () => {}, config: () => {}, toolHost: {} };
   const snapshot: HomeSnapshot = {
     attention: { gates: [], failedRuns: [] },
     recentSessions: [],
@@ -123,7 +121,6 @@ describe('the hosts say which picker it is', () => {
 
   it('the bare Home: the picker sets the default of new chats', async () => {
     const c = createHomeController({
-      doctorProbes: probes,
       startChat: () => Promise.resolve(session()),
       homeStore,
       onExit: vi.fn(),
@@ -137,7 +134,6 @@ describe('the hosts say which picker it is', () => {
 
   it('a chat the Home hosts: the same picker switches this chat', async () => {
     const c = createHomeController({
-      doctorProbes: probes,
       startChat: () => Promise.resolve(session()),
       reseatChat: () => Promise.resolve(session()),
       homeStore,

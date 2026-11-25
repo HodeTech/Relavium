@@ -47,7 +47,6 @@ function mount(initial: { grants: ListResult; allowlist: RepoAllowlistSource }) 
   const listGrants = vi.fn(() => grants);
   const readAllowlist = vi.fn(() => allowlist);
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     permissions: createPermissionsPort(

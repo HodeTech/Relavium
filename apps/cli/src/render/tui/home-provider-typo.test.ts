@@ -34,7 +34,6 @@ function session(): HomeChatSession {
 const controller = (startChat: () => Promise<HomeChatSession>) =>
   createHomeController({
     homeStore: { read: () => SNAPSHOT },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     onExit: () => {},
     onError: () => {},

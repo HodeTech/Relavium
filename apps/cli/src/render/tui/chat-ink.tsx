@@ -102,15 +102,12 @@ import {
 } from './overlay-flags.js';
 import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
-import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
-import { openDoctor, parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
+import { openDoctor, type DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
-import {
-  openReport,
-  parseReportLine,
-  reportAvailable,
-  type ReportsPort,
-} from '../../popups/report-port.js';
+import { openReport, type ReportsPort } from '../../popups/report-port.js';
+import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
+import { popupRefusal } from '../../popups/popup-refusal.js';
+import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import type { PopupPlacement } from '../../popups/geometry.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import {
@@ -131,6 +128,7 @@ import {
   PopupSlot,
   slotDrawing,
   type PopupSlotProps,
+  type SlotDrawing,
 } from '../../popups/popup-slot.js';
 import {
   foldMentionKey,
@@ -842,40 +840,60 @@ const NO_NOTIFICATION: NotificationSnapshot = { current: undefined, queued: 0, h
 const noNotificationSnapshot = (): NotificationSnapshot => NO_NOTIFICATION;
 
 /**
- * Watch a stand-alone chat's sources of a sheet (its store's cards, its native prompt channel) and close the open popup unanswered when a sheet
- * ARRIVES (ADR-0148 §2: the sheet wins, nothing is restored). A card that was already there when a popup opened (a race the open gate refuses)
- * does not close it: its custody is revoked and its evidence reset instead. Returns the unsubscribe.
+ * The composer as a host hands it to its view (ADR-0148 §2, one owner of the keys): while the slot draws a popup the keys are the popup's, so
+ * the composer's cursor block is not drawn (a lit cursor beside a popup says the composer takes keys it does not), and its text stays as it is;
+ * once the popup closes the cursor is back where it was. `promptRows` places the cursor only on a row whose span holds its offset, so an offset
+ * before the text places it on none.
  */
-export function watchChatSheetArrival(
+export function composerEditor(editor: EditorState, drawing: SlotDrawing | undefined): EditorState {
+  return drawing === undefined ? editor : { text: editor.text, cursor: -1 };
+}
+
+/**
+ * The notification a host's hint row draws (ADR-0148 §2 "Notifications"): none while the slot draws an overlay popup, which draws it in its own
+ * legend row (the hint row around the box would otherwise repeat it, dimmed, at the popup's edges); otherwise the channel's current one. An
+ * inline popup replaces the body, hint row included, so it needs no exception here; once the popup closes the hint row shows the notification as
+ * before.
+ */
+export function hintRowNotification(
+  current: string | undefined,
+  drawing: SlotDrawing | undefined,
+): string | undefined {
+  return drawing?.placement === 'overlay' ? undefined : current;
+}
+
+/**
+ * The kinds of sheet a stand-alone chat has (its store's cards, its native prompt channel) and how to follow them, for {@link bindPopupHost}:
+ * a sheet of either kind that ARRIVES over a popup closes it unanswered (ADR-0148 §2: the sheet wins, nothing is restored). A card that was
+ * already there when a popup opened (a race the open gate refuses) does not close it: its custody is revoked and its evidence reset instead.
+ */
+export function chatSheetSources(
   store: Pick<ChatStoreController, 'getSnapshot' | 'subscribe'>,
   native: Pick<NativePromptUi, 'getSnapshot' | 'subscribe'> | undefined,
-  popups: Pick<PopupHost, 'getSnapshot' | 'sheetArrived'>,
-): () => void {
-  const present = (): { readonly card: boolean; readonly native: boolean } => {
-    const cards = cardFlagsFrom(store.getSnapshot());
-    return {
-      card: cards.approval || cards.question || cards.checkpoint,
-      native: native?.getSnapshot().active === true,
-    };
-  };
-  let before = present();
-  const check = (): void => {
-    const now = present();
-    const arrived = (now.card && !before.card) || (now.native && !before.native);
-    before = now;
-    if (arrived && popups.getSnapshot().open) popups.sheetArrived();
-  };
-  const stopStore = store.subscribe(check);
-  const stopNative = native?.subscribe(check);
-  return () => {
-    stopStore();
-    stopNative?.();
+): PopupSheetSources<'card' | 'native'> {
+  return {
+    present: () => {
+      const cards = cardFlagsFrom(store.getSnapshot());
+      return {
+        card: cards.approval || cards.question || cards.checkpoint,
+        native: native?.getSnapshot().active === true,
+      };
+    },
+    subscribe: (onChange) => {
+      const stopStore = store.subscribe(onChange);
+      const stopNative = native?.subscribe(onChange);
+      return () => {
+        stopStore();
+        stopNative?.();
+      };
+    },
   };
 }
 
 /**
- * Why a popup may not open in a stand-alone chat now (ADR-0148 §2), or `undefined`: a card is open, a native card is, a turn, a submit or a
- * `!` command runs, the interrupt keymap is armed, or another overlay owns the keyboard.
+ * Why a popup may not open in a stand-alone chat now (ADR-0148 §2), or `undefined`: the one refusal (`popup-refusal.ts`) over this chat's facts.
+ * A card is open (an approval or its review, a question, a checkpoint), a native card is, a turn, a submit or a `!` command runs, the interrupt
+ * keymap is armed, or another overlay owns the keyboard. A stand-alone chat is never starting and has no native action.
  */
 export function chatPopupRefusal(facts: {
   readonly overlays: OverlayFlags;
@@ -883,13 +901,13 @@ export function chatPopupRefusal(facts: {
   readonly interruptArmed: boolean;
 }): PopupRefusal | undefined {
   const { overlays } = facts;
-  if (overlays.approval || overlays.review || overlays.question || overlays.checkpoint)
-    return 'card-open';
-  if (overlays.nativePrompt) return 'sheet-open';
-  if (turnInFlight(facts.turn)) return 'turn-running';
-  if (facts.interruptArmed) return 'armed';
-  if (overlayOwnsKeyboard(overlays)) return 'overlay-open';
-  return undefined;
+  return popupRefusal({
+    cards: overlays.approval || overlays.review || overlays.question || overlays.checkpoint,
+    sheet: overlays.nativePrompt,
+    turn: facts.turn,
+    armed: facts.interruptArmed,
+    overlay: overlayOwnsKeyboard(overlays),
+  });
 }
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
@@ -1189,29 +1207,24 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   );
   useEffect(() => {
     if (popups === undefined || popupAcknowledgement === undefined) return;
-    popups.bindVisibility(popupAcknowledgement.visible);
-    // The opening rules (ADR-0148 §2), read now: no card, no native card, no turn or submit, nothing armed, no other overlay.
-    popups.bindOpenGate(() =>
-      chatPopupRefusal({
-        overlays: liveOverlays(),
-        turn: liveTurnFacts(),
-        interruptArmed: interruptRef.current.armedAt !== undefined,
-      }),
-    );
-    // A popup that opens over a card (a race) resets the card's acknowledgement and dwell origin, synchronously.
-    const stopRevoking = revokeCardCustodyOnPopup(popups, () => {
-      props.store.invalidateToolReview();
-      nativeAcknowledgement?.invalidate();
+    return bindPopupHost({
+      popups,
+      acknowledgement: popupAcknowledgement,
+      // The opening rules (ADR-0148 §2), read now: no card, no native card, no turn or submit, nothing armed, no other overlay.
+      gate: () =>
+        chatPopupRefusal({
+          overlays: liveOverlays(),
+          turn: liveTurnFacts(),
+          interruptArmed: interruptRef.current.armedAt !== undefined,
+        }),
+      // A popup that opens over a card (a race) resets the card's acknowledgement and dwell origin, synchronously.
+      onRevoke: () => {
+        props.store.invalidateToolReview();
+        nativeAcknowledgement?.invalidate();
+      },
+      // A sheet that ARRIVES over a popup wins: the popup closes unanswered.
+      watchSheets: chatSheetSources(props.store, props.modePrompt?.ui),
     });
-    // A sheet that ARRIVES over a popup wins: the popup closes unanswered.
-    const stopWatching = watchChatSheetArrival(props.store, props.modePrompt?.ui, popups);
-    return () => {
-      stopWatching();
-      stopRevoking();
-      popups.bindOpenGate(undefined);
-      popups.bindVisibility(undefined);
-      popupAcknowledgement.dispose();
-    };
     // `liveOverlays` reads refs and the store at the call; the subscriptions are bound once per host.
   }, [popups, popupAcknowledgement, nativeAcknowledgement, props.store, props.modePrompt]);
   useEffect(() => () => nativeAcknowledgement?.dispose(), [nativeAcknowledgement]);
@@ -1646,6 +1659,30 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     return () => suspendPort.attach(undefined);
   }, [app, suspendPort, props.store]);
 
+  /**
+   * The chat's one open adapter (ADR-0148 §2): the popup `route` names, on this chat's popup host with this chat's port. The popup's code is
+   * loaded on first use, and a load that fails is a fault of the chat (`onError`), never swallowed.
+   */
+  const openPopupRoute = (host: PopupHost, route: PopupRoute): void => {
+    let opening: Promise<void> | undefined;
+    if (route.kind === 'doctor') {
+      if (props.doctor !== undefined)
+        opening = openDoctor({ host, port: props.doctor, deep: route.deep, origin: 'chat' });
+    } else if (props.reports !== undefined) {
+      opening = openReport({
+        host,
+        port: props.reports,
+        line: route.line,
+        origin: 'chat',
+        // The facts the open gate read, read again by the release at the moment of its answer: the one predicate over the same facts.
+        turnInFlight: () => turnInFlight(liveTurnFacts()),
+      });
+    }
+    void opening?.catch((cause: unknown) => {
+      props.onError(cause);
+    });
+  };
+
   const submit = (message: string, display?: string): void => {
     if (!acceptsInput()) return;
     if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
@@ -1672,38 +1709,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openPermissionsSheet();
       return;
     }
-    // `/doctor` and `/doctor --deep` open the doctor popup (ADR-0148 §8) here, BEFORE the submit is marked in flight: the popup host's open
-    // gate reads a submit in flight as a turn, and this line is not one. Any other form dispatches and is rejected there.
-    const doctor = props.doctor === undefined ? undefined : parseDoctorLine(message);
-    if (doctor !== undefined && props.doctor !== undefined && popups !== undefined) {
-      const port = props.doctor;
-      void openDoctor({ host: popups, port, deep: doctor.deep, origin: 'chat' }).catch(
-        (cause: unknown) => {
-          props.onError(cause);
-        },
-      );
-      return;
-    }
-    // `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` open their report popup (ADR-0148 §10) here too, for the same reason:
-    // BEFORE the submit is marked in flight. A line that is not exactly one of them (`/agent now`, `/cost --force`) dispatches and is rejected there.
-    const report = props.reports === undefined ? undefined : parseReportLine(message);
-    if (
-      report !== undefined &&
-      props.reports !== undefined &&
-      popups !== undefined &&
-      reportAvailable(props.reports, report.kind)
-    ) {
-      const port = props.reports;
-      void openReport({
-        host: popups,
-        port,
-        line: report,
-        origin: 'chat',
-        // The facts the open gate read, read again by the release at the moment of its answer: the one predicate over the same facts.
-        turnInFlight: () => turnInFlight(liveTurnFacts()),
-      }).catch((cause: unknown) => {
-        props.onError(cause);
-      });
+    // `/doctor` (and `--deep`, ADR-0148 §8), `/agent`, `/cost` (and `--release`), `/workflows` and `/help` (§10) open their popup here, BEFORE
+    // the submit is marked in flight: the popup host's open gate reads a submit in flight as a turn, and this line is not one. Any other form
+    // (`/doctor now`, `/cost --force`) dispatches and is rejected there.
+    const route =
+      popups === undefined
+        ? undefined
+        : routePopupLine(message, { doctor: props.doctor !== undefined, reports: props.reports });
+    if (route !== undefined && popups !== undefined) {
+      openPopupRoute(popups, route);
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -2368,8 +2382,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     flush: flushPopup,
   };
   // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4):
-  // the slot's own predicate over the slot's own props. The slot stays OUTSIDE the dimmed subtree, as the last child of the root.
-  const dimmed = dimsBackdrop(slotDrawing(slotProps, popupSnapshot), color);
+  // the slot's own predicate over the slot's own props. The slot stays OUTSIDE the dimmed subtree, as the last child of the root. The same
+  // predicate takes the cursor out of the composer and the notification off the hint row while a popup is drawn.
+  const drawing = slotDrawing(slotProps, popupSnapshot);
+  const dimmed = dimsBackdrop(drawing, color);
   return (
     <>
       <BackdropDim dimmed={dimmed}>
@@ -2402,7 +2418,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             tick={tick}
             nowMs={Date.now()}
             color={color}
-            editor={editor}
+            editor={composerEditor(editor, drawing)}
             running={chatIsBusy({
               turnRunning: running,
               shellBusy,
@@ -2423,7 +2439,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             interruptArmed={interruptArmed}
             copied={copied}
             paletteOpen={promptHidden(renderedOverlays)}
-            notification={notification.current?.text}
+            notification={hintRowNotification(notification.current?.text, drawing)}
           />
           {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
             overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}

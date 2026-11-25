@@ -91,7 +91,6 @@ function mount() {
   };
   const onError = vi.fn();
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: vi.fn(() => new Promise<HomeChatSession>(() => {})),
     homeStore: { read: () => EMPTY },
     history,

@@ -31,7 +31,7 @@ import { costReadFailedContent } from './cost-session.js';
 import { openFrame, railOf } from './popup-reducer.js';
 import type { ChordRefusal } from './popup-host.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
-import { REPORT_TEXT_COLUMNS } from './report-text.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
 import { COMPLETE, costReading, costRow } from './report.test-support.js';
 import type { CostReading } from './report-port.js';
 
@@ -82,7 +82,7 @@ describe('the report says what costNotice says', () => {
     (_name, reading) => {
       const lines = costReportLines(reading);
       for (const line of lines)
-        expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+        expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
       const words = (text: string): string[] => text.split(/\s+/u).filter((word) => word !== '');
       expect(words(lines.join(' '))).toEqual(words(noticeOf(reading)));
     },
@@ -197,11 +197,11 @@ describe('the total wraps like every other line (the notice’s words, the popup
       ...(reading.coverage === undefined ? {} : { coverage: reading.coverage }),
     }).total;
     // The precondition: this total is wider than the popup, so a report that did not wrap it would draw it cut.
-    expect(displayWidth(total)).toBeGreaterThan(REPORT_TEXT_COLUMNS);
+    expect(displayWidth(total)).toBeGreaterThan(POPUP_TEXT_COLUMNS);
     const lines = costReportLines(reading);
     expect(lines.length).toBeGreaterThan(1);
     for (const line of lines)
-      expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+      expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
     expect(lines.join(' ').replaceAll(/\s+/gu, ' ')).toContain(total);
   });
 });
@@ -228,7 +228,7 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
   };
 
   /** The room a line has: the popup's text columns, and two fewer where the frame puts a glyph in front of it (an error’s first line). */
-  const ROOM = REPORT_TEXT_COLUMNS;
+  const ROOM = POPUP_TEXT_COLUMNS;
 
   it.each([
     ['NOTHING_HELD', NOTHING_HELD],

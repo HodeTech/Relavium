@@ -128,6 +128,8 @@ export function reportRig(options: ReportRigOptions = {}) {
   });
   let painted = true;
   host.bindVisibility(() => painted);
+  // A host's gate is bound when it mounts, and a host with none opens nothing: this rig's host lets every open through.
+  host.bindOpenGate(() => undefined);
   host.bindPageRows(() => 18);
   let turn = options.turn === true;
   const open = (

@@ -4,13 +4,13 @@
  * what the confirmed release does. Loaded only when the person first opens a report (`report-port.ts`); its words are `cost-popup.ts`.
  *
  * **Reading.** The session's spend (a query of the database and a look at the live governor) is read in work the popup starts, after one
- * macrotask, entered on the work owner and never while a frame is drawn; the step says `loading` until it lands, and a fault is a state of its
+ * macrotask, entered on the work owner (`popup-work.ts`) and never while a frame is drawn; the step says `loading` until it lands, and a fault is a state of its
  * own by CODE only (a database error can carry a path) and goes to the owner. Every result carries the popup's run (`PopupContext`), so one
  * for a popup that is closed or replaced lands nowhere. When it lands the report offers `[r]` only if something is held.
  *
  * **Releasing is a confirmed step, and the answer re-checks what it was asked for.** `[r]` (or a typed `/cost --release`, which opens ON the
- * step) shows a confirmation line answered only by `Ctrl+Y` through the popup host's chord guard (the doctor's own machinery: nothing here adds
- * a guard or removes one). At the answer, and only then, this module:
+ * step) shows a confirmation line answered only by `Ctrl+Y` through the popup host's chord guard (the same one the doctor's deep check answers
+ * through: nothing here adds a guard or removes one, and the words of a refusal are `chord-refusal.ts`'s). At the answer, and only then, this module:
  *
  * 1. asks the host AGAIN whether a turn, a submit, a `!` command or a native action is in flight (`turnInFlight`, the facts the host's open
  *    gate reads). The popup owns the keyboard, so none can start behind it, but a line that was drawn before the answer is not evidence for
@@ -41,9 +41,9 @@ import {
   TURN_IN_FLIGHT_NOTICE,
   turnInFlightContent,
 } from './cost-popup.js';
+import { copyReport } from './popup-copy.js';
+import { faultCode, macrotask, startPopupWork } from './popup-work.js';
 import { type CostPort, type CostReading, type ReportOpenRequest } from './report-port.js';
-import { copyReport } from './report-copy.js';
-import { faultCode, macrotask, startReportWork } from './report-work.js';
 
 /** What the report says when the session's cost cannot be read: the fault's CODE, never its message. */
 export function costReadFailedContent(cause: unknown) {
@@ -80,7 +80,7 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
     generation += 1;
     const mine = generation;
     const live = (): boolean => !context.signal.aborted && generation === mine;
-    startReportWork(
+    startPopupWork(
       port.workOwner,
       async () => {
         await pause();
@@ -101,7 +101,7 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
     outcome: Parameters<typeof releaseDoneContent>[0],
   ): void => {
     const live = (): boolean => !context.signal.aborted;
-    startReportWork(
+    startPopupWork(
       port.workOwner,
       async () => {
         await pause();
@@ -150,10 +150,7 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
       // Not an answer: the host disarmed the line. The person is told that nothing was released, and why.
       context.notify(releaseRefusedText(reason));
     },
-    enter: (context) => {
-      // The result step is final: `Enter` closes it as `Esc` does.
-      if (context.stepIndex() === COST_STEP.done) context.close();
-    },
+    // No `enter`: the result step is `final`, so the host closes it on `Enter` as on `Esc` (`popup-reducer.ts`).
   };
 
   const opened = host.openForUser(costSpec(request.origin, onRelease), handlers);

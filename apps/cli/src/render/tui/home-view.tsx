@@ -81,8 +81,8 @@ interface HomeViewProps {
   readonly snapshot: HomeSnapshot;
   /** The current prompt editor — text + cursor (owned by the `RootApp`). */
   readonly editor: EditorState;
-  /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
-   *  edit/submit. Multi-line + already secret-free (the doctor formatter sanitizes). */
+  /** Transient command output (a refusal, a flow's closing sentence, a failed build), shown above the prompt, cleared on the next
+   *  edit/submit. Multi-line; each line is sanitised as it is laid out (`layoutHomeNotice`). */
   readonly notice?: string | undefined;
   /** Injected clock for the relative-time labels (the projection is clock-free). */
   readonly nowMs: number;
@@ -568,7 +568,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
     fixedRows + (stripBudget - remaining) + (guardRows === undefined ? 0 : guardRows + 1);
   const paletteMaxRows = Math.max(PALETTE_MIN_ROWS, rows - 1 - bodyRows);
 
-  // Nothing to show: a welcome in the strip's place, unless a notice (a `/doctor` report) holds its rows.
+  // Nothing to show: a welcome in the strip's place, unless a notice holds its rows.
   const welcome =
     noticeLayout === undefined ? (
       <Box flexDirection="column" marginLeft={2} marginTop={1}>
@@ -688,9 +688,9 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
       )}
 
       {noticeLayout !== undefined && (
-        // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
+        // The notice — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
         // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
-        // multi-line string. Already sanitized at the source (formatDoctorReport).
+        // multi-line string. Each line was sanitised as it was laid out (`layoutHomeNotice`).
         <Box marginTop={1} flexDirection="column">
           <Text {...dimProps(color)}>{noticeLayout.lines.join('\n')}</Text>
           {noticeLayout.footer !== undefined && (

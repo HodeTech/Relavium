@@ -2,8 +2,11 @@
  * What a chat host hands the four report popups, and the one way a host opens one ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1, §6, §10; [MVP-11 §4.4](../../../../docs/roadmap/phases/mvp-11.md#44-reports-and-settings-as-popups)): `/agent`, `/cost` (and `/cost --release`),
  * `/workflows` and `/help`, opened ONLY in an interactive chat (the chat the Home hosts and a stand-alone `relavium chat`). This module is the
- * EAGER half, the doctor's pattern (`doctor-port.ts`): types, the parse of a typed line, and a loader that brings the popups' code in
- * (`report-session.ts` and what it imports) only when the person first asks for a report, so a host never pays for it at start.
+ * EAGER half, split from the lazy half as `doctor-port.ts` is: types, the parse of a typed line, and a loader that brings the popups' code in
+ * (`report-session.ts` and what it imports) only when the person first asks for a report, so a host never pays for it at start. What the four
+ * reports and the `/doctor` popup share (the scrub and the wrap, the work starter, the copy, the phrases of a refused chord) is
+ * `popup-text.ts`, `popup-work.ts`, `popup-copy.ts` and `chord-refusal.ts`, written once; `ReportWorkOwner` below is the owner they all start
+ * work on.
  *
  * The hosts route and open, and hold no popup logic: the chat host (`chat-ink.tsx`) and the Home controller recognise the line
  * ({@link parseReportLine}) in the same place they open `/permissions` and `/doctor`, BEFORE the line is counted as a submit (so the popup

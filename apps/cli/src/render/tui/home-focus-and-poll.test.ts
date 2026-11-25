@@ -133,7 +133,6 @@ describe('the Enter after a refresh dropped the focused row', () => {
         }),
     );
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => new Promise(() => {}),
       homeStore: { read: () => shown },
       hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
@@ -278,7 +277,6 @@ describe('the Active tab`s poll while a native question holds the keyboard', () 
         }),
     );
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => new Promise(() => {}),
       homeStore: { read: () => EMPTY },
       active: { token: (): ChangeToken => ({ ...token }), read, isClosed: () => false },

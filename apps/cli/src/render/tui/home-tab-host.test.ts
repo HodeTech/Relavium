@@ -121,7 +121,6 @@ function mount(options: Options = {}) {
   const onExit = vi.fn();
   const startChat = options.startChat ?? vi.fn(() => new Promise<HomeChatSession>(() => {}));
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
     ...(options.withPort === false ? {} : { permissions: port }),

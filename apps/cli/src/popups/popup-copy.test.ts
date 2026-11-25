@@ -1,7 +1,8 @@
 /**
- * `[c] copy` on the four report popups ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §1): it puts exactly the lines the popup draws on the clipboard, as plain text, scrubbed like everything drawn, says what happened in the
- * doctor's sentences, is offered only where there is a report to copy, and writes nothing but a notification.
+ * `[c] copy` on the popups that show a report ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §1): on the four report popups it puts exactly the lines the popup draws on the clipboard, as plain text, scrubbed like everything drawn, says
+ * what happened in the sentences of one family (the doctor's too: `copyPopupText`), is offered only where there is a report to copy, and writes
+ * nothing but a notification.
  */
 import type { ClipboardOutcome, ClipboardWriter } from '../render/clipboard.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -19,10 +20,11 @@ import { helpLines } from './help-popup.js';
 import { popupLegend } from './popup-reducer.js';
 import {
   copyControlsFor,
-  reportCopyNotice,
+  copyPopupText,
+  popupCopyNotice,
   reportCopyText,
-  reportCopyUnavailable,
-} from './report-copy.js';
+  popupCopyUnavailable,
+} from './popup-copy.js';
 import type { ReportsPort } from './report-port.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
 import {
@@ -404,7 +406,7 @@ describe('what [c] says', () => {
     },
   );
 
-  it('says what it wrote, that the request failed or that the report is too large, in the doctor’s sentences', async () => {
+  it('says what it wrote, that the request failed or that the report is too large, in the one family of sentences', async () => {
     const written = spyClipboard();
     const r = await opened('workflows', { workflows: flows().port, clipboard: written.writer });
     r.press('c');
@@ -443,10 +445,10 @@ describe('what [c] says', () => {
   it('every sentence of a copy fits the popup’s legend row at the 80-column floor, whatever the report’s name and a six-digit count', () => {
     for (const label of ['Agent', 'Cost', 'Workflows', 'Help']) {
       const said = [
-        reportCopyNotice(label, { kind: 'written', characters: 999_999 }),
-        reportCopyNotice(label, { kind: 'failed' }),
-        reportCopyNotice(label, { kind: 'too-large', base64Length: 99_999, limit: 74_994 }),
-        reportCopyUnavailable(label),
+        popupCopyNotice(label, { kind: 'written', characters: 999_999 }),
+        popupCopyNotice(label, { kind: 'failed' }),
+        popupCopyNotice(label, { kind: 'too-large', base64Length: 99_999, limit: 74_994 }),
+        popupCopyUnavailable(label),
       ];
       expect(said.filter((text) => text !== undefined)).toHaveLength(4);
       for (const text of said) {
@@ -457,7 +459,7 @@ describe('what [c] says', () => {
   });
 
   it('an empty write says nothing', () => {
-    expect(reportCopyNotice('Cost', { kind: 'empty' })).toBeUndefined();
+    expect(popupCopyNotice('Cost', { kind: 'empty' })).toBeUndefined();
   });
 
   it('only a report is offered a copy', () => {
@@ -495,4 +497,52 @@ describe('the legend keeps [c] copy (ADR-0148 §1)', () => {
       expect(rows).toContain('[c] copy');
     },
   );
+});
+
+describe('copyPopupText: the one send of every popup, the doctor’s included', () => {
+  const sendOnce = async (
+    clipboard: ClipboardWriter | undefined,
+    label: string,
+    text: string,
+  ): Promise<string[]> => {
+    const said: string[] = [];
+    copyPopupText({ notify: (line) => said.push(line) }, { clipboard }, label, text);
+    await settleWork();
+    return said;
+  };
+
+  it('writes the text it is given as it is, and says how many characters went, under the popup’s name', async () => {
+    const clip = spyClipboard();
+    const text = 'doctor: all checks passed\n  ok  OS keychain  reachable';
+    expect(await sendOnce(clip.writer, 'Doctor', text)).toEqual([
+      `Doctor: sent ${String(text.length)} characters to the terminal clipboard.`,
+    ]);
+    expect(clip.texts).toEqual([text]);
+  });
+
+  it('with no clipboard says copying is not available here, and writes nothing', async () => {
+    expect(await sendOnce(undefined, 'Doctor', 'a report')).toEqual([
+      'Doctor: copying is not available here.',
+    ]);
+  });
+
+  it.each([
+    [{ kind: 'failed' } as const, 'Doctor: the clipboard request failed.'],
+    [
+      { kind: 'too-large', base64Length: 99_999, limit: 74_994 } as const,
+      'Doctor: too large for the terminal clipboard.',
+    ],
+  ])('says that a write that %o did not happen', async (outcome, said) => {
+    expect(await sendOnce(() => outcome, 'Doctor', 'a report')).toEqual([said]);
+  });
+
+  it('a clipboard that throws is a notification, never a throw, and an empty write says nothing', async () => {
+    const throwing: ClipboardWriter = () => {
+      throw new Error('PRIVATE');
+    };
+    expect(await sendOnce(throwing, 'Doctor', 'a report')).toEqual([
+      'Doctor: the clipboard request failed.',
+    ]);
+    expect(await sendOnce(() => ({ kind: 'empty' }), 'Doctor', '')).toEqual([]);
+  });
 });

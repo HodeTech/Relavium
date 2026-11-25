@@ -64,7 +64,6 @@ function fixture(options: {
   };
   const deps: HomeControllerDeps = {
     homeStore: { read: () => snapshot },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.reject(new Error('unexpected chat')),
     onExit: () => {},
     onError,

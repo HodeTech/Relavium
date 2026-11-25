@@ -10,7 +10,7 @@ import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { helpContent, helpLines, helpSpec } from './help-popup.js';
 import { openFrame } from './popup-reducer.js';
-import { REPORT_TEXT_COLUMNS } from './report-text.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
 import type { ReportSurface } from './report-port.js';
 
 // The registry's own function, spied on: it still does what it does, and what the popup asks it is recorded.
@@ -64,7 +64,7 @@ describe.each(['standalone-chat', 'home-chat'] as const)(
 
     it('wrap under themselves, and no line is wider than the popup', () => {
       for (const line of helpLines(surface, KEYS))
-        expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+        expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
     });
   },
 );

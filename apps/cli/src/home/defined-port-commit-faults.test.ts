@@ -204,7 +204,6 @@ function mountHome() {
       }),
     },
     exportDefined: (slug) => runExportCard({ flow: yes, port }, slug),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<never>(() => {}),
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},

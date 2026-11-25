@@ -10,7 +10,7 @@ import { displayWidth } from '../render/tui/viewport.js';
 import { ESC } from './doctor.test-support.js';
 import { openFrame } from './popup-reducer.js';
 import { catalogEntry, fakeWorkflows, reportRig, settleWork } from './report.test-support.js';
-import { REPORT_TEXT_COLUMNS } from './report-text.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
 import {
   WORKFLOWS_FAULT,
   workflowsContent,
@@ -84,9 +84,9 @@ describe('the content', () => {
       if (content.kind !== 'empty' && content.kind !== 'error') throw new Error('a state');
       const glyph = content.kind === 'error' ? 2 : 0;
       expect(displayWidth(content.what), content.what).toBeLessThanOrEqual(
-        REPORT_TEXT_COLUMNS - glyph,
+        POPUP_TEXT_COLUMNS - glyph,
       );
-      expect(displayWidth(content.next), content.next).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+      expect(displayWidth(content.next), content.next).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
       expect(`${content.what} ${content.next}`).not.toMatch(/\bEsc\b/u);
     }
   });

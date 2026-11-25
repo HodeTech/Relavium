@@ -404,13 +404,13 @@ describe('a live notification is drawn in the legend row while the popup is open
         { kind: 'list', rows: rows(2) },
         {
           placement,
-          parts: { notice: 'Doctor report: sent 164 characters to the terminal clipboard.' },
+          parts: { notice: 'Doctor: sent 164 characters to the terminal clipboard.' },
         },
       );
       const plain = frame({ kind: 'list', rows: rows(2) }, { placement });
       expect(shown.text.length).toBe(plain.text.length);
       expect(shown.text.at(-2)?.trim()).toBe(
-        'Doctor report: sent 164 characters to the terminal clipboard.',
+        'Doctor: sent 164 characters to the terminal clipboard.',
       );
       expect(shown.lines.at(-2)?.kind).toBe('notice');
       expect(shown.text.at(-2)).not.toContain('Esc close');

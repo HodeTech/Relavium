@@ -43,7 +43,6 @@ function mount(options: { size?: { cols: number; rows: number } } = {}) {
   const close = vi.fn(() => Promise.resolve());
   const onExit = vi.fn();
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => RUNNING, cancel, close },

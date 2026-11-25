@@ -5,9 +5,9 @@
 import type { Agent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { NOT_WIRED_MARK } from '../chat/agent-notice.js';
 import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js';
 import { buildDefaultChatAgent } from '../chat/default-agent.js';
-import { NOT_WIRED_MARK } from '../render/tui/agent-sheet.js';
 import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import {
@@ -17,8 +17,8 @@ import {
   agentUnreadableContent,
 } from './agent-popup.js';
 import { openFrame } from './popup-reducer.js';
-import { reportCopyText } from './report-copy.js';
-import { REPORT_TEXT_COLUMNS } from './report-text.js';
+import { reportCopyText } from './popup-copy.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
 
 // Built at runtime (no contiguous secret literal: leakwatch).
 const SECRET = ['sk', 'ant', 'agent', 'ABCDEF1234567890XYZ'].join('-');
@@ -100,7 +100,7 @@ describe('the fields', () => {
     );
     const lines = agentReportLines(view);
     for (const line of lines)
-      expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+      expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
     const body = lines.join(' ').replaceAll(/\s+/gu, ' ');
     // The label of the file is whole (a path wraps where it must), every tool is named, and the prompt's head is what the view keeps.
     expect(lines.join('').replaceAll(/\s+/gu, '')).toContain('reviewer.agent.yaml');
@@ -118,7 +118,7 @@ describe('the fields', () => {
     );
     const lines = agentReportLines(view);
     for (const line of lines)
-      expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+      expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
     const toolRows = lines.slice(
       lines.findIndex((line) => /^ {2}Tools {2}/u.test(line)),
       lines.findIndex((line) => /^ {2}System prompt/u.test(line)),

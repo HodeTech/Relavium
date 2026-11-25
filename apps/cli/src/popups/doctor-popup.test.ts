@@ -10,6 +10,7 @@ import { ENDPOINT_CHANGED_DETAIL, KEY_GONE_DETAIL } from '../chat/doctor-deep.js
 import type { DoctorCheck } from '../chat/doctor.js';
 import { KNOWN_PROVIDER_IDS } from '../engine/providers.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
+import { legend } from '../render/tui/legend.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { check } from './doctor.test-support.js';
 import {
@@ -17,8 +18,8 @@ import {
   CONSENT_MCP,
   CONSENT_TOO_LONG,
   DOCTOR_LINE_ROWS,
+  DOCTOR_LOADING,
   DOCTOR_STEP,
-  DOCTOR_TEXT_COLUMNS,
   checksContent,
   consentContent,
   detailContent,
@@ -27,15 +28,18 @@ import {
   doctorHeading,
   doctorRowId,
   doctorSpec,
-  doctorText,
   failedProviderRemedy,
   hasRows,
   providerKeysCheck,
   providersRemedy,
+  quickFailedContent,
   remedyOf,
 } from './doctor-popup.js';
 import type { DoctorSurface } from './doctor-port.js';
-import { naturalBodyRows, popupBody, type PopupContent } from './frame-model.js';
+import { naturalBodyRows, popupBody, popupFrameLines, type PopupContent } from './frame-model.js';
+import { popupGeometry, type PopupBoxGeometry } from './geometry.js';
+import { openFrame, popupLegend, withContent } from './popup-reducer.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupText } from './popup-text.js';
 
 const SURFACES: readonly DoctorSurface[] = ['home', 'home-chat', 'standalone-chat'];
 
@@ -137,7 +141,7 @@ describe('a row', () => {
 
   it('scrubs a secret a detail carries, wherever it came from', () => {
     const secret = ['sk', 'ant', 'api03', 'Q'.repeat(40)].join('-');
-    expect(doctorText(`401: ${secret}`)).not.toContain(secret);
+    expect(scrubPopupText(`401: ${secret}`)).not.toContain(secret);
   });
 });
 
@@ -233,7 +237,7 @@ describe('the consent line', () => {
     const content = consentContent([{ providerId: 'openai', origin }], [], 'home');
     if (content.kind !== 'report') throw new Error('report');
     for (const line of content.lines)
-      expect(displayWidth(line)).toBeLessThanOrEqual(DOCTOR_TEXT_COLUMNS);
+      expect(displayWidth(line)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
     expect(content.lines.join('').replace(/\s+/gu, '')).toContain(origin);
   });
 
@@ -488,7 +492,7 @@ describe('the words the popup says, pinned by literal', () => {
         for (const line of lines) {
           expect(line, `${accent}${String(words)}`).not.toMatch(/^\s/u);
           expect(line, `${accent}${String(words)}`).not.toMatch(/\s$/u);
-          expect(displayWidth(line)).toBeLessThanOrEqual(DOCTOR_TEXT_COLUMNS);
+          expect(displayWidth(line)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
         }
         expect(lines.join(' ')).toBe(text);
       }
@@ -569,7 +573,7 @@ describe('the letters of the checks step', () => {
     expect(doctorChecksControls(true).map((control) => control.key)).toEqual(['r', 'd', 'c']);
     expect(doctorChecksControls(false).map((control) => control.key)).toEqual(['r', 'd']);
     expect(doctorChecksControls(true).map((control) => control.verb)).toEqual([
-      'quick check',
+      'again',
       'deep check',
       'copy',
     ]);
@@ -591,6 +595,76 @@ describe('the letters of the checks step', () => {
       'open /providers',
     );
     expect(doctorSpec('home', false, false).steps[DOCTOR_STEP.detail]?.enter).toBeUndefined();
+  });
+});
+
+describe('the legend of the checks step names every key it answers to, at the smallest terminal too', () => {
+  /** The checks step as the session leaves it with `content` (and the letters `controls` it sets with it). */
+  const checksFrame = (content: PopupContent, controls: ReturnType<typeof doctorChecksControls>) =>
+    withContent(openFrame(doctorSpec('home', false), 1), DOCTOR_STEP.checks, content, controls);
+
+  /** The legend row of the frame, as the frame model fits it to a popup on a terminal of `columns`. */
+  function legendRowAt(frame: ReturnType<typeof checksFrame>, columns: number): string {
+    const geometry = popupGeometry({
+      columns,
+      rows: 24,
+      kind: 'standard',
+      placement: 'overlay',
+      rail: true,
+      bodyRows: 3,
+    });
+    if (!geometry.fits) throw new Error('fits');
+    const box: PopupBoxGeometry = geometry;
+    const lines = popupFrameLines(
+      {
+        title: '/doctor',
+        origin: 'home',
+        steps: ['Checks'],
+        stepIndex: 0,
+        legend: popupLegend(frame),
+      },
+      { lines: [] },
+      box,
+    );
+    return (lines.at(-2)?.text ?? '').trim();
+  }
+
+  const rows = checksContent({ quick: [check('a', 'ok'), check('b', 'warn')] });
+  const FULL = 'Enter details · [r] again · [d] deep check · [c] copy · Esc close';
+
+  it('with rows: Enter, the quick check, the deep check, the copy and the way out, in these words, in the 66 columns of an 80-column popup', () => {
+    const frame = checksFrame(rows, doctorChecksControls(true));
+    expect(legendRowAt(frame, 80)).toBe(FULL);
+    // The margin of the row's first column is the one space the builder leaves: the row is exactly as wide as the popup's text.
+    expect(displayWidth(` ${FULL}`)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
+  });
+
+  it('the arrows are the first to go, at every width: a popup is at most 76 columns wide, and the whole legend with them does not fit it', () => {
+    const frame = checksFrame(rows, doctorChecksControls(true));
+    const parts = popupLegend(frame);
+    expect(legend(parts.items, parts.exit)).toBe(`↑/↓ select · ${FULL}`);
+    for (const columns of [80, 100, 200]) expect(legendRowAt(frame, columns)).toBe(FULL);
+  });
+
+  it('with deep rows kept (the same step, the deep section under the quick rows) it is the same row', () => {
+    const kept = checksContent({
+      quick: [check('a', 'ok')],
+      deep: { checks: [check('provider:x', 'ok')], ageMs: 5000 },
+    });
+    expect(legendRowAt(checksFrame(kept, doctorChecksControls(true)), 80)).toBe(FULL);
+  });
+
+  it('where the checks could not run there is no copy, and the rest are still named', () => {
+    const frame = checksFrame(quickFailedContent(), doctorChecksControls(false));
+    expect(legendRowAt(frame, 80)).toBe('[r] again · [d] deep check · Esc close');
+  });
+
+  it('while the checks load it names nothing but the way out', () => {
+    const frame = checksFrame(
+      { kind: 'loading', what: DOCTOR_LOADING.quick },
+      doctorChecksControls(false),
+    );
+    expect(legendRowAt(frame, 80)).toBe('Esc cancel');
   });
 });
 
@@ -623,7 +697,7 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
     const body = popupBody(
       content,
       { selected: 0, offset: 0 },
-      { bodyRows: DOCTOR_LINE_ROWS, listRows: DOCTOR_LINE_ROWS, innerWidth: DOCTOR_TEXT_COLUMNS },
+      { bodyRows: DOCTOR_LINE_ROWS, listRows: DOCTOR_LINE_ROWS, innerWidth: POPUP_TEXT_COLUMNS },
     );
     return body.lines;
   }
@@ -638,7 +712,7 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
 
   it('has the body rows of a popup at 80×24', () => {
     expect(DOCTOR_LINE_ROWS).toBe(17);
-    expect(DOCTOR_TEXT_COLUMNS).toBe(66);
+    expect(POPUP_TEXT_COLUMNS).toBe(66);
   });
 
   it('every way the four providers can be named or left out, with the longest origins a custom endpoint can have, is on the page whole', () => {
@@ -679,7 +753,7 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
     expect(over.kind).toBe('empty');
     expect(
       displayWidth('Not contacted (its key or its endpoint could not be read): OpenAI.'),
-    ).toBeLessThanOrEqual(DOCTOR_TEXT_COLUMNS);
+    ).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
   });
 
   it('four of the longest origins cannot all be named: the line says so and offers nothing', () => {
@@ -695,6 +769,6 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
     expect(content.what).toBe('These destinations are too long to confirm, so nothing is sent.');
     expect(content.what).toBe(CONSENT_TOO_LONG);
     expect(content.next).toBe('Esc goes back.');
-    expect(displayWidth(content.what)).toBeLessThanOrEqual(DOCTOR_TEXT_COLUMNS);
+    expect(displayWidth(content.what)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
   });
 });

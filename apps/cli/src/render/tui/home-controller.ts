@@ -62,15 +62,10 @@ import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
-import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
-import { parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
+import type { DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
-import {
-  parseReportLine,
-  reportAvailable,
-  type ParsedReportLine,
-  type ReportsPort,
-} from '../../popups/report-port.js';
+import type { ParsedReportLine, ReportsPort } from '../../popups/report-port.js';
+import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
   agentStartNotice,
   agentStartReasonOf,
@@ -592,7 +587,7 @@ export interface HomeControllerDeps {
   readonly homeStore: HomeStore;
   /** The monotonic clock the interrupt keymap's arming window runs on (ADR-0115 §1). Default `performance.now`; a test injects its own. */
   readonly now?: () => number;
-  /** Original Home invocation; observe publication before local recovery and retain entered doctor work. */
+  /** Original Home invocation; observe publication before local recovery and retain entered work (a native action, a write). */
   readonly workOwner?: Pick<InvocationWorkOwner, 'enter' | 'failure'>;
   /** The Home exited cleanly (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
@@ -605,11 +600,9 @@ export interface HomeControllerDeps {
    * instant bound so it need not wait real time.
    */
   readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
-  /** The `/doctor` probes (2.5.C S5) — the Home palette's `/doctor` runs the fast tier over these into `notice`. */
-  readonly doctorProbes: DoctorProbes;
   /**
-   * The text the controller writes itself (the doctor's report, a chat's end notice) carries glyphs of the glyph table, so it is written in
-   * their plain forms when colour is off (ADR-0145 §5): `true` ⇒ the plain forms. Absent ⇒ the Unicode glyphs.
+   * The text the controller writes itself (a hosted run's end, a model switch) carries glyphs of the glyph table, so it is written in their
+   * plain forms when colour is off (ADR-0145 §5): `true` ⇒ the plain forms. Absent ⇒ the Unicode glyphs.
    */
   readonly plainGlyphs?: boolean;
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
@@ -727,8 +720,9 @@ export interface HomeControllerDeps {
   /**
    * Open the `/doctor` popup ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §8) on the
    * Home's popup host: the Home's own (no `chat`) or the chat's in front (its {@link HomeChatSession.doctor}), on its confirmation line for a
-   * typed `/doctor --deep`. The controller only routes: it recognises the line where it opens a sheet for `/permissions`, clears the editor and
-   * calls this, so nothing reaches the Home's notice or the transcript. Absent ⇒ the Home runs the quick tier into its notice, as before.
+   * typed `/doctor --deep`. The controller only routes (`popup-route.ts`): it recognises the line where it opens a sheet for `/permissions`,
+   * clears the editor and calls this, so nothing reaches the Home's notice or the transcript. Production always wires it. Absent (a test's
+   * Home) ⇒ `/doctor` at the landing says the doctor is not available here, and a chat's `/doctor` is dispatched to the chat.
    */
   readonly openDoctor?:
     | ((request: { readonly deep: boolean; readonly chat?: DoctorPort | undefined }) => void)
@@ -736,8 +730,8 @@ export interface HomeControllerDeps {
   /**
    * Open one of the report popups (`/agent`, `/cost`, `/workflows`, `/help`; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §10, MVP-11 step 4b) over the chat in front, on the Home's popup host, with the chat's {@link HomeChatSession.reports}. The controller only
-   * routes: it recognises the line where it opens a sheet for `/permissions`, clears the editor and calls this, so nothing reaches the Home's
-   * notice or the transcript. `turnInFlight` is the controller's own reading of the facts its open gate reads, for the release step to ask again
+   * routes (`popup-route.ts`): it recognises the line where it opens a sheet for `/permissions`, clears the editor and calls this, so nothing
+   * reaches the Home's notice or the transcript. `turnInFlight` is the controller's own reading of the facts its open gate reads, for the release step to ask again
    * at its answer. Absent ⇒ a chat's report lines are dispatched and print their text, as before.
    */
   readonly openReport?:
@@ -901,6 +895,9 @@ export function alreadyOnModelHint(displayName: string): string {
 
 /** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
 const RUN_HISTORY_UNAVAILABLE = 'The run history is not available here.';
+
+/** What `/doctor` says on a Home that has no doctor popup to open (only a test's Home: `driveHome` always wires one). */
+const DOCTOR_UNAVAILABLE = 'Doctor is not available here.';
 
 /** What the landing says when a session resume ends because the person cancelled one of its interactive steps. */
 const RESUME_CANCELLED = 'Resume cancelled.';
@@ -1115,9 +1112,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (pending === undefined) finish();
     else void pending.then(finish, failed);
   };
-  // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
-  // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
-  let doctorRunId = 0;
   // A monotonic submit generation: bumped when the compose buffer is submitted (cleared). An async mention read
   // captures it at accept time and drops its inject if a submit has since happened — so a slow read resolving after
   // Enter can never splice the file into the (now-empty) buffer meant for the NEXT message (the session-identity
@@ -1125,7 +1119,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let submitEpoch = 0;
   // A monotonic `/models` picker generation (2.5.G S7): bumped on every picker open. An async catalog refresh
   // captures it and lands its result ONLY if the picker is still on the SAME generation — so a slow refresh
-  // resolving after the picker was closed AND reopened can never clobber the fresh picker (the `doctorRunId` pattern).
+  // resolving after the picker was closed AND reopened can never clobber the fresh picker.
   let pickerEpoch = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
@@ -1852,7 +1846,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({
           session: undefined,
           input: emptyEditor(),
-          notice: undefined, // a stale build-failure notice or /doctor report must not leak into the returned Home
+          notice: undefined, // a stale notice (a build failure, a refusal) must not leak into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           ...parkedPatch(), // and a run it left parked, or one answered meanwhile, in the refreshed Attention rows
@@ -2670,18 +2664,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /**
    * `/doctor` and `/doctor --deep` typed at the landing (ADR-0148 §8): the popup opens, on its confirmation line for `--deep` (new on the Home:
    * it ran only the quick tier). Any other argument is refused in one line that names the one it takes. `false` when the popup is not wired here (the
-   * line then goes on to the landing's own answer, the quick tier into the notice) or a chat is in front (its own routing opens it).
+   * line then goes on to the landing's own answer, which says the doctor is not available here) or a chat is in front (its own routing opens it).
    */
   const answerDoctorOnTheLanding = (text: string): boolean => {
     const open = deps.openDoctor;
     if (open === undefined || state.session !== undefined) return false;
     set({ input: emptyEditor() });
-    const doctor = parseDoctorLine(text);
-    if (doctor === undefined) {
+    const route = routePopupLine(text, { doctor: true });
+    if (route?.kind !== 'doctor') {
       set({ notice: '/doctor accepts only --deep.' });
       return true;
     }
-    open({ deep: doctor.deep });
+    open({ deep: route.deep });
     return true;
   };
 
@@ -2785,7 +2779,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     history = recordHistory(history, trimmed);
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
-    doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
     set({
       input: emptyEditor(),
       notice: undefined,
@@ -2836,7 +2829,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tabMemory = freshTabMemory();
     tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no agent detail
     disarmInterrupt();
-    doctorRunId += 1; // as a submit does: an in-flight /doctor run must not land its report on the chat that opens
     set({
       screen: undefined,
       ...parkedPatch(),
@@ -2864,7 +2856,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // The `/models` picker (2.5.G S7, ADR-0064 §10) — a keyboard-owning overlay opened from the Home palette. The db
   // read + the merge are synchronous (`port.load()`); a refresh egresses and lands its result ONLY into the SAME
   // picker generation that kicked it — the monotonic `pickerEpoch` (bumped on every open) drops a resolve whose
-  // picker has since closed or been REOPENED (the `doctorRunId` pattern; the identity half of loadMentions' guard).
+  // picker has since closed or been REOPENED (the identity half of loadMentions' guard).
   // Home-only: it can be open only in `mode: 'home'`, so no chat/session race applies. Two status channels are kept
   // SEPARATE — `banner` (async refresh partial-failure) vs `hint` (transient user-action feedback) — so a completing
   // refresh can never silently wipe a "not available"/"could not save" message the user just triggered.
@@ -2875,7 +2867,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
     let view: ReturnType<HomeModelsPort['load']>;
     try {
-      view = deps.models.load(); // a DB read — never crash the REPL (parity with runDoctor / acceptModel's guard)
+      view = deps.models.load(); // a DB read — never crash the REPL (parity with acceptModel's guard)
     } catch {
       // Keep the last-shown entries; just drop the spinner and surface the refresh status.
       set({
@@ -2955,7 +2947,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     set({
-      notice: undefined, // opening the picker clears any stale /doctor report behind it
+      notice: undefined, // opening the picker clears any stale notice behind it
       modelPicker: {
         entries: view.entries,
         filter: '',
@@ -3379,39 +3371,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
     runDoctor: (deep) => {
       if (exiting) return Promise.resolve();
-      // The popup where the host wires it (ADR-0148 §8): the palette's `/doctor` opens it, and nothing is written into the notice.
-      if (deps.openDoctor !== undefined) {
-        set({ input: emptyEditor() });
-        deps.openDoctor({ deep });
+      // The popup (ADR-0148 §8): the palette's `/doctor` opens it, and nothing is written into the notice. A Home that does not wire it (only a
+      // test's: `driveHome` always does) has no doctor to show, and says so in one line, as the other words with no port do.
+      const open = deps.openDoctor;
+      if (open === undefined) {
+        set({ notice: DOCTOR_UNAVAILABLE });
         return Promise.resolve();
       }
-      const operation = async (): Promise<void> => {
-        const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
-        set({ notice: 'doctor: checking…' });
-        let text: string;
-        try {
-          text = formatDoctorReport(
-            await runDoctorChecks(deep, deps.doctorProbes),
-            deps.plainGlyphs === true,
-          );
-        } catch (cause) {
-          deps.workOwner?.failure(cause);
-          text = 'doctor: check failed';
-        }
-        // Land ONLY if nothing moved on during the await: still THIS run (the prompt wasn't edited/submitted), still
-        // a bare idle Home (no chat started, mode still 'home'), and the palette isn't open (it cleared the notice).
-        if (
-          runId === doctorRunId &&
-          !exiting &&
-          state.mode === 'home' &&
-          state.session === undefined &&
-          state.palette === undefined
-        ) {
-          set({ notice: text });
-        }
-      };
-      // Returning/handling this promise is separate from retaining the actual original operation.
-      return deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
+      set({ input: emptyEditor() });
+      open({ deep });
+      return Promise.resolve();
     },
   };
 
@@ -3748,8 +3717,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
    *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
    * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
-   * - `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` open their report popup (ADR-0148 §10), where the session holds the
-   *   report's port: the popup is opened before the line is a submit, so the open gate never takes the line for a turn in flight.
+   * - `/doctor` (and `/doctor --deep`, ADR-0148 §8) and `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` (§10) open their
+   *   popup, where the session holds its port, as the one routing says (`popup-route.ts`): the popup is opened before the line is a submit, so
+   *   the open gate never takes the line for a turn in flight. These are not exact matches: white space around the words is ignored.
    * - `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the informational notice; a
    *   non-reasoning model falls through to the slash dispatch (the ctx handler's "no controllable tier" notice).
    */
@@ -3761,32 +3731,31 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (trimmed === '/permissions' && active.permissions !== undefined)
       return () => openPermissionsSheet(active);
     if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
-    // `/doctor` and `/doctor --deep` open the popup over this chat (ADR-0148 §8) before the line is a submit, so the open gate never sees it as
-    // a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
-    const doctor = parseDoctorLine(trimmed);
-    const openDoctor = deps.openDoctor;
-    if (doctor !== undefined && openDoctor !== undefined && active.doctor !== undefined) {
-      const port = active.doctor;
-      return () => openDoctor({ deep: doctor.deep, chat: port });
+    // `/doctor` (and `--deep`) and the reports open their popup over this chat (ADR-0148 §8, §10) before the line is a submit, so the open gate
+    // never sees it as a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
+    const route = routePopupLine(trimmed, {
+      doctor: deps.openDoctor !== undefined && active.doctor !== undefined,
+      reports: deps.openReport === undefined ? undefined : active.reports,
+    });
+    return route === undefined ? undefined : () => openPopupOverChat(active, route);
+  };
+
+  /**
+   * The controller's one open adapter (ADR-0148 §2): the popup a routed line names, over the chat in front, through the host's open ports with
+   * the chat's own. Reached only for a route {@link routePopupLine} gave for this chat, so the port it names is wired.
+   */
+  const openPopupOverChat = (active: HomeChatSession, route: PopupRoute): void => {
+    if (route.kind === 'doctor') {
+      if (active.doctor !== undefined) deps.openDoctor?.({ deep: route.deep, chat: active.doctor });
+      return;
     }
-    const report = parseReportLine(trimmed);
-    const openReport = deps.openReport;
-    if (
-      report !== undefined &&
-      openReport !== undefined &&
-      active.reports !== undefined &&
-      reportAvailable(active.reports, report.kind)
-    ) {
-      const chat = active.reports;
-      return () =>
-        openReport({
-          line: report,
-          chat,
-          // The facts `homePopupRefusal` reads, read again by the release at the moment of its answer.
-          turnInFlight: () => turnInFlight(homeTurnFacts(state)),
-        });
-    }
-    return undefined;
+    if (active.reports !== undefined)
+      deps.openReport?.({
+        line: route.line,
+        chat: active.reports,
+        // The facts `homePopupRefusal` reads, read again by the release at the moment of its answer.
+        turnInFlight: () => turnInFlight(homeTurnFacts(state)),
+      });
   };
 
   // Submit `line`: a leading `!command` runs the shell escape (attachments stay pending — they ride the NEXT
@@ -4122,7 +4091,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
-      set({ ...openPaletteState(undefined), notice: undefined }); // running another command clears a stale report
+      set({ ...openPaletteState(undefined), notice: undefined }); // running another command clears a stale notice
       return;
     }
     switch (action.kind) {
@@ -4134,12 +4103,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       default: {
         // Every buffer edit / cursor motion (append / backspace / newline / move / kill) folds via the shared
         // applyEditorAction — the Home prompt is a first-class line editor too (2.5.D step 2). A NO-OP motion (a
-        // cursor key at a boundary — applyEditorAction returns the SAME reference) must not bump doctorRunId or
-        // clear a visible `/doctor` report; only a real change does (the first real edit means the user has moved
-        // on, and the bump stops a slow `--deep` report reappearing over what's now typed).
+        // cursor key at a boundary — applyEditorAction returns the SAME reference) must not clear a visible notice
+        // the person is reading; only a real change does (the first real edit means the user has moved on).
         const next = applyEditorAction(state.input, action);
         if (next === state.input) return;
-        doctorRunId += 1;
         set({ input: next, notice: undefined });
         return;
       }
@@ -4365,7 +4332,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;
-      doctorRunId += 1; // an append clears a stale `/doctor` report + invalidates an in-flight run, like a typed edit
+      // An append clears a stale notice, like a typed edit.
       history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)
       set({
         input: insertAtCursor(state.input, pasted),

@@ -6,7 +6,8 @@
  *
  * **Opening** (§2). A popup opens only on the person's command ({@link PopupHost.openForUser}: there is no other way in, so a system event
  * cannot open one), and only when the host's gate says no turn runs, no card or sheet is open and no two-step is armed. A refused open says so
- * in ONE notification and opens nothing.
+ * in ONE notification and opens nothing. A host that has bound no gate (it is not mounted yet, or it has unbound it on the way out) refuses
+ * every open as `closed`: the gate fails closed, as the acknowledgement does when no visibility check is bound.
  *
  * **One key history** (§2). Every key and paste a popup takes is stamped on the host's ONE key history (`ChordHistory`, shared with the chat
  * store's approval guards and the Home's chord cards) as typing, and a key that RESOLVES something as a resolution: `Enter` on a step that
@@ -221,7 +222,10 @@ export interface PopupHost {
   readonly resized: (columns: number, rows: number) => void;
   /** Close every popup (the host's own reason: it is ending, or a command closed it). */
   readonly closeAll: (reason: PopupCloseReason) => void;
-  /** The host's gate: why a popup may not open now (a turn, a card, a sheet, an armed two-step), or `undefined`. Read at each open. */
+  /**
+   * The host's gate: why a popup may not open now (a turn, a card, a sheet, an armed two-step), or `undefined`. Read at each open. With no gate
+   * bound every open is refused as `closed`.
+   */
   readonly bindOpenGate: (gate: (() => PopupRefusal | undefined) | undefined) => void;
   /** The acknowledgement's check: whether this exact snapshot is measured and flushed on screen now. */
   readonly bindVisibility: (check: ((snapshot: PopupHostSnapshot) => boolean) | undefined) => void;
@@ -766,7 +770,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         notify(refusedOpenText(spec.title, 'popup-open'));
         return { opened: false, reason: 'popup-open' };
       }
-      const refusal = gate?.();
+      // No gate bound is no permission: a host that never said what may not open (or unbound it) opens nothing, as no visibility check sees nothing.
+      const refusal = gate === undefined ? 'closed' : gate();
       if (refusal !== undefined) {
         notify(refusedOpenText(spec.title, refusal));
         return { opened: false, reason: refusal };

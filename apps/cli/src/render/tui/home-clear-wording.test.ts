@@ -22,7 +22,6 @@ const WORDS = '/clear is unavailable: no conversation to clear.';
 function home(keyless: boolean): HomeController {
   return createHomeController({
     homeStore: { read: () => SNAPSHOT },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: vi.fn(),
     onExit: () => {},
     onError: () => {},

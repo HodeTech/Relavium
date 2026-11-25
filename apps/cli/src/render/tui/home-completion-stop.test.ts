@@ -68,7 +68,6 @@ function fixture(
     homeStore: { read: () => EMPTY_HOME },
     onExit: vi.fn(),
     onError,
-    doctorProbes: { keychain: () => undefined, config: () => undefined, toolHost: {} },
     ...(options.models === undefined ? {} : { models: options.models }),
   });
   const start = async (): Promise<void> => {

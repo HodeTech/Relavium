@@ -1388,7 +1388,6 @@ describe('a masked value stays out of everything', () => {
     // The Home's own controller carries the typed `/run`, as the product does.
     const controllerStates: string[] = [];
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => {
         throw new Error('unexpected chat');
       },

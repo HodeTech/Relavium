@@ -3,7 +3,8 @@
  * §2): a turn streaming, a submit settling (its auto-compaction included), a `!` command running, or (the Home) a native action holding the
  * keyboard. ONE function, read by both things that ask:
  *
- * - the **open gate** of each host (`chatPopupRefusal`, `homePopupRefusal`): a popup does not open over any of it, and a refused open says so;
+ * - the **open gate** of each host (`chatPopupRefusal`, `homePopupRefusal`, through the one refusal of `popup-refusal.ts`): a popup does not
+ *   open over any of it, and a refused open says so;
  * - the **release step of `/cost`** at the moment of its answer (`cost-session.ts`): the popup owns the keyboard, so nothing can start behind it,
  *   but an answer is never taken on a state read earlier, and a release is never carried out while any of this is in flight.
  *

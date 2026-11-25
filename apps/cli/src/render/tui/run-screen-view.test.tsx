@@ -423,7 +423,6 @@ function mountHome(
     return true;
   });
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: {

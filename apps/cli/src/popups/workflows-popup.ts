@@ -4,15 +4,15 @@
  * the same one the plain chat's notice lists (`catalogParts`, `chat/repl-info.ts`: workflows, then agents, an invalid entry flagged and never
  * dropped; the no-project line; the fault's own words). On the Home `/workflows` stays the tab host's screen; this is a chat's.
  *
- * **Every slug is untrusted** (it is a file's name in a project) and passes the FULL scrub of the run cards ({@link reportText}); so does the
+ * **Every slug is untrusted** (it is a file's name in a project) and passes the FULL scrub of the run cards ({@link scrubPopupText}); so does the
  * reason of a fault, which can carry a project file's text. Its one control is `[c] copy`, offered with the catalog; `Esc` closes it.
  */
 
 import { catalogParts, CATALOG_EMPTY_NOTICE, NO_PROJECT_NOTICE } from '../chat/repl-info.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
+import { scrubPopupText, wrapHanging } from './popup-text.js';
 import type { WorkflowsReading } from './report-port.js';
-import { reportText, wrapHanging } from './report-text.js';
 
 /** The loading words while the catalog is scanned. */
 export const WORKFLOWS_LOADING = 'Reading the project catalog';
@@ -37,7 +37,7 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
       return {
         kind: 'error',
         what: WORKFLOWS_FAULT,
-        next: reportText(reading.reason),
+        next: scrubPopupText(reading.reason),
       };
     case 'catalog': {
       const parts = catalogParts(reading.workflows, reading.agents);
@@ -53,7 +53,7 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
           ...wrapHanging(section.heading),
           ...section.entries.flatMap((entry) =>
             wrapHanging(
-              `  ${reportText(entry.slug)}${entry.valid ? '' : ' (invalid)'}`,
+              `  ${scrubPopupText(entry.slug)}${entry.valid ? '' : ' (invalid)'}`,
               undefined,
               6,
             ),

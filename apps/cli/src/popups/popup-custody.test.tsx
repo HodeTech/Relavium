@@ -93,7 +93,7 @@ describe.each(HOSTS)('%s', (_name, mount) => {
         opened: false,
         reason: 'card-open',
       });
-      m.popups.bindOpenGate(undefined);
+      m.popups.bindOpenGate(() => undefined);
       expect(m.popups.openForUser(testReportPopup('chat')).opened).toBe(true);
       await m.settle();
       for (const chord of Object.values(CHORDS)) {
@@ -114,7 +114,7 @@ describe.each(HOSTS)('%s', (_name, mount) => {
       const answered = await openCard(m);
       // Long past every guard: before the popup this card would answer a Ctrl+Y at once.
       vi.advanceTimersByTime(5000);
-      m.popups.bindOpenGate(undefined);
+      m.popups.bindOpenGate(() => undefined);
       expect(m.popups.openForUser(testReportPopup('chat')).opened).toBe(true);
       await m.settle();
       // The popup closes with no key (the command's own close), so no key-history guard is in play: only the frame and the dwell are.

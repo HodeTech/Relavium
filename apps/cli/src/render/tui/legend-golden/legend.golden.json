@@ -1749,10 +1749,10 @@
   "doctor-popup": {
     "step=checks content=loading colour=off [1]": " Esc cancel",
     "step=checks content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
-    "step=checks outcome=warning colour=off [1]": " Enter details · [r] quick check · [d] deep check · Esc close",
-    "step=checks outcome=warning colour=on [1]": " ⟦bold: Enter⟧⟦dim:  details · ⟧⟦bold: [r]⟧⟦dim:  quick check · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
-    "step=checks outcome=failed deep=kept colour=off [1]": " Enter details · [r] quick check · [d] deep check · Esc close",
-    "step=checks outcome=failed deep=kept colour=on [1]": " ⟦bold: Enter⟧⟦dim:  details · ⟧⟦bold: [r]⟧⟦dim:  quick check · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=checks outcome=warning colour=off [1]": " Enter details · [r] again · [d] deep check · [c] copy · Esc close",
+    "step=checks outcome=warning colour=on [1]": " ⟦bold: Enter⟧⟦dim:  details · ⟧⟦bold: [r]⟧⟦dim:  again · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=checks outcome=failed deep=kept colour=off [1]": " Enter details · [r] again · [d] deep check · [c] copy · Esc close",
+    "step=checks outcome=failed deep=kept colour=on [1]": " ⟦bold: Enter⟧⟦dim:  details · ⟧⟦bold: [r]⟧⟦dim:  again · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "step=detail surface=home colour=off [1]": " [Ctrl+C] close · Esc back",
     "step=detail surface=home colour=on [1]": " ⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
     "step=detail surface=home-chat colour=off [1]": " Go back to the Home ([Ctrl+C] twice) and use /providers to connect",
@@ -1768,9 +1768,9 @@
     "step=checks content=deep-running colour=off [1]": " Esc cancel",
     "step=checks content=deep-running colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
     "step=checks content=error colour=off [1]": " [r] runs them again.",
-    "step=checks content=error colour=off [2]": " [r] quick check · [d] deep check · Esc close",
+    "step=checks content=error colour=off [2]": " [r] again · [d] deep check · Esc close",
     "step=checks content=error colour=on [1]": "⟦dim:  [r] runs them again.                                               ⟧",
-    "step=checks content=error colour=on [2]": " ⟦bold: [r]⟧⟦dim:  quick check · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
+    "step=checks content=error colour=on [2]": " ⟦bold: [r]⟧⟦dim:  again · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   },
   "agent-popup": {
     "content=report colour=off [1]": " [c] copy · Esc close",

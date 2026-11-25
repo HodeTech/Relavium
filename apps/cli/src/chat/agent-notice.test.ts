@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { Agent, ReasoningEffort } from '@relavium/shared';
 
-import { boundAgentView, type BoundAgentView } from '../../chat/bound-agent-view.js';
-import { buildDefaultChatAgent } from '../../chat/default-agent.js';
-import { AGENT_PROMPT_HEAD_CHARS, AGENT_TOOLS_MAX } from '../../history/agents-model.js';
+import { AGENT_PROMPT_HEAD_CHARS, AGENT_TOOLS_MAX } from '../history/agents-model.js';
+import { usableColumns } from '../render/tui/sheet-frame.js';
+import { cardRowBudget } from '../render/tui/tool-review-card.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import {
   agentNotice,
   agentSheetBody,
@@ -19,10 +20,9 @@ import {
   NOT_WIRED_MARK,
   packedTools,
   wrappedTools,
-} from './agent-sheet.js';
-import { usableColumns } from './sheet-frame.js';
-import { cardRowBudget } from './tool-review-card.js';
-import { displayWidth } from './viewport.js';
+} from './agent-notice.js';
+import { boundAgentView, type BoundAgentView } from './bound-agent-view.js';
+import { buildDefaultChatAgent } from './default-agent.js';
 
 /**
  * The pure field formatting of the bound agent (ADR-0140 §3), what is left of the `/agent` sheet (MVP-11 step 4b retired the sheet; the popup

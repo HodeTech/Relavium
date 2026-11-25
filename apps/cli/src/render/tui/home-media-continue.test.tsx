@@ -107,7 +107,6 @@ function mount(options: Options = {}) {
     guard: OFF,
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: {

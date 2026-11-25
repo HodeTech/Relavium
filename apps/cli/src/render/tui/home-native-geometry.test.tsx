@@ -36,7 +36,6 @@ describe.each([true, false])('native Home geometry alternate=%s', (alternate) =>
         teardown: async () => {},
       };
       const controller = createHomeController({
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         startChat: () => Promise.resolve(session),
         homeStore: {
           read: () => ({
@@ -149,7 +148,6 @@ describe.each([true, false])('bare Home model rewrite visibility alternate=%s', 
       let acknowledged = false;
       let effective: string | undefined;
       const controller = createHomeController({
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         startChat: () => {
           throw new Error('unexpected chat');
         },

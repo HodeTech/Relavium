@@ -95,6 +95,7 @@ function rig(options: Partial<PopupHostOptions> = {}) {
   });
   let painted = true;
   host.bindVisibility(() => painted);
+  host.bindOpenGate(() => undefined); // an unbound gate opens nothing: this host lets every open through
   /** The frame was measured and flushed now: the popup has appeared. */
   const show = (): void => host.shown(host.getSnapshot());
   return {
@@ -125,6 +126,32 @@ describe('opening (ADR-0148 §2)', () => {
       refusedOpenText('/test', 'turn-running'),
     );
     expect(notifications.getSnapshot().queued).toBe(0);
+  });
+
+  it('a host that binds no gate refuses every open as closed and says so; bound, it gates as before; unbound again, it refuses again', () => {
+    const time = timers();
+    const notifications = createNotificationChannel({ schedule: time.schedule });
+    const host = createPopupHost({
+      now: time.now,
+      schedule: time.schedule,
+      notifications,
+      placement: 'overlay',
+    });
+    host.bindVisibility(() => true);
+    // Never bound: fail closed, as an unbound visibility check sees nothing.
+    expect(host.openForUser(spec())).toEqual({ opened: false, reason: 'closed' });
+    expect(host.getSnapshot().open).toBe(false);
+    expect(notifications.getSnapshot().current?.text).toBe(refusedOpenText('/test', 'closed'));
+    // Bound: the gate decides, a refusal and a permission alike.
+    host.bindOpenGate(() => 'armed');
+    expect(host.openForUser(spec())).toEqual({ opened: false, reason: 'armed' });
+    host.bindOpenGate(() => undefined);
+    expect(host.openForUser(spec()).opened).toBe(true);
+    host.closeAll('command');
+    // Unbound again (a host unmounting): closed once more.
+    host.bindOpenGate(undefined);
+    expect(host.openForUser(spec())).toEqual({ opened: false, reason: 'closed' });
+    expect(host.getSnapshot().open).toBe(false);
   });
 
   it('refuses a second popup while one is open (a child is the popup’s own to open)', () => {
@@ -215,6 +242,7 @@ describe('one key history per host (ADR-0148 §2)', () => {
     // The popup and the store read the SAME clock and the SAME history.
     const host = createPopupHost({ placement: 'overlay', history, now: () => performance.now() });
     host.bindVisibility(() => true);
+    host.bindOpenGate(() => undefined);
     host.openForUser(spec());
     host.shown(host.getSnapshot());
     vi.advanceTimersByTime(100);
@@ -241,6 +269,7 @@ describe('one key history per host (ADR-0148 §2)', () => {
     });
     const host = createPopupHost({ placement: 'overlay', now: () => performance.now() });
     host.bindVisibility(() => true);
+    host.bindOpenGate(() => undefined);
     host.openForUser(spec());
     host.shown(host.getSnapshot());
     vi.advanceTimersByTime(100);

@@ -424,7 +424,6 @@ const MODEL_PICKER: ModelPickerState = {
 
 describe("the Home's own record is built from its state in one place", () => {
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.reject(new Error('not started in this test')),
     homeStore: { read: () => EMPTY },
     onExit: vi.fn(),
@@ -590,7 +589,6 @@ describe('every pause fact derives from the record (a list was missed: pauses)',
   it('a popup the controller is told of closes its screen slot (the controller’s gates see it)', () => {
     let open = true;
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.reject(new Error('not started in this test')),
       homeStore: { read: () => EMPTY },
       onExit: vi.fn(),

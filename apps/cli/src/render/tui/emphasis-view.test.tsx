@@ -89,6 +89,10 @@ describe('Emph, as the element it returns', () => {
   it('is its children and nothing else when there is nothing to draw, or no style: no bytes are written for nothing', () => {
     expect(childrenOf(emphElement('bold', ''))).toBe('');
     expect(childrenOf(emphElement('bold', undefined))).toBeUndefined();
+    // The other values React draws as nothing: a missing node and a conditional that did not hold (and `true`).
+    expect(childrenOf(emphElement('bold', null))).toBeNull();
+    expect(childrenOf(emphElement('bold', false))).toBe(false);
+    expect(childrenOf(emphElement('bold', true))).toBe(true);
     expect(childrenOf(emphElement(undefined, 'x'))).toBe('x');
     expect(childrenOf(emphElement([], 'x'))).toBe('x');
   });

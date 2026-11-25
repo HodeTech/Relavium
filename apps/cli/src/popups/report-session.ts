@@ -1,8 +1,9 @@
 /**
  * The four report popups' opener ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1,
  * §6, §10): given what the host asked for ({@link ReportOpenRequest}), it opens the popup the typed line names over the host's popup host.
- * Loaded by a dynamic import the first time a report is asked for (`openReport`, `report-port.ts`), the doctor's pattern, so no host pays for
- * any of it at start.
+ * Loaded by a dynamic import the first time a report is asked for (`openReport`, `report-port.ts`), as the doctor's is (`doctor-port.ts`), so no
+ * host pays for any of it at start. The words every popup shares (the scrub, the wrap, the work starter, the copy and the refusal phrases) are
+ * `popup-text.ts`, `popup-work.ts`, `popup-copy.ts` and `chord-refusal.ts`; this module only routes.
  *
  * - `/agent` and `/help` are built from what the session already holds and opened with their content (no read, nothing to wait for).
  * - `/workflows` opens loading and scans the project's catalog in work the popup starts (`cost-session.ts` reads the same way).
@@ -13,12 +14,12 @@
 
 import { agentContent, agentSpec, agentUnreadableContent } from './agent-popup.js';
 import { openCostPopup } from './cost-session.js';
-import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
-import { copyControlsFor, copyReport } from './report-copy.js';
-import { helpContent, helpSpec } from './help-popup.js';
-import type { ReportKind, ReportOpenRequest, ReportsPort } from './report-port.js';
 import type { PopupContent } from './frame-model.js';
-import { macrotask, startReportWork } from './report-work.js';
+import { helpContent, helpSpec } from './help-popup.js';
+import { copyControlsFor, copyReport } from './popup-copy.js';
+import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
+import { macrotask, startPopupWork } from './popup-work.js';
+import type { ReportKind, ReportOpenRequest, ReportsPort } from './report-port.js';
 import {
   workflowsContent,
   workflowsFailedContent,
@@ -81,7 +82,7 @@ function openWorkflows(request: ReportOpenRequest): PopupOpenResult {
   if (!opened.opened) return opened;
   const context: PopupContext = opened.context;
   const live = (): boolean => !context.signal.aborted;
-  startReportWork(
+  startPopupWork(
     port.workOwner,
     async () => {
       await pause();

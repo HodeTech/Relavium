@@ -120,7 +120,6 @@ function mount(options: Options = {}) {
       cancel: () => true,
       close: () => Promise.resolve(),
     },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},

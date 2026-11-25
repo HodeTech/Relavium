@@ -81,7 +81,6 @@ function mount(options: { sessions?: number; extra?: Partial<HomeControllerDeps>
     return Promise.resolve(session);
   });
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => snapshotWith(options.sessions ?? 0) },
     schedule: () => () => {},
@@ -141,8 +140,8 @@ describe('every command the registry places on the Home is handled by the Homeâ€
     pricing: { notice: 'Model pricing is not available here.' },
     init: { notice: 'Project initialization is unavailable in this session.' },
     import: { notice: 'Import is unavailable in this session.' },
-    // The fast tier starts at once: the notice is its progress line, replaced by the report when the probes settle.
-    doctor: { notice: 'doctor: checkingâ€¦' },
+    // A popup that `driveHome` always wires: a Home without one says so in one line, as the other words with no port do.
+    doctor: { notice: 'Doctor is not available here.' },
     help: { screen: 'help' },
     clear: { notice: unavailableNotice('clear', 'no conversation to clear') },
     exit: { exit: true },

@@ -53,7 +53,6 @@ async function homeChat(): Promise<{
   const session = chatSession(lines);
   const c = createHomeController({
     homeStore: { read: () => SNAPSHOT },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     onExit: () => {},
     onError: () => {},
@@ -148,7 +147,6 @@ describe('a line typed in the palette of the bare Home', () => {
   it('is still answered by the Home, as a pasted line is', async () => {
     const c = createHomeController({
       homeStore: { read: () => SNAPSHOT },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.reject(new Error('no chat is built for a command line')),
       onExit: () => {},
       onError: () => {},

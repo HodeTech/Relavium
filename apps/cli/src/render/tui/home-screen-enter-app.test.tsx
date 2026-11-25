@@ -83,7 +83,6 @@ function mount() {
   };
   const onError = vi.fn();
   const real = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<never>(() => {}),
     homeStore: { read: () => SNAPSHOT },
     history,

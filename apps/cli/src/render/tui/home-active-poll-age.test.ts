@@ -82,7 +82,6 @@ function mount() {
   const reads = vi.fn((): Promise<ActiveRead> => reader());
   const active: HomeActivePort = { token: probe.token, read: reads, isClosed: () => false };
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     active,

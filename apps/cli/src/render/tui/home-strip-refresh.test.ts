@@ -150,7 +150,6 @@ function rig(options: RigOptions) {
     if (options.faultsEndTheHome !== true) throw cause;
   });
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: options.startChat ?? (() => new Promise(() => {})),
     ...(options.models === true
       ? {

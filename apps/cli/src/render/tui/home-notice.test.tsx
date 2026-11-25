@@ -24,7 +24,9 @@ const snapshot: HomeSnapshot = {
   unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${n}`),
   isEmpty: false,
 };
-const detail = 'Read this diagnostic detail carefully. '.repeat(80) + 'FINAL_RECOVERY_REMEDY';
+// A long report the Home's notice holds whole: what `/import` resolves with here (the notice wraps and pages any long sentence the same way).
+const detail =
+  'REPORT_START ' + 'Read this diagnostic detail carefully. '.repeat(80) + 'FINAL_RECOVERY_REMEDY';
 function mount(alternate: boolean, color: boolean, keyless = false) {
   const input = new OwnedTtyInput(),
     output = new OwnedTtyOutput(),
@@ -40,12 +42,7 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
     resumeChat,
     pickSession,
     homeStore: { read: () => snapshot },
-    doctorProbes: {
-      keychain: () => {},
-      config: () => {},
-      toolHost: {},
-      globalArtifacts: () => detail,
-    },
+    importDefined: () => Promise.resolve(detail),
     providerSetup: { initialKeyless: keyless, open: () => Promise.resolve() },
     onExit,
     onError: (cause) => {
@@ -90,11 +87,11 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
       output.rows = rows;
       output.emit('resize');
     },
-    doctor: async () => {
+    report: async () => {
       input.push('/');
       await vi.waitFor(() => expect(controller.getSnapshot().palette).toBeDefined());
-      input.push('doctor');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette?.state.query).toBe('doctor'));
+      input.push('import');
+      await vi.waitFor(() => expect(controller.getSnapshot().palette?.state.query).toBe('import'));
       input.push('\r');
     },
     close: async () => {
@@ -110,23 +107,22 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
 
 describe.each([true, false])('Home reports and minimum geometry alternate=%s', (alternate) => {
   it.each([true, false])(
-    'retains complete doctor output, wraps and pages without hiding Continue or the prompt (color=%s)',
+    'retains a complete long report, wraps and pages without hiding Continue or the prompt (color=%s)',
     async (color) => {
       const h = mount(alternate, color, true);
       try {
         await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
-        await h.doctor();
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
-        expect(h.frame('doctor:')).toContain('wired tools');
+        await h.report();
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('FINAL_RECOVERY_REMEDY'));
         h.input.push('\x1b[B');
         await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
         h.resize(80, 24);
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
-        expect(h.frame('doctor:')).toContain(`${color ? '›' : '>'} Saved conversation 0`);
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('Notice 1–'));
+        expect(h.frame('REPORT_START')).toContain(`${color ? '›' : '>'} Saved conversation 0`);
         // a saved conversation is focused, so `Enter` resumes it: the line promises only the command word
-        expect(h.frame('doctor:')).toContain('No provider key yet · /providers connects one');
-        expect(h.frame('doctor:')).toContain('PgUp/PgDn');
-        expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);
+        expect(h.frame('REPORT_START')).toContain('No provider key yet · /providers connects one');
+        expect(h.frame('REPORT_START')).toContain('PgUp/PgDn');
+        expect(h.frame('REPORT_START').split('\n').length).toBeLessThanOrEqual(24);
         // Coalesced page keys reduce against the live page, without submitting or moving Continue focus.
         h.input.push('\x1b[6~'.repeat(20));
         await vi.waitFor(() => expect(h.frame('PgUp/PgDn')).toContain('FINAL_RECOVERY_REMEDY'));
@@ -134,13 +130,13 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         expect(h.resumeChat).not.toHaveBeenCalled();
         expect(h.startChat).not.toHaveBeenCalled();
         const rerunStart = h.output.frames.length;
-        await h.doctor();
+        await h.report();
         await vi.waitFor(() =>
           expect(h.output.frames.slice(rerunStart).join('')).toContain('Notice 1–'),
         );
         h.resize(120, 60);
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
-        expect(h.frame('doctor:')).not.toContain('PgUp/PgDn');
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('FINAL_RECOVERY_REMEDY'));
+        expect(h.frame('REPORT_START')).not.toContain('PgUp/PgDn');
       } finally {
         await h.close();
       }

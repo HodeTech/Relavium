@@ -940,8 +940,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       return run;
     };
 
-    // The Home's `/doctor` probes (built here, over the store-aware resolver). The zero-config default agent has no
-    // `mcp_servers`, so the `--deep` MCP tier reports "none configured" (and the Home palette runs only the fast tier).
+    // The Home's `/doctor` probes (built here, over the store-aware resolver), for the Home's `/doctor` popup below. The zero-config
+    // default agent has no `mcp_servers`, and the Home has no session, so the popup's deep tier shows no MCP rows here.
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
@@ -2093,6 +2093,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...changeProbe.token(),
         hostedRunId: hostedRuns.snapshot().active?.runId,
       });
+      // The Home's one open adapter for a popup the controller routed (ADR-0148 §2): on the Home's popup host, while the Home takes input. The
+      // popup's code is loaded the first time it is asked for, never at start, and a load that fails is the Home's own fault (its work owner),
+      // never swallowed.
+      const openOnHome = (open: (host: PopupHost) => Promise<void>): void => {
+        const host = popups;
+        if (host === undefined || homeInputSealed) return;
+        void open(host).catch((cause: unknown) => {
+          ownership?.surface.work.failure(cause);
+        });
+      };
       // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
       // `/import` (ADR-0140 §9): the import card over `relavium import`'s own prepare and commit, on the same native flow.
@@ -2110,28 +2120,22 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
         popupOpen: () => popups?.getSnapshot().open === true,
-        // `/doctor` opens its popup on the Home's host (ADR-0148 §8); its code is loaded the first time (`openDoctor`), never at start.
+        // `/doctor` opens its popup on the Home's host (ADR-0148 §8): the Home's own doctor, or the chat's in front.
         openDoctor: ({ deep, chat }) => {
-          const host = popups;
-          if (host === undefined || homeInputSealed) return;
-          void openDoctor({
-            host,
-            port: chat ?? homeDoctor,
-            deep,
-            origin: chat === undefined ? 'home' : 'chat',
-          }).catch((cause: unknown) => {
-            ownership?.surface.work.failure(cause);
-          });
+          openOnHome((host) =>
+            openDoctor({
+              host,
+              port: chat ?? homeDoctor,
+              deep,
+              origin: chat === undefined ? 'home' : 'chat',
+            }),
+          );
         },
         // `/agent`, `/cost`, `/workflows` and `/help` open their report popup on the Home's host (ADR-0148 §10) over the chat in front, with its
-        // port; the code is loaded the first time (`openReport`), never at start.
+        // port.
         openReport: ({ line, chat, turnInFlight }) => {
-          const host = popups;
-          if (host === undefined || homeInputSealed) return;
-          void openReport({ host, port: chat, line, origin: 'chat', turnInFlight }).catch(
-            (cause: unknown) => {
-              ownership?.surface.work.failure(cause);
-            },
+          openOnHome((host) =>
+            openReport({ host, port: chat, line, origin: 'chat', turnInFlight }),
           );
         },
         launchRun: (slug, path) => runLaunch.open(slug, path),
@@ -2251,7 +2255,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               ownership === undefined ? operation() : ownership.surface.work.enter(operation),
           }),
         homeStore,
-        doctorProbes,
         models,
         openModeSettings: () =>
           runModeSettings({

@@ -67,6 +67,17 @@ export const DOCTOR_LANDMARKS = {
   error: 'The checks could not run.',
 } as const;
 
+/**
+ * The legend row of the states that have one of their own, whole on one row of every cell at 80×24 and wider (ADR-0148 §1, §8): the checks
+ * step with rows names Enter, both checks, the copy and the way out, and the arrows are the only key the 66 columns of an 80-column popup leave
+ * out. The states that are not a list (the line, the run, the empty state) are not listed: their legends are the reducer's, pinned in its tests.
+ */
+export const DOCTOR_LEGEND_ROW: Readonly<Partial<Record<DoctorState, string>>> = {
+  checks: 'Enter details · [r] again · [d] deep check · [c] copy · Esc close',
+  done: 'Enter details · [r] again · [d] deep check · [c] copy · Esc close',
+  error: '[r] again · [d] deep check · Esc close',
+};
+
 /** What the `/doctor` popup is opened to: its checks, a row's detail, its line, the deep tier running, done, with nothing to send, or failed. */
 export type DoctorState = keyof typeof DOCTOR_LANDMARKS;
 

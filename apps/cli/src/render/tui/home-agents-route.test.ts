@@ -152,7 +152,6 @@ function mount(options: Options = {}) {
     ...(agents === undefined ? {} : { agents }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(options.resume === 'none' ? {} : { resumeChat }),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},

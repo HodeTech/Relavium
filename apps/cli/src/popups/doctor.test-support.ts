@@ -188,6 +188,8 @@ export function doctorRig(options: { readonly settleMs?: number } = {}) {
   };
   let painted = true;
   host.bindVisibility(() => painted);
+  // A host's gate is bound when it mounts, and a host with none opens nothing: this rig's host lets every open through.
+  host.bindOpenGate(() => undefined);
   // The rows a page moves, as a standard popup at 80×24 has them: a short report does not scroll.
   host.bindPageRows(() => 18);
   const scope = {};

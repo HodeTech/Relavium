@@ -302,9 +302,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
     expect(r.step()).toBe(COST_STEP.cost);
-    expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Not released: the line was not on screen yet.',
-    );
+    expect(r.notifications.getSnapshot().current?.text).toBe('Not released: not yet shown.');
   });
 
   it('Ctrl+Y 799 ms after the acknowledged frame releases nothing; 800 ms releases', async () => {

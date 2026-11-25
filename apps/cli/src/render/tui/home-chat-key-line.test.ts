@@ -54,7 +54,6 @@ async function homeChat(): Promise<{ c: HomeController; lines: string[] }> {
   const lines: string[] = [];
   const c = createHomeController({
     homeStore: { read: () => SNAPSHOT },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(chatSession(lines)),
     onExit: () => {},
     onError: () => {},

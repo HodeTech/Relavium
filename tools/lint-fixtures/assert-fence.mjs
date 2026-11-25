@@ -82,6 +82,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/render/surface.ts',
   'apps/cli/src/onboarding/setup-notes.ts',
   'apps/cli/src/popups/geometry.ts',
+  'apps/cli/src/popups/popup-refusal.ts',
   'apps/cli/src/popups/turn-in-flight.ts',
   DATA_MODULE,
 ];

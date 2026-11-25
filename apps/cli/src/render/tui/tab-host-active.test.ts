@@ -635,7 +635,6 @@ function mount(options: Options = {}) {
   };
   const onExit = vi.fn();
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     ...(options.withActive === false ? {} : { active }),

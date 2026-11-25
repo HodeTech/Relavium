@@ -84,7 +84,6 @@ function mount(wired: Partial<Record<Dependency, () => Promise<string>>> = {}): 
   const deps: HomeControllerDeps = {
     ...(wired.importDefined === undefined ? {} : { importDefined: wired.importDefined }),
     ...(wired.pricing === undefined ? {} : { pricing: wired.pricing }),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: { read: () => EMPTY },
     onExit,

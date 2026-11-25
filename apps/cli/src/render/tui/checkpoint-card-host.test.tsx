@@ -79,7 +79,6 @@ function fixture(
     teardown: async () => {},
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: {
       read: () => ({

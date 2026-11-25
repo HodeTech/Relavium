@@ -50,7 +50,6 @@ function mount(size: { cols: number; rows: number }, sessions: number, alternate
   const onExit = vi.fn();
   const startChat = vi.fn(() => new Promise<never>(() => {}));
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => snapshotWith(sessions) },
     schedule: () => () => {},

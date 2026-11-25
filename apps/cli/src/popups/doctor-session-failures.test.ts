@@ -205,6 +205,64 @@ describe('the quick tier’s failures are the owner’s, and a stale one lands n
   });
 });
 
+describe('a quick tier that failed stays failed, whatever lands after it', () => {
+  /** An owner that refuses the FIRST thing entered on it (the quick tier) and runs everything after (the deep run, a second quick tier). */
+  function refusingTheFirst() {
+    const cause = new TypeError('the checks could not be started');
+    let entered = 0;
+    return {
+      cause,
+      enter: <T>(operation: () => Promise<T>): Promise<T> => {
+        entered += 1;
+        return entered === 1 ? Promise.reject(cause) : operation();
+      },
+    };
+  }
+
+  it('[d] and a landed deep result leave the step saying the checks could not run, with [r] and [d], and never the loading words', async () => {
+    const owned = refusingTheFirst();
+    const { r, anthropic, failures } = await opened({ enter: owned.enter });
+    expect(failures).toEqual([owned.cause]);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    await answerTheLine(r);
+    // The deep tier ran and landed: its one request was sent and answered.
+    expect(anthropic.requests).toHaveLength(1);
+    expect(deepRunInFlight(r.scope)).toBe(false);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    expect(r.words()).toContain('The checks could not run.');
+    expect(r.words()).not.toContain('Checking your setup');
+    expect(controlKeys(r)).toEqual(['r', 'd']);
+  });
+
+  it('[r] then runs the checks, and the deep rows that landed meanwhile are shown with them', async () => {
+    const owned = refusingTheFirst();
+    const { r } = await opened({ enter: owned.enter });
+    await answerTheLine(r);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    r.clock.advance(600);
+    r.press('r');
+    await settleWork();
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('list');
+    expect(r.words()).toContain('OS keychain');
+    expect(r.words()).toContain('Anthropic key works');
+    expect(controlKeys(r)).toEqual(['r', 'd', 'c']);
+  });
+
+  it('a deep run that cannot start leaves it saying the same, not the loading words', async () => {
+    // Every entry is refused: the quick tier first, then the deep run's own.
+    const cause = new TypeError('the owner is closing');
+    const { r } = await opened({
+      enter: () => {
+        throw cause;
+      },
+    });
+    await answerTheLine(r);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    expect(r.words()).not.toContain('Checking your setup');
+  });
+});
+
 describe('the line’s failures, and the line that was overtaken', () => {
   it('a presence read that fails says the providers could not be read, and the owner is told', async () => {
     const cause = new TypeError('the keychain read failed');

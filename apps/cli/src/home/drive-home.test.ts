@@ -311,6 +311,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         capture(props);
         const native = props.nativePrompt;
         native?.bindVisibility((expected) => native.getSnapshot() === expected);
+        // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does, and a host with none opens nothing: open.
+        props.popups?.bindOpenGate(() => undefined);
         props.onRendererReady?.(async (publish) => {
           await publish?.();
         });

@@ -34,7 +34,6 @@ describe('a failed build at 80 columns', () => {
   it('shows the whole failure across rows, with the remedy readable, and gives the message back to the prompt', async () => {
     const controller = createHomeController({
       homeStore: { read: () => EMPTY },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.reject(new Error(REMEDY)),
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -125,7 +124,6 @@ describe.each([
     const onExit = vi.fn();
     const controller = createHomeController({
       homeStore: { read: () => EMPTY },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.reject(new Error('unexpected chat')),
       onExit,
       onError: vi.fn(),

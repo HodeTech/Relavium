@@ -22,7 +22,6 @@ describe('Home command typo guidance', () => {
     const controller = createHomeController({
       startChat,
       initializeProject,
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       homeStore: {
         read: () => ({
           attention: { gates: [], failedRuns: [] },

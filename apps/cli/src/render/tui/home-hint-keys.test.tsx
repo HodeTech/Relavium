@@ -90,7 +90,6 @@ function rig(options: {
 }): Rig {
   const exits = vi.fn();
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: options.startChat ?? (() => new Promise(() => {})),
     homeStore: { read: () => options.snapshot ?? snapshotOf({}) },
     hostedRuns: {

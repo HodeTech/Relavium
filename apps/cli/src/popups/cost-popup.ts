@@ -7,7 +7,7 @@
  * **The report is `costNotice`'s facts and `costNotice`'s words** (`costParts`, `chat/repl-info.ts`): the total with its coverage qualifier, the
  * notes (the durability warning), the models seen only by usage and one row per model with its share, calls, tokens, the unpriced note, the
  * legacy line and the held estimate. A model id is a provider's text and a shared database's, so it is the one thing the popup does not take from
- * the notice's own sanitiser: every model passes the FULL scrub of the run cards ({@link reportText}).
+ * the notice's own sanitiser: every model passes the FULL scrub of the run cards ({@link scrubPopupText}).
  *
  * **The release is a step, not a keystroke.** `[r]` is offered only when something is held (a figure in the rows or in the live governor), and
  * it goes to a confirmation line answered by `Ctrl+Y` through the popup host's chord guard. The line says what changes in the product's words:
@@ -17,12 +17,13 @@
 
 import { costLineText, costParts } from '../chat/repl-info.js';
 import { formatUsdExact } from '../render/notation.js';
+import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
+import { COPY_CONTROL } from './popup-copy.js';
 import type { ChordRefusal } from './popup-host.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
-import { COPY_CONTROL } from './report-copy.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging, wrapPopupText } from './popup-text.js';
 import type { CostReading, CostRelease } from './report-port.js';
-import { REPORT_TEXT_COLUMNS, reportText, wrapHanging, wrapReport } from './report-text.js';
 
 /** The popup's steps: the report, the release's confirmation line (reached from the report, or opened on by `/cost --release`) and its result. */
 export const COST_STEP = { cost: 0, release: 1, done: 2 } as const;
@@ -103,13 +104,13 @@ function partsOf(reading: CostReading, released?: number) {
  */
 export function costReportLines(
   reading: CostReading,
-  columns = REPORT_TEXT_COLUMNS,
+  columns = POPUP_TEXT_COLUMNS,
 ): readonly string[] {
   const parts = partsOf(reading);
   return [
-    ...wrapReport(parts.total, columns),
+    ...wrapPopupText(parts.total, columns),
     ...[...parts.notes, ...parts.rows].flatMap((line) =>
-      wrapHanging(costLineText(line, reportText), columns),
+      wrapHanging(costLineText(line, scrubPopupText), columns),
     ),
   ];
 }
@@ -129,11 +130,11 @@ export function releaseContent(reading: CostReading): PopupContent {
   return {
     kind: 'report',
     lines: [
-      ...wrapReport(
+      ...wrapPopupText(
         `This lifts about ${formatUsdExact(held)} of estimated-but-unconfirmed spend from this session’s cap, so later turns can spend that much more.`,
       ),
       '',
-      ...wrapReport('It cannot be undone.'),
+      ...wrapPopupText('It cannot be undone.'),
     ],
   };
 }
@@ -143,13 +144,7 @@ export function releaseContent(reading: CostReading): PopupContent {
  * popup draws it in its legend row.
  */
 export function releaseRefusedText(reason: ChordRefusal): string {
-  const why: Readonly<Record<ChordRefusal, string>> = {
-    unseen: 'the line was not on screen yet',
-    early: 'it came too soon after the line appeared',
-    expired: 'the time to confirm had passed',
-    typed: 'a key was typed after the line appeared',
-  };
-  return `Not released: ${why[reason]}.`;
+  return `Not released: ${CHORD_REFUSAL_PHRASE[reason]}.`;
 }
 
 /** The release step after an answer found a turn in flight: an empty state, so the line cannot be answered again from stale evidence. */
@@ -172,13 +167,13 @@ export function releaseDoneContent(
 ): PopupContent {
   const amount = releasedAmount(outcome);
   const lines = [
-    ...wrapReport(
+    ...wrapPopupText(
       amount > 0
         ? `Released ~${formatUsdExact(amount)} back to the cap.`
         : 'Nothing was held against the cap, so nothing was released.',
     ),
   ];
-  if (after !== undefined) lines.push('', ...wrapReport(partsOf(after).total));
+  if (after !== undefined) lines.push('', ...wrapPopupText(partsOf(after).total));
   return { kind: 'report', lines };
 }
 

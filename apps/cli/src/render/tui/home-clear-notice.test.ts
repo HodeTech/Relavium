@@ -51,7 +51,6 @@ describe('the notice a /clear in the chat the Home hosts opens the fresh convers
     const first = session('first', () => Promise.resolve(fresh));
     const c: HomeController = createHomeController({
       homeStore: { read: () => SNAPSHOT },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(first),
       onExit: () => {},
       onError: () => {},

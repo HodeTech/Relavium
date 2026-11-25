@@ -689,7 +689,6 @@ function mountTabHost(
 ) {
   const size = options.size ?? { cols: 80, rows: 24 };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     permissions: portOf({ ...SNAPSHOT, allowlist: ALLOWLIST }),

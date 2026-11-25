@@ -28,7 +28,6 @@ function fixture(
   const open = options.open ?? vi.fn(() => Promise.resolve());
   const c = createHomeController({
     homeStore: { read: () => snapshot },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => {
       throw new Error('unexpected chat');
     },
@@ -108,7 +107,6 @@ describe('Home provider setup', () => {
     const open = vi.fn(() => Promise.resolve());
     const c = createHomeController({
       homeStore: { read: () => snapshot },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(session),
       onExit: () => {},
       onError: () => {},
@@ -148,7 +146,6 @@ describe('Home provider setup', () => {
     };
     const c = createHomeController({
       homeStore: { read: () => snapshot },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(session),
       onExit: () => {},
       onError: () => {},

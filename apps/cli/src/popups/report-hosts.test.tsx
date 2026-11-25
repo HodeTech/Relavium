@@ -23,7 +23,7 @@ import {
 } from '../render/tui/surface-matrix/report-fixture.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { COST_STEP } from './cost-popup.js';
-import { reportCopyText } from './report-copy.js';
+import { reportCopyText } from './popup-copy.js';
 import { openReport, type ReportsPort } from './report-port.js';
 
 type Host = 'chat' | 'standalone-chat';

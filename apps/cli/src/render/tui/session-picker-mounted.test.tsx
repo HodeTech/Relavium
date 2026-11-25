@@ -45,7 +45,6 @@ describe.each(['home', 'standalone'] as const)('mounted searchable picker in %s'
               isEmpty: true,
             }),
           },
-          doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
           onExit: () => {},
           onError: () => {},
         });

@@ -81,7 +81,6 @@ function mount(opts: { launch?: () => Promise<string>; withChat?: boolean } = {}
   };
   const controller = createHomeController({
     ...(opts.launch === undefined ? {} : { launchRun: opts.launch }),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: { read: () => EMPTY },
     onExit: vi.fn(),

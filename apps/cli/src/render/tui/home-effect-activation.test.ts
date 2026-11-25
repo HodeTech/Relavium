@@ -76,7 +76,6 @@ function controller(startChat: () => Promise<HomeChatSession>) {
   return createHomeController({
     startChat,
     homeStore: { read: () => EMPTY },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     onExit: vi.fn(),
     onError: vi.fn(),
   });

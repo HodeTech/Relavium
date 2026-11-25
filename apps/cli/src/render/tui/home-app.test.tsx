@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClipboardOutcome, ClipboardWriter } from '../clipboard.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
-import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -54,8 +53,6 @@ import { COPIED_TOAST_MS } from './tui-constants.js';
  */
 
 afterEach(cleanup);
-
-const STUB_DOCTOR_PROBES: DoctorProbes = { keychain: () => {}, config: () => {}, toolHost: {} };
 
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
@@ -173,7 +170,6 @@ function mountHome(
   let size = opts.size ?? { cols: 100, rows: 30 };
   const snapshot = opts.snapshot; // captured so `read: () => snapshot` narrows without an `as` cast
   const c = createHomeController({
-    doctorProbes: STUB_DOCTOR_PROBES,
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
@@ -506,7 +502,6 @@ describe('RootApp — the suspend port (ADR-0068 §e)', () => {
   it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
     const port = createSuspendPort();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () =>
         Promise.resolve(
           makeSession(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)),

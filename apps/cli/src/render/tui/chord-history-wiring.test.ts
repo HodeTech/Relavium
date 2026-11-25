@@ -106,7 +106,6 @@ function wiring() {
   });
   const cancel = vi.fn((): boolean => true);
   const controller: HomeController = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => host, cancel, close: () => Promise.resolve() },

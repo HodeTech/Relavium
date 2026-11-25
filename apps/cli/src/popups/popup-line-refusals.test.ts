@@ -97,6 +97,7 @@ function rig(options: { readonly line?: Partial<PopupStep>; readonly dropTimers?
   });
   let painted = true;
   host.bindVisibility(() => painted);
+  host.bindOpenGate(() => undefined); // an unbound gate opens nothing: this host lets every open through
   host.bindPageRows(() => 1);
   const chord = vi.fn();
   const refusals: ChordRefusal[] = [];
@@ -280,6 +281,7 @@ describe('a Ctrl+Y the opening guard dropped disarms the line at once and says w
       placement: 'overlay',
     });
     host.bindVisibility(() => true);
+    host.bindOpenGate(() => undefined);
     const refusals: ChordRefusal[] = [];
     const chord = vi.fn();
     host.openForUser(

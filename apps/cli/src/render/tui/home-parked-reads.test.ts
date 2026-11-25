@@ -58,7 +58,6 @@ function rig(initial: RunHostSnapshot) {
   const pending = new Map<number, { at: number; run: () => void }>();
   const list = vi.fn((): readonly ParkedRunRow[] => [ROW]);
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: {

@@ -67,7 +67,6 @@ describe.each([false, true])('native chat geometry (color %s)', (color) => {
                   isEmpty: true,
                 }),
               },
-              doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
               onExit: () => {},
               onError: (error) => {
                 throw error;

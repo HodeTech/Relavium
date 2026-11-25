@@ -104,6 +104,8 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
     }),
     render: (value) => {
       props = value;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does, and a host with none opens nothing: open.
+      value.popups?.bindOpenGate(() => undefined);
       value.onRendererReady?.(async (publish) => {
         await publish?.();
       });

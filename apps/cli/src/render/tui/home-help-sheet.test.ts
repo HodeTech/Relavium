@@ -89,7 +89,6 @@ function mount(
   const onExit = vi.fn();
   const startChat = vi.fn(() => new Promise<HomeChatSession>(() => {}));
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => options.snapshot ?? EMPTY },
     ...(options.hosted === undefined
@@ -143,7 +142,8 @@ const ANSWERS: Readonly<Record<string, (home: Home) => void | Promise<void>>> = 
     expect(home.onExit).toHaveBeenCalledOnce();
   },
   doctor: (home) => {
-    expect(home.controller.getSnapshot().notice).toContain('doctor:');
+    // A popup `driveHome` always wires; with none, the one line every word with no port says.
+    expect(home.controller.getSnapshot().notice).toBe('Doctor is not available here.');
   },
   clear: (home) => {
     // The words `Enter` on the dim /clear row says (C8): one fact, one wording.
@@ -509,7 +509,6 @@ describe('a word the registry does not know', () => {
     const started = vi.fn(() => Promise.resolve(session));
     const onExit = vi.fn();
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: started,
       homeStore: { read: () => EMPTY },
       schedule: () => () => {},

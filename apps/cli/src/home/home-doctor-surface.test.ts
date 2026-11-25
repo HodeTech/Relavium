@@ -50,6 +50,8 @@ it('the Home’s /doctor opens its popup, which names /import and no shell comma
     }),
     render: (value) => {
       props = value;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does, and a host with none opens nothing: open.
+      value.popups?.bindOpenGate(() => undefined);
       value.onRendererReady?.(async (publish) => {
         await publish?.();
       });

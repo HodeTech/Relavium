@@ -96,7 +96,6 @@ describe('the fake terminal', () => {
   it('draws what ink-testing-library draws for a real Home, in the full-screen and the inline renderer', async () => {
     for (const variant of [ALT_80, INLINE_80]) {
       const controller = createHomeController({
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         startChat: () => new Promise<never>(() => {}),
         homeStore: { read: () => EMPTY_SNAPSHOT },
         schedule: () => () => {},

@@ -209,7 +209,6 @@ describe('retained catalog credential changes', () => {
           isEmpty: true,
         }),
       },
-      doctorProbes: { keychain: () => undefined, config: () => undefined, toolHost: {} },
       onExit: vi.fn(),
       onError: vi.fn(),
       models: {

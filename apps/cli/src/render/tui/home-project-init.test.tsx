@@ -50,7 +50,6 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
   let held = false;
   let flushes = 0;
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: {
       read: () => ({

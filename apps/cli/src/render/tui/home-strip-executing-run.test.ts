@@ -58,7 +58,6 @@ function rig(initialParked: readonly ParkedRunRow[]) {
   const timers = new Map<number, { at: number; run: () => void }>();
   const list = vi.fn((): readonly ParkedRunRow[] => parked);
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },

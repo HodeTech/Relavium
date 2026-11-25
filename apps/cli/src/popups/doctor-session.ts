@@ -1,15 +1,18 @@
 /**
  * The `/doctor` popup's state machine ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §8, [MVP-11 §4.4](../../../../docs/roadmap/phases/mvp-11.md#44-reports-and-settings-as-popups)): what runs when, what each key does, and what
- * is kept between two openings. Loaded only when the person first opens the popup (`doctor-port.ts`); its words are `doctor-popup.ts`.
+ * is kept between two openings. Loaded only when the person first opens the popup (`doctor-port.ts`); its words are `doctor-popup.ts`. What it
+ * shares with the four report popups is written once: the work starter (`popup-work.ts`), the copy (`popup-copy.ts`), the scrub and the wrap
+ * (`popup-text.ts`) and the phrases of a refused chord (`chord-refusal.ts`).
  *
  * **States.** idle (the quick tier is done) → armed (`[d]`: the confirmation line is being prepared) → confirming (the line is drawn and waits
  * for its chord) → running (the deep tier) → done; `[r]` runs the quick tier again from idle or done, and keeps the kept deep rows (labelled with
- * their age). Every step is a step of ONE popup, and every result carries the popup's run: a result for a popup that is closed or replaced
- * lands nowhere (`PopupContext.setContent`).
+ * their age). A quick tier that FAILED is a state of its own (the checks step says so, with `[r]` and `[d]`, whatever lands after it: a deep result
+ * included), never "no rows yet". Every step is a step of ONE popup, and every result carries the popup's run: a result for a popup that is
+ * closed or replaced lands nowhere (`PopupContext.setContent`).
  *
  * **The quick tier reads off the render.** Each probe (the keychain's reachability, the configuration, the global artifacts) and each provider's
- * key PRESENCE (`availability` or `hasKey`, never a key value) runs in the work the popup starts, one at a time with the event loop given back
+ * key PRESENCE (`availability` or `hasKey`, never a key value) runs in the work the popup starts (`startPopupWork`), one at a time with the event loop given back
  * between two, and the presence reads stop at {@link DOCTOR_PRESENCE_BOUND_MS}: a keychain that is locked or asks for access blocks the loop for
  * that read only, never a frame. Nothing here runs while the popup is drawn.
  *
@@ -48,8 +51,8 @@ import {
   providerEndpointOrigin,
   type ProviderResolver,
 } from '../engine/providers.js';
-import { attemptClipboardWrite, type ClipboardOutcome } from '../render/clipboard.js';
 import { keyToken } from '../render/tui/legend.js';
+import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import {
   checksContent,
   consentContent,
@@ -61,13 +64,16 @@ import {
   DOCTOR_LOADING,
   DOCTOR_STEP,
   providerKeysCheck,
+  quickFailedContent,
   remedyOf,
   type DoctorTier,
   type DoctorView,
 } from './doctor-popup.js';
 import type { DoctorOpenRequest } from './doctor-port.js';
 import type { PopupContent } from './frame-model.js';
+import { copyPopupText } from './popup-copy.js';
 import type { ChordRefusal, PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
+import { macrotask, startPopupWork } from './popup-work.js';
 
 /** How long the presence reads of one check may take before the rest are not read (each read is synchronous: a keychain may prompt). */
 export const DOCTOR_PRESENCE_BOUND_MS = 2000;
@@ -111,12 +117,6 @@ export function deepRunInFlight(scope: object): boolean {
   return SCOPES.get(scope)?.run !== undefined;
 }
 
-/** A macrotask: the event loop renders and reads keys before the next probe. */
-const macrotask = (): Promise<void> =>
-  new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-
 /** A provider's key presence, a boolean and never a value; `undefined` for a resolver that can only read the value (it is not asked). */
 function presenceOf(resolver: ProviderResolver, id: ProviderId): boolean | undefined {
   if (resolver.availability !== undefined) return resolver.availability(id).status === 'usable';
@@ -125,31 +125,11 @@ function presenceOf(resolver: ProviderResolver, id: ProviderId): boolean | undef
 }
 
 /**
- * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): the reason in a few words, and what that means. At most 66 columns,
- * the inner width of a popup at the smallest terminal, so the notification is never cut.
+ * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): the reason in a few words (`chord-refusal.ts`, the one table of
+ * them), and what that means. At most 66 columns, the inner width of a popup at the smallest terminal, so the notification is never cut.
  */
 export function chordRefusedText(reason: ChordRefusal): string {
-  const why: Readonly<Record<ChordRefusal, string>> = {
-    unseen: 'not yet shown',
-    early: 'pressed too soon',
-    expired: 'time ran out',
-    typed: 'a key was typed',
-  };
-  return `Not confirmed: ${why[reason]}. Nothing was sent; ${keyToken('d')} asks again.`;
-}
-
-/** What `[c]` says: what was sent to the terminal's clipboard, never the text. */
-export function copyNotice(outcome: ClipboardOutcome): string | undefined {
-  switch (outcome.kind) {
-    case 'written':
-      return `Doctor report: sent ${String(outcome.characters)} characters to the terminal clipboard.`;
-    case 'failed':
-      return 'Doctor report: the clipboard request failed.';
-    case 'too-large':
-      return 'Doctor report: too large for the terminal clipboard.';
-    case 'empty':
-      return undefined;
-  }
+  return `Not confirmed: ${CHORD_REFUSAL_PHRASE[reason]}. Nothing was sent; ${keyToken('d')} asks again.`;
 }
 
 /** What the line says while the host's last deep run is still stopping: nothing new can be sent yet. */
@@ -173,6 +153,8 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
   let quickProgress: string = DOCTOR_LOADING.quick;
   let quickGeneration = 0;
   let deepRunning = false;
+  /** Whether the quick tier's last run failed: the checks step then says so (with `[r]`), whatever else lands, until a run is started again. */
+  let quickFailed = false;
   /** Whether the checks step shows the rows now (and so has a report to copy), as opposed to loading or an error. */
   let rowsShown = false;
   let arming = 0;
@@ -200,9 +182,14 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
     context.setContent(DOCTOR_STEP.checks, content, doctorChecksControls(rowsShown));
   };
 
-  /** The checks step, from what is known now: the deep run's wait, the quick tier's, or the rows (the deep rows' age is read now). */
+  /**
+   * The checks step, from what is known now: the deep run's wait, the quick tier's failure, its wait, or the rows (the deep rows' age is read
+   * now). A failed quick tier is a state of its own, never "no rows yet": it is said (with `[r]` and `[d]`) while a deep run lands or fails, and
+   * the kept deep result is not lost, it is shown with the rows once `[r]` succeeds.
+   */
   const refresh = (context: PopupContext): void => {
     if (deepRunning) showChecks(context, { kind: 'loading', what: DOCTOR_LOADING.deep });
+    else if (quickFailed) showChecks(context, quickFailedContent());
     else if (quick === undefined) showChecks(context, { kind: 'loading', what: quickProgress });
     else showChecks(context, checksContent(view()));
   };
@@ -248,6 +235,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
     const generation = quickGeneration;
     const live = (): boolean => !context.signal.aborted && quickGeneration === generation;
     quick = undefined;
+    quickFailed = false;
     quickProgress = DOCTOR_LOADING.quick;
     refresh(context);
     const operation = async (): Promise<void> => {
@@ -273,27 +261,12 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
       quick = checks;
       refresh(context);
     };
-    const failed = (cause: unknown): void => {
-      port.workOwner?.failure(cause);
+    startPopupWork(port.workOwner, operation, () => {
       if (!live()) return;
       quick = undefined;
-      try {
-        showChecks(context, {
-          kind: 'error',
-          what: 'The checks could not run.',
-          next: `${keyToken('r')} runs them again.`,
-        });
-      } catch (inner) {
-        // A listener that throws again is the owner's fault too, never an unhandled rejection.
-        port.workOwner?.failure(inner);
-      }
-    };
-    try {
-      const pending = port.workOwner === undefined ? operation() : port.workOwner.enter(operation);
-      pending.catch(failed);
-    } catch (cause) {
-      failed(cause);
-    }
+      quickFailed = true;
+      refresh(context);
+    });
   };
 
   /** Arm the line: read which providers have a key and where each would send it, freeze them, and say so. */
@@ -454,17 +427,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
     // The report is what the checks step shows: while it loads, or says the checks could not run, there is none (a kept deep result alone is
     // not the report either).
     if (!rowsShown) return;
-    const clipboard = port.clipboard;
-    if (clipboard === undefined) {
-      context.notify('Doctor report: copying is not available here.');
-      return;
-    }
-    void attemptClipboardWrite(clipboard, doctorCopyText(view(), port.plainGlyphs === true)).then(
-      (outcome) => {
-        const text = copyNotice(outcome);
-        if (text !== undefined) context.notify(text);
-      },
-    );
+    copyPopupText(context, port, 'Doctor', doctorCopyText(view(), port.plainGlyphs === true));
   };
 
   const handlers: PopupHandlers = {

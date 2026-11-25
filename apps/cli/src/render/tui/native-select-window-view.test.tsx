@@ -352,7 +352,6 @@ describe.each([
       teardown: () => Promise.resolve(),
     };
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(session),
       homeStore: {
         read: () => ({

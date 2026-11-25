@@ -71,7 +71,6 @@ function fixture(
   );
   const c = createHomeController({
     homeStore: { read: () => SNAPSHOT },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     onExit: () => {},
     onError: () => {},

@@ -4,16 +4,15 @@
  * as a scrollable report. It replaces the docked sheet of [ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §3 and shows the same fields from the same view (`BoundAgentView`: the definition the SESSION holds, never a file): the name, the file label,
  * the provider and the model it runs on, the temperature and the reasoning effort, the tool grant with the mark of a tool this chat does not
- * wire, and the head of the system prompt. Its words are the pure field formatting `agent-sheet.ts` keeps for the plain chat's notice (the name,
+ * wire, and the head of the system prompt. Its words are the pure field formatting `chat/agent-notice.ts` keeps for the plain chat's notice (the name,
  * the tool grant with its marks, the effort the session uses), one field to a row and wrapped where the sheet cut, so the two cannot name
  * different facts.
  *
  * **Every field is untrusted** (an agent's name, id, model, tool names and prompt come from a project's YAML or a shared database), and this
- * is one of the report popups whose builders share the FULL scrub of the run cards ({@link reportText}): the view's own scrub is a floor under
+ * is one of the report popups whose builders share the FULL scrub of the run cards ({@link scrubPopupText}): the view's own scrub is a floor under
  * it, not the scrub. Its one control is `[c] copy`; `Esc` (and `Ctrl+C`) close it.
  */
 
-import type { BoundAgentView } from '../chat/bound-agent-view.js';
 import {
   agentSheetTitle,
   effortText,
@@ -25,11 +24,12 @@ import {
   NOT_SET,
   toolsParts,
   wrappedTools,
-} from '../render/tui/agent-sheet.js';
+} from '../chat/agent-notice.js';
+import type { BoundAgentView } from '../chat/bound-agent-view.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
+import { copyControlsFor } from './popup-copy.js';
 import type { PopupSpec } from './popup-reducer.js';
-import { copyControlsFor } from './report-copy.js';
-import { REPORT_TEXT_COLUMNS, reportText, wrapHanging } from './report-text.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js';
 
 /** What the popup says when the view of the agent cannot be made. */
 export const AGENT_REPORT_UNREADABLE = {
@@ -45,18 +45,18 @@ export function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
   const { detail } = view;
   return {
     ...view,
-    id: reportText(view.id),
-    name: view.name === undefined ? undefined : reportText(view.name),
-    sourceLabel: view.sourceLabel === undefined ? undefined : reportText(view.sourceLabel),
+    id: scrubPopupText(view.id),
+    name: view.name === undefined ? undefined : scrubPopupText(view.name),
+    sourceLabel: view.sourceLabel === undefined ? undefined : scrubPopupText(view.sourceLabel),
     detail: {
       ...detail,
-      model: reportText(detail.model),
-      provider: reportText(detail.provider),
-      tools: detail.tools.map(reportText),
-      promptHead: reportText(detail.promptHead),
+      model: scrubPopupText(detail.model),
+      provider: scrubPopupText(detail.provider),
+      tools: detail.tools.map(scrubPopupText),
+      promptHead: scrubPopupText(detail.promptHead),
       ...(detail.reasoningEffort === undefined
         ? {}
-        : { reasoningEffort: reportText(detail.reasoningEffort) }),
+        : { reasoningEffort: scrubPopupText(detail.reasoningEffort) }),
     },
   };
 }
@@ -64,7 +64,7 @@ export function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
 /** One field: its label, then its value, which wraps under itself (nothing is cut: a popup scrolls where a sheet could not). */
 function field(label: string, value: string): string[] {
   const lead = fieldLead(label);
-  return wrapHanging(`${lead}${value}`, REPORT_TEXT_COLUMNS, lead.length);
+  return wrapHanging(`${lead}${value}`, POPUP_TEXT_COLUMNS, lead.length);
 }
 
 /**
@@ -77,7 +77,7 @@ function toolsField(view: BoundAgentView): string[] {
   const rows = wrappedTools(
     lead,
     items.map((item) => item.text),
-    REPORT_TEXT_COLUMNS - INDENT.length - LABEL_WIDTH,
+    POPUP_TEXT_COLUMNS - INDENT.length - LABEL_WIDTH,
   );
   return rows.map((row, index) => `${index === 0 ? fieldLead('Tools') : fieldLead('')}${row}`);
 }

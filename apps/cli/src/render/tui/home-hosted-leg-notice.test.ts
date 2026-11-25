@@ -71,7 +71,6 @@ function rig(start: RunHostSnapshot = executing(RUN)) {
     teardown: () => Promise.resolve(),
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     // A native action that ends in the chat reads the run host again: the one way a chat's Home looks at the host with no leg live. `/resume`
     // is the one such action a chat has (`/init` is the Home's: ADR-0145 §7.5), and a resume that is refused with a notice ends in the chat.

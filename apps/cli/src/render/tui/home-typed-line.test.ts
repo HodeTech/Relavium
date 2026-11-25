@@ -15,7 +15,6 @@ import { createHomeController, type HomeController } from './home-controller.js'
 function mount(): HomeController {
   return createHomeController({
     startChat: () => new Promise(() => {}),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     homeStore: {
       read: () => ({
         attention: { gates: [], failedRuns: [] },

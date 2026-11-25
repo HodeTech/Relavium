@@ -1,12 +1,12 @@
 /**
- * How a report popup starts its work ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §2, §5): off the render, on the owner, and never as an unhandled rejection. The doctor's pattern, shared by the three reports that read
- * something (`/cost`, `/workflows` and the release's refreshed total).
+ * How a popup starts its work ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2, §5): off the render, on the owner, and never as an unhandled rejection. One starter for the `/doctor` popup's quick tier and for the
+ * report popups that read something (`/cost`, `/workflows` and the release's refreshed total).
  *
- * A report's reads are synchronous queries (a database, a directory scan), so "off the render" means: not while a frame is being drawn, and
- * not before the event loop has given the frame back. Each is started after one macrotask, entered on the work owner (so the session's database
- * stays open until it has settled and an exit waits for it), and its fault goes to the owner and to the popup as a state by CODE, never by
- * message (a database error can carry a path).
+ * A popup's reads are synchronous queries (a database, a directory scan, a keychain), so "off the render" means: not while a frame is being
+ * drawn, and not before the event loop has given the frame back. Each is started after one macrotask, entered on the work owner (so the
+ * session's database stays open until it has settled and an exit waits for it), and its fault goes to the owner and to the popup as a state by
+ * CODE, never by message (a database error can carry a path).
  */
 
 import { CliError } from '../process/errors.js';
@@ -27,7 +27,7 @@ export function faultCode(cause: unknown): string {
  * Start `operation` as the popup's work: entered on `owner` when there is one, its fault reported to the owner and given to `failed` (which
  * puts the state in the popup). An owner that no longer admits work (the host is closing) throws on entry: that is a fault of the same kind.
  */
-export function startReportWork(
+export function startPopupWork(
   owner: ReportWorkOwner | undefined,
   operation: () => Promise<void>,
   failed: (cause: unknown) => void,

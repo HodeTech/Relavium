@@ -137,7 +137,6 @@ describe.each([false, true])('inline transcript suspension (color %s)', (color) 
           isEmpty: true,
         }),
       },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       onExit: () => {},
       onError: () => {
         throw new Error('Unexpected Home controller failure.');

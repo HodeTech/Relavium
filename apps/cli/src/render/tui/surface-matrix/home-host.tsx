@@ -1,4 +1,3 @@
-import type { DoctorProbes } from '../../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../../home/home-store.js';
 import { RootApp, type RootAppProps } from '../home-app.js';
 import {
@@ -49,8 +48,6 @@ export const EMPTY_SNAPSHOT: HomeSnapshot = {
   isEmpty: true,
 };
 
-const STUB_DOCTOR_PROBES: DoctorProbes = { keychain: () => {}, config: () => {}, toolHost: {} };
-
 /** What the controller's ports may need of the host they are built for. */
 export interface HomeContext {
   /** The native prompt channel, when the setup asked for one. */
@@ -90,7 +87,7 @@ export interface HomeSetup {
   readonly subscribeResize?: ((onResize: () => void) => () => void) | undefined;
   /**
    * The Home's `/doctor` popup port: given, the controller opens the popup on the Home's popup host as `driveHome` wires it (`openDoctor`), for
-   * the landing and, with a session whose `doctor` is set, for the chat it hosts. Absent ⇒ `/doctor` runs the quick tier into the notice.
+   * the landing and, with a session whose `doctor` is set, for the chat it hosts. Absent ⇒ `/doctor` says the doctor is not available here.
    */
   readonly doctor?: DoctorPort | undefined;
   /**
@@ -185,8 +182,7 @@ export function mountHome(
         );
   const session = setup.session;
   const real = createHomeController({
-    doctorProbes: STUB_DOCTOR_PROBES,
-    // As `driveHome` wires it from the colour setting: the lines the controller writes itself (the /doctor report, a leg's end, a model switch)
+    // As `driveHome` wires it from the colour setting: the lines the controller writes itself (a leg's end, a model switch)
     // are drawn in the plain glyph forms exactly when colour is off, so the matrix reads them as a person does.
     plainGlyphs: !variant.color,
     startChat:

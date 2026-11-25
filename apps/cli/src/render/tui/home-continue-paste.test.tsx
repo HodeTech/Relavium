@@ -57,7 +57,6 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
             isEmpty: false,
           }),
         },
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         onExit: () => {},
         onError: () => {},
       });

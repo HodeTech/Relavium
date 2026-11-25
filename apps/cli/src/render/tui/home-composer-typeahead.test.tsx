@@ -123,7 +123,6 @@ describe('keys typed in the Home composer with a card open reach that counter', 
     let size = { cols: 60, rows: 24 }; // too small to hold a card: it is not painted
     let resize = (): void => undefined;
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.reject(new Error('unexpected chat')),
       homeStore: { read: () => EMPTY },
       onExit: vi.fn(),

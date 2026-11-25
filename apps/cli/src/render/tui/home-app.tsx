@@ -5,8 +5,8 @@ import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import type { DisplayPathRoots } from '../notation.js';
 import { NativePromptView } from './native-prompt-view.js';
-import { turnInFlight } from '../../popups/turn-in-flight.js';
-import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
+import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
+import { popupRefusal } from '../../popups/popup-refusal.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import type { NotificationChannel, NotificationSnapshot } from '../../popups/notifications.js';
 import {
@@ -40,7 +40,13 @@ import {
 } from 'react';
 
 import type { PendingAttachment } from './attachments.js';
-import { chatIsBusy, ChatView, useCopiedToast } from './chat-ink.js';
+import {
+  chatIsBusy,
+  ChatView,
+  composerEditor,
+  hintRowNotification,
+  useCopiedToast,
+} from './chat-ink.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
   createTranscriptAcknowledgement,
@@ -605,29 +611,24 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useEffect(() => {
     const popups = props.popups;
     if (popups === undefined || popupAcknowledgement === undefined) return;
-    popups.bindVisibility(popupAcknowledgement.visible);
-    // The opening rules (ADR-0148 §2): no turn running, no card or sheet open, no two-step armed, nothing else owning the keyboard.
-    popups.bindOpenGate(() =>
-      homePopupRefusal(controller.getSnapshot(), propsRef.current.nativePrompt?.getSnapshot()),
-    );
-    // A popup that opens over a card (only a race can do it) resets the card's acknowledgement and dwell origin: the card is measured again on
-    // a new frame before anything on it counts. Synchronous, in the popup host's own publication.
-    const stopRevoking = revokeCardCustodyOnPopup(popups, () => {
-      homeFrame.invalidate();
-      cardFrame.invalidate();
-      nativeAcknowledgement?.invalidate();
-      controller.getSnapshot().session?.store.invalidateToolReview();
+    return bindPopupHost({
+      popups,
+      acknowledgement: popupAcknowledgement,
+      // The opening rules (ADR-0148 §2): no turn running, no card or sheet open, no two-step armed, nothing else owning the keyboard.
+      gate: () =>
+        homePopupRefusal(controller.getSnapshot(), propsRef.current.nativePrompt?.getSnapshot()),
+      // A popup that opens over a card (only a race can do it) resets the card's acknowledgement and dwell origin: the card is measured again
+      // on a new frame before anything on it counts. Synchronous, in the popup host's own publication.
+      onRevoke: () => {
+        homeFrame.invalidate();
+        cardFrame.invalidate();
+        nativeAcknowledgement?.invalidate();
+        controller.getSnapshot().session?.store.invalidateToolReview();
+      },
+      // A sheet that ARRIVES over a popup wins: the popup closes unanswered (ADR-0148 §2). Each source is watched for a sheet that was not
+      // there before: a card of the live chat, a native card, the exit guard, a gate card.
+      watchSheets: homeSheetSources(controller, propsRef.current.nativePrompt),
     });
-    // A sheet that ARRIVES over a popup wins: the popup closes unanswered (ADR-0148 §2). Each source is watched for a sheet that was not
-    // there before: a card of the live chat, a native card, the exit guard, a gate card.
-    const stopWatching = watchSheetArrival(controller, propsRef.current.nativePrompt, popups);
-    return () => {
-      stopWatching();
-      stopRevoking();
-      popups.bindOpenGate(undefined);
-      popups.bindVisibility(undefined);
-      popupAcknowledgement.dispose();
-    };
   }, [controller, popupAcknowledgement, homeFrame, cardFrame, nativeAcknowledgement, props.popups]);
   // The notification channel is held while a decision is on screen or the hint row is not drawn, so it never paints over a card's rows and a
   // notification nobody could see is not spent. Followed from every source, not from this root's renders: a chat's card comes and goes in the
@@ -1082,7 +1083,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4).
   // It is the slot's own predicate, asked of the slot's own props, and the slot itself stays OUTSIDE the dimmed subtree in every branch: the
   // popup's cells are never dim, and nothing that is not the slot is positioned absolutely. A boolean: it changes only when a popup opens or closes.
-  const dimmed = dimsBackdrop(slotDrawing(slotProps, popupSnapshot), color);
+  // The same predicate takes the cursor out of the composer and the notification off the hint row while a popup is drawn.
+  const drawing = slotDrawing(slotProps, popupSnapshot);
+  const dimmed = dimsBackdrop(drawing, color);
+  const composer = composerEditor(state.input, drawing);
+  const hintNotification = hintRowNotification(notification.current?.text, drawing);
   // In the overlay the root must be as tall as the screen less a row, so the absolutely positioned popup lies inside it.
   const overlayOpen =
     placement === 'overlay' && (popupSnapshot.open || (prompt.active && nativeFramed(prompt)));
@@ -1100,7 +1105,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
               holdsCustody(liveOverlays())
             }
             reviewClipboard={props.reviewClipboard}
-            editor={state.input}
+            editor={composer}
             overlays={flags}
             palette={state.palette}
             search={state.search}
@@ -1136,7 +1141,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             attachments={state.attachments}
             copied={copied}
             promptHeight={chatPromptHeight(flags, prompt, size)}
-            notification={notification.current?.text}
+            notification={hintNotification}
           />
           {nativeAcknowledgement && (
             <NativePromptView
@@ -1261,7 +1266,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
               homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
             }}
             snapshot={state.snapshot}
-            editor={state.input}
+            editor={composer}
             notice={state.notice}
             nowMs={props.nowMs()}
             cols={Number.isFinite(size.cols) ? size.cols : 0}
@@ -1278,7 +1283,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             interruptArmed={state.interruptArmed}
             hostedRun={state.hostedRun}
             exitGuard={state.exitGuard}
-            notification={notification.current?.text}
+            notification={hintNotification}
           />
         )}
         {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
@@ -1359,73 +1364,53 @@ function GateCardScreenView(
 
 /**
  * Why a popup may not open on the Home now ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §2), or `undefined` when it may: a chat is being built; a card of the live chat is open; a sheet (a native card, the exit guard, a gate card)
- * is; a turn, a submit, a `!` command or a native action runs; the interrupt keymap is armed (a two-step); or something else owns the keyboard
- * (a palette, a picker, a sheet, a screen). The popup host asks this at every open and says the reason in one notification.
+ * §2), or `undefined` when it may: the one refusal (`popup-refusal.ts`) over the Home's facts. A chat is being built; a card of the live chat is
+ * open; a sheet (a native card, the exit guard, a gate card) is; a turn, a submit, a `!` command or a native action runs; the interrupt keymap
+ * is armed (a two-step); or something else owns the keyboard (a palette, a picker, a sheet, a screen). The popup host asks this at every open
+ * and says the reason in one notification.
  */
 export function homePopupRefusal(
   state: HomeControllerState,
   native: NativePromptSnapshot | undefined,
 ): PopupRefusal | undefined {
-  if (state.mode === 'loading') return 'starting';
-  const store = state.session?.store.getSnapshot();
-  const cards = cardFlagsFrom(store);
-  if (cards.approval || cards.review || cards.question || cards.checkpoint) return 'card-open';
-  if (
-    native?.active === true ||
-    state.exitGuard !== undefined ||
-    state.screen?.kind === 'gate-card'
-  )
-    return 'sheet-open';
-  if (turnInFlight(homeTurnFacts(state))) return 'turn-running';
-  if (state.interruptArmed) return 'armed';
-  if (overlayOwnsKeyboard(homeOverlayFlags(state))) return 'overlay-open';
-  return undefined;
-}
-
-/** Which kinds of sheet are on the Home now: a card of the live chat, a native card, the exit guard, a gate card. */
-interface SheetsPresent {
-  readonly card: boolean;
-  readonly native: boolean;
-  readonly exitGuard: boolean;
-  readonly gateCard: boolean;
-}
-
-function sheetsPresent(
-  state: HomeControllerState,
-  native: NativePromptSnapshot | undefined,
-): SheetsPresent {
   const cards = cardFlagsFrom(state.session?.store.getSnapshot());
-  return {
-    card: cards.approval || cards.question || cards.checkpoint,
-    native: native?.active === true,
-    exitGuard: state.exitGuard !== undefined,
-    gateCard: state.screen?.kind === 'gate-card',
-  };
+  return popupRefusal({
+    starting: state.mode === 'loading',
+    cards: cards.approval || cards.review || cards.question || cards.checkpoint,
+    sheet:
+      native?.active === true ||
+      state.exitGuard !== undefined ||
+      state.screen?.kind === 'gate-card',
+    turn: homeTurnFacts(state),
+    armed: state.interruptArmed,
+    overlay: overlayOwnsKeyboard(homeOverlayFlags(state)),
+  });
 }
 
 /**
- * Watch every source of a sheet on the Home (the controller, the live chat's store, the native prompt channel) and close the open popup
- * unanswered when a sheet ARRIVES (one that was not there a moment before): the sheet wins and nothing is restored (ADR-0148 §2). A popup the
+ * The kinds of sheet the Home has and how to follow them, for {@link bindPopupHost}: a card of the live chat, a native card, the exit guard, a
+ * gate card, followed through the controller, the live chat's store (across a new session) and the native prompt channel. One of them that
+ * ARRIVES (it was not there a moment before) closes the open popup unanswered: the sheet wins and nothing is restored (ADR-0148 §2). A popup the
  * person opened over a card that was already there (a race the open gate refuses) is not closed by it: that card's custody is revoked and its
- * evidence reset instead (`revokeCardCustodyOnPopup`). Returns the unsubscribe.
+ * evidence reset instead.
  */
-export function watchSheetArrival(
+export function homeSheetSources(
   controller: Pick<HomeController, 'getSnapshot' | 'subscribe'>,
   native: Pick<NativePromptUi, 'getSnapshot' | 'subscribe'> | undefined,
-  popups: Pick<PopupHost, 'getSnapshot' | 'sheetArrived'>,
-): () => void {
-  let before = sheetsPresent(controller.getSnapshot(), native?.getSnapshot());
-  return watchHomeSources(controller, native, [], () => {
-    const now = sheetsPresent(controller.getSnapshot(), native?.getSnapshot());
-    const arrived =
-      (now.card && !before.card) ||
-      (now.native && !before.native) ||
-      (now.exitGuard && !before.exitGuard) ||
-      (now.gateCard && !before.gateCard);
-    before = now;
-    if (arrived && popups.getSnapshot().open) popups.sheetArrived();
-  });
+): PopupSheetSources<'card' | 'native' | 'exitGuard' | 'gateCard'> {
+  return {
+    present: () => {
+      const state = controller.getSnapshot();
+      const cards = cardFlagsFrom(state.session?.store.getSnapshot());
+      return {
+        card: cards.approval || cards.question || cards.checkpoint,
+        native: native?.getSnapshot().active === true,
+        exitGuard: state.exitGuard !== undefined,
+        gateCard: state.screen?.kind === 'gate-card',
+      };
+    },
+    subscribe: (onChange) => watchHomeSources(controller, native, [], onChange),
+  };
 }
 
 /**

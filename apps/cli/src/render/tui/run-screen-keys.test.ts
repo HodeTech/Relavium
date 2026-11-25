@@ -128,7 +128,6 @@ function mount(options: Options = {}) {
   const onExit = vi.fn();
   const startChat = options.startChat ?? vi.fn(() => new Promise<HomeChatSession>(() => {}));
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
     ...(options.launchRun === undefined ? {} : { launchRun: options.launchRun }),

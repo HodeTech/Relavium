@@ -43,7 +43,6 @@ const ITEMS: readonly AgentsModelItem[] = [
 
 function mount() {
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => EMPTY },
     agents: {

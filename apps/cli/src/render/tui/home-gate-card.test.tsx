@@ -136,7 +136,6 @@ function mount(options: Options = {}) {
     guard: options.guard ?? OFF,
   };
   const real = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => options.snapshot ?? EMPTY },
     hostedRuns: {
@@ -553,7 +552,6 @@ describe('a card that has not been painted refuses an answer', () => {
   it('with no frame evidence bound at all, the card never takes an approval (controller only: nothing paints)', async () => {
     const resume = vi.fn(() => Promise.resolve(STARTED));
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => new Promise(() => {}),
       homeStore: { read: () => EMPTY },
       gateCards: { list: () => [ROW], read: () => APPROVAL_RUN, resume, guard: OFF },

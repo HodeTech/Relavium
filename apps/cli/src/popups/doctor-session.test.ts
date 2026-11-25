@@ -12,7 +12,6 @@ import type { FetchLike } from '../engine/validated-fetch.js';
 import { CONSENT_LEAD, CONSENT_MCP, DOCTOR_STEP } from './doctor-popup.js';
 import {
   chordRefusedText,
-  copyNotice,
   deepRunInFlight,
   DOCTOR_PRESENCE_BOUND_MS,
   STILL_STOPPING,
@@ -30,6 +29,7 @@ import {
   stubResolver,
 } from './doctor.test-support.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
+import { popupCopyNotice } from './popup-copy.js';
 import { CHORD_STEP_WINDOW_MS, type ChordRefusal } from './popup-host.js';
 import { currentStep, popupLegend } from './popup-reducer.js';
 import { legend } from '../render/tui/legend.js';
@@ -192,10 +192,9 @@ describe('the consent line (ADR-0148 §8)', () => {
     expect(seam.keyFor).not.toHaveBeenCalled();
     const frame = r.host.getSnapshot().frame;
     if (frame === undefined) throw new Error('open');
-    // The way out of the line is named by the host's own legend (`Esc cancel` until the host says `Esc back` where it goes back): the answer key
-    // is named first either way, and that is what this test pins.
-    expect(legend(popupLegend(frame).items, popupLegend(frame).exit)).toMatch(
-      /^\[Ctrl\+Y\] send · Esc (cancel|back)$/u,
+    // The line's legend: the answer key first, then the way out, which goes back to the checks it came from.
+    expect(legend(popupLegend(frame).items, popupLegend(frame).exit)).toBe(
+      '[Ctrl+Y] send · Esc back',
     );
   });
 
@@ -279,14 +278,23 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     r.open({ probes: stubProbes(seam.resolver) }, true);
     expect(r.step()).toBe(DOCTOR_STEP.line);
     await settleWork();
-    // A Ctrl+Y before the popup's first frame: the opening guard drops it, and it is counted as a key typed over the line (the host says
-    // what becomes of the line and why; here only that nothing is ever sent for it).
+    // A Ctrl+Y before the popup's first frame: the opening guard drops it, and the host disarms the line at once and says why: the line is
+    // gone, the person is back on the checks, and nothing was sent.
     ctrlY(r);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.notifications.getSnapshot().current?.text).toBe(chordRefusedText('unseen'));
+    expect(anthropic.requests).toHaveLength(0);
+    // A second one, on the checks (nothing to answer there), sends nothing either.
     r.show();
     r.clock.advance(1000);
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
-    expect(r.notifications.getSnapshot().current?.text).toMatch(/^Not confirmed: /u);
+    // `[d]` asks again, and a patient press answers the new line.
+    r.clock.advance(3000);
+    await arm(r, 0);
+    r.clock.advance(1000);
+    ctrlY(r);
+    expect(anthropic.requests).toHaveLength(1);
   });
 
   it('counts from a `/doctor --deep` line nobody typed over', async () => {
@@ -306,13 +314,22 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     r.press('d');
     await settleWork();
     r.hide();
-    ctrlY(r); // dropped: its frame was not on screen; counted as typing (the host says what becomes of the line and why)
+    ctrlY(r); // dropped: its frame was not on screen
+    // The host disarmed the line at once and said why: the line is gone, back on the checks, nothing sent.
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.notifications.getSnapshot().current?.text).toBe(chordRefusedText('unseen'));
+    expect(anthropic.requests).toHaveLength(0);
     r.reveal();
     r.show();
     r.clock.advance(1000);
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
-    expect(r.notifications.getSnapshot().current?.text).toMatch(/^Not confirmed: /u);
+    // `[d]` asks again, and a patient press answers the new line.
+    r.clock.advance(3000);
+    await arm(r, 0);
+    r.clock.advance(1000);
+    ctrlY(r);
+    expect(anthropic.requests).toHaveLength(1);
   });
 
   it('does not count on the heels of another key (a double tap, a key repeat): the quiet gap', async () => {
@@ -1098,8 +1115,8 @@ describe('the detail step says only what is true of its keys (D3)', () => {
     expect(r.step()).toBe(DOCTOR_STEP.detail);
     expect(r.words()).toContain('Esc goes back to the checks, where [r] checks again.');
     expect(r.words()).not.toContain('Press [r]');
-    expect(legendOf(r)).not.toContain('quick check');
-    expect(legendOf(r)).not.toContain('copy');
+    expect(legendOf(r)).not.toContain('[r]');
+    expect(legendOf(r)).not.toContain('[c]');
     const before = reads;
     r.press('r');
     r.press('c');
@@ -1166,9 +1183,9 @@ describe('what the person is told is short enough for the popup and in these wor
     expect(inner).toBe(66);
     const biggest = 99_999; // a report cannot be longer than the terminal’s clipboard takes
     const said = [
-      copyNotice({ kind: 'written', characters: biggest }),
-      copyNotice({ kind: 'failed' }),
-      copyNotice({ kind: 'too-large', base64Length: 80_000, limit: 74_994 }),
+      popupCopyNotice('Doctor', { kind: 'written', characters: biggest }),
+      popupCopyNotice('Doctor', { kind: 'failed' }),
+      popupCopyNotice('Doctor', { kind: 'too-large', base64Length: 80_000, limit: 74_994 }),
       STILL_STOPPING,
     ];
     for (const text of said) {
@@ -1178,14 +1195,17 @@ describe('what the person is told is short enough for the popup and in these wor
   });
 
   it('says what happened to the copy, in these words, and nothing when nothing was selected', () => {
-    expect(copyNotice({ kind: 'written', characters: 1234 })).toBe(
-      'Doctor report: sent 1234 characters to the terminal clipboard.',
+    // The doctor's sentences are the family every popup's copy speaks (`popup-copy.ts`), under the doctor's name.
+    expect(popupCopyNotice('Doctor', { kind: 'written', characters: 1234 })).toBe(
+      'Doctor: sent 1234 characters to the terminal clipboard.',
     );
-    expect(copyNotice({ kind: 'failed' })).toBe('Doctor report: the clipboard request failed.');
-    expect(copyNotice({ kind: 'too-large', base64Length: 80_000, limit: 74_994 })).toBe(
-      'Doctor report: too large for the terminal clipboard.',
+    expect(popupCopyNotice('Doctor', { kind: 'failed' })).toBe(
+      'Doctor: the clipboard request failed.',
     );
-    expect(copyNotice({ kind: 'empty' })).toBeUndefined();
+    expect(
+      popupCopyNotice('Doctor', { kind: 'too-large', base64Length: 80_000, limit: 74_994 }),
+    ).toBe('Doctor: too large for the terminal clipboard.');
+    expect(popupCopyNotice('Doctor', { kind: 'empty' })).toBeUndefined();
   });
 
   it('the line that is still stopping says so in these words', () => {
@@ -1199,7 +1219,7 @@ describe('what the person is told is short enough for the popup and in these wor
     r.press('c');
     await settleWork();
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Doctor report: copying is not available here.',
+      'Doctor: copying is not available here.',
     );
   });
 
@@ -1221,7 +1241,7 @@ describe('what the person is told is short enough for the popup and in these wor
     await settleWork();
     expect(copied).toHaveLength(1);
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      `Doctor report: sent ${String(copied[0]?.length)} characters to the terminal clipboard.`,
+      `Doctor: sent ${String(copied[0]?.length)} characters to the terminal clipboard.`,
     );
   });
 

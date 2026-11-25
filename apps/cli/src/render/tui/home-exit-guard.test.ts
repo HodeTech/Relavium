@@ -145,7 +145,6 @@ function mount(
     throw cause;
   });
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     // By default a chat never arrives: the sites that build one say so, and the others never ask for one.
     startChat: options.startChat ?? (() => new Promise<HomeChatSession>(() => {})),
     homeStore: { read: () => EMPTY },
