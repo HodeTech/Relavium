@@ -386,6 +386,32 @@ export function homeTurnFacts(state: HomeControllerState): TurnFacts {
 }
 
 /**
+ * Why a native action may not open now ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2): its flow is drawn as a popup, so it opens on the rules a popup opens on, read off the facts `homePopupRefusal` reads, as the Home would
+ * stand once the action's own change (`patch`, with the palette it closes) is published: a popup already open, a chat being built, a card
+ * waiting, a sheet (the exit guard, a gate card), a turn, a submit or a `!` command in flight, a two-step armed. The overlay a native action
+ * is opened FROM (the palette it closes, the tab host its `r` and `x` run over) is not a refusal: the flow is drawn over it. A native card
+ * that is already open is the channel's (`begin` refuses a second flow). Pure, so every fact is tested on its own.
+ */
+export function homeNativeActionRefusal(
+  state: HomeControllerState,
+  patch: Partial<HomeControllerState>,
+  popupOpen: boolean,
+): PopupRefusal | undefined {
+  if (popupOpen) return 'popup-open';
+  const next: HomeControllerState = { ...state, palette: undefined, ...patch };
+  const cards = cardFlagsFrom(next.session?.store.getSnapshot());
+  return popupRefusal({
+    starting: next.mode === 'loading',
+    cards: cards.approval || cards.review || cards.question || cards.checkpoint,
+    sheet: next.exitGuard !== undefined || next.screen?.kind === 'gate-card',
+    turn: homeTurnFacts(next),
+    armed: next.interruptArmed,
+    overlay: false,
+  });
+}
+
+/**
  * What a screen of the slot is told when it opens. `run-view` (MVP-8 step 3), `tab-host` (step 4) and `help` (step 5, the landing's
  * `/help` sheet, which is told nothing) are the kinds so far; each has its own props, and the opener and the readers switch on `kind`.
  */
@@ -2082,31 +2108,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * Why a native action may not open now ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
-   * §2): its flow is drawn as a popup, so it opens on the rules a popup opens on, read off the facts `homePopupRefusal` reads, as the Home
-   * would stand once the action's own change is published (`next`): a popup already open, a chat being built, a card waiting, a sheet (the
-   * exit guard, a gate card), a turn, a submit or a `!` command in flight, a two-step armed. The overlay a native action is opened FROM (the
-   * palette it closes, the tab host its `r` and `x` run over) is not a refusal: the flow is drawn over it. A native card that is already open is
-   * the channel's (`begin` refuses a second flow).
-   */
-  const nativeActionRefusal = (next: HomeControllerState): PopupRefusal | undefined => {
-    if (deps.popupOpen?.() === true) return 'popup-open';
-    const cards = cardFlagsFrom(next.session?.store.getSnapshot());
-    return popupRefusal({
-      starting: next.mode === 'loading',
-      cards: cards.approval || cards.review || cards.question || cards.checkpoint,
-      sheet: next.exitGuard !== undefined || next.screen?.kind === 'gate-card',
-      turn: homeTurnFacts(next),
-      armed: next.interruptArmed,
-      overlay: false,
-    });
-  };
-
-  /**
    * Start a native action: the keyboard is the flow's from here on. `patch` is published in the SAME state change as the busy mark, for a
    * caller whose own change must not be seen on its own (the Sessions tab's resume: the screen leaves as the resume begins).
    *
-   * Refused when a popup could not open now ({@link nativeActionRefusal}): one notification on the Home's channel says so, in the words a
+   * Refused when a popup could not open now ({@link homeNativeActionRefusal}): one notification on the Home's channel says so, in the words a
    * refused popup uses, and nothing is written to the Home's notice or to a transcript. Of the caller's change only a cleared editor is kept
    * (a draft that looks like a provider key is never left in the prompt); the rest belongs to an action that did not start.
    */
@@ -2116,7 +2121,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     patch: Partial<HomeControllerState> = {},
   ): void => {
     if (exiting || state.nativeActionBusy) return;
-    const refusal = nativeActionRefusal({ ...state, palette: undefined, ...patch });
+    const refusal = homeNativeActionRefusal(state, patch, deps.popupOpen?.() === true);
     if (refusal !== undefined) {
       if (patch.input !== undefined) set({ input: patch.input });
       deps.announce?.(refusedOpenText(label, refusal));

@@ -139,9 +139,17 @@ describe('a chord step drawn in the popup frame', () => {
     }
   });
 
-  it.each(RENDERERS)(
-    '%s: a chord step that is not wholly on its page is the notice and is never answered; Esc leaves it',
-    async (renderer) => {
+  /** Facts no popup holds (30 rows), and facts the floor's popup cannot hold but a wider terminal's can (rows that wrap only at 66 columns). */
+  const TOO_LONG = Array.from({ length: 30 }, (_, index) => `fact ${String(index)}`);
+  const WIDE = Array.from({ length: 9 }, (_, index) => `fact ${String(index)} ${'w'.repeat(62)}`);
+  it.each(
+    RENDERERS.flatMap((renderer) => [
+      [renderer, 'too long for any popup', TOO_LONG, 'This is too long for a popup'] as const,
+      [renderer, 'too wide for the floor', WIDE, 'No room for this popup'] as const,
+    ]),
+  )(
+    '%s, %s: a chord step that is not wholly on its page is the notice and is never answered; Esc leaves it',
+    async (renderer, _case, details, notice) => {
       const m = mountHome(
         { renderer, color: false, size: { cols: 80, rows: 24 } },
         { nativePrompt: true },
@@ -154,12 +162,13 @@ describe('a chord step drawn in the popup frame', () => {
         channel.flow.popup?.(descriptor('home'));
         const answer = channel.flow.chord({
           message: 'Write?',
-          details: Array.from({ length: 30 }, (_, index) => `fact ${String(index)}`),
+          details,
           allow: 'Write',
           deny: 'Skip',
         });
-        await m.until(() => m.frame().join('\n').includes('No room for this popup'));
+        await m.until(() => m.frame().join('\n').includes(notice));
         const text = m.frame().join('\n');
+        expect(text).toContain(notice);
         expect(text).not.toContain('fact 0');
         await pause(PAST_THE_GUARDS_MS);
         m.key(KEYS.ctrlY);
@@ -314,6 +323,90 @@ describe('a resize clears a masked field, framed, in each host’s resize path (
       m.unmount();
     }
   });
+});
+
+describe('a SHRINK writes no frame that holds the old bullets (the renderer redraws on a resize: the field is emptied first)', () => {
+  const SHRINKS = [
+    { cols: 70, rows: 24 },
+    { cols: 60, rows: 20 },
+  ] as const;
+
+  it.each(SHRINKS.flatMap((to) => [true, false].map((framed) => [to, framed] as const)))(
+    'the Home, to %o, framed=%s',
+    async (to, framed) => {
+      let size = { cols: 80, rows: 24 };
+      const listeners = new Set<() => void>();
+      const m = mountHome(
+        { renderer: 'alt', color: false, size },
+        {
+          nativePrompt: true,
+          getSize: () => size,
+          subscribeResize: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+      );
+      try {
+        await m.settle();
+        const channel = m.channel;
+        if (channel === undefined) throw new Error('no channel');
+        channel.flow.begin();
+        if (framed) channel.flow.popup?.({ ...descriptor('home'), title: '/providers' });
+        const answer = channel.flow.password({ message: 'Paste your Anthropic API key' });
+        await m.until(() => m.frame().join('\n').includes('Paste your Anthropic API key'));
+        await m.until(() => shownNow(channel), 400);
+        m.key(bracketed('sk-ant-old-secret-0000000000000000000000'));
+        await m.until(() => m.frame().join('\n').includes('•'));
+        const before = m.raw().length;
+        size = { ...to };
+        m.resize(to.cols, to.rows);
+        for (const listener of [...listeners]) listener();
+        await m.settle();
+        await m.settle();
+        expect(m.raw().slice(before)).not.toContain('•');
+        expect(channel.ui.getSnapshot().display).toBe('');
+        channel.flow.cancel();
+        expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+        await channel.flow.end();
+      } finally {
+        m.unmount();
+      }
+    },
+  );
+
+  it.each(SHRINKS.flatMap((to) => [true, false].map((framed) => [to, framed] as const)))(
+    'the stand-alone chat, to %o, framed=%s',
+    async (to, framed) => {
+      const m = mountStandaloneChat(
+        { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } },
+        { nativePrompt: true },
+      );
+      try {
+        await m.settle();
+        const channel = m.channel;
+        if (channel === undefined) throw new Error('no channel');
+        channel.flow.begin();
+        if (framed) channel.flow.popup?.({ ...descriptor('chat'), title: '/providers' });
+        const answer = channel.flow.password({ message: 'Paste your OpenAI API key' });
+        await m.until(() => m.frame().join('\n').includes('Paste your OpenAI API key'));
+        await m.until(() => shownNow(channel), 400);
+        m.key(bracketed('sk-old-secret-0000000000000000000000'));
+        await m.until(() => m.frame().join('\n').includes('•'));
+        const before = m.raw().length;
+        m.resize(to.cols, to.rows);
+        await m.settle();
+        await m.settle();
+        expect(m.raw().slice(before)).not.toContain('•');
+        expect(channel.ui.getSnapshot().display).toBe('');
+        channel.flow.cancel();
+        expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+        await channel.flow.end();
+      } finally {
+        m.unmount();
+      }
+    },
+  );
 });
 
 describe('a framed select drawn in a window pages by the window the popup draws', () => {

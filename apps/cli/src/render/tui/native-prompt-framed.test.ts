@@ -178,6 +178,18 @@ describe('the opening guard of a framed flow (ADR-0148 §3)', () => {
     expect(await answer).toBe('a');
   });
 
+  it('a raw chunk that holds a carriage return (`key.return` false) is an answer: inside the settle it answers nothing, after it, it does', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(100);
+    r.key('y\r', none);
+    expect(await settled(answer)).toBe(PENDING);
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('y\r', none);
+    expect(await answer).toBe('a');
+  });
+
   it('runs per FLOW: a later prompt of the same flow is not settled again, and `begin` starts a new guard', async () => {
     const r = rig();
     const first = r.channel.flow.select({ message: 'First', options: PLAIN });
@@ -351,12 +363,31 @@ describe('a guarded option (the consent’s affirmative, ADR-0148 §3)', () => {
     ]).toEqual([800, 300, 1500, 2000]);
   });
 
-  it('the dwell: an Enter before 800 ms of the acknowledged frame is dropped, one at 800 ms answers', async () => {
+  it('the dwell: an Enter before 800 ms of the acknowledged frame is dropped, one at 800 ms answers (the select opened long before)', async () => {
+    // The lockout runs from the select's opening too (see below), so the frame is shown here past it: what is left is the dwell alone.
+    const r = rig({ framed: false, settleMs: 0 });
+    const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+    r.advance(APPROVAL_LOCKOUT_MS + 500);
+    r.show();
+    const shownAt = r.now();
+    r.at(shownAt + APPROVAL_CONFIRM_MIN_MS - 1);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    r.at(shownAt + APPROVAL_CONFIRM_MIN_MS + APPROVAL_QUIET_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('use');
+  });
+
+  it('the lockout runs from the moment the guarded select opened: a deliberate Enter needs about two seconds after it appeared', async () => {
     const c = consent();
-    c.at(c.shownAt + APPROVAL_CONFIRM_MIN_MS - 1);
+    const openedAt = c.shownAt;
+    // Every other layer is clear at 1.999 s (the dwell 800 ms, the quiet gap, no typing, no answer before): only the opening lockout refuses.
+    c.at(openedAt + APPROVAL_LOCKOUT_MS - 1);
     c.key('', ENTER);
     expect(await settled(c.answer)).toBe(PENDING);
-    c.at(c.shownAt + APPROVAL_CONFIRM_MIN_MS + APPROVAL_QUIET_MS);
+    // That refusal came inside the lockout and restarted it.
+    expect(c.history.lastResolvedAt).toBe(openedAt + APPROVAL_LOCKOUT_MS - 1);
+    c.at(openedAt + APPROVAL_LOCKOUT_MS - 1 + APPROVAL_LOCKOUT_MS);
     c.key('', ENTER);
     expect(await c.answer).toBe('use');
   });
@@ -447,13 +478,20 @@ describe('a guarded option (the consent’s affirmative, ADR-0148 §3)', () => {
     expect(await answer).toBe('use');
   });
 
-  it('a refused Enter outside the lockout does not start one (only a refusal inside it restarts it)', async () => {
+  it('a refused Enter inside the two seconds after the select opened restarts the lockout; one after them, refused by another layer, does not', async () => {
     const c = consent();
-    c.advance(APPROVAL_CONFIRM_MIN_MS - 100); // inside the dwell, with no answer before
+    c.advance(APPROVAL_CONFIRM_MIN_MS - 100); // inside the dwell AND the opening lockout
     c.key('', ENTER);
     expect(await settled(c.answer)).toBe(PENDING);
-    expect(c.history.lastResolvedAt).toBe(Number.NEGATIVE_INFINITY);
-    c.advance(100 + APPROVAL_QUIET_MS);
+    expect(c.history.lastResolvedAt).toBe(c.now());
+    const restarted = c.now();
+    c.at(restarted + APPROVAL_LOCKOUT_MS);
+    c.setVisible(false); // refused by the frame, outside any lockout: no restart
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    expect(c.history.lastResolvedAt).toBe(restarted);
+    c.setVisible(true);
+    c.advance(APPROVAL_QUIET_MS);
     c.key('', ENTER);
     expect(await c.answer).toBe('use');
   });
@@ -763,5 +801,190 @@ describe('any resize clears a secret (ADR-0148 §4)', () => {
       expect(r.snapshot().display).toBe('');
       ack.dispose();
     });
+  });
+});
+
+/**
+ * The held-key cases the 6.1 sitting found (F1, F2): a guarded select that no answer came just before (the first prompt of a flow opened by
+ * the composer's `Enter`, which the landing stamps as a key and never as a resolution; one reached after a wait with the key held through it),
+ * and a chord card after another chord card answered by the held `Ctrl+Y`, one repeat of which is dropped as unseen. Each case holds the key for
+ * eight seconds at an operating system's initial delay and repeat rate, then lets go and presses once: the held key never answers, the patient
+ * press does.
+ */
+describe('a held key never answers what it was not pressed for (F1, F2)', () => {
+  const DELAYS = [250, 400, 516, 660, 1000, 1400, 1800] as const;
+  const RATES = [30, 60, 100, 300, 450, 700, 1000, 1100, 1400, 1800] as const;
+  const ACKS = [16, 300, 900] as const;
+  const HELD_FOR_MS = 8000;
+  const MODES = ['legacy', 'kitty'] as const;
+
+  /**
+   * Hold `Enter` from `from` (the first repeat one initial delay later, then one per `rate`) to `from + HELD_FOR_MS`, a repeat the host could not
+   * deliver (before `visibleFrom`) dropped as unseen, as the host drops it. Returns the time of the last repeat.
+   */
+  function holdEnter(
+    r: ReturnType<typeof rig>,
+    from: number,
+    delay: number,
+    rate: number,
+    mode: (typeof MODES)[number],
+    visibleFrom: () => number,
+  ): number {
+    let last = from;
+    for (let at = from + delay; at <= from + HELD_FOR_MS; at += rate) {
+      r.at(at);
+      last = at;
+      const key = mode === 'kitty' ? REPEAT_ENTER : ENTER;
+      if (at < visibleFrom()) r.channel.ui.unseenInput('\r', key);
+      else r.key('', key);
+    }
+    return last;
+  }
+
+  const firstPromptCases = [true, false].flatMap((framed) =>
+    ACKS.flatMap((ack) => MODES.map((mode) => [framed, ack, mode] as const)),
+  );
+
+  it.each(firstPromptCases)(
+    'framed=%s, frame acknowledged at %i ms, %s repeats: the guarded select is the first prompt of a flow a composer Enter opened',
+    async (framed, ack, mode) => {
+      const answered: string[] = [];
+      for (const delay of DELAYS)
+        for (const rate of RATES) {
+          const history = createChordHistory();
+          const r = rig({ framed, history });
+          const t0 = r.now();
+          history.previousKeyAt = t0; // the composer's Enter: a key the landing stamped, not a resolution
+          const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+          let shownAt = Number.POSITIVE_INFINITY;
+          const last = holdEnter(r, t0, delay, rate, mode, () => {
+            if (r.now() >= t0 + ack && shownAt === Number.POSITIVE_INFINITY) {
+              const now = r.now();
+              r.at(t0 + ack);
+              r.show();
+              r.at(now);
+              shownAt = t0 + ack;
+            }
+            return shownAt;
+          });
+          if ((await settled(answer)) !== PENDING)
+            answered.push(`${String(delay)}/${String(rate)}`);
+          if (shownAt === Number.POSITIVE_INFINITY) r.show();
+          r.at(last + APPROVAL_LOCKOUT_MS);
+          r.key('', ENTER);
+          expect(await answer, `the patient press after ${String(delay)}/${String(rate)}`).toBe(
+            'use',
+          );
+        }
+      expect(answered).toEqual([]);
+    },
+  );
+
+  const waitCases = [2500, 4000, 10_000].flatMap((wait) =>
+    [true, false].flatMap((framed) =>
+      ACKS.flatMap((ack) => MODES.map((mode) => [wait, framed, ack, mode] as const)),
+    ),
+  );
+
+  it.each(waitCases)(
+    'reached after a %i ms wait with the Enter held through it, framed=%s, frame at %i ms, %s repeats',
+    async (wait, framed, ack, mode) => {
+      const answered: string[] = [];
+      for (const delay of DELAYS)
+        for (const rate of RATES) {
+          const history = createChordHistory();
+          const r = rig({ framed, history });
+          const t0 = r.now();
+          history.previousKeyAt = t0;
+          r.channel.flow.busy('Checking your key');
+          r.at(t0 + 16);
+          r.show(); // the wait is on screen: the flow's first frame
+          let answer: Promise<string | symbol> | undefined;
+          let shownAt = Number.POSITIVE_INFINITY;
+          const last = holdEnter(r, t0, delay, rate, mode, () => {
+            const now = r.now();
+            if (answer === undefined && now >= t0 + wait) {
+              r.at(t0 + wait);
+              answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+              r.at(now);
+            }
+            if (
+              answer !== undefined &&
+              shownAt === Number.POSITIVE_INFINITY &&
+              now >= t0 + wait + ack
+            ) {
+              r.at(t0 + wait + ack);
+              r.show();
+              r.at(now);
+              shownAt = t0 + wait + ack;
+            }
+            // a key while the wait is on screen is delivered; one between the select's publication and its frame is not
+            return answer === undefined ? t0 + 16 : shownAt;
+          });
+          answer ??= r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+          if ((await settled(answer)) !== PENDING)
+            answered.push(`${String(delay)}/${String(rate)}`);
+          r.show();
+          r.at(Math.max(last, r.now()) + APPROVAL_LOCKOUT_MS);
+          r.key('', ENTER);
+          expect(await answer, `the patient press after ${String(delay)}/${String(rate)}`).toBe(
+            'use',
+          );
+        }
+      expect(answered).toEqual([]);
+    },
+  );
+
+  it('a chord card after one a held Ctrl+Y answered, one repeat dropped as unseen: never answered while held; a patient press after it is', async () => {
+    const CHORD_DELAYS = [250, 400, 516, 660, 900, 1000, 1400, 1800] as const;
+    const answered: string[] = [];
+    for (const delay of CHORD_DELAYS)
+      for (const rate of RATES) {
+        const r = rig({ framed: false });
+        const first = r.channel.flow.chord({ message: 'First?', allow: 'Yes', deny: 'No' });
+        r.show();
+        r.advance(5000);
+        r.key('y', CTRL);
+        expect(await first).toBe('allow');
+        const t0 = r.now();
+        const second = r.channel.flow.chord({ message: 'Second?', allow: 'Yes', deny: 'No' });
+        r.at(t0 + 16);
+        r.show();
+        let index = 0;
+        let last = t0;
+        for (let at = t0 + delay; at <= t0 + HELD_FOR_MS; at += rate, index += 1) {
+          r.at(at);
+          last = at;
+          if (index === 1) r.channel.ui.unseenInput('y', CTRL);
+          else r.key('y', CTRL);
+        }
+        if ((await settled(second)) !== PENDING) answered.push(`${String(delay)}/${String(rate)}`);
+        r.at(last + APPROVAL_LOCKOUT_MS);
+        r.key('y', CTRL);
+        expect(await second, `the patient press after ${String(delay)}/${String(rate)}`).toBe(
+          'allow',
+        );
+      }
+    expect(answered).toEqual([]);
+  });
+
+  it('a dropped key on a chord card that is not its Ctrl+Y is typing only: it does not touch a running lockout; a dropped Ctrl+Y restarts it', async () => {
+    const r = rig({ framed: false });
+    const first = r.channel.flow.chord({ message: 'First?', allow: 'Yes', deny: 'No' });
+    r.show();
+    r.advance(5000);
+    r.key('y', CTRL);
+    expect(await first).toBe('allow');
+    const resolvedAt = r.history.lastResolvedAt;
+    void r.channel.flow.chord({ message: 'Write?', allow: 'Yes', deny: 'No' });
+    r.show();
+    r.advance(100); // inside the lockout of the answer above
+    r.channel.ui.unseenInput('n', CTRL);
+    r.channel.ui.unseenInput('x', none);
+    expect(r.history.lastResolvedAt).toBe(resolvedAt);
+    expect(r.history.lastForeignKeyAt).toBe(r.now());
+    r.advance(100);
+    r.channel.ui.unseenInput('y', CTRL);
+    expect(r.history.lastResolvedAt).toBe(r.now());
   });
 });

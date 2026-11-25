@@ -474,7 +474,7 @@ const recordNativeFramed: Recorder = (): StateRows => {
         ...NATIVE_BASE,
         message: 'Created the project directories.',
         options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
-        final: true,
+        final: 'ok',
         popup: { ...named('skip for now'), stepIndex: 2 },
       },
     ],

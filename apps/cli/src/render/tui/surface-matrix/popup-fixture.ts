@@ -322,7 +322,8 @@ export function nativePopupSnapshot(
         message: NATIVE_POPUP_LANDMARK.done,
         details: [...DONE_LINES],
         options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
-        final: true,
+        escape: 'back',
+        final: 'ok',
       };
   }
 }
@@ -360,30 +361,31 @@ export async function openNativePopup(
     title: NATIVE_POPUP_TITLE,
     origin,
     stepNames: NATIVE_STEP_NAMES,
+    progress: 'manual',
   });
   const expected = nativePopupSnapshot(kind, origin);
   flow.begin();
-  flow.step(STEP_OF[kind]);
+  const on = flow.at(STEP_OF[kind]);
   switch (kind) {
     case 'select':
-      leaveOpen(flow.select({ message: expected.message, options: expected.options }));
+      leaveOpen(on.select({ message: expected.message, options: expected.options }));
       break;
     case 'text':
-      leaveOpen(flow.text({ message: expected.message }));
+      leaveOpen(on.text({ message: expected.message }));
       break;
     case 'password':
       flow.note(expected.note);
-      leaveOpen(flow.password({ message: expected.message }));
+      leaveOpen(on.password({ message: expected.message }));
       await mount.until(() => shownOn(channel));
       channel.ui.paste(MATRIX_SECRET);
       channel.ui.resized();
       break;
     case 'busy':
-      flow.busy(expected.message);
+      on.busy(expected.message);
       break;
     case 'chord':
       leaveOpen(
-        flow.chord({
+        on.chord({
           message: expected.message,
           details: expected.details,
           allow: 'Write the file',
@@ -393,7 +395,7 @@ export async function openNativePopup(
       break;
     case 'picker':
       leaveOpen(
-        flow.pick({
+        on.pick({
           message: expected.message,
           load: () => Promise.resolve({ options: [...PICKER_ROWS] }),
         }),

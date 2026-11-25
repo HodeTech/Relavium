@@ -63,12 +63,12 @@ export function NativePromptHost({
   const owned = given === undefined;
   useEffect(() => {
     // The acknowledgement looks at the new size as it is invalidated: a masked field is emptied before the frame at that size is drawn
-    // (ADR-0148 §4: any resize clears a key typed so far).
+    // (ADR-0148 §4: any resize clears a key typed so far). Prepended: the renderer's own listener came first and redraws the tree it has.
     const resized = (): void => {
       acknowledgement.invalidate();
       setSize(getSize());
     };
-    stdout.on('resize', resized);
+    stdout.prependListener('resize', resized);
     return () => {
       stdout.removeListener('resize', resized);
       if (owned) acknowledgement.dispose();

@@ -48,7 +48,7 @@ const FULL: Required<NativePromptSnapshot> = {
     exitLabel: 'close',
     depth: 1,
   },
-  final: true,
+  final: 'ok',
 };
 
 /** Every field of the descriptor: a field added without a value here does not compile. */
@@ -79,7 +79,7 @@ function changed(key: keyof NativePromptSnapshot): NativePromptSnapshot {
     escape: 'cancel',
     details: [...FULL.details],
     popup: { ...DESCRIPTOR },
-    final: undefined,
+    final: 'failed',
   };
   return { ...FULL, [key]: variants[key] };
 }
@@ -194,6 +194,15 @@ describe('the flow’s one setter plumbs the descriptor into the snapshot', () =
     channel.flow.popup?.(undefined);
     expect(channel.ui.getSnapshot().popup).toBeUndefined();
     expect(sameNativePromptFrame(set, channel.ui.getSnapshot())).toBe(false);
+    channel.ui.dispose();
+  });
+
+  it('clamps a step below the first and a count below one (a frame is never drawn on step -3 of 0)', () => {
+    const channel = createNativePromptChannel({ now: () => 0 });
+    channel.flow.begin();
+    channel.flow.popup?.({ ...DESCRIPTOR, stepIndex: -3, stepCount: 0 });
+    expect(channel.ui.getSnapshot().popup?.stepIndex).toBe(0);
+    expect(channel.ui.getSnapshot().popup?.stepCount).toBe(1);
     channel.ui.dispose();
   });
 

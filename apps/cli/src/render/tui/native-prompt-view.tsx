@@ -1,6 +1,6 @@
-import { Box, useApp, type DOMElement } from 'ink';
+import { Box, Transform, useApp, useStdout, type DOMElement } from 'ink';
 import { Text } from './text.js';
-import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { withGlyphForm } from './glyphs.js';
 import { keyToken, legend } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
@@ -9,16 +9,17 @@ import {
   type NativePromptAcknowledgement,
 } from './native-prompt-acknowledgement.js';
 import { dimProps } from './projection.js';
-import { nativeFramed, pickerLegendParts } from '../../popups/native-popup-body.js';
+import {
+  NATIVE_PICKER_EMPTY,
+  nativeFramed,
+  nativeLegendParts,
+  pickerLegendParts,
+  withLiveBullets,
+} from '../../popups/native-popup-body.js';
 import { PromptEditor } from './prompt-view.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
-import {
-  SELECT_MARKER_INDENT,
-  selectLayout,
-  selectLegend,
-  selectRowText,
-} from './native-select-window.js';
+import { SELECT_MARKER_INDENT, selectLayout, selectRowText } from './native-select-window.js';
 
 /**
  * The host's gutter. EVERY row of a chord card's body starts with it, so column 0 belongs to the renderer: text the card's author wrote
@@ -51,17 +52,13 @@ export function pickerLegend(snapshot: NativePromptSnapshot): string {
 /** What a picker with no row says, with the card's own leaving keys. */
 function pickerEmptyLegend(snapshot: NativePromptSnapshot): string {
   const { before, exit } = nativeLeave(snapshot.escape === 'back');
-  return legend([{ text: 'No matching sessions' }, ...before], exit);
+  return legend([{ text: NATIVE_PICKER_EMPTY }, ...before], exit);
 }
 
-/** The one-line key legend under a prompt card, by the kind of card. */
-function promptLegend(snapshot: NativePromptSnapshot, windowed: boolean): string {
-  const back = snapshot.escape === 'back';
-  if (snapshot.kind === 'picker') return pickerLegend(snapshot);
-  if (snapshot.kind === 'select') return selectLegend(back, windowed);
-  const { before, exit } = nativeLeave(back, leaveEffect(snapshot));
-  if (snapshot.kind === 'busy' || snapshot.kind === 'chord') return legend(before, exit);
-  return legend([{ keys: 'Enter', verb: 'continue' }, ...before], exit);
+/** The one-line key legend under a prompt card: the channel's one legend (`nativeLegendParts`, shared with the popup frame), joined. */
+export function promptLegend(snapshot: NativePromptSnapshot, windowed: boolean): string {
+  const { items, exit } = nativeLegendParts(snapshot, windowed, 'card');
+  return legend(items, exit);
 }
 
 /**
@@ -86,6 +83,53 @@ function DetailRows({
   );
 }
 
+/**
+ * A resize empties a masked field before the renderer draws anything at the new size (ADR-0148 §4). The renderer registered its own `resize`
+ * listener first and redraws the tree it already has (a shrink rewrites the whole screen), which still holds the field's bullets: so this
+ * listener is PREPENDED, and the channel's change is rendered (the root is a legacy one: synchronously) before the renderer's redraw. Every host
+ * that draws the channel mounts this view (the Home's root, the native prompt host), framed prompt or card.
+ */
+function useResizeClearsFirst(acknowledgement: NativePromptAcknowledgement): void {
+  const { stdout } = useStdout();
+  useEffect(() => {
+    const noticed = (): void => acknowledgement.noticeSize();
+    stdout.prependListener('resize', noticed);
+    return () => {
+      stdout.removeListener('resize', noticed);
+    };
+  }, [stdout, acknowledgement]);
+}
+
+/**
+ * The field of a text or a masked card: what is typed (bullets for a secret, the channel's display). A masked field is drawn through the
+ * renderer's output phase with the field as it is NOW: a resize redraws this tree before it is rendered again, and the field the resize emptied
+ * must not be written with its old bullets (ADR-0148 §4). Nothing for any other card.
+ */
+function FieldRow({
+  snapshot,
+  acknowledgement,
+}: Readonly<{
+  snapshot: NativePromptSnapshot;
+  acknowledgement: NativePromptAcknowledgement;
+}>): ReactElement | null {
+  if (snapshot.kind === 'text')
+    return (
+      <Text>
+        {'> '}
+        {snapshot.display}
+      </Text>
+    );
+  if (snapshot.kind !== 'password') return null;
+  return (
+    <Transform transform={(row) => withLiveBullets(row, acknowledgement.current())}>
+      <Text>
+        {'> '}
+        {snapshot.display}
+      </Text>
+    </Transform>
+  );
+}
+
 /** A sentence in place of a card the terminal cannot show: the reason, then what the keys that leave do (ADR-0145 §3). */
 function refusal(snapshot: NativePromptSnapshot, reason: string): string {
   const { before, exit } = nativeLeave(snapshot.escape === 'back', leaveEffect(snapshot));
@@ -105,6 +149,7 @@ export function NativePromptView({
 }>): ReactElement | null {
   const ref = useRef<DOMElement | null>(null);
   const app = useApp();
+  useResizeClearsFirst(acknowledgement);
   const [overflow, setOverflow] = useState<{
     snapshot: NativePromptSnapshot;
     cols: number;
@@ -206,12 +251,7 @@ export function NativePromptView({
                 </Text>
               ),
             ))}
-      {(snapshot.kind === 'password' || snapshot.kind === 'text') && (
-        <Text>
-          {'> '}
-          {snapshot.display}
-        </Text>
-      )}
+      <FieldRow snapshot={snapshot} acknowledgement={acknowledgement} />
       {snapshot.error !== '' && <Text>{snapshot.error}</Text>}
       <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined)}</Text>
     </Box>

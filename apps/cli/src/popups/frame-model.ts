@@ -1034,11 +1034,19 @@ export function popupNoticeLegend(parts: {
   };
 }
 
-/** What a popup says in place of its frame when the terminal cannot hold it. */
-export function popupNoticeText(reason: 'below-floor' | 'no-room'): string {
-  return reason === 'below-floor'
-    ? 'Terminal too small for this popup — enlarge it to 80×24'
-    : 'No room for this popup — enlarge the terminal';
+/**
+ * Why a popup is drawn as a notice: the terminal is below the floor, it has no room for this popup now (`no-room`: a larger terminal would hold
+ * it), or what the popup would show does not fit even the largest popup any terminal gives (`too-long`: 76 columns, 21 rows), so enlarging the
+ * terminal cannot help.
+ */
+export type PopupNoticeReason = 'below-floor' | 'no-room' | 'too-long';
+
+/** What a popup says in place of its frame when it cannot be drawn whole. */
+export function popupNoticeText(reason: PopupNoticeReason): string {
+  if (reason === 'below-floor') return 'Terminal too small for this popup — enlarge it to 80×24';
+  return reason === 'no-room'
+    ? 'No room for this popup — enlarge the terminal'
+    : 'This is too long for a popup';
 }
 
 /**
@@ -1046,7 +1054,7 @@ export function popupNoticeText(reason: 'below-floor' | 'no-room'): string {
  * the terminal's width, `columns`, so the notice is opaque as the frame is and no cell of the body it covers is left at the end of its rows.
  */
 export function popupNoticeLines(
-  reason: 'below-floor' | 'no-room',
+  reason: PopupNoticeReason,
   keys: { readonly items: readonly LegendItem[]; readonly exit: LegendExit },
   columns: number,
 ): readonly SheetLine[] {

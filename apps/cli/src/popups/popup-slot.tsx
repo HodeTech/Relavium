@@ -21,7 +21,7 @@
  * descriptor (`NativePopup`).
  */
 
-import { Box, type DOMElement } from 'ink';
+import { Box, Transform, type DOMElement } from 'ink';
 import {
   Component,
   useLayoutEffect,
@@ -44,6 +44,7 @@ import {
   popupNoticeLegend,
   popupNoticeLines,
   type PopupFrameParts,
+  type PopupNoticeReason,
 } from './frame-model.js';
 import {
   INLINE_LIST_MAX_ROWS,
@@ -58,8 +59,10 @@ import {
   nativeNaturalRows,
   nativePopupLayout,
   nativePopupLegend,
+  withLiveBullets,
   type NativeBodyLayout,
 } from './native-popup-body.js';
+import { Text } from '../render/tui/text.js';
 import {
   popupFrameMatches,
   type ExpectedPopupFrame,
@@ -124,7 +127,7 @@ export function PopupFrameView(
 /** The notice drawn in place of a popup the terminal cannot hold: the reason and the way back, opaque, at the top of the screen. */
 function PopupNotice(
   props: Readonly<{
-    reason: 'below-floor' | 'no-room';
+    reason: PopupNoticeReason;
     color: boolean;
     placement: PopupPlacement;
     columns: number;
@@ -357,6 +360,67 @@ export function nativePopupFrameLines(
   return withGlyphForm(!color, () => popupFrameLines(parts, { lines: layout.lines }, geometry));
 }
 
+/**
+ * The frame of a framed native prompt in its content node, as {@link PopupFrameView} draws it, except a masked field's row: that row goes
+ * through the renderer's output phase with the field as it is NOW (`withLiveBullets`), because on a resize the renderer redraws the tree it
+ * has before it is rendered again, and a field the resize emptied must not be written with its old bullets (ADR-0148 §4).
+ */
+function NativeFrameView(
+  props: Readonly<{
+    lines: readonly SheetLine[];
+    color: boolean;
+    placement: PopupPlacement;
+    left: number;
+    top: number;
+    contentRef: (node: DOMElement | null) => void;
+    /** The masked field's row among `lines`, and the channel's current snapshot; absent ⇒ no masked field. */
+    secret?: { readonly index: number; readonly live: () => NativePromptSnapshot } | undefined;
+  }>,
+): ReactElement {
+  const { secret } = props;
+  const row = secret === undefined ? undefined : props.lines[secret.index];
+  if (secret === undefined || row === undefined)
+    return (
+      <PopupFrameView
+        lines={props.lines}
+        color={props.color}
+        placement={props.placement}
+        left={props.left}
+        top={props.top}
+        contentRef={props.contentRef}
+      />
+    );
+  return (
+    <Placed placement={props.placement} left={props.left} top={props.top}>
+      <Box ref={props.contentRef} flexDirection="column" flexShrink={0} alignSelf="flex-start">
+        <SheetLinesView lines={props.lines.slice(0, secret.index)} color={props.color} />
+        <Transform transform={(text) => withLiveBullets(text, secret.live())}>
+          <Text wrap="truncate-end">{row.text}</Text>
+        </Transform>
+        <SheetLinesView lines={props.lines.slice(secret.index + 1)} color={props.color} />
+      </Box>
+    </Placed>
+  );
+}
+
+/** The terminal that gives a popup the most it can have: 76 columns and 21 rows, whatever is larger. */
+const LARGEST_TERMINAL: Size = { cols: 200, rows: 200 };
+
+/**
+ * Why a framed native prompt that is not wholly on its page is drawn as a notice: below the floor; no room now (a larger terminal would hold it);
+ * or too long for any popup (it does not fit even the largest popup a terminal gives, so enlarging the terminal cannot help).
+ */
+export function nativeNoticeReason(
+  snapshot: NativePromptSnapshot,
+  placement: PopupPlacement,
+  geometry: PopupGeometry,
+  color: boolean,
+): PopupNoticeReason {
+  if (!geometry.fits) return geometry.reason;
+  const largest = nativePopupGeometry(snapshot, placement, LARGEST_TERMINAL, color);
+  return largest.geometry.fits && largest.layout?.fits === true ? 'no-room' : 'too-long';
+}
+
 /** A native prompt a flow drew as a popup: the channel's snapshot in the popup frame, acknowledged by the channel's own acknowledgement. */
 function NativePopup(
   props: Readonly<{
@@ -398,7 +462,7 @@ function NativePopup(
   if (!geometry.fits || layout === undefined || !layout.fits)
     return (
       <PopupNotice
-        reason={geometry.fits ? 'no-room' : geometry.reason}
+        reason={nativeNoticeReason(snapshot, placement, geometry, color)}
         color={color}
         placement={placement}
         columns={size.cols}
@@ -407,7 +471,7 @@ function NativePopup(
     );
   const lines = nativePopupFrameLines(snapshot, geometry, layout, color);
   return (
-    <PopupFrameView
+    <NativeFrameView
       lines={lines}
       color={color}
       placement={placement}
@@ -416,6 +480,11 @@ function NativePopup(
       contentRef={(element) => {
         node.current = element;
       }}
+      secret={
+        layout.secretRow === undefined
+          ? undefined
+          : { index: 1 + geometry.railRows + layout.secretRow, live: acknowledgement.current }
+      }
     />
   );
 }

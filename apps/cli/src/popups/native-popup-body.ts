@@ -55,6 +55,27 @@ export const NATIVE_LIST_MIN_ROWS = 3;
 /** The columns the selection marker and its space take: an option's later rows hang under its label, past them. */
 const OPTION_HANG = 2;
 
+/** The bullet a masked field is drawn with, one per character typed (the channel's display, at most 32). */
+const SECRET_BULLET = '•';
+
+/**
+ * A drawn row of a masked field as the field is NOW (`live`, the channel's current snapshot): every bullet past what the field holds now is a
+ * space (one column for one, so the row keeps its width). For the renderer's output phase (`Transform`), which runs on a resize BEFORE the
+ * tree is re-rendered: a field the resize emptied is never drawn with the bullets of what was typed into it (ADR-0148 §4). Only a field's row
+ * goes through it; a field that holds what it drew is left as it is.
+ */
+export function withLiveBullets(row: string, live: NativePromptSnapshot): string {
+  const held =
+    live.kind === 'password'
+      ? Array.from(live.display).filter((c) => c === SECRET_BULLET).length
+      : 0;
+  return row.replace(
+    /•+/gu,
+    (run) =>
+      `${SECRET_BULLET.repeat(Math.min(run.length, held))}${' '.repeat(Math.max(0, run.length - held))}`,
+  );
+}
+
 /** The key a chord step's affirmative answer is named by on its legend row. */
 const CHORD_ALLOW_KEY = 'Ctrl+Y';
 
@@ -74,6 +95,8 @@ export interface NativeBodyGeometry {
 export interface NativeBodyLayout {
   /** The body's rows, each at most the inner width (the frame pads them). */
   readonly lines: readonly SheetLine[];
+  /** The index in {@link lines} of a masked field's row (drawn through {@link withLiveBullets}); absent for every other prompt. */
+  readonly secretRow?: number | undefined;
   /** Whether the WHOLE prompt is on its page; `false` ⇒ the slot draws the notice in its place and nothing on it answers. */
   readonly fits: boolean;
   /** How far `PgUp`/`PgDn` move a select's cursor when its list is drawn in a window; `undefined` when it is drawn whole. */
@@ -102,7 +125,9 @@ function aboveRows(snapshot: NativePromptSnapshot, width: number): SheetLine[] {
   const scrub = scrubFor(snapshot);
   const rows = [
     ...wrapped('text', scrub(snapshot.note), width),
-    ...wrapped('message', scrub(snapshot.message), width),
+    ...(snapshot.final === 'failed'
+      ? wrapped('failed', `${glyph('failed')} ${scrub(snapshot.message)}`, width)
+      : wrapped('message', scrub(snapshot.message), width)),
   ];
   if (snapshot.kind === 'chord' || snapshot.kind === 'select')
     for (const detail of snapshot.details)
@@ -287,14 +312,18 @@ function fieldLayout(
   geometry: NativeBodyGeometry,
 ): NativeBodyLayout {
   const width = geometry.innerWidth;
-  return whole(
+  const above = aboveRows(snapshot, width);
+  const layout = whole(
     [
-      ...aboveRows(snapshot, width),
+      ...above,
       { kind: 'row', text: fieldRow('> ', snapshot.display, width) },
       ...errorRows(snapshot, width),
     ],
     geometry,
   );
+  return snapshot.kind === 'password' && layout.fits
+    ? { ...layout, secretRow: above.length }
+    : layout;
 }
 
 /** Whether a chord step's legend row keeps its affirmative answer (`[Ctrl+Y]`) at `width`: a step whose answer is not named is never answered. */
@@ -426,10 +455,16 @@ export function pickerLegendParts(snapshot: NativePromptSnapshot): {
   return { items: [next, ...before], exit };
 }
 
-/** The legend parts of each framed kind, before the descriptor's words name the way back. */
-function kindLegend(
+/**
+ * The ONE legend of a prompt of the channel, as parts, for both of its surfaces: the card (`native-prompt-view.tsx` joins them into its one
+ * line) and the popup frame (which fits them to its row and names the way back in the descriptor's words). They differ in one place only: a
+ * chord CARD draws its answers as rows of its own, so its legend is the way back alone, where the popup names the answers on the legend row.
+ * `windowed` names `PgUp/PgDn page` for a select drawn in a window.
+ */
+export function nativeLegendParts(
   snapshot: NativePromptSnapshot,
   windowed: boolean,
+  surface: 'card' | 'popup',
 ): { readonly items: readonly LegendItem[]; readonly exit: LegendExit } {
   const back = snapshot.escape === 'back';
   switch (snapshot.kind) {
@@ -454,6 +489,7 @@ function kindLegend(
     case 'chord': {
       // The answers, named on the legend row: the affirmative first (it is kept longest), then the refusal, then the way back (which refuses).
       const { before, exit } = nativeLeave(back, 'denies');
+      if (surface === 'card') return { items: before, exit };
       const label = (value: string): string =>
         snapshot.options.find((option) => option.value === value)?.label ?? value;
       return {
@@ -483,9 +519,9 @@ export function nativePopupLegend(
   snapshot: NativePromptSnapshot,
   windowed = false,
 ): { readonly items: readonly LegendItem[]; readonly exit: LegendExit } {
-  if (snapshot.kind === 'select' && snapshot.final === true)
+  if (snapshot.kind === 'select' && snapshot.final !== undefined)
     return { items: [], exit: exitKey.close(['Enter', 'Esc'], 'close') };
-  const { items, exit } = kindLegend(snapshot, windowed);
+  const { items, exit } = nativeLegendParts(snapshot, windowed, 'popup');
   const label = snapshot.popup?.exitLabel ?? '';
   const named = exit.class === 'close' && label !== '' ? exitKey.close(exit.keys, label) : exit;
   return { items, exit: named };

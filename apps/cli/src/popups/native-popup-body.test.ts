@@ -9,7 +9,8 @@ import { withGlyphForm } from '../render/tui/glyphs.js';
 import { legend } from '../render/tui/legend.js';
 import type { NativePromptSnapshot } from '../render/tui/native-prompt-channel.js';
 import { displayWidth } from '../render/tui/viewport.js';
-import { fittedLegendItems } from './frame-model.js';
+import { selectLegend } from '../render/tui/native-select-window.js';
+import { fittedLegendItems, popupNoticeText, wrapRows } from './frame-model.js';
 import { INLINE_LIST_MAX_ROWS, popupInnerWidth } from './geometry.js';
 import {
   NATIVE_LIST_MIN_ROWS,
@@ -19,11 +20,13 @@ import {
   nativeNaturalRows,
   nativeOptionWindow,
   nativePopupLayout,
+  nativeLegendParts,
   nativePopupLegend,
   nativeWindowPage,
+  withLiveBullets,
   type NativeBodyGeometry,
 } from './native-popup-body.js';
-import { nativePopupFrameLines, nativePopupGeometry } from './popup-slot.js';
+import { nativeNoticeReason, nativePopupFrameLines, nativePopupGeometry } from './popup-slot.js';
 
 /** The inner width of a standard popup at the floor (80 columns): 66. */
 const WIDTH = popupInnerWidth(80, 'standard');
@@ -255,7 +258,7 @@ describe('a select', () => {
       message: 'Created the project directories.',
       details: ['.relavium/workflows', '.relavium/agents'],
       options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
-      final: true,
+      final: 'ok',
     };
     expect(texts(done)).toEqual([
       'Created the project directories.',
@@ -729,5 +732,222 @@ describe('hostile text in every sink', () => {
   it('a key-shaped string pasted into a masked field is drawn only as bullets', () => {
     const rows = texts({ ...BASE, kind: 'password', options: [], display: '•'.repeat(32) });
     expect(rows.join('\n')).not.toMatch(/sk-|api03/u);
+  });
+});
+
+describe('the reviews’ killing tests (6.1 architecture round)', () => {
+  /** A snapshot of every framed kind, each with text long enough to wrap. */
+  const LONG = 'L'.repeat(150);
+  const KINDS: readonly NativePromptSnapshot[] = [
+    { ...BASE, options: [GEMINI, { value: 'x', label: LONG, hint: 'H'.repeat(150) }] },
+    { ...BASE, kind: 'text', options: [], message: LONG, display: 'x'.repeat(300) },
+    {
+      ...BASE,
+      kind: 'password',
+      options: [],
+      note: KEY_STEP_NOTE,
+      message: LONG,
+      display: '•'.repeat(32),
+    },
+    { ...BASE, kind: 'busy', options: [], message: LONG, note: LONG },
+    {
+      ...BASE,
+      kind: 'chord',
+      message: LONG,
+      details: [LONG, 'short'],
+      options: [
+        { value: 'allow', label: 'Write' },
+        { value: 'deny', label: 'Skip' },
+      ],
+    },
+    {
+      ...BASE,
+      kind: 'picker',
+      message: LONG,
+      display: LONG,
+      options: [{ value: 's', label: LONG, hint: 'H'.repeat(150) }],
+      picker: {
+        allDirectories: false,
+        page: 1,
+        cursor: 0,
+        loading: false,
+        hasNext: false,
+        hasPrevious: false,
+        retryable: false,
+      },
+    },
+    {
+      ...BASE,
+      message: LONG,
+      details: [LONG],
+      options: [{ value: 'done', label: 'Done', hint: LONG }],
+      final: 'failed',
+    },
+  ];
+
+  it.each([80, 100, 140])(
+    'at %i columns no body row of any framed kind is wider than the inner width',
+    (columns) => {
+      const width = popupInnerWidth(columns, 'standard');
+      for (const snapshot of KINDS)
+        for (const color of [true, false])
+          for (const row of withGlyphForm(!color, () =>
+            nativePopupLayout(snapshot, {
+              bodyRows: Number.POSITIVE_INFINITY,
+              listRows: Number.POSITIVE_INFINITY,
+              innerWidth: width,
+            }),
+          ).lines)
+            expect(displayWidth(row.text), `${snapshot.kind}: ${row.text}`).toBeLessThanOrEqual(
+              width,
+            );
+    },
+  );
+
+  it('a chord with `escape: back` whose affirmative cannot fit the legend row is not on its page (the `[Ctrl+Y]` item itself is asked for, not any key)', () => {
+    const chord: NativePromptSnapshot = {
+      ...BASE,
+      kind: 'chord',
+      escape: 'back',
+      message: 'Import?',
+      details: ['from x'],
+      options: [
+        { value: 'allow', label: 'W'.repeat(100) },
+        { value: 'deny', label: 'No' },
+      ],
+    };
+    // the legend row still names keys (`Esc back`, `[Ctrl+C] denies`): only `[Ctrl+Y]` is gone
+    expect(fittedLegendItems(nativePopupLegend(chord), WIDTH).some((item) => 'keys' in item)).toBe(
+      true,
+    );
+    expect(plain(chord).fits).toBe(false);
+  });
+
+  it('a typed field that exactly fills the row is drawn whole, with no ellipsis; one column more shows its end', () => {
+    const exact = 'x'.repeat(WIDTH - 2);
+    const row = (display: string): string =>
+      plain({ ...BASE, kind: 'text', options: [], display, message: 'Name' }).lines[1]?.text ?? '';
+    expect(row(exact)).toBe(`> ${exact}`);
+    expect(row(`${exact}y`)).toBe(`> …${'x'.repeat(WIDTH - 4)}y`);
+  });
+
+  it('`wrapRows`: a row after a break at exactly the width starts at its first word', () => {
+    expect(wrapRows(`${'a'.repeat(66)} bbb`, 66)).toEqual(['a'.repeat(66), 'bbb']);
+  });
+});
+
+describe('one legend for the card and the popup', () => {
+  it.each([
+    ['select', 'cancel', false],
+    ['select', 'back', false],
+    ['select', 'cancel', true],
+    ['select', 'back', true],
+  ] as const)(
+    'the card’s %s legend (escape %s, windowed %s) is the select window’s own estimate',
+    (kind, escape, windowed) => {
+      const snapshot: NativePromptSnapshot = { ...BASE, kind, escape };
+      const parts = nativeLegendParts(snapshot, windowed, 'card');
+      expect(legend(parts.items, parts.exit)).toBe(selectLegend(escape === 'back', windowed));
+    },
+  );
+
+  it.each(['select', 'text', 'password', 'busy', 'picker'] as const)(
+    '%s: the card and the popup draw the same items (the popup names the way back in the descriptor’s words)',
+    (kind) => {
+      for (const escape of ['cancel', 'back'] as const) {
+        const snapshot: NativePromptSnapshot = {
+          ...BASE,
+          kind,
+          escape,
+          popup: { ...BASE.popup!, exitLabel: 'close' },
+        };
+        const card = nativeLegendParts(snapshot, false, 'card');
+        const popup = nativePopupLegend(snapshot);
+        expect(popup.items).toEqual(card.items);
+        expect(legend(popup.items, popup.exit)).toBe(legend(card.items, card.exit));
+      }
+    },
+  );
+
+  it('a chord card’s legend is its way back alone (its answers are rows); the popup names the answers before it', () => {
+    const chord: NativePromptSnapshot = {
+      ...BASE,
+      kind: 'chord',
+      options: [
+        { value: 'allow', label: 'Write' },
+        { value: 'deny', label: 'Skip' },
+      ],
+    };
+    const card = nativeLegendParts(chord, false, 'card');
+    expect(legend(card.items, card.exit)).toBe('Esc denies');
+    const popup = nativePopupLegend(chord);
+    expect(legend(popup.items, popup.exit)).toBe('[Ctrl+Y] Write · [Ctrl+N] Skip · Esc denies');
+    expect(popup.items.slice(2)).toEqual(card.items);
+  });
+});
+
+describe('a masked field drawn with what it holds NOW (`withLiveBullets`)', () => {
+  const live = (
+    display: string,
+    kind: NativePromptSnapshot['kind'] = 'password',
+  ): NativePromptSnapshot => ({
+    ...BASE,
+    kind,
+    options: [],
+    display,
+  });
+
+  it('a field the resize emptied is drawn with no bullet, its row as wide as before', () => {
+    const row = ` > ${'•'.repeat(12)}      `;
+    expect(withLiveBullets(row, live(''))).toBe(` > ${' '.repeat(12)}      `);
+    expect(displayWidth(withLiveBullets(row, live('')))).toBe(displayWidth(row));
+  });
+
+  it('a field that holds fewer than were drawn keeps that many; one that holds as many or more is left as it is', () => {
+    const row = ` > ${'•'.repeat(12)}`;
+    expect(withLiveBullets(row, live('•'.repeat(5)))).toBe(` > ${'•'.repeat(5)}${' '.repeat(7)}`);
+    expect(withLiveBullets(row, live('•'.repeat(12)))).toBe(row);
+    expect(withLiveBullets(row, live('•'.repeat(20)))).toBe(row);
+  });
+
+  it('once the prompt is no longer a masked field, no bullet of it is drawn', () => {
+    expect(withLiveBullets(' > ••••', live('', 'busy'))).toBe(' >     ');
+  });
+});
+
+describe('why a framed prompt that is not on its page is a notice', () => {
+  const tooLong: NativePromptSnapshot = {
+    ...BASE,
+    kind: 'chord',
+    message: 'Write?',
+    details: Array.from({ length: 30 }, (_, index) => `fact ${String(index)}`),
+    options: [
+      { value: 'allow', label: 'Write' },
+      { value: 'deny', label: 'Skip' },
+    ],
+  };
+  const wide: NativePromptSnapshot = {
+    ...tooLong,
+    details: Array.from({ length: 9 }, (_, index) => `fact ${String(index)} ${'w'.repeat(62)}`),
+  };
+  const reason = (snapshot: NativePromptSnapshot, cols: number, rows: number) => {
+    const { geometry } = nativePopupGeometry(snapshot, 'overlay', { cols, rows }, false);
+    return nativeNoticeReason(snapshot, 'overlay', geometry, false);
+  };
+
+  it('below the floor: `below-floor`', () => {
+    expect(reason(BASE, 60, 20)).toBe('below-floor');
+  });
+
+  it('too long for the largest popup any terminal gives: `too-long` (enlarging cannot help), and it says so', () => {
+    expect(reason(tooLong, 80, 24)).toBe('too-long');
+    expect(reason(tooLong, 200, 60)).toBe('too-long');
+    expect(popupNoticeText('too-long')).toBe('This is too long for a popup');
+  });
+
+  it('too wide for this terminal but not for a wider one: `no-room` (enlarging helps)', () => {
+    expect(reason(wide, 80, 24)).toBe('no-room');
+    const { layout } = nativePopupGeometry(wide, 'overlay', { cols: 100, rows: 30 }, false);
+    expect(layout?.fits).toBe(true);
   });
 });

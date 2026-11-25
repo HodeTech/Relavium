@@ -11,11 +11,39 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../../popups/geometry.js';
 import { refusedOpenText } from '../../popups/popup-host.js';
 import { displayWidth } from './viewport.js';
+import type { AskUserRequest, ToolApprovalRequest } from '@relavium/core';
+
+import { createChatStore, type ChatStoreController } from './chat-store.js';
 import {
   createHomeController,
+  homeNativeActionRefusal,
+  type HomeChatSession,
   type HomeController,
   type HomeControllerDeps,
+  type HomeControllerState,
 } from './home-controller.js';
+import { createRunCard } from './run-card-model.js';
+import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+
+const GATE_REQUEST: ToolApprovalRequest = {
+  toolId: 'edit_file',
+  action: 'fs_write',
+  preview: { path: 'src/app.ts' },
+  unredactedPreview: { path: 'src/app.ts' },
+};
+const GATE_QUESTION: AskUserRequest = {
+  questions: [
+    {
+      header: 'Pick',
+      question: 'Which file?',
+      multiSelect: false,
+      options: [
+        { label: 'alpha.ts', description: 'The first file' },
+        { label: 'beta.ts', description: 'The second file' },
+      ],
+    },
+  ],
+};
 
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
@@ -165,5 +193,168 @@ describe('a native flow opens on a popup’s rules', () => {
     await flush();
     expect(h.controller.getSnapshot().input.text).toBe('hello there');
     expect(h.announce).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The gate's facts, one by one (`homeNativeActionRefusal`, pure): the keyboard routing keeps most of them out of reach today (a card or a
+ * running turn holds the keys), so each is proved here on the state the Home would have, as the reviews asked.
+ */
+describe('the gate’s facts, each on its own', () => {
+  const homeStore = { read: () => EMPTY };
+  const base = createHomeController({
+    startChat: () => new Promise(() => undefined),
+    homeStore,
+    onExit: vi.fn(),
+    onError: (cause) => {
+      throw cause;
+    },
+  }).getSnapshot();
+
+  /**
+   * A live chat whose store is the real one, opened on the card `open` asks for (left unanswered); `running` reports a turn in flight, and
+   * `without` hides one card field of the snapshot so another can be proved on its own.
+   */
+  function withChat(
+    open?: (store: ChatStoreController) => void,
+    options: { readonly running?: boolean; readonly without?: 'approval' } = {},
+  ): HomeControllerState {
+    const real = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    open?.(real);
+    const store: ChatStoreController = {
+      ...real,
+      getSnapshot: () => {
+        const snapshot = real.getSnapshot();
+        return {
+          ...snapshot,
+          ...(options.without === 'approval' ? { approval: undefined } : {}),
+          state:
+            options.running === true ? { ...snapshot.state, status: 'running' } : snapshot.state,
+        };
+      },
+    };
+    const session: HomeChatSession = {
+      store,
+      sessionId: 'sess-gate',
+      processLine: () => Promise.resolve(),
+      shouldStop: () => false,
+      stopReason: () => 'exit',
+      teardown: () => Promise.resolve(),
+    };
+    return { ...base, mode: 'chat', session };
+  }
+  const swallow = (promise: Promise<unknown>): void => {
+    promise.catch(() => undefined);
+  };
+  const gateCard: HomeControllerState['screen'] = {
+    kind: 'gate-card',
+    runId: 'run-1',
+    card: createRunCard({
+      runId: 'run-1',
+      gates: [],
+      resume: () => Promise.reject(new Error('unused')),
+    }),
+    back: 'landing',
+    from: 'landing',
+  };
+
+  it('nothing in the way: it opens', () => {
+    expect(homeNativeActionRefusal(base, {}, false)).toBeUndefined();
+    expect(homeNativeActionRefusal(withChat(), {}, false)).toBeUndefined();
+  });
+
+  it('a popup already open refuses first, whatever else holds', () => {
+    expect(homeNativeActionRefusal(base, {}, true)).toBe('popup-open');
+    expect(homeNativeActionRefusal({ ...base, mode: 'loading' }, {}, true)).toBe('popup-open');
+  });
+
+  it('a chat being built refuses (`starting`)', () => {
+    expect(homeNativeActionRefusal({ ...base, mode: 'loading' }, {}, false)).toBe('starting');
+  });
+
+  it.each([
+    [
+      'an approval',
+      (store: ChatStoreController) => swallow(store.requestApproval(GATE_REQUEST, false)),
+    ],
+    [
+      'the agent’s question',
+      (store: ChatStoreController) => swallow(store.requestQuestion(GATE_QUESTION)),
+    ],
+    [
+      'a continue checkpoint',
+      (store: ChatStoreController) =>
+        swallow(store.requestCheckpoint({ rounds: 32, interval: 32 })),
+    ],
+  ] as const)('%s waiting refuses (`card-open`)', (_name, open) => {
+    const state = withChat(open);
+    expect(homeNativeActionRefusal(state, {}, false)).toBe('card-open');
+  });
+
+  it('the tool review open refuses (`card-open`), the approval hidden so the review is proved on its own', () => {
+    const state = withChat(
+      (store) => {
+        swallow(store.requestApproval(GATE_REQUEST, false));
+        store.openDetails();
+      },
+      { without: 'approval' },
+    );
+    expect(state.session?.store.getSnapshot().review).toBeDefined();
+    expect(state.session?.store.getSnapshot().approval).toBeUndefined();
+    expect(homeNativeActionRefusal(state, {}, false)).toBe('card-open');
+  });
+
+  it('a sheet refuses (`sheet-open`): the exit guard, and a gate card', () => {
+    expect(homeNativeActionRefusal({ ...base, exitGuard: 'confirm' }, {}, false)).toBe(
+      'sheet-open',
+    );
+    expect(homeNativeActionRefusal({ ...base, screen: gateCard }, {}, false)).toBe('sheet-open');
+  });
+
+  it('a turn, a `!` command or a submit in flight refuses (`turn-running`)', () => {
+    expect(homeNativeActionRefusal(withChat(undefined, { running: true }), {}, false)).toBe(
+      'turn-running',
+    );
+    expect(homeNativeActionRefusal({ ...base, shellBusy: true }, {}, false)).toBe('turn-running');
+    expect(homeNativeActionRefusal({ ...base, submitBusy: true }, {}, false)).toBe('turn-running');
+  });
+
+  it('a two-step armed refuses (`armed`)', () => {
+    expect(homeNativeActionRefusal({ ...base, interruptArmed: true }, {}, false)).toBe('armed');
+  });
+
+  it('the overlay a flow is opened from is no refusal: the palette, a search, a mention, a screen of the slot', () => {
+    const palette = createHomeController({
+      startChat: () => new Promise(() => undefined),
+      homeStore,
+      onExit: vi.fn(),
+      onError: (cause) => {
+        throw cause;
+      },
+    });
+    palette.handleKey('/', {});
+    const open = palette.getSnapshot();
+    expect(open.palette).toBeDefined();
+    expect(homeNativeActionRefusal(open, {}, false)).toBeUndefined();
+  });
+
+  it('is read on the Home as the action’s own change leaves it (`patch`)', () => {
+    // a change that takes the sheet away opens; one that brings one refuses
+    expect(
+      homeNativeActionRefusal({ ...base, screen: gateCard }, { screen: undefined }, false),
+    ).toBeUndefined();
+    expect(homeNativeActionRefusal(base, { exitGuard: 'confirm' }, false)).toBe('sheet-open');
+  });
+
+  it('says the reasons in the one order of `popupRefusal`: a chat being built before a card, a card before a sheet, a sheet before a turn, a turn before a two-step', () => {
+    const everything = {
+      ...withChat((store) => swallow(store.requestCheckpoint({ rounds: 1, interval: 1 })), {
+        running: true,
+      }),
+      exitGuard: 'confirm' as const,
+      interruptArmed: true,
+    };
+    expect(homeNativeActionRefusal({ ...everything, mode: 'loading' }, {}, false)).toBe('starting');
+    expect(homeNativeActionRefusal(everything, {}, false)).toBe('card-open');
   });
 });

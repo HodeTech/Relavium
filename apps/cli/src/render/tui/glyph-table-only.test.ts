@@ -99,7 +99,12 @@ const ALLOWED: readonly Allowance[] = [
   },
   {
     characters: /•/u,
-    files: ['engine/providers.ts', 'home/run-launch.ts', 'render/tui/native-prompt-channel.ts'],
+    files: [
+      'engine/providers.ts',
+      'home/run-launch.ts',
+      'popups/native-popup-body.ts',
+      'render/tui/native-prompt-channel.ts',
+    ],
     reason:
       'the mask of a secret: `••••` for a provider key, a secret field, or each character of a password',
   },
@@ -269,6 +274,7 @@ describe('every symbol character of the application’s source is the table’s 
     expect([...new Set(tableHits)].sort()).toEqual([
       'engine/providers.ts •',
       'home/run-launch.ts •',
+      'popups/native-popup-body.ts •',
       'render/markdown/layout.ts ─',
       'render/markdown/parser.ts •',
       'render/scrollback.ts ─',

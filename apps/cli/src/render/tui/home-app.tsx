@@ -973,7 +973,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         // Any other key is not delivered (the card is not visible), but it is typing as far as the chord guard is concerned: while a
         // card is open, every key the person types in the composer reaches the channel's typeahead and quiet layers, seen or not.
         // A key typed with NO card open never gets here: it is a composer edit, not typeahead.
-        else props.nativePrompt.unseenInput();
+        else props.nativePrompt.unseenInput(input, key);
         return;
       }
       props.nativePrompt.input(input, key);

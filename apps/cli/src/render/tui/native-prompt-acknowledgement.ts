@@ -210,6 +210,12 @@ export function createNativePromptAcknowledgement(
   });
   return {
     invalidate,
+    /**
+     * Look at the terminal's size now and, if it is one this acknowledgement has not seen, tell the channel (a masked field is emptied). For a
+     * resize listener that must run BEFORE the renderer's own: the renderer redraws the tree it has on a resize, and a tree that still holds
+     * the field's bullets would be written once more at the new size (`native-prompt-view.tsx`, `native-prompt-host.tsx`).
+     */
+    noticeSize: noteSize,
     visible,
     /**
      * Installed by the popup slot that draws the channel's prompt in the popup frame: how far `PgUp`/`PgDn` move the cursor of a select drawn
