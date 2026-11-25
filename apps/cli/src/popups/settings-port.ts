@@ -137,6 +137,11 @@ export interface ModelsSettingsPort {
    * is bound to another agent. Absent ⇒ unknown. May throw (a config read).
    */
   readonly defaultModel?: (() => string | undefined) | undefined;
+  /**
+   * A chat's: the provider the default model is persisted with (`[chat].default_provider`), when one is set: new chats use it verbatim, whatever
+   * the catalog says of the model (ADR-0059). Absent or `undefined` ⇒ the provider is the one the default model's catalog row names.
+   */
+  readonly defaultProvider?: (() => string | undefined) | undefined;
   /** What a person reads for a provider id (`OpenAI`, not `openai`; ADR-0145 §8). */
   readonly providerName: (provider: string) => string;
   /** The clock the catalog's age is told against (epoch milliseconds). Absent ⇒ the wall clock. */

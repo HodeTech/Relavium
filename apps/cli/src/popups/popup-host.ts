@@ -99,7 +99,11 @@
  * one key history). Every repeat of a held key is a key, so a held `Enter`, or a held `↓` and then `Enter`, never applies; a fresh press after
  * reading, or a slow second press, does. An `Enter` refused for this says nothing and is no resolution either.
  *
- * **The `Enter` that reached a form is not its answer, however long it is held.** The quiet gap cannot tell a held key's FIRST repeat from a
+
+ * **The `Enter` that reached a guarded form is not its answer, however long it is held.** A form is `guarded` when applying it widens authority
+ * or sends data elsewhere (`PopupForm.guarded`: `/mode` for `accept-edits` and `auto`, `/models` when the provider changes); the other forms
+ * (`plan`, `ask`, a model within the default's provider) have the settle and the quiet gap alone, and a held `Enter` does apply them, which
+ * is harmless by construction (nothing is approved or sent that was not already). The quiet gap cannot tell a held key's FIRST repeat from a
  * slow second press: the terminal's initial repeat delay (225 ms to 1.8 s on macOS, 250 ms to 1 s on Windows, 660 ms on X11) is longer than the
  * gap and, on a form reached by an `Enter`, longer than the settle too, and a slow repeat RATE (400 ms to 1.8 s, an accessibility setting) is
  * longer than the gap as well. A terminal that reports key events labels the repeat and the reducer drops it (`popup-reducer.ts`,
@@ -664,6 +668,17 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   const liveNotice = (): string | undefined =>
     stack.length === 0 ? undefined : channel?.getSnapshot().current?.text;
 
+  /** Whether the step a frame is on is a form whose apply widens authority or sends data elsewhere (`PopupForm.guarded`). */
+  const onGuardedForm = (frame: PopupFrame): boolean => {
+    const content = currentStep(frame).state.content;
+    return content.kind === 'form' && content.guarded === true;
+  };
+
+  /** An `Enter` that came inside the lockout of the answer before it restarts the lockout: the approval's own strict rule (`chord-guard.ts`). */
+  const restartLockout = (stamp: ChordStamp): void => {
+    if (stamp.now - stamp.lastResolvedAt < APPROVAL_LOCKOUT_MS) chord.resolved(stamp);
+  };
+
   /** The state of the step a frame is on (what the form says is this and its content), or `undefined` for no frame. */
   const formStateOf = (frame: PopupFrame | undefined): PopupStepState | undefined =>
     frame === undefined ? undefined : currentStep(frame).state;
@@ -992,10 +1007,9 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     // strict rule, `chord-guard.ts`): a held key at any repeat rate, slower than the quiet gap included, keeps pushing the end of the lockout
     // away, so it never reaches it however long it is held; a person who lets go and presses again after it applies.
     const content = currentStep(record.frame).state.content;
-    const lockedForm = content.kind === 'form' && content.guarded === true;
+    const lockedForm = onGuardedForm(record.frame);
     if (!formSettled(stamp.now) || !formQuiet(stamp, lockedForm)) {
-      if (lockedForm && stamp.now - stamp.lastResolvedAt < APPROVAL_LOCKOUT_MS)
-        chord.resolved(stamp);
+      if (lockedForm) restartLockout(stamp);
       return;
     }
     // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
@@ -1147,6 +1161,10 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       // Typing, or a person choosing a row, seen or not: what a control letter of a popup with a line answered by `Enter` is armed against.
       record.typing = typingOf(action) ?? record.typing;
       if (admitKey(record, action, stamp)) dispatchKey(record, action, stamp, typedBefore);
+      // An `Enter` that reaches a GUARDED form inside its lockout restarts it even when the key was not admitted (a frame nobody has seen yet,
+      // the opening guard): a key held at a slow rate, one repeat of which lands in the moment before a new frame is acknowledged, must not
+      // let the lockout run out under it. An admitted one restarts it in `applyForm`.
+      else if (action.kind === 'enter' && onGuardedForm(record.frame)) restartLockout(stamp);
       return true;
     },
     paste: (text) => {

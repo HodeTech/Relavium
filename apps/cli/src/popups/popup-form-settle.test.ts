@@ -378,6 +378,33 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
     },
   );
 
+  // The rig above says every frame is on screen. A real slot acknowledges each frame a moment after it is made, and a repeat that lands in
+  // that moment arrives at a snapshot nobody has seen: the host drops it before the form's own rule, and it must still restart the lockout.
+  it.each([1100, 1500, 1800])(
+    'a key held at %i ms, one repeat landing on a frame nobody has seen yet (a notice came): nothing applies',
+    (rate) => {
+      const { r, mode } = settledMode();
+      let seen = r.host.getSnapshot();
+      r.host.bindVisibility((snapshot) => snapshot === seen);
+      r.press(ENTER); // the press that reached the form, which stays down
+      r.clock.advance(FRAME_MS);
+      r.ack();
+      seen = r.host.getSnapshot();
+      for (let repeat = 1; repeat <= 4; repeat += 1) {
+        r.clock.advance(rate - (repeat === 1 ? FRAME_MS : 0));
+        if (repeat === 2) r.notifications.notify('mode word'); // a new snapshot, not acknowledged yet
+        r.press(ENTER);
+        seen = r.host.getSnapshot(); // the slot draws it a moment later
+      }
+      expect(mode.applied).toEqual([]);
+      expect(r.open()).toBe(true);
+      r.clock.advance(APPROVAL_LOCKOUT_MS); // let go and read: the notice has gone meanwhile, and the slot has drawn the frame without it
+      seen = r.host.getSnapshot();
+      r.press(ENTER);
+      expect(mode.applied).toEqual(['auto']);
+    },
+  );
+
   it('a press that is early restarts the wait: the person is told by nothing, and a press a lockout after it applies', () => {
     const { r, mode } = settledMode();
     r.press(ENTER); // step 1 → step 2

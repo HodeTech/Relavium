@@ -390,17 +390,36 @@ describe('applying in a chat (the popup closes first)', () => {
     );
   });
 
-  it('a chat port that cannot say the default says only where new chats would go', () => {
-    const fake = fakeModels({ current: OPENAI, provider: 'openai' }); // no `defaultModel`
+  it('with no default configured, new chats are taken to start where this chat is: a pick of its own provider is neither guarded nor warned', () => {
+    // The zero-config chat: the key-aware fallback gives new chats the provider the person already uses; nothing is read to say otherwise.
+    const fake = fakeModels({ current: OPENAI, provider: 'openai', defaultModel: undefined });
     const rig = opened(fake);
     highlight(rig, NO_TIER);
     rig.press('', ENTER);
-    expect(formOf(rig).radio?.options[1]?.warning).toBe(
-      'New chats start on OpenAI. Your messages in them are sent to OpenAI.',
+    const form = formOf(rig);
+    expect(form.guarded).toBeUndefined();
+    expect(form.radio?.options[1]?.warning).toBeUndefined();
+    // ... and another provider's model still is, with where new chats would go.
+    const other = opened(fakeModels({ current: OPENAI, provider: 'openai' }));
+    highlight(other, GRADED);
+    other.press('', ENTER);
+    expect(formOf(other).guarded).toBe(true);
+  });
+
+  it('a persisted default provider is the one new chats use, whatever the catalog says of the default model (ADR-0059)', () => {
+    // The default model is Anthropic's in the catalog, but the config persists `default_provider = "openai"` for it: new chats go to OpenAI.
+    const fake = fakeModels({ defaultModel: GRADED, defaultProvider: 'openai' });
+    const rig = opened(fake);
+    highlight(rig, BUDGET); // an Anthropic model, the chat's own provider and the catalog's reading of the default
+    rig.press('', ENTER);
+    const form = formOf(rig);
+    expect(form.guarded).toBe(true); // the chats to come DO change provider
+    expect(form.radio?.options[1]?.warning).toBe(
+      'New chats move from OpenAI to Anthropic. Your messages in them are sent to Anthropic.',
     );
   });
 
-  it('with no tier in force, "New chats" for the model in force with the stand-in tier left alone saves the model and no tier', async () => {
+  it('with no tier in force, "New chats" saves the tier the form shows, the stand-in included (ADR-0066 §6: what is shown is what is saved)', async () => {
     const fake = fakeModels({ effort: undefined });
     const rig = opened(fake);
     rig.press('', ENTER); // the model in force: the form for the same model
@@ -408,7 +427,9 @@ describe('applying in a chat (the popup closes first)', () => {
     rig.settle();
     rig.press('', ENTER);
     await settleWork();
-    expect(fake.saved).toEqual([{ modelId: GRADED, provider: 'anthropic' }]);
+    expect(fake.saved).toEqual([
+      { modelId: GRADED, provider: 'anthropic', reasoningEffort: 'medium' },
+    ]);
   });
 
   it('`This chat` with the model in force and another tier is the session’s tier, said as `/effort` says it', () => {

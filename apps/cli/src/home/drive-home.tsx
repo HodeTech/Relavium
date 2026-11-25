@@ -1000,6 +1000,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
       }),
       currentDefault: readEffectiveDefault,
+      currentDefaultProvider: () => readEffectiveChat().defaultProvider,
       currentEffort: readEffectiveEffort,
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an

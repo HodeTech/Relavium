@@ -325,6 +325,7 @@ function chatModelsSettings(
   store: Pick<ChatStoreController, 'getSnapshot'>,
   setEffort: (effort: ReasoningEffort) => void,
   save: Omit<DefaultModelSaveOptions, 'write'>,
+  readDefaultProvider: () => string | undefined,
 ): ModelsSettingsPort | undefined {
   if (picker === undefined) return undefined;
   const write = picker.writeDefault;
@@ -337,6 +338,7 @@ function chatModelsSettings(
     currentProvider: () => built.agent.provider,
     currentEffort: () => store.getSnapshot().reasoningEffort,
     defaultModel: save.readEffective,
+    defaultProvider: readDefaultProvider,
     providerName: providerDisplayName,
     setEffort,
     ...(write === undefined
@@ -2813,11 +2815,18 @@ export function createChatLineHandler(
           // `/models` (ADR-0148 §3, §6): this session's half (its model, provider and tier, its tier setter, the catalog and the default's
           // writer of its `modelCatalog`); the switch is the host's (`bindModelSwitch`). Only where the catalog is wired (a stand-alone chat:
           // the chat the Home hosts gets its member from the Home's controller).
-          models: chatModelsSettings(wiring.modelCatalog, built, store, modeControl.onSetEffort, {
-            readEffective: () => readLiveConfig().config.chat.defaultModel,
-            closing: noticesStopped,
-            failure: (cause) => workOwner?.failure(cause),
-          }),
+          models: chatModelsSettings(
+            wiring.modelCatalog,
+            built,
+            store,
+            modeControl.onSetEffort,
+            {
+              readEffective: () => readLiveConfig().config.chat.defaultModel,
+              closing: noticesStopped,
+              failure: (cause) => workOwner?.failure(cause),
+            },
+            () => readLiveConfig().config.chat.defaultProvider,
+          ),
           // `/mode` (two steps, the 2026-11-25 ruling): this chat through the session's one mode setter, which records the change, refuses an
           // unrecorded widening and announces itself; new chats through the startup-default writer on this chat's native prompt, its result
           // said by the popup on the host's channel (never in the transcript). Only where that writer is wired.

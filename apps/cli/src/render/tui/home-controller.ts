@@ -530,6 +530,8 @@ export interface HomeModelsPort {
   refresh: () => Promise<RefreshReport>;
   /** The current `[preferences].default_model` (the picker's `✓` marker), or `undefined` when none is set. */
   currentDefault: () => string | undefined;
+  /** The provider the default is persisted with (`[chat].default_provider`), when one is set (the chat's `/models` judges "New chats" by it). */
+  currentDefaultProvider?: (() => string | undefined) | undefined;
   /** The current resolved default reasoning-effort tier (ADR-0066 §6) — the `✓`/opening highlight of the bare-Home
    *  effort sub-step; `undefined` ⇒ none set (the sub-list opens on a neutral middle tier). */
   currentEffort: () => ReasoningEffort | undefined;
@@ -2931,6 +2933,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         current: () => active.store.getSnapshot().state.model,
         currentProvider: () => active.provider,
         defaultModel: port.currentDefault,
+        defaultProvider: port.currentDefaultProvider,
         currentEffort: () => active.store.getSnapshot().reasoningEffort,
         setEffort: active.onSetEffort,
         switchModel: (choice) => {

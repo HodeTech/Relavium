@@ -88,10 +88,21 @@ function readInForce(models: ModelsSettingsPort): InForce | undefined {
   }
 }
 
-/** The provider new chats start on: the one of the default model the chat's host reads (`undefined`: not known). */
-function defaultProviderOf(models: ModelsSettingsPort, view: CatalogView): string | undefined {
+/**
+ * The provider new chats start on: the one the default is persisted with, else the one of the default model's catalog row; with no default
+ * configured, new chats take the provider the key-aware fallback finds, which for a chat on the default agent is the chat's own (`own`).
+ * `undefined`: not known (a read that failed), which the form treats as a move.
+ */
+function defaultProviderOf(
+  models: ModelsSettingsPort,
+  view: CatalogView,
+  own: string | undefined,
+): string | undefined {
   try {
-    return currentProviderOf(view.entries, models.defaultModel?.(), undefined);
+    const persisted = models.defaultProvider?.();
+    if (persisted !== undefined) return persisted;
+    const model = models.defaultModel?.();
+    return model === undefined ? own : currentProviderOf(view.entries, model, undefined);
   } catch {
     return undefined;
   }
@@ -253,7 +264,9 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
           current: marked,
           currentProvider,
           defaultProvider:
-            models.scope === 'home' ? currentProvider : defaultProviderOf(models, view),
+            models.scope === 'home'
+              ? currentProvider
+              : defaultProviderOf(models, view, currentProvider),
           currentEffort: inForce.effort,
           canSaveDefault: models.saveDefault !== undefined,
           providerName: models.providerName,
@@ -282,14 +295,8 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
           port.announce(alreadyDefaultAnnouncement(choice.modelId));
           return;
         }
-        // The model in force with a stand-in tier left alone: new chats keep the provider's default tier (nothing was chosen to save).
-        handOffDefault(
-          port,
-          models,
-          picked.sameModel && standIn
-            ? { modelId: choice.modelId, provider: choice.provider }
-            : choice,
-        );
+        // What the form shows is what is saved (ADR-0066 §6: the default model and its tier in one write), the stand-in tier included.
+        handOffDefault(port, models, choice);
       },
     },
   );
