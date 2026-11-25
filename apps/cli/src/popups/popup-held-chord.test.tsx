@@ -270,6 +270,9 @@ describe('typed `/doctor --deep` in a real chat, then Ctrl+Y (MVP-11 step 4 roun
   ] as const)(
     'a Ctrl+Y %i ms after the line appeared sends %i request(s): the Enter that typed the line locks it for 2 s',
     async (wait, sent) => {
+      // One clock for every guard of the host, moved by hand: the wait is exactly `wait`, whatever the machine is doing (on a real clock a loaded
+      // machine adds its own delay to `m.skip(wait)`, and a Ctrl+Y meant to be 1900 ms after the line lands past the 2 s lockout).
+      vi.useFakeTimers({ toFake: ['performance'] });
       const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
       const anthropic = recordingProvider('anthropic');
       const seam = stubResolver({ keys: { anthropic: MOUNTED_KEY }, providers: { anthropic } });
@@ -285,7 +288,7 @@ describe('typed `/doctor --deep` in a real chat, then Ctrl+Y (MVP-11 step 4 roun
         await m.typeLine('/doctor --deep');
         await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
         await m.settle();
-        m.skip(wait);
+        vi.advanceTimersByTime(wait);
         m.key(KEYS.ctrlY);
         await m.settle();
         await settleWork();
@@ -293,6 +296,7 @@ describe('typed `/doctor --deep` in a real chat, then Ctrl+Y (MVP-11 step 4 roun
         expect(anthropic.requests).toHaveLength(sent);
       } finally {
         m.unmount();
+        vi.useRealTimers();
       }
     },
   );
@@ -320,6 +324,8 @@ describe('the Home: its landing and its chat’s lists stamp their keys too, so 
   ] as const)(
     'typed on the landing, then a Ctrl+Y %i ms after the line appeared: %i request(s)',
     async (wait, sent) => {
+      // One clock for every guard of the host, moved by hand (see the stand-alone chat's case above).
+      vi.useFakeTimers({ toFake: ['performance'] });
       const { anthropic, port } = doctorOnHome('home');
       const m = mountHome(variant, { doctor: port });
       try {
@@ -329,7 +335,7 @@ describe('the Home: its landing and its chat’s lists stamp their keys too, so 
         m.key(KEYS.enter);
         await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
         await m.settle();
-        m.skip(wait);
+        vi.advanceTimersByTime(wait);
         m.key(KEYS.ctrlY);
         await m.settle();
         await settleWork();
@@ -337,6 +343,7 @@ describe('the Home: its landing and its chat’s lists stamp their keys too, so 
         expect(anthropic.requests).toHaveLength(sent);
       } finally {
         m.unmount();
+        vi.useRealTimers();
       }
     },
   );

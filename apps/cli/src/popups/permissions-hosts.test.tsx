@@ -23,6 +23,7 @@ import {
 } from '../render/tui/surface-matrix/chat-host.js';
 import { KEYS } from '../render/tui/surface-matrix/home-host.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
+import { PERMISSIONS_STEP } from './permissions-popup.js';
 import type { SettingsPort } from './settings-port.js';
 
 type Host = 'chat' | 'standalone-chat';
@@ -130,9 +131,23 @@ async function openList(m: ChatMount): Promise<void> {
   m.skip(600);
 }
 
-/** `[d]`, and the withdrawal's line drawn and acknowledged. */
+/**
+ * `[d]`, and the withdrawal's line drawn and acknowledged. A `[d]` the host dropped (a key that arrives before the popup's first frame was
+ * acknowledged is dropped, and a loaded machine makes that race possible) arms nothing, so it is pressed again, a gap later, until the popup is on
+ * its line: and never once it is, because a second `d` on the line is a key typed since `[d]`.
+ */
 async function arm(m: ChatMount): Promise<void> {
+  const onLine = (): boolean =>
+    m.popups.getSnapshot().frame?.stepIndex === PERMISSIONS_STEP.withdraw;
   m.key('d');
+  await m.settle();
+  await vi.waitFor(
+    () => {
+      if (!onLine()) m.key('d');
+      expect(onLine()).toBe(true);
+    },
+    { timeout: WAIT_MS, interval: 400 },
+  );
   await vi.waitFor(() => expect(m.text()).toContain('Withdraw this remembered command?'), {
     timeout: WAIT_MS,
     interval: 15,

@@ -131,6 +131,33 @@ describe('the settings a chat session hands its driver', () => {
     expect(typeof seen?.setAnnouncer).toBe('function');
   });
 
+  it('its `/mode` member reads the chat’s mode, applies through the session’s one setter (the footer moves) and carries a startup-default writer', async () => {
+    await chatWith(true, async (ctx) => {
+      const mode = ctx.settings?.mode;
+      if (mode === undefined) throw new Error('no /mode member');
+      expect(mode.current()).toBe('ask');
+      expect(mode.apply('plan')).toBe(true);
+      // The setter is the session's own: the status line's mode moved with it, and the member reads it back.
+      expect(ctx.store.getSnapshot().mode).toBe('plan');
+      expect(mode.current()).toBe('plan');
+      expect(typeof mode.saveStartupDefault).toBe('function');
+      await Promise.resolve();
+    });
+  });
+
+  it('its `/permissions` member reads this chat’s lists and its mode now: the project’s remembered commands, this session’s approvals, and the mode in force', async () => {
+    await chatWith(true, async (ctx) => {
+      const permissions = ctx.settings?.permissions;
+      if (permissions === undefined) throw new Error('no /permissions member');
+      expect(permissions.port.surface).toBe('chat');
+      expect(permissions.port.load()).toEqual({ project: { ok: true, rows: [] }, session: [] });
+      expect(permissions.mode()).toBe('ask');
+      ctx.onModeChange?.('plan');
+      expect(permissions.mode()).toBe('plan');
+      await Promise.resolve();
+    });
+  });
+
   it('a typed `/effort <tier>` applies and announces on the bound channel, and writes nothing into the transcript', async () => {
     const announced: string[] = [];
     await chatWith(true, async (ctx) => {

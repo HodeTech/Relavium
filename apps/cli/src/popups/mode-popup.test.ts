@@ -382,10 +382,13 @@ describe('answering the popup', () => {
 
   it('a step 2 that is not wholly on its page applies nothing and names no `Enter`; `Esc` still steps back', () => {
     const r = openMode('ask');
-    r.host.bindPageRows(() => 3);
     r.press('', END);
     r.press('', ENTER);
     expect(stepIndex(r)).toBe(SCOPE_STEP);
+    // Step 2 drawn whole, acknowledged, and its settle, quiet gap and lockout all passed: only the page can still withhold its `Enter`. The
+    // page then shrinks under it (a resize the slot has not acknowledged yet), so the form is no longer wholly on it.
+    r.settle();
+    r.host.bindPageRows(() => 3);
     r.press('', ENTER);
     expect(r.mode.applied).toEqual([]);
     expect(r.host.getSnapshot().open).toBe(true);
@@ -396,6 +399,20 @@ describe('answering the popup', () => {
     ).toBe(false);
     r.press('', ESC);
     expect(stepIndex(r)).toBe(0);
+  });
+
+  it('the same `Enter` applies once the page holds step 2 whole again: the page was the only thing that withheld it', () => {
+    const r = openMode('ask');
+    r.press('', END);
+    r.press('', ENTER);
+    r.settle();
+    r.host.bindPageRows(() => 3);
+    r.press('', ENTER);
+    expect(r.mode.applied).toEqual([]);
+    r.host.bindPageRows(() => 17);
+    r.settle(); // drawn whole again, and the lockout of the refused `Enter` passed
+    r.press('', ENTER);
+    expect(r.mode.applied).toEqual(['auto']);
   });
 });
 
