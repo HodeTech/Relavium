@@ -97,7 +97,7 @@ export function modeScopeForm(mode: ChatMode): PopupForm {
       initial: 'this-chat',
       options: SCOPES,
     },
-    ...(announcesEffect(mode) ? { warning: MODE_EFFECT[mode].full } : {}),
+    ...(announcesEffect(mode) ? { warning: MODE_EFFECT[mode].full, guarded: true as const } : {}),
   };
 }
 

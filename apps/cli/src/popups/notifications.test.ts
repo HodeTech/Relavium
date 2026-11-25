@@ -137,6 +137,26 @@ describe('the latest word on a subject replaces the earlier (MVP-11 step 5, corr
     expect(text(channel)).toBeUndefined();
   });
 
+  it('an empty text with a topic withdraws the topic’s notifications, showing and waiting, and says nothing', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('other');
+    channel.notify('auto mode', undefined, 'mode');
+    channel.notify('', undefined, 'mode');
+    expect(channel.getSnapshot().queued).toBe(0);
+    expect(text(channel)).toBe('other');
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBeUndefined(); // the withdrawn one never shows
+    channel.notify('accept-edits mode', undefined, 'mode');
+    expect(text(channel)).toBe('accept-edits mode');
+    channel.notify('', undefined, 'mode'); // the one showing goes at once and its timer with it
+    expect(text(channel)).toBeUndefined();
+    expect(time.pending()).toBe(0);
+    channel.notify('', undefined, 'mode'); // nothing to withdraw: nothing changes
+    channel.notify('', undefined); // an empty text with no topic is ignored as before
+    expect(channel.getSnapshot()).toMatchObject({ current: undefined, queued: 0 });
+  });
+
   it('a replacement while the channel is held waits for the hold, and still replaces what waited', () => {
     const time = clock();
     const channel = createNotificationChannel({ schedule: time.schedule });

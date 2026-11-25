@@ -140,6 +140,12 @@ export interface PopupForm {
   readonly radio?: PopupFormField | undefined;
   /** The warning drawn under the fields (`⚠ This chat moves from Anthropic to OpenAI. …`), wrapped whole; a chosen radio option's replaces it. */
   readonly warning?: string | undefined;
+  /**
+   * Applying the form widens authority or sends data elsewhere (`/mode auto`, `/models` to another provider): its `Enter` also waits out the
+   * approval's lockout after the answer that reached it, so a key held down never applies it (`popup-host.ts`). A form that only narrows or
+   * stays within one provider has the settle and the quiet gap alone: it applies as soon as it has been read.
+   */
+  readonly guarded?: true | undefined;
 }
 
 /**

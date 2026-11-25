@@ -726,6 +726,7 @@ const recordModels: Recorder = (): StateRows => {
       scope,
       current,
       currentProvider: 'anthropic',
+      defaultProvider: 'anthropic',
       currentEffort: 'medium',
       canSaveDefault,
       providerName: providerDisplayName,

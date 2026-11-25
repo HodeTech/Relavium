@@ -347,12 +347,9 @@ describe('the host answers a form', () => {
     r.host.input('', ENTER);
     expect(r.applied).toEqual([]);
     r.setPage(6);
-    // The first press resolved (it tried to answer), so a second one needs the lockout after it, not only the quiet gap: inside it, it is
-    // taken for a held key's repeat and never applies a form.
+    // A second press a quiet gap after the first (one inside it is a held key's repeat, and never applies a form). This form only narrows or
+    // stays within one provider: it is not `guarded`, so the lockout after the answer that reached it does not apply (`popup-form-settle.test.ts`).
     r.time.advance(300);
-    r.host.input('', ENTER);
-    expect(r.applied).toEqual([]);
-    r.time.advance(APPROVAL_LOCKOUT_MS);
     r.host.input('', ENTER);
     expect(r.applied).toEqual([{ tab: 'medium', radio: 'new' }]);
   });

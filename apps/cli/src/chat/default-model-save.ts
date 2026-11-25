@@ -114,7 +114,8 @@ export async function withDefaultModelCard<T>(
     flow.busy('Saving default model…');
     return await run(signal);
   } catch (cause) {
-    if (signal.aborted && cause === signal.reason)
+    // A cancel is the flow's own reason, or the wait for the card's host that the cancel cut short.
+    if (signal.aborted && (cause === signal.reason || cause instanceof NativeHostUnavailableError))
       throw new CliError('invalid_invocation', DEFAULT_MODEL_CANCELLED);
     throw cause;
   } finally {

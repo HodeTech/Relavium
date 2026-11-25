@@ -132,6 +132,11 @@ export interface ModelsSettingsPort {
   readonly currentProvider: () => string | undefined;
   /** The tier in force: the chat's, or the Home's default (`undefined`: the provider's default). May throw (a config read). */
   readonly currentEffort: () => ReasoningEffort | undefined;
+  /**
+   * A chat's: the default model new chats start with today (`undefined`: none set), which says what the provider of new chats is when this chat
+   * is bound to another agent. Absent ⇒ unknown. May throw (a config read).
+   */
+  readonly defaultModel?: (() => string | undefined) | undefined;
   /** What a person reads for a provider id (`OpenAI`, not `openai`; ADR-0145 §8). */
   readonly providerName: (provider: string) => string;
   /** The clock the catalog's age is told against (epoch milliseconds). Absent ⇒ the wall clock. */

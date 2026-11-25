@@ -354,6 +354,8 @@ describe('createChatLineHandler over a real session, store and persister: what t
     readonly chat: ChatStoreController;
     readonly persister: SessionPersister;
     readonly announced: string[];
+    /** The topics withdrawn (a narrowing leaves no word of the mode it left). */
+    readonly withdrawn: string[];
     readonly dispose: () => Promise<void>;
   }
   async function rig(interactive = true): Promise<Rig> {
@@ -402,12 +404,18 @@ describe('createChatLineHandler over a real session, store and persister: what t
     persister.start();
     built.session.start();
     const announced: string[] = [];
-    handler.setAnnouncer((text) => announced.push(text));
+    // A withdrawal (an empty text with a topic: a mode that narrowed leaves no word of the one it left) is kept apart from what was said.
+    const withdrawn: string[] = [];
+    handler.setAnnouncer((text, topic) => {
+      if (text === '') withdrawn.push(topic ?? '');
+      else announced.push(text);
+    });
     return {
       handler,
       chat,
       persister,
       announced,
+      withdrawn,
       dispose: async () => {
         persister.close();
         built.session.cancel();
@@ -434,6 +442,8 @@ describe('createChatLineHandler over a real session, store and persister: what t
     expect(r.handler.onModeChange('auto')).toBe(true);
     expect(r.handler.onModeChange('ask')).toBe(true);
     expect(r.announced).toEqual([modeChangedNotice('accept-edits'), modeChangedNotice('auto')]);
+    // A narrowing says nothing, but it withdraws the word of the mode it left (`ask←plan` and `auto→ask`; a widening withdraws nothing).
+    expect(r.withdrawn).toEqual(['mode', 'mode']);
     expect(modeRecords()).toEqual([
       'ask→plan',
       'plan→accept-edits',

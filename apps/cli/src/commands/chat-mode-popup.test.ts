@@ -155,7 +155,10 @@ function modePopupOver(ctx: ChatDriveContext) {
   const settings = ctx.settings;
   if (settings?.mode === undefined) throw new Error('the chat has no /mode member');
   const announced: string[] = [];
-  ctx.setAnnouncer?.((text) => announced.push(text));
+  // What was said; a withdrawal (an empty text with a topic) is no word.
+  ctx.setAnnouncer?.((text) => {
+    if (text !== '') announced.push(text);
+  });
   const clock = manualClock();
   const host = createPopupHost({
     now: clock.now,

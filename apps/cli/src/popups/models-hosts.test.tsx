@@ -26,6 +26,7 @@ import {
   type ChatMount,
 } from '../render/tui/surface-matrix/chat-host.js';
 import { KEYS, mountHome, type HomeMount } from '../render/tui/surface-matrix/home-host.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { CATALOG, fakeModels, GRADED, OPENAI } from './models.test-support.js';
 import { currentStep, visibleRows } from './popup-reducer.js';
@@ -40,6 +41,8 @@ const variantOf = (renderer: (typeof RENDERERS)[number]): Variant => ({
   size: { cols: 80, rows: 24 },
 });
 
+/** A patient press: past the form's lockout after the answer that reached it (a held key never applies a form; an early press restarts the wait). */
+const PATIENT_MS = APPROVAL_LOCKOUT_MS + 100;
 const WAIT_MS = 10_000;
 vi.setConfig({ testTimeout: 3 * WAIT_MS });
 
@@ -181,7 +184,7 @@ async function pressUntil(
   await vi.waitFor(
     () => {
       if (!moved()) {
-        m.skip(600);
+        m.skip(PATIENT_MS);
         m.key(key);
       }
       expect(moved()).toBe(true);
@@ -198,7 +201,7 @@ async function openModels(m: ChatMount | HomeMount, type: () => Promise<void>): 
     timeout: WAIT_MS,
     interval: 15,
   });
-  m.skip(600);
+  m.skip(PATIENT_MS);
 }
 
 /** The id of the row the popup's first step highlights now. */
@@ -220,7 +223,7 @@ async function toOpenAiForm(m: ChatMount | HomeMount): Promise<void> {
   );
   await pressUntil(m, KEYS.enter, () => popupStep(m) === 1);
   await vi.waitFor(() => expect(m.text()).toContain('Reasoning effort'));
-  m.skip(600);
+  m.skip(PATIENT_MS);
 }
 
 const residue = (m: ChatMount) => ({
@@ -279,7 +282,7 @@ describe.each(HOSTS)('/models in the %s host', (host) => {
         const before = residue(m);
         await openModels(m, () => m.typeLine('/models'));
         await pressUntil(m, KEYS.enter, () => popupStep(m) === 1);
-        m.skip(600);
+        m.skip(PATIENT_MS);
         m.key(KEYS.right);
         await m.settle();
         await pressUntil(m, KEYS.enter, () => !m.popups.getSnapshot().open);

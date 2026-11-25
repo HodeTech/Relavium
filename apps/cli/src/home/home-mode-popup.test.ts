@@ -22,6 +22,7 @@ import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { PopupKey } from '../popups/popup-reducer.js';
 import { acknowledgeWrite } from '../process/io.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
@@ -193,6 +194,12 @@ async function fixture() {
    * applies a form (`popup-host.ts`, "A held key never applies a form").
    */
   const pressFrom = async (from: string, key: PopupKey): Promise<void> => {
+    // A guarded form (`auto`) waits out the approval's lockout after the answer that reached it, and an `Enter` refused inside it restarts it:
+    // the press is a patient one, after the wait, never a retry inside it (the clock is real time here).
+    if (from === 'mode:1')
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, APPROVAL_LOCKOUT_MS + 200);
+      });
     await vi.waitFor(
       () => {
         if (popupStep() === from) mounted.popups?.input('', key);

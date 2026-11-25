@@ -18,8 +18,8 @@ import { describe, expect, it } from 'vitest';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { APPROVAL_LOCKOUT_MS, APPROVAL_QUIET_MS } from '../render/tui/tool-review-model.js';
 import { manualClock } from './doctor.test-support.js';
-import { SCOPE_STEP } from './mode-popup.js';
-import { fakeModels, modelsRig } from './models.test-support.js';
+import { modeScopeForm, SCOPE_STEP } from './mode-popup.js';
+import { fakeModels, modelsRig, OPENAI } from './models.test-support.js';
 import { createNotificationChannel } from './notifications.js';
 import { POPUP_SELECT_SETTLE_MS } from './opening-guard.js';
 import { createPopupHost } from './popup-host.js';
@@ -71,12 +71,13 @@ function rig() {
   };
 }
 
-/** `/mode` opened over a fake member, in force `ask` (its first row): every apply and hand-off recorded. */
+/** `/mode` opened over a fake member, in force `auto` (its last row): every apply and hand-off recorded. */
 function modeOver(r: ReturnType<typeof rig>) {
   const applied: ChatMode[] = [];
   const saved: ChatMode[] = [];
   const member: ModeSettingsPort = {
-    current: () => 'ask',
+    // In force `auto`: its `Enter` on step 1 reaches the `auto` form, the one that widens authority and is guarded (`PopupForm.guarded`).
+    current: () => 'auto',
     apply: (mode) => {
       applied.push(mode);
       return true;
@@ -120,9 +121,10 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
     r.press(ENTER); // the chain's next `Enter`, the moment step 2 appeared
     expect(mode.applied).toEqual([]);
     expect(r.open()).toBe(true);
-    // Dropped as the opening guard drops a key: no word, and no resolution (only step 1's `Enter` resolved).
+    // Dropped as the opening guard drops a key, with no word; inside the lockout it restarts it (the chain's `Enter` is the last answer now).
     expect(r.notifications.getSnapshot().current).toBeUndefined();
-    expect(r.history.lastResolvedAt).toBe(resolvedByStep1);
+    expect(r.history.lastResolvedAt).toBeGreaterThan(resolvedByStep1);
+    expect(r.history.lastResolvedAt).toBe(r.clock.now());
   });
 
   // One press after step 2's frame was seen, at an offset from that acknowledgement. The slot is slow here on purpose (it acknowledges the
@@ -163,15 +165,16 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
     expect(mode.applied).toEqual([]);
     r.clock.advance(POPUP_SELECT_SETTLE_MS);
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 });
 
 describe('presses a quiet gap or more apart through step 1 into step 2', () => {
-  // Slower than the quiet gap, a key's repeat is a press like any other (F5 holds the faster ones): none applies before the settle of step 2's
-  // acknowledged frame or before the lockout after step 1's `Enter` (whichever is later), and the first after both does, once.
-  it.each([300, 400, 500, 750, 1000, 2500])(
-    'pressed every %i ms: nothing before step 2’s frame has settled, then the first press after it applies',
+  // Slower than the quiet gap, a key's repeat is a press like any other for the gap (F5 holds the faster ones), so what holds it is the
+  // lockout: an `Enter` refused inside it restarts it, so presses closer together than the lockout never apply, however many; the first press
+  // a lockout after the one before it (and the settle of step 2's acknowledged frame after it was seen) applies, once.
+  it.each([300, 400, 500, 750, 1000, 1999, 2000, 2500])(
+    'pressed every %i ms: none applies while each is inside the lockout of the one before; one a lockout later does',
     (interval) => {
       const { r, mode } = settledMode();
       r.press(ENTER); // the press: step 1 → step 2
@@ -180,7 +183,7 @@ describe('presses a quiet gap or more apart through step 1 into step 2', () => {
       const shownAt = pressedAt + FRAME_MS;
       let acked = false;
       let appliedAt: number | undefined;
-      for (let at = pressedAt + interval; at <= pressedAt + 3000; at += interval) {
+      for (let at = pressedAt + interval; at <= pressedAt + 6000; at += interval) {
         if (!acked && at >= shownAt) {
           r.clock.advance(shownAt - r.clock.now());
           r.ack();
@@ -191,14 +194,20 @@ describe('presses a quiet gap or more apart through step 1 into step 2', () => {
         r.press(ENTER);
         if (mode.applied.length > 0 && appliedAt === undefined) appliedAt = at;
       }
-      if (appliedAt !== undefined) {
-        expect(appliedAt - shownAt).toBeGreaterThanOrEqual(POPUP_SELECT_SETTLE_MS);
-        expect(appliedAt - pressedAt).toBeGreaterThanOrEqual(APPROVAL_LOCKOUT_MS);
+      if (interval < APPROVAL_LOCKOUT_MS) {
+        expect(appliedAt).toBeUndefined();
+        expect(mode.applied).toEqual([]);
+        expect(r.open()).toBe(true);
+        // Let go: a press a lockout after the last one applies.
+        r.clock.advance(APPROVAL_LOCKOUT_MS);
+        r.press(ENTER);
+        expect(mode.applied).toEqual(['auto']);
+        return;
       }
+      // A repeat every lockout or more is a press a lockout after the one before it: the first (after the settle) applies.
       const ready = Math.max(shownAt + POPUP_SELECT_SETTLE_MS, pressedAt + APPROVAL_LOCKOUT_MS);
-      const firstAfter = Math.ceil((ready - pressedAt) / interval) * interval + pressedAt;
-      expect(appliedAt).toBe(firstAfter);
-      expect(mode.applied).toEqual(['ask']);
+      expect(appliedAt).toBe(Math.ceil((ready - pressedAt) / interval) * interval + pressedAt);
+      expect(mode.applied).toEqual(['auto']);
     },
   );
 });
@@ -212,7 +221,7 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
 
   it.each([30, 100, 250].flatMap((ms) => repeats.map(([kind, key]) => [ms, kind, key] as const)))(
     'a held `Enter` repeating every %i ms (%s) never applies step 2, even 5 s after its frame was seen',
-    (interval, _kind, repeat) => {
+    (interval, kind, repeat) => {
       const { r, mode } = settledMode();
       r.press(ENTER); // the press: step 1 → step 2
       expect(r.step()).toBe(SCOPE_STEP);
@@ -233,13 +242,15 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
       expect(mode.applied).toEqual([]);
       expect(mode.saved).toEqual([]);
       expect(r.step()).toBe(SCOPE_STEP);
-      // Said nothing, and resolved nothing: the held key's repeats were dropped as a key too soon is.
+      // Said nothing; the held key's repeats were dropped as a key too soon is, and each restarted the lockout (the key held is the last answer).
       expect(r.notifications.getSnapshot().current).toBeUndefined();
-      expect(r.history.lastResolvedAt).toBe(resolvedByStep1);
-      // Let go, read, press again: that press applies.
-      r.clock.advance(APPROVAL_QUIET_MS);
+      // (A repeat the terminal LABELS is no key at all to the popup: it never reaches the form, so it restarts nothing and needs nothing.)
+      if (kind === 'plain') expect(r.history.lastResolvedAt).toBeGreaterThan(resolvedByStep1);
+      else expect(r.history.lastResolvedAt).toBe(resolvedByStep1);
+      // Let go, read for the lockout, press again: that press applies.
+      r.clock.advance(APPROVAL_LOCKOUT_MS);
       r.press(ENTER);
-      expect(mode.applied).toEqual(['ask']);
+      expect(mode.applied).toEqual(['auto']);
     },
   );
 
@@ -250,7 +261,7 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
     r.ack();
     r.clock.advance(2000);
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 
   it('a held `↓` and then `Enter` follows the same rule: refused within the gap of the last repeat, applied a quiet gap after it', () => {
@@ -286,7 +297,7 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
       r.host.input('x', {}); // a key of any kind: a letter a form has no use for
       r.clock.advance(gap);
       r.press(ENTER);
-      expect(mode.applied).toEqual(applies ? ['ask'] : []);
+      expect(mode.applied).toEqual(applies ? ['auto'] : []);
     },
   );
 
@@ -338,9 +349,49 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
       // Let go, and a deliberate press after the form was read applies, once.
       r.clock.advance(APPROVAL_LOCKOUT_MS);
       r.press(ENTER);
-      expect(mode.applied).toEqual(['ask']);
+      expect(mode.applied).toEqual(['auto']);
     },
   );
+
+  // A slow repeat RATE is an accessibility setting (Windows' slowest is about 400 ms, several macOS positions are 450 ms to 1.8 s, X11 and KDE
+  // allow more): every repeat is slower than the quiet gap, so the gap catches none and the lockout alone holds the key. It holds because a
+  // refused `Enter` inside it restarts it.
+  const slowRates = [300, 400, 450, 900, 1800] as const;
+  const slowDelays = [250, 375, 500, 600, 1000, 1800] as const;
+  it.each(slowDelays.flatMap((d) => slowRates.map((rate) => [d, rate] as const)))(
+    'initial delay %i ms, a repeat every %i ms: held for six seconds applies nothing, and a press a lockout after letting go applies once',
+    (delay, rate) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER); // the press that reached step 2, which stays down
+      const pressedAt = r.clock.now();
+      r.clock.advance(FRAME_MS);
+      r.ack();
+      for (let at = pressedAt + delay; at <= pressedAt + delay + 6000; at += rate) {
+        r.clock.advance(at - r.clock.now());
+        r.press(ENTER);
+      }
+      expect(mode.applied).toEqual([]);
+      expect(r.open()).toBe(true);
+      r.clock.advance(APPROVAL_LOCKOUT_MS);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(['auto']);
+    },
+  );
+
+  it('a press that is early restarts the wait: the person is told by nothing, and a press a lockout after it applies', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER); // step 1 → step 2
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.clock.advance(1200);
+    r.press(ENTER); // too early: dropped, and the lockout runs from here now
+    r.clock.advance(1500);
+    r.press(ENTER); // 2.7 s after the form opened, 1.5 s after the early press: still inside
+    expect(mode.applied).toEqual([]);
+    r.clock.advance(APPROVAL_LOCKOUT_MS);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['auto']);
+  });
 
   it('the delays are not special: the first repeat after any initial delay below the lockout is dropped, and the lockout is the cause', () => {
     // The delays that clear the settle (500 ms from the frame) and the quiet gap (300 ms) are the ones the lockout exists for.
@@ -352,9 +403,8 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
       r.clock.advance(delay - FRAME_MS);
       r.press(ENTER); // the first repeat
       expect(mode.applied, `${delay} ms`).toEqual([]);
-      expect(r.history.lastResolvedAt, `${delay} ms: nothing resolved`).toBeLessThan(
-        r.clock.now() - delay + 1,
-      );
+      // The refused repeat is inside the lockout and restarts it: the lockout now runs from it.
+      expect(r.history.lastResolvedAt, `${delay} ms: the lockout restarted`).toBe(r.clock.now());
     }
     // At the lockout itself, with nothing held between, it is a deliberate press and applies.
     const { r, mode } = settledMode();
@@ -363,7 +413,7 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
     r.ack();
     r.clock.advance(APPROVAL_LOCKOUT_MS - FRAME_MS);
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 
   it.each([
@@ -383,7 +433,7 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
       expect(r.open()).toBe(true);
       r.clock.advance(APPROVAL_QUIET_MS);
       r.press(ENTER);
-      expect(mode.applied).toEqual(['ask']);
+      expect(mode.applied).toEqual(['auto']);
     },
   );
 
@@ -392,7 +442,11 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
     const m = modelsRig(fake.member);
     m.open();
     m.settle();
-    m.press('', ENTER); // the model in force, on to its form (a press that stays down)
+    // Another provider's model: its form sends the conversation elsewhere, so it is guarded.
+    for (let guard = 0; guard < 20 && m.step()?.highlighted !== OPENAI; guard += 1)
+      m.press('', DOWN);
+    expect(m.step()?.highlighted).toBe(OPENAI);
+    m.press('', ENTER); // on to its form (a press that stays down)
     m.clock.advance(FRAME_MS);
     m.host.shown(m.host.getSnapshot());
     m.clock.advance(660 - FRAME_MS);
@@ -404,6 +458,65 @@ describe('F2: a held `Enter` never applies a form, whatever the terminal’s ini
     expect(m.announced).toEqual([]);
     expect(fake.switched).toEqual([]);
     expect(fake.tiers).toEqual([]);
+  });
+});
+
+describe('a form that only narrows has the settle and the quiet gap, no lockout (PopupForm.guarded)', () => {
+  /** `/mode` in force `plan`: its form for `plan` states no effect that approves anything and applies a narrowing. */
+  function narrowing() {
+    const r = rig();
+    const applied: ChatMode[] = [];
+    const member: ModeSettingsPort = {
+      current: () => 'plan',
+      apply: (mode) => {
+        applied.push(mode);
+        return true;
+      },
+      saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
+    };
+    const opened = openSettingsPopup({
+      host: r.host,
+      port: { surface: 'standalone-chat', announce: () => {}, mode: member },
+      command: 'mode',
+      origin: 'chat',
+    });
+    expect(opened.opened).toBe(true);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    return { r, applied };
+  }
+
+  it('applies as soon as it has settled and a quiet gap has passed: a person who read `plan` is not made to wait two seconds', () => {
+    const { r, applied } = narrowing();
+    r.press(ENTER); // step 1 → the form for `plan`
+    expect(r.step()).toBe(SCOPE_STEP);
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS); // 516 ms after the `Enter` that reached it: inside what a guarded form waits
+    r.press(ENTER);
+    expect(applied).toEqual(['plan']);
+  });
+
+  it('still drops an `Enter` inside its settle or its quiet gap, and a modified or repeated one', () => {
+    const { r, applied } = narrowing();
+    r.press(ENTER);
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
+    r.press(ENTER); // inside the settle
+    r.clock.advance(APPROVAL_QUIET_MS - 1);
+    r.press(ENTER); // inside the quiet gap of the key before it
+    r.press({ return: true, meta: true });
+    r.press({ return: true, eventType: 'repeat' });
+    expect(applied).toEqual([]);
+    expect(r.open()).toBe(true);
+  });
+
+  it('a form for `auto` is guarded and one for `accept-edits` too; `plan` and `ask` are not; `/models` is guarded when the provider changes', () => {
+    expect(modeScopeForm('auto').guarded).toBe(true);
+    expect(modeScopeForm('accept-edits').guarded).toBe(true);
+    expect(modeScopeForm('ask').guarded).toBeUndefined();
+    expect(modeScopeForm('plan').guarded).toBeUndefined();
   });
 });
 
@@ -463,7 +576,7 @@ describe('what starts the settle again, and what does not', () => {
     r.ack();
     r.clock.advance(300); // inside the settle of the re-acknowledged frame, past the lockout and the settle of the first
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 
   it('a terminal below the floor (no frame drawn at all) starts it again when the form is drawn again', () => {
@@ -479,7 +592,7 @@ describe('what starts the settle again, and what does not', () => {
     expect(mode.applied).toEqual([]);
     r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 
   it('a form acknowledged cut (its page too short) starts it again once it is acknowledged whole', () => {
@@ -496,7 +609,7 @@ describe('what starts the settle again, and what does not', () => {
     expect(mode.applied).toEqual([]);
     r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
     r.press(ENTER);
-    expect(mode.applied).toEqual(['ask']);
+    expect(mode.applied).toEqual(['auto']);
   });
 
   it('the form drawn again after a child popup over it closed starts it again', () => {

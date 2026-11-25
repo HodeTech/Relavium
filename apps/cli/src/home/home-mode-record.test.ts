@@ -101,9 +101,9 @@ async function fixture(options: FixtureOptions = {}) {
       const channel = value.notifications;
       if (channel !== undefined) {
         const notify = channel.notify;
-        vi.spyOn(channel, 'notify').mockImplementation((text, from) => {
-          notified.push(text);
-          notify(text, from);
+        vi.spyOn(channel, 'notify').mockImplementation((text, from, topic) => {
+          if (text !== '') notified.push(text); // an empty text with a topic withdraws one: nothing was said
+          notify(text, from, topic);
         });
       }
       instance = render(createElement(RootApp, value), {

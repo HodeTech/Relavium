@@ -17,6 +17,7 @@ import {
   type ChatMount,
 } from '../render/tui/surface-matrix/chat-host.js';
 import { KEYS } from '../render/tui/surface-matrix/home-host.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import type { SettingsPort } from './settings-port.js';
 
@@ -29,6 +30,8 @@ const variantOf = (renderer: (typeof RENDERERS)[number]): Variant => ({
   size: { cols: 80, rows: 24 },
 });
 
+/** A patient press: past the form's lockout after the answer that reached it (a held key never applies a form; an early press restarts the wait). */
+const PATIENT_MS = APPROVAL_LOCKOUT_MS + 100;
 const WAIT_MS = 10_000;
 vi.setConfig({ testTimeout: 3 * WAIT_MS });
 
@@ -96,7 +99,7 @@ async function enterFrom(m: ChatMount, from: string | undefined): Promise<void> 
       if (popupStep(m) === from) {
         // A patient press, a moment after the key before it: a form's `Enter` inside the previous key's quiet gap is a held key's repeat and
         // never applies (`popup-host.ts`, "A held key never applies a form").
-        m.skip(600);
+        m.skip(PATIENT_MS);
         m.key(KEYS.enter);
       }
       expect(popupStep(m)).not.toBe(from);
@@ -121,7 +124,7 @@ describe.each(HOSTS)('/mode in the %s host', (host) => {
         });
         await vi.waitFor(() => expect(m.text()).toContain('every action asks first · current'));
         expect(m.submitted).toEqual([]);
-        m.skip(600);
+        m.skip(PATIENT_MS);
         m.key(KEYS.down); // ask → plan
         await m.settle();
         await enterFrom(m, 'mode:0');

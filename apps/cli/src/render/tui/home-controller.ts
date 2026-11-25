@@ -2930,6 +2930,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         ...catalogOf(port),
         current: () => active.store.getSnapshot().state.model,
         currentProvider: () => active.provider,
+        defaultModel: port.currentDefault,
         currentEffort: () => active.store.getSnapshot().reasoningEffort,
         setEffort: active.onSetEffort,
         switchModel: (choice) => {

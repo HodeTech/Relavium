@@ -94,6 +94,8 @@ export interface FakeModelsOptions {
   readonly refreshedAt?: number;
   readonly current?: string | undefined;
   readonly provider?: string | undefined;
+  /** The default model new chats start with (a chat's port reads it; absent ⇒ the port has none). */
+  readonly defaultModel?: string | undefined;
   readonly effort?: ReasoningEffort | undefined;
   /** The catalog read throws. */
   readonly loadThrows?: boolean;
@@ -143,6 +145,7 @@ export function fakeModels(options: FakeModelsOptions = {}) {
       return 'current' in options ? options.current : GRADED;
     },
     currentProvider: () => ('provider' in options ? options.provider : 'anthropic'),
+    ...('defaultModel' in options ? { defaultModel: () => options.defaultModel } : {}),
     currentEffort: () => {
       if (options.currentThrows === true) throw new Error('the config does not parse');
       return effort;

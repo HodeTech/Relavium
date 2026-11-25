@@ -307,6 +307,23 @@ describe('a stand-alone chat’s writer (the Home’s path and consent)', () => 
     expect(f.channel.ui.getSnapshot().active).toBe(false);
   });
 
+  it('a card cancelled while the writer still waits for its host is a cancel, not a failure', async () => {
+    const original = '[preferences]\ntheme = "kept"\n';
+    const f = writerFixture(original, 'never');
+    f.show();
+    const pending = f.write('gpt-5', 'openai');
+    await vi.waitFor(() => expect(f.begin).toHaveBeenCalledTimes(1));
+    f.channel.flow.cancel(); // the host has not mounted: the wait is cut short by the cancel
+    const error = await pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(error).toBeInstanceOf(CliError);
+    expect(error instanceof CliError ? error.code : undefined).toBe('invalid_invocation');
+    expect(error instanceof CliError ? error.message : '').toBe('Default model change cancelled.');
+    expect(readFileSync(f.configPath, 'utf8')).toBe(original);
+  });
+
   it('a card the person cancels writes nothing and is a cancel', async () => {
     const original = '[preferences]\ntheme = "kept"\n';
     const f = writerFixture(original);

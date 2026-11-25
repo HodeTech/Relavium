@@ -48,7 +48,11 @@ export type NotificationSource = object;
  */
 export type NotificationTopic = 'mode';
 
-/** What a session announces on its host's channel: the text, and (for a subject whose latest word replaces the earlier) its topic. */
+/**
+ * What a session announces on its host's channel: the text, and (for a subject whose latest word replaces the earlier) its topic. An EMPTY
+ * text with a topic announces nothing and withdraws what the topic still has on the channel, showing or waiting: a subject that changed to
+ * a state with no word of its own (a mode that narrowed) must not leave the word of the state it left on the row.
+ */
 export type Announce = (text: string, topic?: NotificationTopic) => void;
 
 export interface Notification {
@@ -75,7 +79,7 @@ export interface NotificationChannel {
   /**
    * Report one line, raised by the host or (`from`) by a popup. Through {@link notificationText}; an empty text is ignored; a text shown or
    * waiting is not queued again. One with a `topic` replaces every earlier one of that topic, the one showing included (it takes its place at
-   * once, for its own three seconds): the latest word on a subject is the only true one.
+   * once, for its own three seconds): the latest word on a subject is the only true one. An empty text with a topic withdraws that topic's.
    */
   readonly notify: (text: string, from?: NotificationSource, topic?: NotificationTopic) => void;
   /**
@@ -177,11 +181,28 @@ export function createNotificationChannel(options?: {
     publish();
   };
 
+  /** Drop every notification of `topic`, the one showing included (the next one waiting is shown). */
+  const withdraw = (topic: NotificationTopic): void => {
+    const before = queue.length;
+    for (let index = queue.length - 1; index >= 0; index -= 1)
+      if (queue[index]?.topic === topic) queue.splice(index, 1);
+    const showing = current?.topic === topic;
+    if (showing) {
+      stopTimer();
+      current = undefined;
+      pump();
+    }
+    if (showing || queue.length !== before) publish();
+  };
+
   return {
     notify: (text, from, topic) => {
       if (disposed) return;
       const clean = notificationText(text);
-      if (clean.length === 0) return;
+      if (clean.length === 0) {
+        if (topic !== undefined) withdraw(topic);
+        return;
+      }
       if (current?.text === clean || queue.some((waiting) => waiting.text === clean)) return;
       const next: Notification = {
         text: clean,

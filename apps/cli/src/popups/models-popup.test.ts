@@ -248,6 +248,7 @@ const facts = (over: Partial<ScopeFacts> & Pick<ScopeFacts, 'entry'>): ScopeFact
   scope: 'chat',
   current: GRADED,
   currentProvider: 'anthropic',
+  defaultProvider: 'anthropic',
   currentEffort: 'medium',
   canSaveDefault: true,
   providerName: NAME,
@@ -283,6 +284,33 @@ describe('the second step in a chat (popup-models-step2-80x24.png)', () => {
       'New chats move from Anthropic to OpenAI. Your messages in them are sent to OpenAI.',
     );
     expect(form.warning).toBeUndefined();
+  });
+
+  it('the form is guarded exactly when its apply could send data elsewhere: this chat’s provider changes, or (with a default to save) the chats to come', () => {
+    const guardedOf = (over: Partial<ScopeFacts> & Pick<ScopeFacts, 'entry'>) =>
+      scopeForm(facts(over)).guarded;
+    expect(guardedOf({ entry: entry(OPENAI) })).toBe(true); // this chat would move provider
+    expect(guardedOf({ entry: entry(BUDGET) })).toBeUndefined(); // one provider, the default's too
+    // The chat is on OpenAI but new chats are on Anthropic: choosing an OpenAI model moves the chats to come.
+    expect(
+      guardedOf({ entry: entry(NO_TIER), currentProvider: 'openai', defaultProvider: 'anthropic' }),
+    ).toBe(true);
+    // ... which a chat that cannot save a default cannot do.
+    expect(
+      guardedOf({
+        entry: entry(NO_TIER),
+        currentProvider: 'openai',
+        defaultProvider: 'anthropic',
+        canSaveDefault: false,
+      }),
+    ).toBeUndefined();
+    // The default's provider unknown: the apply may move the chats to come, so it is guarded.
+    expect(guardedOf({ entry: entry(BUDGET), defaultProvider: undefined })).toBe(true);
+    // The Home's form is about the default alone.
+    expect(guardedOf({ entry: entry(OPENAI), scope: 'home' })).toBe(true);
+    expect(
+      guardedOf({ entry: entry(BUDGET), scope: 'home', canSaveDefault: false }),
+    ).toBeUndefined();
   });
 
   it('a model of the same provider says nothing leaves; the model in force says what `This chat` does with it', () => {

@@ -38,8 +38,8 @@ export const MODE_EFFECT: Readonly<Record<ChatMode, ModeEffect>> = {
     short: 'files are edited without asking',
   },
   auto: {
-    full: 'File edits and other granted actions are approved without asking; a command still asks unless you remembered or approved it, and scope and protected-path rules still apply.',
-    short: 'granted actions run unasked; commands ask',
+    full: 'File edits, network calls and other granted actions are approved without asking; a command still asks unless you remembered or approved it, and scope and protected-path rules still apply.',
+    short: 'commands ask; granted actions run unasked',
   },
 };
 

@@ -37,7 +37,7 @@ describe('the effects', () => {
       'Files are edited without asking; commands and network still ask, and protected paths stay refused.',
     );
     expect(MODE_EFFECT.auto.full).toBe(
-      'File edits and other granted actions are approved without asking; a command still asks unless you remembered or approved it, and scope and protected-path rules still apply.',
+      'File edits, network calls and other granted actions are approved without asking; a command still asks unless you remembered or approved it, and scope and protected-path rules still apply.',
     );
     // The same truth the bare `/mode` list states (MODE_DESCRIPTION), in its two load-bearing clauses.
     expect(MODE_DESCRIPTION.auto).toContain(
@@ -59,7 +59,7 @@ describe('the effects', () => {
       );
     }
     expect(displayWidth(MODE_NOT_RECORDED_NOTICE)).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
-    expect(modeChangedNotice('auto')).toBe('auto mode · granted actions run unasked; commands ask');
+    expect(modeChangedNotice('auto')).toBe('auto mode · commands ask; granted actions run unasked');
     expect(modeChangedNotice('accept-edits')).toBe(
       'accept-edits mode · files are edited without asking',
     );

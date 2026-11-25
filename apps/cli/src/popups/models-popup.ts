@@ -286,6 +286,11 @@ export interface ScopeFacts {
   readonly current: string | undefined;
   /** The provider of the model in force ({@link currentProviderOf}); `undefined`: unknown, and the warning says where the data goes anyway. */
   readonly currentProvider: string | undefined;
+  /**
+   * The provider new chats start on today (the provider of the default model, not of this chat: a chat bound to another agent runs on a
+   * provider that is not the default's); `undefined`: unknown, and the warning says where new chats go without saying where from.
+   */
+  readonly defaultProvider: string | undefined;
   readonly currentEffort: ReasoningEffort | undefined;
   /** A chat that can save the default (its port has a writer): the radio offers `New chats`. */
   readonly canSaveDefault: boolean;
@@ -365,6 +370,13 @@ function thisChatDetail(facts: ScopeFacts, hasTiers: boolean): string {
 export function scopeForm(facts: ScopeFacts): PopupForm {
   const tabs = tiersField(facts);
   const summary = summaryOf(facts.entry, facts.providerName);
+  // Another provider (or one not known to be the same), for this chat or, where the form can save the default, for the chats to come: the
+  // form sends data elsewhere, so its `Enter` is guarded (`PopupForm.guarded`).
+  const moves =
+    facts.currentProvider !== facts.entry.provider ||
+    ((facts.scope === 'home' || facts.canSaveDefault) &&
+      facts.defaultProvider !== facts.entry.provider);
+  const guarded = moves ? { guarded: true as const } : {};
   if (facts.scope === 'home')
     return {
       kind: 'form',
@@ -372,10 +384,11 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
       tabs,
       warning: dataLeavesWarning(
         'new-chats',
-        facts.currentProvider,
+        facts.defaultProvider,
         facts.entry.provider,
         facts.providerName,
       ),
+      ...guarded,
     };
   const thisChat: PopupFormOption = {
     id: SCOPE_THIS_CHAT,
@@ -398,7 +411,7 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
     // The chats to come start on the other provider: said as the Home says it (it is the scope a provider change opens on).
     warning: dataLeavesWarning(
       'new-chats',
-      facts.currentProvider,
+      facts.defaultProvider,
       facts.entry.provider,
       facts.providerName,
     ),
@@ -422,6 +435,7 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
       : undefined,
     // A chat that cannot save a default has no radio: `Enter` applies to this chat, and the line about it is the form's own.
     warning: facts.canSaveDefault ? undefined : thisChat.warning,
+    ...guarded,
   };
 }
 

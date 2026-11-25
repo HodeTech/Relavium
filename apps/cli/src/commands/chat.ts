@@ -336,6 +336,7 @@ function chatModelsSettings(
     current: () => built.agent.model,
     currentProvider: () => built.agent.provider,
     currentEffort: () => store.getSnapshot().reasoningEffort,
+    defaultModel: save.readEffective,
     providerName: providerDisplayName,
     setEffort,
     ...(write === undefined
@@ -1976,8 +1977,12 @@ export function createChatModeControl(
       applyChatMode(modeEnv, effective);
       // Whatever started it (the popup, `Shift+Tab`, a typed `/mode auto`), a change into a mode that approves without a card says what it
       // does; the status line already shows the mode's name.
-      if (changes && announcesEffect(effective))
-        opts.announce?.(modeChangedNotice(effective), 'mode');
+      if (changes) {
+        // A change into a mode with no word of its own (a narrowing: the status line is its confirmation) withdraws the word of the mode it
+        // left, which would otherwise stay on the row for its few seconds claiming authority the chat no longer has.
+        if (announcesEffect(effective)) opts.announce?.(modeChangedNotice(effective), 'mode');
+        else opts.announce?.('', 'mode');
+      }
       return true;
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,

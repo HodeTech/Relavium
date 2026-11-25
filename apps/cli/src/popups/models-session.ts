@@ -88,6 +88,15 @@ function readInForce(models: ModelsSettingsPort): InForce | undefined {
   }
 }
 
+/** The provider new chats start on: the one of the default model the chat's host reads (`undefined`: not known). */
+function defaultProviderOf(models: ModelsSettingsPort, view: CatalogView): string | undefined {
+  try {
+    return currentProviderOf(view.entries, models.defaultModel?.(), undefined);
+  } catch {
+    return undefined;
+  }
+}
+
 function readCatalog(models: ModelsSettingsPort): CatalogView | undefined {
   try {
     return models.load();
@@ -237,11 +246,14 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
         );
         if (entry === undefined) return;
         const marked = markedCurrent(view.entries, inForce.current);
+        const currentProvider = currentProviderOf(view.entries, inForce.current, inForce.provider);
         const form = scopeForm({
           entry,
           scope: models.scope,
           current: marked,
-          currentProvider: currentProviderOf(view.entries, inForce.current, inForce.provider),
+          currentProvider,
+          defaultProvider:
+            models.scope === 'home' ? currentProvider : defaultProviderOf(models, view),
           currentEffort: inForce.effort,
           canSaveDefault: models.saveDefault !== undefined,
           providerName: models.providerName,
@@ -270,7 +282,14 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
           port.announce(alreadyDefaultAnnouncement(choice.modelId));
           return;
         }
-        handOffDefault(port, models, choice);
+        // The model in force with a stand-in tier left alone: new chats keep the provider's default tier (nothing was chosen to save).
+        handOffDefault(
+          port,
+          models,
+          picked.sameModel && standIn
+            ? { modelId: choice.modelId, provider: choice.provider }
+            : choice,
+        );
       },
     },
   );

@@ -101,10 +101,13 @@
  *
  * **The `Enter` that reached a form is not its answer, however long it is held.** The quiet gap cannot tell a held key's FIRST repeat from a
  * slow second press: the terminal's initial repeat delay (225 ms to 1.8 s on macOS, 250 ms to 1 s on Windows, 660 ms on X11) is longer than the
- * gap and, on a form reached by an `Enter`, longer than the settle too. A terminal that reports key events labels the repeat and the reducer
- * drops it (`popup-reducer.ts`, `plainEnter`); one that does not cannot, so a form's `Enter` also waits out the approval's own lockout
- * (`APPROVAL_LOCKOUT_MS`, 2 s: longer than the slowest initial delay an operating system offers) after the last answer, the `Enter` that
- * reached the form. The time a person spends reading the form counts towards it, so it costs a slow reader nothing.
+ * gap and, on a form reached by an `Enter`, longer than the settle too, and a slow repeat RATE (400 ms to 1.8 s, an accessibility setting) is
+ * longer than the gap as well. A terminal that reports key events labels the repeat and the reducer drops it (`popup-reducer.ts`,
+ * `plainEnter`); one that does not cannot, so a form's `Enter` also waits out the approval's own lockout (`APPROVAL_LOCKOUT_MS`, 2 s: longer
+ * than the slowest initial delay an operating system offers) after the last answer, the `Enter` that reached the form, and an `Enter`
+ * refused inside it restarts it, as the approval's strict chord does. So a key held at any rate never applies a form, and a person who lets
+ * go and reads the form for 2 s applies it; one who presses early waits again. The time spent reading counts towards the first wait.
+ * Not covered, and said: a first repeat that arrives only after 2 s (no operating system offers it) cannot be told from a press by time.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
@@ -160,6 +163,7 @@ import {
   type PopupControl,
   type PopupFormValues,
   type PopupFrame,
+  type PopupStepState,
   type PopupKey,
   type PopupKeyAction,
   type PopupSpec,
@@ -551,16 +555,16 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     formShownAt !== undefined && arrivedAt - formShownAt >= formSettleMs;
 
   /**
-   * Whether a form's `Enter` came after a quiet gap AND after the lockout of the answer before it: no key of any kind (its stamp's
-   * `previousKeyAt`, on the host's one history) in the approval's quiet gap (`APPROVAL_QUIET_MS`, the chord step's own layer) before it, and
-   * the last answer (the `Enter` that reached the form: its stamp's `lastResolvedAt`) at least `APPROVAL_LOCKOUT_MS` ago. A held `Enter`
-   * repeats far faster than the gap and every repeat is a key, so once the first repeat is dropped no later one is let through however long it
-   * is held; the first repeat itself comes only after the terminal's initial delay, and the lockout is longer than any such delay. A
-   * deliberate press after reading does neither.
+   * Whether a form's `Enter` came after a quiet gap AND, for a `guarded` form (one that widens authority or sends data elsewhere), after the
+   * lockout of the answer before it: no key of any kind (its stamp's `previousKeyAt`, on the host's one history) in the approval's quiet gap
+   * (`APPROVAL_QUIET_MS`, the chord step's own layer) before it, and the last answer (the `Enter` that reached the form: its stamp's
+   * `lastResolvedAt`) at least `APPROVAL_LOCKOUT_MS` ago. A held `Enter` repeats far faster than the gap and every repeat is a key, so once
+   * the first repeat is dropped no later one is let through however long it is held; the first repeat itself comes only after the terminal's
+   * initial delay, and the lockout is longer than any such delay. A deliberate press after reading does neither.
    */
-  const formQuiet = (stamp: ChordStamp): boolean =>
+  const formQuiet = (stamp: ChordStamp, guarded: boolean): boolean =>
     stamp.now - stamp.previousKeyAt >= APPROVAL_QUIET_MS &&
-    stamp.now - stamp.lastResolvedAt >= APPROVAL_LOCKOUT_MS;
+    (!guarded || stamp.now - stamp.lastResolvedAt >= APPROVAL_LOCKOUT_MS);
 
   /** Whether the record's line is a report (what a line that offers nothing then is: one its page does not hold whole), not an empty or failed state. */
   const isReport = (record: FrameRecord): boolean =>
@@ -660,6 +664,10 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   const liveNotice = (): string | undefined =>
     stack.length === 0 ? undefined : channel?.getSnapshot().current?.text;
 
+  /** The state of the step a frame is on (what the form says is this and its content), or `undefined` for no frame. */
+  const formStateOf = (frame: PopupFrame | undefined): PopupStepState | undefined =>
+    frame === undefined ? undefined : currentStep(frame).state;
+
   const publish = (): void => {
     // First, so a notification it lets through (or holds back) is already in the snapshot built below; it may publish once itself.
     syncHold();
@@ -682,8 +690,10 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     ) {
       // A new frame of a confirmation line (a notification appearing or going included) has not been seen yet.
       if (next.frame !== snapshot.frame || next.notice !== snapshot.notice) beginLine(record);
-      // Nor has a new frame of a form (a notification is not one: it changes nothing the form says).
-      if (next.frame !== snapshot.frame) formShownAt = undefined;
+      // Nor has a new frame of a form (a notification is not one: it changes nothing the form says, and neither is a result that lands on
+      // ANOTHER step of the popup: the form's own state is the same object).
+      if (next.frame !== snapshot.frame && formStateOf(snapshot.frame) !== formStateOf(next.frame))
+        formShownAt = undefined;
       snapshot = next;
     }
     syncClock();
@@ -978,12 +988,20 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
    * if the form is wholly on the page it is drawn on.
    */
   const applyForm = (record: FrameRecord, stamp: ChordStamp, values: PopupFormValues): void => {
-    // Too soon: dropped as the opening guard drops a key (no word, no resolution stamp).
-    if (!formSettled(stamp.now) || !formQuiet(stamp)) return;
+    // Too soon: dropped as the opening guard drops a key, with no word. An `Enter` refused INSIDE the lockout restarts it (the approval's own
+    // strict rule, `chord-guard.ts`): a held key at any repeat rate, slower than the quiet gap included, keeps pushing the end of the lockout
+    // away, so it never reaches it however long it is held; a person who lets go and presses again after it applies.
+    const content = currentStep(record.frame).state.content;
+    const lockedForm = content.kind === 'form' && content.guarded === true;
+    if (!formSettled(stamp.now) || !formQuiet(stamp, lockedForm)) {
+      if (lockedForm && stamp.now - stamp.lastResolvedAt < APPROVAL_LOCKOUT_MS)
+        chord.resolved(stamp);
+      return;
+    }
     // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
     chord.resolved(stamp);
     // A form is never windowed: one that is not wholly on the page its frame is drawn on applies nothing (its legend names no `Enter`).
-    if (!formFits(currentStep(record.frame).state.content, pageNow(), widthNow())) return;
+    if (!formFits(content, pageNow(), widthNow())) return;
     const apply = record.handlers.apply;
     const { runId } = record.frame;
     if (apply !== undefined) guarded(() => apply(contextOf(runId), values));

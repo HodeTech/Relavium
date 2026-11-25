@@ -142,6 +142,21 @@ describe('the refresh (popup work; the list keeps its rows meanwhile)', () => {
     expect(rig.step()?.highlighted).toBe(GRADED);
   });
 
+  it('a refresh that lands on step 1 while the person reads step 2 is not a new frame of the form: its settle is not restarted', async () => {
+    const fake = fakeModels();
+    const rig = opened(fake);
+    await settleWork();
+    rig.press('', ENTER); // the model in force, on to its form
+    rig.settle(); // the form is seen and has settled
+    fake.setEntries([model('aaa-new-model', 'anthropic'), ...fake.member.load().entries]);
+    fake.stale[0]?.resolve({ providers: [{ provider: 'anthropic', status: 'refreshed' }] });
+    await settleWork();
+    rig.host.shown(rig.host.getSnapshot()); // the slot draws the frame the result made: the form in it is as it was
+    rig.press('', ENTER); // a deliberate `Enter` the moment after, on a form that has been read
+    expect(rig.host.getSnapshot().open).toBe(false);
+    expect(rig.announced).toHaveLength(1); // the apply ran: the tier in force, said as `/effort` says it
+  });
+
   it('a result for a popup that has closed lands nowhere: the catalog is not read again', async () => {
     const fake = fakeModels();
     const rig = opened(fake);
@@ -352,6 +367,48 @@ describe('applying in a chat (the popup closes first)', () => {
     expect(moved.switched).toEqual([
       { modelId: OPENAI, provider: 'openai', reasoningEffort: 'high' },
     ]);
+  });
+
+  it('"New chats" is judged against the provider NEW CHATS use, not the chat’s own: a chat bound to another agent sees the truth', () => {
+    // A chat on `gpt-5` (OpenAI, bound to an agent) while the default model of new chats is `claude-sonnet-4-6` (Anthropic).
+    const bound = (modelId: string) => {
+      const fake = fakeModels({ current: OPENAI, provider: 'openai', defaultModel: GRADED });
+      const rig = opened(fake);
+      highlight(rig, modelId);
+      rig.press('', ENTER);
+      return { rig, form: formOf(rig) };
+    };
+    const toAnthropic = bound(GRADED);
+    // This chat would move from OpenAI to Anthropic; new chats are already on Anthropic: no false "move", no line at all.
+    expect(toAnthropic.form.radio?.options[0]?.warning).toContain('from OpenAI to Anthropic');
+    expect(toAnthropic.form.radio?.options[1]?.warning).toBeUndefined();
+    const toOpenAi = bound(NO_TIER);
+    // Same provider as the chat, but NOT the default's: new chats would start sending to OpenAI, and the line says from where.
+    expect(toOpenAi.form.radio?.options[0]?.warning).toBeUndefined();
+    expect(toOpenAi.form.radio?.options[1]?.warning).toBe(
+      'New chats move from Anthropic to OpenAI. Your messages in them are sent to OpenAI.',
+    );
+  });
+
+  it('a chat port that cannot say the default says only where new chats would go', () => {
+    const fake = fakeModels({ current: OPENAI, provider: 'openai' }); // no `defaultModel`
+    const rig = opened(fake);
+    highlight(rig, NO_TIER);
+    rig.press('', ENTER);
+    expect(formOf(rig).radio?.options[1]?.warning).toBe(
+      'New chats start on OpenAI. Your messages in them are sent to OpenAI.',
+    );
+  });
+
+  it('with no tier in force, "New chats" for the model in force with the stand-in tier left alone saves the model and no tier', async () => {
+    const fake = fakeModels({ effort: undefined });
+    const rig = opened(fake);
+    rig.press('', ENTER); // the model in force: the form for the same model
+    rig.press('', DOWN); // "New chats"
+    rig.settle();
+    rig.press('', ENTER);
+    await settleWork();
+    expect(fake.saved).toEqual([{ modelId: GRADED, provider: 'anthropic' }]);
   });
 
   it('`This chat` with the model in force and another tier is the session’s tier, said as `/effort` says it', () => {
