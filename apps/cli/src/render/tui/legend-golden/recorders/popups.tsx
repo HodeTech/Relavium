@@ -36,6 +36,30 @@ import {
   DOCTOR_STEP,
   type DoctorView,
 } from '../../../../popups/doctor-popup.js';
+import { boundAgentView } from '../../../../chat/bound-agent-view.js';
+import { buildDefaultChatAgent } from '../../../../chat/default-agent.js';
+import { agentContent, agentSpec, agentUnreadableContent } from '../../../../popups/agent-popup.js';
+import {
+  COST_LOADING_CONTENT,
+  COST_STEP,
+  costControls,
+  costReportContent,
+  costSpec,
+  releaseContent,
+  releaseDoneContent,
+  releaseFailedContent,
+  turnInFlightContent,
+} from '../../../../popups/cost-popup.js';
+import { costReadFailedContent } from '../../../../popups/cost-session.js';
+import { helpContent, helpSpec } from '../../../../popups/help-popup.js';
+import type { CostReading } from '../../../../popups/report-port.js';
+import {
+  workflowsContent,
+  workflowsFailedContent,
+  workflowsSpec,
+  WORKFLOWS_LOADING_CONTENT,
+} from '../../../../popups/workflows-popup.js';
+import { CHAT_KEYS } from '../../chat-keys.js';
 
 const check = (
   id: string,
@@ -78,6 +102,30 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     file: 'popups/doctor-popup.ts',
     describe:
       'the /doctor popup (ADR-0148 §8): its checks, a row’s detail, its confirmation line and the deep tier, each with its legend and its words',
+  },
+  {
+    id: 'agent-popup',
+    file: 'popups/agent-popup.ts',
+    describe:
+      'the /agent popup (ADR-0148 §10): the bound agent’s fields as a read-only report, and the state when its view cannot be made; its legend is the way back alone',
+  },
+  {
+    id: 'cost-popup',
+    file: 'popups/cost-popup.ts',
+    describe:
+      'the /cost popup (ADR-0148 §10): the report with and without the `[r] release held estimates` control, the release’s confirmation line (`[Ctrl+Y] release`), its empty and turn-in-flight states, its result and its failed state, and the states of the read',
+  },
+  {
+    id: 'workflows-popup',
+    file: 'popups/workflows-popup.ts',
+    describe:
+      'the /workflows popup in a chat (ADR-0148 §10): the catalog report, an empty project, no project, the fault and the state of the scan',
+  },
+  {
+    id: 'help-popup',
+    file: 'popups/help-popup.ts',
+    describe:
+      'the /help popup in a chat (ADR-0148 §10): the commands of the chat’s palette and the chat’s keys as one scrollable report',
   },
 ];
 
@@ -375,9 +423,156 @@ const recordDoctor: Recorder = (): StateRows => {
   };
 };
 
+/** One reading of a session's spend for the recorders: one model, and (`held`) an estimate held against the cap. */
+function costReading(held: boolean): CostReading {
+  const complete = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
+  return {
+    totalCostMicrocents: 12_000,
+    rows: [
+      {
+        model: 'claude-opus-4-8',
+        modelCatalogId: undefined,
+        inputTokens: 1200,
+        outputTokens: 800,
+        conservativeMicrocents: held ? 450 : 0,
+        costMicrocents: 12_000,
+        callCount: 3,
+        unpricedCalls: 0,
+        isLegacy: false,
+      },
+    ],
+    coverage: complete,
+    models: [{ model: 'claude-opus-4-8', coverage: complete }],
+    governor: held ? { microcents: 450, durabilityBroken: false } : undefined,
+  };
+}
+
+/** The `/agent` popup: its one read-only step, and the state of a view that could not be made. */
+const recordAgent: Recorder = (): StateRows => {
+  const view = boundAgentView(buildDefaultChatAgent('claude-sonnet-4-6'), undefined);
+  const frame = (content: PopupContent): PopupFrame => openFrame(agentSpec('chat', content), 1);
+  return {
+    ...frameStates(label({ content: 'report' }), frame(agentContent(view))),
+    ...frameStates(label({ content: 'error' }), frame(agentUnreadableContent())),
+  };
+};
+
+/** The `/cost` popup in each state that changes its words or its legend, as its session puts them there. */
+const recordCost: Recorder = (): StateRows => {
+  const spec = costSpec('chat', false);
+  const opened = openFrame(spec, 1);
+  const reportOf = (held: boolean): PopupFrame => {
+    const reading = costReading(held);
+    return withContent(opened, COST_STEP.cost, costReportContent(reading), costControls(reading));
+  };
+  const at = (frame: PopupFrame, step: number, content: PopupContent): PopupFrame => ({
+    ...withContent(frame, step, content),
+    stepIndex: step,
+  });
+  const held = reportOf(true);
+  const outcome = { durable: 450, live: 450 };
+  return {
+    ...frameStates(
+      label({ step: 'cost', content: 'loading' }),
+      withContent(opened, COST_STEP.cost, COST_LOADING_CONTENT),
+    ),
+    ...frameStates(label({ step: 'cost', content: 'nothing-held' }), reportOf(false)),
+    ...frameStates(label({ step: 'cost', content: 'held' }), held),
+    ...frameStates(
+      label({ step: 'cost', content: 'error' }),
+      withContent(opened, COST_STEP.cost, costReadFailedContent(new Error('x')), []),
+    ),
+    ...frameStates(
+      label({ step: 'release', content: 'line' }),
+      at(held, COST_STEP.release, releaseContent(costReading(true))),
+    ),
+    ...frameStates(
+      label({ step: 'release', content: 'loading' }),
+      at(opened, COST_STEP.release, COST_LOADING_CONTENT),
+    ),
+    ...frameStates(
+      label({ step: 'release', content: 'nothing-held' }),
+      at(held, COST_STEP.release, releaseContent(costReading(false))),
+    ),
+    ...frameStates(
+      label({ step: 'release', content: 'turn-in-flight' }),
+      at(held, COST_STEP.release, turnInFlightContent()),
+    ),
+    ...frameStates(
+      label({ step: 'done', content: 'released' }),
+      at(held, COST_STEP.done, releaseDoneContent(outcome, undefined)),
+    ),
+    ...frameStates(
+      label({ step: 'done', content: 'released-with-total' }),
+      at(held, COST_STEP.done, releaseDoneContent(outcome, costReading(false))),
+    ),
+    ...frameStates(
+      label({ step: 'done', content: 'failed' }),
+      at(held, COST_STEP.done, releaseFailedContent()),
+    ),
+  };
+};
+
+/** The `/workflows` popup: the catalog, nothing in it, no project, the fault, and the scan. */
+const recordWorkflows: Recorder = (): StateRows => {
+  const frame = (content: PopupContent): PopupFrame =>
+    withContent(openFrame(workflowsSpec('chat'), 1), 0, content);
+  const entry = (slug: string, valid = true) => ({
+    slug,
+    name: undefined,
+    tags: [],
+    path: `${slug}.relavium.yaml`,
+    valid,
+  });
+  return {
+    ...frameStates(label({ content: 'loading' }), frame(WORKFLOWS_LOADING_CONTENT)),
+    ...frameStates(
+      label({ content: 'catalog' }),
+      frame(
+        workflowsContent({
+          kind: 'catalog',
+          workflows: [entry('deploy'), entry('broken', false)],
+          agents: [entry('coder')],
+        }),
+      ),
+    ),
+    ...frameStates(
+      label({ content: 'empty-project' }),
+      frame(workflowsContent({ kind: 'catalog', workflows: [], agents: [] })),
+    ),
+    ...frameStates(
+      label({ content: 'no-project' }),
+      frame(workflowsContent({ kind: 'no-project' })),
+    ),
+    ...frameStates(
+      label({ content: 'fault' }),
+      frame(workflowsContent({ kind: 'fault', reason: 'too many workflow files' })),
+    ),
+    ...frameStates(label({ content: 'not-run' }), frame(workflowsFailedContent())),
+  };
+};
+
+/** The `/help` popup of a chat on each of the two surfaces that have one. */
+const recordHelp: Recorder = (): StateRows => {
+  const states: Record<string, readonly string[]> = {};
+  for (const surface of ['standalone-chat', 'home-chat'] as const)
+    Object.assign(
+      states,
+      frameStates(
+        label({ surface }),
+        openFrame(helpSpec('chat', helpContent(surface, Object.values(CHAT_KEYS))), 1),
+      ),
+    );
+  return states;
+};
+
 export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'popup-frame-legend': recordFrameLegend,
   'popup-native-legend': recordNativeLegend,
   'popup-notice': recordNotice,
   'doctor-popup': recordDoctor,
+  'agent-popup': recordAgent,
+  'cost-popup': recordCost,
+  'workflows-popup': recordWorkflows,
+  'help-popup': recordHelp,
 };

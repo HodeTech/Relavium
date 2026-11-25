@@ -28,14 +28,7 @@ import {
 } from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
-import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
-import {
-  agentChatSheet,
-  permissionsChatSheet,
-  permissionsSheetOf,
-  type ChatSheetState,
-} from './chat-sheet.js';
-import type { BoundAgentView } from '../../chat/bound-agent-view.js';
+import { permissionsChatSheet, permissionsSheetOf, type ChatSheetState } from './chat-sheet.js';
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
@@ -71,6 +64,13 @@ import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import { parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
+import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
+import {
+  parseReportLine,
+  reportAvailable,
+  type ParsedReportLine,
+  type ReportsPort,
+} from '../../popups/report-port.js';
 import {
   agentStartNotice,
   agentStartReasonOf,
@@ -233,10 +233,13 @@ export interface HomeChatSession {
   /** The `/permissions` sheet's port (ADR-0137 §2): a typed or palette-selected bare `/permissions` opens the sheet over this chat.
    *  Absent ⇒ the command is dispatched and says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
-  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   *  §3): a typed or palette-selected bare `/agent` opens the read-only sheet over this chat, from the definition the session holds (a reseat
-   *  builds a new session, so it is the provider and model the chat runs on now). Absent ⇒ the command is dispatched and prints a notice. */
-  readonly boundAgent?: () => BoundAgentView;
+  /**
+   * What this chat's report popups read ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. A typed or palette-selected line for a report whose
+   * member is present opens the popup over this chat through {@link HomeControllerDeps.openReport}, before the line reaches the chat's dispatch.
+   * Absent ⇒ the command is dispatched and prints its text into the transcript, as before.
+   */
+  readonly reports?: ReportsPort;
   /**
    * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §8): its session's probes, its read-only MCP report and its owner. A typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup
@@ -323,7 +326,7 @@ export interface HomeControllerState {
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
   /** The open docked sheet of a live in-Home chat — `undefined` ⇒ closed. ONE slot for every sheet a chat has, a union by kind
-   *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists) and `/agent` (ADR-0140 §3, the bound agent, read-only). A
+   *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists). A
    *  keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
    *  sheets cannot be open at once. The bare Home's `/permissions` is not this: it is the Permissions tab of the tab host, a kind of
    *  {@link HomeControllerState.screen} (ADR-0140 §3). */
@@ -381,6 +384,20 @@ export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
     replacesBody: false,
     nativeActionBusy: state.nativeActionBusy,
     ...cardFlagsFrom(state.session?.store.getSnapshot()),
+  };
+}
+
+/**
+ * What is in flight in the Home now ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2): the live chat's turn, a submit, a `!` command, a native action. The ONE reading of those facts, for the popup host's open gate
+ * (`homePopupRefusal`) and for the release step of `/cost` at the moment of its answer, through {@link turnInFlight}.
+ */
+export function homeTurnFacts(state: HomeControllerState): TurnFacts {
+  return {
+    running: state.session?.store.getSnapshot().state.status === 'running',
+    shellBusy: state.shellBusy,
+    submitBusy: state.submitBusy,
+    nativeActionBusy: state.nativeActionBusy,
   };
 }
 
@@ -715,6 +732,20 @@ export interface HomeControllerDeps {
    */
   readonly openDoctor?:
     | ((request: { readonly deep: boolean; readonly chat?: DoctorPort | undefined }) => void)
+    | undefined;
+  /**
+   * Open one of the report popups (`/agent`, `/cost`, `/workflows`, `/help`; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10, MVP-11 step 4b) over the chat in front, on the Home's popup host, with the chat's {@link HomeChatSession.reports}. The controller only
+   * routes: it recognises the line where it opens a sheet for `/permissions`, clears the editor and calls this, so nothing reaches the Home's
+   * notice or the transcript. `turnInFlight` is the controller's own reading of the facts its open gate reads, for the release step to ask again
+   * at its answer. Absent ⇒ a chat's report lines are dispatched and print their text, as before.
+   */
+  readonly openReport?:
+    | ((request: {
+        readonly line: ParsedReportLine;
+        readonly chat: ReportsPort;
+        readonly turnInFlight: () => boolean;
+      }) => void)
     | undefined;
   /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
@@ -1831,7 +1862,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
-          chatSheet: undefined, // and the chat's docked sheet (`/permissions`, `/agent`): it is gone with the chat, and with a reseat or a `/clear`
+          chatSheet: undefined, // and the chat's docked sheet (`/permissions`): it is gone with the chat, and with a reseat or a `/clear`
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -3168,7 +3199,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // ---- The in-Home chat's docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) ---------------------------------
+  // ---- The in-Home chat's docked sheet: `/permissions` (ADR-0137 §2) ---------------------------------
   /**
    * Whether a docked sheet may open over this chat now: only at an idle prompt with nothing pending, so a card cannot arrive while it is
    * open (the same gate ChatApp applies). The key gates above already keep a busy chat from reaching here (a running turn, a `!` command
@@ -3200,21 +3231,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (opened.sheet !== undefined) set({ chatSheet: permissionsChatSheet(opened.sheet) });
     else active.store.note(opened.note);
   };
-  // `/agent`: the definition THIS session holds, nothing read and nothing written. It goes into the one sheet slot, so it replaces
-  // whatever sheet was there (none can be, a sheet owns the keyboard) and no field is added to the state. A chat without the view is never
-  // offered the sheet; it dispatches and the chat prints a notice. A defect in the view's builder must not take the prompt down with it either.
-  const openAgentSheet = (active: HomeChatSession): void => {
-    const view = active.boundAgent;
-    if (view === undefined || !sheetMayOpen(active)) return;
-    try {
-      set({ chatSheet: agentChatSheet(view()) });
-    } catch {
-      active.store.note(AGENT_UNREADABLE);
-    }
-  };
   // The open sheet owns every key. A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on
   // to the card's own handling (the sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the
-  // product takes). The agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped. A permissions withdrawal runs
+  // product takes). A permissions withdrawal runs
   // through the port (the store is read again there) and the sheet reloads with the answer; a defect in the port must not leave the keyboard
   // owned by a frozen sheet.
   const routeChatSheetKey = (
@@ -3237,10 +3256,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (active === undefined) {
       set({ chatSheet: undefined });
-      return true;
-    }
-    if (open.kind === 'agent') {
-      if (foldAgentSheetKey(input, key) === 'close') set({ chatSheet: undefined });
       return true;
     }
     const port = active.permissions;
@@ -3733,7 +3748,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
    *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
    * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
-   * - `/agent` opens the read-only sheet of the agent this chat is bound to (ADR-0140 §3), where the session holds its view.
+   * - `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` open their report popup (ADR-0148 §10), where the session holds the
+   *   report's port: the popup is opened before the line is a submit, so the open gate never takes the line for a turn in flight.
    * - `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the informational notice; a
    *   non-reasoning model falls through to the slash dispatch (the ctx handler's "no controllable tier" notice).
    */
@@ -3744,8 +3760,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (trimmed === '/models' && deps.reseatChat !== undefined) return openModelPicker;
     if (trimmed === '/permissions' && active.permissions !== undefined)
       return () => openPermissionsSheet(active);
-    if (trimmed === '/agent' && active.boundAgent !== undefined)
-      return () => openAgentSheet(active);
     if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
     // `/doctor` and `/doctor --deep` open the popup over this chat (ADR-0148 §8) before the line is a submit, so the open gate never sees it as
     // a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
@@ -3754,6 +3768,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (doctor !== undefined && openDoctor !== undefined && active.doctor !== undefined) {
       const port = active.doctor;
       return () => openDoctor({ deep: doctor.deep, chat: port });
+    }
+    const report = parseReportLine(trimmed);
+    const openReport = deps.openReport;
+    if (
+      report !== undefined &&
+      openReport !== undefined &&
+      active.reports !== undefined &&
+      reportAvailable(active.reports, report.kind)
+    ) {
+      const chat = active.reports;
+      return () =>
+        openReport({
+          line: report,
+          chat,
+          // The facts `homePopupRefusal` reads, read again by the release at the moment of its answer.
+          turnInFlight: () => turnInFlight(homeTurnFacts(state)),
+        });
     }
     return undefined;
   };
@@ -4123,7 +4154,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * - the `/effort` overlay (ADR-0066 §6), chat-scoped, so it always has a live session; the guard keeps `routeEffortPickerKey`'s `active`
    *   non-null (a stale overlay with no session falls through, never expected);
    * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
-   *   withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
+   *   withdraws.
    *
    * The routes are ORDERED handlers, not a list of flags, so a new overlay needs its branch here (or in the chat's own key handler, where the
    * `@`-mention and the reverse search are routed) AND a flag in `overlay-flags.ts`: the record's tests fail until the flag decides its gates.
@@ -4327,7 +4358,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
       // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
-      // The agent sheet has no question to drop, and a paste changes nothing there; `pasteEditable` keeps it out of the composer.
+      // `pasteEditable` keeps a paste out of the composer while a sheet is open.
       const pastedOver = permissionsSheetOf(state.chatSheet);
       if (pastedOver !== undefined)
         set({ chatSheet: permissionsChatSheet(disarmPermissionsSheet(pastedOver)) });

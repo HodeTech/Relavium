@@ -77,6 +77,7 @@ export interface SurfaceBase {
    * | `chat.popup-rich`, `standalone-chat.popup-rich` | a user turn, a tool row, a markdown answer (heading, strong, code, quote, list, table, fenced block), a second exchange and a draft in the prompt |
    * | `home.doctor-*` | the empty, keyed landing (the `/doctor` popup, opened by typing the command, in each of its states) |
    * | `chat.doctor-*`, `standalone-chat.doctor-*` | one short exchange with a strong word, and the prompt with its cursor |
+   * | `chat.report-*`, `standalone-chat.report-*` | the same short exchange (the `/agent`, `/cost`, `/workflows` and `/help` popups, in each state) |
    *
    * A product popup's rows come from `live`, the frame its host has open now, through the same geometry and frame model (`popupBoxOf`): the
    * check is then that the terminal shows exactly that frame, in its box, over an unchanged body.

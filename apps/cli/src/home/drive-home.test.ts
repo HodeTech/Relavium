@@ -75,7 +75,6 @@ import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
-import { agentSheetLines } from '../render/tui/agent-sheet.js';
 import { permissionsSheetOf } from '../render/tui/chat-sheet.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
@@ -94,6 +93,26 @@ import { RunHost, type RunHostSnapshot } from './run-host.js';
 const WAIT_MS = 5000;
 /** The slack a real-clock dwell is waited past its constant, so a key pressed at the edge lands inside the window it needs. */
 const SETTLE_MARGIN_MS = 200;
+
+/**
+ * The lines of the report popup the Home has open once it has opened (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10): the popup is
+ * opened by the controller's routing through `openReport` and its code is loaded on first use, so it appears a moment after the line is typed.
+ */
+async function openedReport(props: RootAppProps, id: string): Promise<string> {
+  const popups = props.popups;
+  if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+  await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe(id), {
+    timeout: WAIT_MS,
+  });
+  const content = popups.getSnapshot().frame?.steps[0]?.content;
+  return content?.kind === 'report' ? content.lines.join('\n') : '';
+}
+
+/** `Esc` on the open popup: the render is injected in these tests, so nothing routes a key to the popup host but the test. */
+function closeReport(props: RootAppProps): void {
+  props.popups?.input('', { escape: true });
+  expect(props.popups?.getSnapshot().open, 'the popup closed').toBe(false);
+}
 
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
@@ -1756,9 +1775,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0140 §3: the in-Home chat is wired to the /agent sheet through its own line handler, and a typed /agent opens the built-in agent’s fields', async () => {
-    // The wired-but-dead field again: a Home session built without `boundAgent` would still pass every controller test that hands the
-    // controller a fake session, and `/agent` would be dispatched to a chat that prints a notice behind the sheet's back. This drives the
+  it('ADR-0148 §10: the in-Home chat is wired to the /agent popup through its own line handler, and a typed /agent opens the built-in agent’s fields', async () => {
+    // The wired-but-dead field again: a Home session built without `reports` would still pass every controller test that hands the
+    // controller a fake session, and `/agent` would be dispatched to a chat that prints a notice behind the popup's back. This drives the
     // REAL `startChat` and reads what it built.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
@@ -1774,20 +1793,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
       timeout: WAIT_MS,
     });
-    const view = props.controller.getSnapshot().session?.boundAgent?.();
+    const reports = props.controller.getSnapshot().session?.reports;
+    expect(reports?.surface, 'the session carries the port of the Home’s chat').toBe('home-chat');
+    const view = reports?.agent?.();
     expect(view?.id, 'the session carries the view of its own agent').toBe('relavium-chat');
     expect(view?.builtIn).toBe(true);
 
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet?.kind).toBe('agent'), {
-      timeout: WAIT_MS,
-    });
-    const sheet = props.controller.getSnapshot().chatSheet;
-    expect(sheet?.kind === 'agent' ? sheet.view.detail.model : undefined).toBe(view?.detail.model);
-    expect(sheet?.kind === 'agent' ? sheet.view.sessionEffort : 'a sheet').toBeUndefined();
-    props.controller.handleKey('', { escape: true });
+    const shown = await openedReport(props, 'agent');
+    expect(shown).toContain(view?.detail.model ?? 'no model');
+    expect(shown).toMatch(/Reasoning effort\s+not set/u);
+    // Nothing reaches the Home's notice or the transcript (ADR-0148 §6), and no sheet opens.
     expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+    closeReport(props);
 
     // The reasoning effort the row shows is the SESSION's, the footer's: `/effort` changes the session and never the definition, so a view
     // made before it (or kept past it) would still say `not set`.
@@ -1805,20 +1825,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const afterEffort = props.controller.getSnapshot().chatSheet;
-    expect(afterEffort?.kind === 'agent' ? afterEffort.view.sessionEffort : undefined).toBe('high');
-    expect(
-      afterEffort?.kind === 'agent' ? afterEffort.view.detail.reasoningEffort : 'a sheet',
-    ).toBeUndefined();
-    const drawn =
-      afterEffort?.kind === 'agent'
-        ? agentSheetLines(afterEffort.view, { columns: 80, terminalRows: 24 }).map(
-            (line) => line.text,
-          )
-        : [];
-    expect(drawn.join('\n')).toMatch(/Reasoning effort\s+high \(declared: not set\)/u);
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    expect(await openedReport(props, 'agent')).toMatch(
+      /Reasoning effort\s+high \(declared: not set\)/u,
+    );
+    closeReport(props);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1858,21 +1868,25 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(rows.length, 'the palette lists the chat’s commands').toBeGreaterThan(10);
     props.controller.handleKey('', { escape: true });
 
+    // ADR-0148 §10: `/help` in a chat is a popup (the plain chat prints the text, `chat.test.ts`), and it lists the rows of the chat's own
+    // palette, in its order and in the words of this surface.
     props.controller.handlePaste('/help');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(
-      () => expect(notices().some((text) => text.startsWith('Commands:'))).toBe(true),
-      {
-        timeout: WAIT_MS,
-      },
-    );
-    const help = notices().find((text) => text.startsWith('Commands:')) ?? '';
-    expect(help.split('\n').slice(1), 'the rows of /help are the rows of the palette').toEqual(
-      rows,
-    );
-    expect(help).toContain('  /exit  Leave this chat and go back to the Home.');
-    expect(help).toContain('  /resume  ');
+    const help = await openedReport(props, 'help');
+    const commandLines = help
+      .split('\n')
+      .slice(1, help.split('\n').indexOf(''))
+      .filter((line) => line.startsWith('  /'));
+    expect(
+      commandLines.map((line) => line.trim().split(/\s+/u)[0]),
+      'the rows of /help are the rows of the palette, in its order',
+    ).toEqual((palette?.list.rows ?? []).map((row) => `/${row.command.name}`));
+    expect(help).toMatch(/\/exit\s+Leave this chat and go back to the Home\./u);
+    expect(help).toMatch(/\/resume\s/u);
     expect(help).not.toContain('End the chat session.');
+    expect(rows.length).toBe(commandLines.length);
+    expect(notices().some((text) => text.startsWith('Commands:'))).toBe(false); // nothing in the transcript
+    closeReport(props);
     await flush(); // the line is done: the next one is read only when the chat is idle again
 
     props.controller.handlePaste('/nosuchword');
@@ -2405,7 +2419,7 @@ workflow:
       await leaveHome(props, running);
     });
 
-    it('the `/agent` sheet of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
+    it('the `/agent` popup of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
       writeProjectAgent(['  - invoke_agent']);
       const { providers } = capturingResolver([textTurn('first')]);
       const { props, running } = await onDetail({ providers });
@@ -2414,24 +2428,18 @@ workflow:
 
       // The label is the catalog's own, relative to the Home's working directory: never the absolute path the consent prompt names.
       const label = join('.relavium', 'agents', 'reviewer.agent.yaml');
-      const view = props.controller.getSnapshot().session?.boundAgent?.();
+      const view = props.controller.getSnapshot().session?.reports?.agent?.();
       expect(view?.sourceLabel).toBe(label);
       expect(view?.sourceLabel).not.toContain(cwd);
       // The Home's chat can ask, so only the tool wired nowhere is marked.
       expect(view?.toolOffer).toEqual({ unwired: [false, false, true], declared: 3, offered: 2 });
       props.controller.handlePaste('/agent');
       props.controller.handleKey('', ENTER);
-      const sheet = props.controller.getSnapshot().chatSheet;
-      const drawn =
-        sheet?.kind === 'agent'
-          ? agentSheetLines(sheet.view, { columns: 80, terminalRows: 24 })
-              .map((line) => line.text)
-              .join('\n')
-          : '';
+      const drawn = await openedReport(props, 'agent');
       expect(drawn).toMatch(/File\s+\.relavium[\\/]agents[\\/]reviewer\.agent\.yaml/u);
       expect(drawn).toMatch(/Tools\s+2 of 3 offered: read_file, search_files,/u);
       expect(drawn).toContain('invoke_agent (not available in this chat)');
-      props.controller.handleKey('', { escape: true });
+      closeReport(props);
 
       // A `/clear` rebinds the definition the session holds, with no file behind it: the view names none, and still marks the same tool.
       const first = props.controller.getSnapshot().session;
@@ -2442,7 +2450,7 @@ workflow:
         { timeout: WAIT_MS },
       );
       await settledChat(props);
-      const cleared = props.controller.getSnapshot().session?.boundAgent?.();
+      const cleared = props.controller.getSnapshot().session?.reports?.agent?.();
       expect(cleared?.id).toBe('reviewer');
       expect(cleared?.sourceLabel).toBeUndefined();
       expect(cleared?.toolOffer?.unwired).toEqual([false, false, true]);
@@ -3152,19 +3160,14 @@ workflow:
     const sessionId = oldSession?.sessionId ?? '';
     expect(sessionId).not.toBe('');
 
-    // ADR-0140 §3: `/agent` on the session as it starts shows the sonnet pair (no effort tier). Opened BEFORE the reseat on purpose: a view
+    // ADR-0148 §10: `/agent` on the session as it starts shows the sonnet pair (no effort tier). Opened BEFORE the reseat on purpose: a view
     // kept past the swap would be read here first, and the reseated chat would then show this one.
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const before = props.controller.getSnapshot().chatSheet;
-    expect(before?.kind === 'agent' ? before.view.detail.model : undefined).toBe(
-      'claude-sonnet-4-6',
-    );
-    expect(
-      before?.kind === 'agent' ? before.view.detail.reasoningEffort : 'a sheet',
-    ).toBeUndefined();
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    const before = await openedReport(props, 'agent');
+    expect(before).toContain('claude-sonnet-4-6');
+    expect(before).toMatch(/Reasoning effort\s+not set/u);
+    closeReport(props);
 
     // Open the reseat picker from the chat palette, filter to a DIFFERENT available model (opus), accept.
     props.controller.handleKey('/', {});
@@ -3219,19 +3222,16 @@ workflow:
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
 
-    // ADR-0140 §3: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
-    // definition, and the sheet reads THAT one, not the definition the chat started on (sonnet, no effort tier).
+    // ADR-0148 §10: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
+    // definition, and the popup reads THAT one, not the definition the chat started on (sonnet, no effort tier).
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const agentSheet = props.controller.getSnapshot().chatSheet;
-    expect(agentSheet?.kind).toBe('agent');
-    const shown = agentSheet?.kind === 'agent' ? agentSheet.view : undefined;
-    expect(shown?.detail.model).toBe('claude-opus-4-8');
-    expect(shown?.detail.provider).toBe('anthropic');
-    expect(shown?.detail.reasoningEffort).toBe('medium');
-    expect(shown?.builtIn, 'the reseat kept the built-in agent, and the sheet knows it').toBe(true);
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    const shown = await openedReport(props, 'agent');
+    expect(shown).toContain('claude-opus-4-8');
+    expect(shown).toContain('anthropic');
+    expect(shown).toMatch(/Reasoning effort\s+medium/u);
+    expect(shown).toContain('the built-in chat agent'); // the reseat kept the built-in agent, and the popup knows it
+    closeReport(props);
 
     // The durable row's agent snapshot updates to the switched model after the reseated session ends.
     props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')

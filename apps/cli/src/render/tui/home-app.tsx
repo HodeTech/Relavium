@@ -5,6 +5,7 @@ import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import type { DisplayPathRoots } from '../notation.js';
 import { NativePromptView } from './native-prompt-view.js';
+import { turnInFlight } from '../../popups/turn-in-flight.js';
 import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import type { NotificationChannel, NotificationSnapshot } from '../../popups/notifications.js';
@@ -54,6 +55,7 @@ import {
   type GateCardScreen,
   type HomeController,
   type HomeControllerState,
+  homeTurnFacts,
 } from './home-controller.js';
 import {
   cardFlagsFrom,
@@ -355,7 +357,7 @@ function ChatRegion(
           color={color}
         />
       )}
-      {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — with the other overlays. */}
+      {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) — with the other overlays. */}
       {props.chatSheet !== undefined && (
         <ChatSheetView
           state={props.chatSheet}
@@ -1375,13 +1377,7 @@ export function homePopupRefusal(
     state.screen?.kind === 'gate-card'
   )
     return 'sheet-open';
-  if (
-    store?.state.status === 'running' ||
-    state.submitBusy ||
-    state.shellBusy ||
-    state.nativeActionBusy
-  )
-    return 'turn-running';
+  if (turnInFlight(homeTurnFacts(state))) return 'turn-running';
   if (state.interruptArmed) return 'armed';
   if (overlayOwnsKeyboard(homeOverlayFlags(state))) return 'overlay-open';
   return undefined;

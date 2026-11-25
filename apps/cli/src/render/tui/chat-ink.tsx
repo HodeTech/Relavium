@@ -51,19 +51,12 @@ import {
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import type { BoundAgentView } from '../../chat/bound-agent-view.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
 } from './permissions-sheet-port.js';
-import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
-import {
-  agentChatSheet,
-  permissionsChatSheet,
-  permissionsSheetOf,
-  type ChatSheetState,
-} from './chat-sheet.js';
+import { permissionsChatSheet, permissionsSheetOf, type ChatSheetState } from './chat-sheet.js';
 import { ChatSheetView } from './chat-sheet-view.js';
 import {
   foldModelPickerKey,
@@ -111,6 +104,13 @@ import { createNativePromptAcknowledgement } from './native-prompt-acknowledgeme
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
 import { openDoctor, parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
+import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
+import {
+  openReport,
+  parseReportLine,
+  reportAvailable,
+  type ReportsPort,
+} from '../../popups/report-port.js';
 import type { PopupPlacement } from '../../popups/geometry.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import {
@@ -314,10 +314,14 @@ interface ChatAppProps {
    *  keyboard-owning sheet instead of dispatching. Absent ⇒ the command says remembered commands are not available. `| undefined`
    *  so the createElement passthrough forwards an absent `ctx.permissions`. */
   readonly permissions?: PermissionsPort | undefined;
-  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   *  §3). When present, a typed (or palette-selected) bare `/agent` opens the docked, read-only sheet instead of dispatching. Absent ⇒ the
-   *  command dispatches and prints the same fields as a notice. `| undefined` so the createElement passthrough forwards an absent `ctx.boundAgent`. */
-  readonly boundAgent?: (() => BoundAgentView) | undefined;
+  /**
+   * What this chat's report popups read ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. For each report whose member is present, a typed
+   * or palette-selected line opens the popup instead of dispatching, as `/doctor` does: before the line is counted as a submit. Absent ⇒ the
+   * command is dispatched and prints its text into the transcript as before. `| undefined` so the createElement passthrough forwards an absent
+   * `ctx.reports`.
+   */
+  readonly reports?: ReportsPort | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -875,15 +879,14 @@ export function watchChatSheetArrival(
  */
 export function chatPopupRefusal(facts: {
   readonly overlays: OverlayFlags;
-  readonly turnRunning: boolean;
-  readonly busy: boolean;
+  readonly turn: TurnFacts;
   readonly interruptArmed: boolean;
 }): PopupRefusal | undefined {
   const { overlays } = facts;
   if (overlays.approval || overlays.review || overlays.question || overlays.checkpoint)
     return 'card-open';
   if (overlays.nativePrompt) return 'sheet-open';
-  if (facts.turnRunning || facts.busy) return 'turn-running';
+  if (turnInFlight(facts.turn)) return 'turn-running';
   if (facts.interruptArmed) return 'armed';
   if (overlayOwnsKeyboard(overlays)) return 'overlay-open';
   return undefined;
@@ -1089,7 +1092,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     effortPickerRef.current = next;
     setEffortPicker(next);
   };
-  // The chat's docked sheet (ADR-0137 §2 `/permissions`, ADR-0140 §3 `/agent`) — ONE slot, a keyboard-owning submode like `/effort`,
+  // The chat's docked sheet (ADR-0137 §2 `/permissions`) — ONE slot, a keyboard-owning submode like `/effort`,
   // ref-shadowed so a coalesced stdin chunk sees a just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can
   // arrive while it is open, and holding one value, so two sheets cannot be open at once.
   const [chatSheet, setChatSheet] = useState<ChatSheetState | undefined>(undefined);
@@ -1144,6 +1147,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.modePrompt?.ui.getSnapshot() ?? NO_PROMPT,
       popups?.getSnapshot() ?? closedPopupsSnapshot(),
     );
+  /** What is in flight in this chat now, read from the store and the refs (a coalesced chunk sees what an earlier key of it just started). */
+  const liveTurnFacts = (): TurnFacts => ({
+    running: props.store.getSnapshot().state.status === 'running',
+    shellBusy: shellBusyRef.current,
+    submitBusy: submitBusyRef.current,
+  });
   const renderedOverlays = overlayFlagsFrom(
     { palette, search, mention, modelPicker, effortPicker, chatSheet },
     nativeSnapshot,
@@ -1185,8 +1194,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     popups.bindOpenGate(() =>
       chatPopupRefusal({
         overlays: liveOverlays(),
-        turnRunning: props.store.getSnapshot().state.status === 'running',
-        busy: shellBusyRef.current || submitBusyRef.current,
+        turn: liveTurnFacts(),
         interruptArmed: interruptRef.current.armedAt !== undefined,
       }),
     );
@@ -1555,7 +1563,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
-  // ---- The docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) --------------------------------------------
+  // ---- The docked sheet: `/permissions` (ADR-0137 §2) --------------------------------------------
   /** Whether a sheet may open now: an idle prompt, with no turn running and no card pending (a card would compete for the keyboard). */
   const sheetMayOpen = (): boolean => {
     const snap = props.store.getSnapshot();
@@ -1580,27 +1588,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (opened.sheet === undefined) props.store.note(opened.note);
     else applyChatSheet(permissionsChatSheet(opened.sheet));
   };
-  // The bound agent's sheet: the definition the session holds, nothing read, nothing written. A defect in the view's builder must not
-  // take the prompt down with it either: the sheet does not open, and the chat says so.
-  const openAgentSheet = (): void => {
-    const view = props.boundAgent;
-    if (view === undefined || !sheetMayOpen()) return;
-    try {
-      applyChatSheet(agentChatSheet(view()));
-    } catch {
-      props.store.note(AGENT_UNREADABLE);
-    }
-  };
   // The open sheet owns every key. A permissions withdrawal is carried out through the port (the store is read again there) and the
-  // sheet is reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet. The
-  // agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped.
+  // sheet is reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
   const routeChatSheetKey = (char: string, key: ModelPickerKey): void => {
     const open = chatSheetRef.current;
     if (open === undefined) return;
-    if (open.kind === 'agent') {
-      if (foldAgentSheetKey(char, key) === 'close') applyChatSheet(undefined);
-      return;
-    }
     const port = props.permissions;
     if (port === undefined) {
       applyChatSheet(undefined);
@@ -1680,12 +1672,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openPermissionsSheet();
       return;
     }
-    // A typed (or palette-selected) bare `/agent` opens the bound agent's sheet (ADR-0140 §3) instead of dispatching, where the view is
-    // wired. `/agent <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
-    if (props.boundAgent !== undefined && message.trim() === '/agent') {
-      openAgentSheet();
-      return;
-    }
     // `/doctor` and `/doctor --deep` open the doctor popup (ADR-0148 §8) here, BEFORE the submit is marked in flight: the popup host's open
     // gate reads a submit in flight as a turn, and this line is not one. Any other form dispatches and is rejected there.
     const doctor = props.doctor === undefined ? undefined : parseDoctorLine(message);
@@ -1696,6 +1682,28 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           props.onError(cause);
         },
       );
+      return;
+    }
+    // `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` open their report popup (ADR-0148 §10) here too, for the same reason:
+    // BEFORE the submit is marked in flight. A line that is not exactly one of them (`/agent now`, `/cost --force`) dispatches and is rejected there.
+    const report = props.reports === undefined ? undefined : parseReportLine(message);
+    if (
+      report !== undefined &&
+      props.reports !== undefined &&
+      popups !== undefined &&
+      reportAvailable(props.reports, report.kind)
+    ) {
+      const port = props.reports;
+      void openReport({
+        host: popups,
+        port,
+        line: report,
+        origin: 'chat',
+        // The facts the open gate read, read again by the release at the moment of its answer: the one predicate over the same facts.
+        turnInFlight: () => turnInFlight(liveTurnFacts()),
+      }).catch((cause: unknown) => {
+        props.onError(cause);
+      });
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -1752,7 +1760,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       ...pasteFlagsFrom(liveOverlays()),
     });
     // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is
-    // withdrawn. The agent sheet has no question to drop, and a paste changes nothing there.
+    // withdrawn.
     const pastedOver = permissionsSheetOf(chatSheetRef.current);
     if (pastedOver !== undefined)
       applyChatSheet(permissionsChatSheet(disarmPermissionsSheet(pastedOver)));
@@ -2003,8 +2011,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       return;
     }
     // The open docked sheet owns every key. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C`
-    // closes, neither ever withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped. Mutually exclusive
-    // with the other submodes (a sheet opens only at an idle prompt).
+    // closes, neither ever withdraws. Mutually exclusive with the other submodes (a sheet opens only at an idle prompt).
     if (chatSheetRef.current !== undefined) {
       routeChatSheetKey(char, key);
       return;
@@ -2476,7 +2483,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
               color={color}
             />
           )}
-          {/* The docked sheet — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — here with the other overlays; the transcript stays above it. */}
+          {/* The docked sheet — `/permissions` (ADR-0137 §2) — here with the other overlays; the transcript stays above it. */}
           {chatSheet !== undefined && (
             <ChatSheetView
               state={chatSheet}
@@ -2763,7 +2770,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           onReseat: ctx.onReseat,
           modelPicker: ctx.modelPicker,
           permissions: ctx.permissions,
-          boundAgent: ctx.boundAgent,
+          reports: ctx.reports,
           // `/doctor` opens its popup over this chat (ADR-0148 §8); the plain and `--json` drivers have none and print the text report.
           doctor: ctx.doctor,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed

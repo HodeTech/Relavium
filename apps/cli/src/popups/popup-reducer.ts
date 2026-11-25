@@ -54,6 +54,12 @@ export interface PopupStep {
    */
   readonly back?: number | undefined;
   /**
+   * The step is the END of a flow: a persistent result the person reads and closes. `Esc` closes the popup from it (there is nothing to go
+   * back to: a step back would re-arm what the flow just did), and its legend says `Enter / Esc close`. The rail still counts the steps that led
+   * to it (`back`), so it reads `✓ Release ╌╌ ◉ Done`.
+   */
+  readonly final?: true | undefined;
+  /**
    * The step is a confirmation line answered by `Ctrl+Y` and by nothing else (ADR-0148 §3 and §8); it also says `holds: 'chord'`. `Ctrl+Y`
    * answers it only through the host's chord guard (`popup-host.ts`); `Esc`, `Ctrl+C`, a paste and every key that is not a navigation key
    * disarm it (it steps back, answered by nothing). `verb` is the legend's (`[Ctrl+Y] send`).
@@ -92,6 +98,11 @@ export interface PopupStepState {
   /** The first line of a report that is shown. */
   readonly offset: number;
   readonly filter: string;
+  /**
+   * The letters the step answers to NOW, when the command set them with its content ({@link withContent}): a control that exists only once
+   * the data is read (`/cost`'s `[r]`, offered only when something is held). Absent ⇒ the step's own `controls`. `[]` ⇒ none.
+   */
+  readonly controls?: readonly PopupControl[] | undefined;
 }
 
 /** One open popup: its spec, the step it is on and every step's state (a step it went back from keeps its own). */
@@ -180,13 +191,21 @@ export function openFrame(spec: PopupSpec, runId: number): PopupFrame {
   return { spec, runId, stepIndex, steps: spec.steps.map(initialStepState) };
 }
 
-/** The step `Esc` returns to from step `index` of `spec` (its `back`, else the one before), or `-1` from the first. */
-export function backOf(spec: PopupSpec, index: number): number {
+/** The step before `index` along `back`, else the one before it, or `-1` from the first: the chain the rail counts. */
+function chainBackOf(spec: PopupSpec, index: number): number {
   if (index <= 0) return -1;
   const back = spec.steps[index]?.back;
   return back !== undefined && Number.isSafeInteger(back) && back >= 0 && back < index
     ? back
     : index - 1;
+}
+
+/**
+ * The step `Esc` returns to from step `index` of `spec` (its `back`, else the one before), or `-1` from the first and from a `final` step:
+ * `Esc` closes the popup there.
+ */
+export function backOf(spec: PopupSpec, index: number): number {
+  return spec.steps[index]?.final === true ? -1 : chainBackOf(spec, index);
 }
 
 /**
@@ -201,7 +220,7 @@ export function railOf(frame: PopupFrame): {
   const names = frame.spec.steps.map((step) => step.name);
   if (frame.spec.rail !== 'path') return { names, index: frame.stepIndex };
   const path: number[] = [];
-  for (let at = frame.stepIndex; at >= 0; at = backOf(frame.spec, at)) path.unshift(at);
+  for (let at = frame.stepIndex; at >= 0; at = chainBackOf(frame.spec, at)) path.unshift(at);
   return { names: path.map((at) => names[at] ?? ''), index: path.length - 1 };
 }
 
@@ -210,7 +229,10 @@ export function onChordStep(frame: PopupFrame): boolean {
   return currentStep(frame).spec.chord !== undefined;
 }
 
-/** The step the frame is on. */
+/**
+ * The step the frame is on: its spec with the controls the command set for it now ({@link PopupStepState.controls}) in place of the spec's,
+ * so the key reducer, the legend and the host all read one answer.
+ */
 export function currentStep(frame: PopupFrame): {
   readonly spec: PopupStep;
   readonly state: PopupStepState;
@@ -218,7 +240,10 @@ export function currentStep(frame: PopupFrame): {
   const spec = frame.spec.steps[frame.stepIndex] ?? frame.spec.steps[0];
   const state = frame.steps[frame.stepIndex] ?? frame.steps[0];
   if (spec === undefined || state === undefined) throw new Error('a popup has no steps');
-  return { spec, state };
+  return {
+    spec: state.controls === undefined ? spec : { ...spec, controls: state.controls },
+    state,
+  };
 }
 
 /**
@@ -440,6 +465,8 @@ export const POPUP_KEYS = {
   leave: 'Esc',
   closeAll: 'Ctrl+C',
   chord: 'Ctrl+Y',
+  /** The keys that close the result step of a flow (`Enter / Esc close`). */
+  finish: ['Enter', 'Esc'],
 } as const;
 
 /**
@@ -458,6 +485,9 @@ export function popupLegend(frame: PopupFrame): {
   const { spec, state } = currentStep(frame);
   const loading = state.content.kind === 'loading';
   const items: LegendItem[] = [];
+  // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
+  if (spec.final === true)
+    return { items, exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
   // A confirmation line says its one answer and nothing else, and its `Esc` steps back (it disarms); `Ctrl+C` disarms it too, so it is not
   // named as closing. While the line is being prepared, or when there is nothing to confirm, it names no answer.
   if (spec.chord !== undefined) {
@@ -513,17 +543,21 @@ function legendPriority(items: readonly LegendItem[], keep: readonly string[]): 
   });
 }
 
-/** The frame with one step's content replaced (an asynchronous result landing): its selection is kept inside the new rows. */
+/**
+ * The frame with one step's content replaced (an asynchronous result landing): its selection is kept inside the new rows. `controls`, when
+ * given, replaces the letters the step answers to from now on (`[]` takes them away); when absent the step keeps the ones it has.
+ */
 export function withContent(
   frame: PopupFrame,
   stepIndex: number,
   content: PopupContent,
+  controls?: readonly PopupControl[],
 ): PopupFrame {
   return {
     ...frame,
     steps: frame.steps.map((state, index) => {
       if (index !== stepIndex) return state;
-      const next = { ...state, content };
+      const next = { ...state, content, ...(controls === undefined ? {} : { controls }) };
       const rows = visibleRows(next);
       const selected = canAct(rows[state.selected]) ? state.selected : firstEnabled(rows);
       return { ...next, selected, offset: 0 };

@@ -353,6 +353,43 @@ describe('late results (ADR-0148 §2)', () => {
   });
 });
 
+describe('a result that brings the letters its step answers to (MVP-11 step 4b)', () => {
+  const BARE: PopupStep = { name: 'Report', content: { kind: 'report', lines: ['one'] } };
+
+  it('lands them with the content, so the letter reaches the command and the legend names it, and a late result lands none', () => {
+    const { host, time } = rig();
+    const controls: string[] = [];
+    let context: PopupContext | undefined;
+    const opened = host.openForUser(spec({ steps: [BARE] }), {
+      control: (_context, key) => {
+        controls.push(key);
+      },
+    });
+    expect(opened.opened).toBe(true);
+    if (opened.opened) context = opened.context;
+    host.shown(host.getSnapshot());
+    time.advance(600);
+    // Before the content brings it, the letter is nothing.
+    host.input('r', {});
+    expect(controls).toEqual([]);
+    expect(
+      context?.setContent(0, { kind: 'report', lines: ['two'] }, [{ key: 'r', verb: 'again' }]),
+    ).toBe(true);
+    host.input('r', {});
+    expect(controls).toEqual(['r']);
+    expect(currentStep(host.getSnapshot().frame ?? fail()).spec.controls).toEqual([
+      { key: 'r', verb: 'again' },
+    ]);
+    // `[]` takes it away again.
+    context?.setContent(0, { kind: 'report', lines: ['three'] }, []);
+    host.input('r', {});
+    expect(controls).toEqual(['r']);
+    // The popup closes; the same context lands nothing, controls included.
+    host.input('', ESC);
+    expect(context?.setContent(0, BARE.content, [{ key: 'r', verb: 'again' }])).toBe(false);
+  });
+});
+
 describe('a stack of depth two (ADR-0148 §5)', () => {
   function withChild() {
     const r = rig();

@@ -23,6 +23,7 @@ import {
   type NotificationChannel,
 } from '../../../popups/notifications.js';
 import type { DoctorPort } from '../../../popups/doctor-port.js';
+import type { ReportsPort } from '../../../popups/report-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import { mountInk, type InkMount, type MountOptions } from './mount.js';
@@ -55,6 +56,11 @@ export interface ChatSetup {
     | undefined;
   /** The chat's `/doctor` popup port: the stand-alone chat's prop, or the Home-hosted chat's session field (with the Home wired to open it). */
   readonly doctor?: DoctorPort | undefined;
+  /**
+   * The chat's report popups' port (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10): the stand-alone chat's prop, or the Home-hosted
+   * chat's session field (with the Home wired to open them).
+   */
+  readonly reports?: ReportsPort | undefined;
 }
 
 /** A mounted chat, whichever host owns it. */
@@ -128,6 +134,7 @@ export function mountStandaloneChat(
       popups={popups}
       notifications={notifications}
       {...(setup.doctor === undefined ? {} : { doctor: setup.doctor })}
+      {...(setup.reports === undefined ? {} : { reports: setup.reports })}
       {...setup.standalone}
     />,
     variant,
@@ -176,6 +183,7 @@ export async function mountHostedChat(
     ...hosted?.home,
     ...(setup.nativePrompt === true ? { nativePrompt: true } : {}),
     ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
+    ...(setup.reports === undefined ? {} : { reports: setup.reports }),
   };
   const homeDeps = homeSetup?.deps;
   const submitted: string[] = [];
@@ -204,6 +212,7 @@ export async function mountHostedChat(
           stopReason: () => 'exit',
           teardown: () => Promise.resolve(),
           ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
+          ...(setup.reports === undefined ? {} : { reports: setup.reports }),
           ...hosted?.session,
         };
       },

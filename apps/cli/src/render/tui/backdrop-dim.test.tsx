@@ -378,10 +378,14 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
 
 // ---- 3. the hosts ----------------------------------------------------------------------------------------------------------------
 
-// The test layer's report popups: their box is known before they are mounted. A product popup (`/doctor`) draws the frame its host has open,
-// and the matrix's own backdrop property checks every cell of it (`checkBackdropDim`, run in every alternate-screen colour cell).
+// The test layer's report popups: their box is known before they are mounted. A product popup (`/doctor`, and the four reports `/agent`, `/cost`,
+// `/workflows` and `/help`) draws the frame its host has open, and the matrix's own backdrop property checks every cell of it (`checkBackdropDim`,
+// run in every alternate-screen colour cell).
 const POPUP_SURFACES = ALL_SURFACES.filter(
-  (surface) => surface.popup !== undefined && !surface.id.includes('.doctor-'),
+  (surface) =>
+    surface.popup !== undefined &&
+    !surface.id.includes('.doctor-') &&
+    !surface.id.includes('.report-'),
 );
 
 /** Where the popup of `entry` is drawn in `ALT`, and the cells inside it. */

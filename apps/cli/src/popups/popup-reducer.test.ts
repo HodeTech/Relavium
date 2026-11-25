@@ -8,11 +8,13 @@ import { describe, expect, it } from 'vitest';
 import { legend } from '../render/tui/legend.js';
 import type { PopupContent, PopupListRow } from './frame-model.js';
 import {
+  backOf,
   currentStep,
   foldPopupAction,
   openFrame,
   openingKeyOf,
   popupLegend,
+  railOf,
   reducePopupKey,
   visibleRows,
   withContent,
@@ -247,5 +249,90 @@ describe('the legend names exactly the keys the fold reads', () => {
     );
     const single = openFrame(spec([step({ content: { kind: 'list', rows: [row('one')] } })]), 1);
     expect(legend(popupLegend(single).items, popupLegend(single).exit)).toBe('Esc close');
+  });
+});
+
+describe('the letters a step answers to can arrive with its content (ADR-0148 §3, MVP-11 step 4b)', () => {
+  const REPORT: PopupContent = { kind: 'report', lines: ['one line'] };
+  const two = (): PopupFrame => openFrame(spec([step({ content: REPORT })]), 1);
+  const R = [{ key: 'r', verb: 'release' }] as const;
+
+  it('a step with no control answers no letter, and one the content brought answers it, in the fold and in the legend', () => {
+    const bare = two();
+    expect(press(bare, 'r').kind).toBe('unchanged');
+    expect(legend(popupLegend(bare).items, popupLegend(bare).exit)).toBe('↑/↓ scroll · Esc close');
+    const offered = withContent(bare, 0, REPORT, R);
+    expect(currentStep(offered).spec.controls).toEqual(R);
+    expect(press(offered, 'r')).toEqual({ kind: 'control', key: 'r' });
+    expect(legend(popupLegend(offered).items, popupLegend(offered).exit)).toBe(
+      '↑/↓ scroll · r release · Esc close'.replace('r release', '[r] release'),
+    );
+  });
+
+  it('an empty list takes the control away, and a content that names none keeps the ones it has', () => {
+    const offered = withContent(two(), 0, REPORT, R);
+    expect(press(withContent(offered, 0, REPORT, []), 'r').kind).toBe('unchanged');
+    expect(press(withContent(offered, 0, { kind: 'report', lines: ['again'] }), 'r')).toEqual({
+      kind: 'control',
+      key: 'r',
+    });
+  });
+
+  it('is per step: another step keeps its own controls, and the spec’s are the default', () => {
+    const frame = openFrame(
+      spec([
+        step({ content: REPORT, controls: [{ key: 'a', verb: 'first' }] }),
+        step({ name: 'Two', content: REPORT }),
+      ]),
+      1,
+    );
+    const changed = withContent(frame, 1, REPORT, R);
+    expect(currentStep(changed).spec.controls).toEqual([{ key: 'a', verb: 'first' }]);
+    expect(currentStep({ ...changed, stepIndex: 1 }).spec.controls).toEqual(R);
+  });
+});
+
+describe('a final step: the end of a flow (MVP-11 step 4b)', () => {
+  const REPORT: PopupContent = { kind: 'report', lines: ['Released.'] };
+  const flow = (): PopupFrame => ({
+    ...openFrame(
+      spec([
+        step({ content: REPORT }),
+        step({ name: 'Release', content: REPORT, back: 0 }),
+        step({ name: 'Done', content: REPORT, back: 1, final: true, enter: 'close' }),
+      ]),
+      1,
+    ),
+    stepIndex: 2,
+  });
+
+  it('Esc closes the popup from it: there is no way back to what the flow just did', () => {
+    expect(backOf(flow().spec, 2)).toBe(-1);
+    expect(backOf(flow().spec, 1)).toBe(0);
+    expect(press(flow(), '', { escape: true }).kind).toBe('close');
+    // The same step without `final` steps back along `back`.
+    const plain = {
+      ...flow(),
+      spec: spec([step(), step({ name: 'B', back: 0 }), step({ name: 'C', back: 1 })]),
+    };
+    expect(press(plain, '', { escape: true }).kind).toBe('frame');
+  });
+
+  it('Enter answers it and Ctrl+C closes everything, as on any step', () => {
+    expect(press(flow(), '', { return: true })).toEqual({ kind: 'enter', row: undefined });
+    expect(press(flow(), 'c', { ctrl: true }).kind).toBe('close-all');
+  });
+
+  it('its legend names Enter and Esc as the keys that close it, and nothing else', () => {
+    const parts = popupLegend(flow());
+    expect(parts.items).toEqual([]);
+    expect(legend(parts.items, parts.exit)).toBe('Enter / Esc close');
+    expect(parts.exit.class).toBe('close');
+  });
+
+  it('the rail still counts the steps that led to it', () => {
+    const rail = railOf({ ...flow(), spec: { ...flow().spec, rail: 'path' } });
+    expect(rail.names).toEqual(['Pick', 'Release', 'Done']);
+    expect(rail.index).toBe(2);
   });
 });

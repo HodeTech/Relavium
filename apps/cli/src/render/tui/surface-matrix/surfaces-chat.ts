@@ -1,8 +1,6 @@
 import type { AskUserRequest, ToolApprovalRequest, ToolPreview } from '@relavium/core';
 
-import { boundAgentView, type BoundAgentView } from '../../../chat/bound-agent-view.js';
 import type { CommandCardFacts } from '../../../chat/command-facts.js';
-import { buildDefaultChatAgent } from '../../../chat/default-agent.js';
 import type { PermissionsPort } from '../../../permissions/chat-permissions.js';
 import { editedFilePreview } from '../fixtures/edit-diff.js';
 import type { MentionReader } from '../mention.js';
@@ -29,6 +27,13 @@ import {
   testReportPopup,
 } from './popup-fixture.js';
 import { DOCTOR_LANDMARKS, doctorPopupBox, doctorPortFor, driveDoctor } from './doctor-fixture.js';
+import {
+  driveReport,
+  REPORT_LANDMARKS,
+  reportPopupBox,
+  reportsPortFor,
+  type ReportState,
+} from './report-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
@@ -105,7 +110,6 @@ const MODEL = 'claude-sonnet-4-5';
 /** The session ports of one chat surface, given once and placed where each host takes them. */
 interface Ports {
   readonly permissions?: PermissionsPort;
-  readonly boundAgent?: () => BoundAgentView;
   readonly mentionReader?: MentionReader;
   readonly models?: boolean;
   readonly effort?: boolean;
@@ -118,7 +122,6 @@ function setupWith(ports: Ports): ChatSetup {
     ...(ports.seedModel === true || effort ? { seed: { model: MODEL, transcript: [] } } : {}),
     standalone: {
       ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
-      ...(ports.boundAgent === undefined ? {} : { boundAgent: ports.boundAgent }),
       ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
       ...(ports.models === true ? { modelPicker: standaloneModelsPort } : {}),
       ...(effort ? { onSetEffort: () => {} } : {}),
@@ -127,7 +130,6 @@ function setupWith(ports: Ports): ChatSetup {
       ...(ports.models === true ? { models: homeModelsPort } : {}),
       session: {
         ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
-        ...(ports.boundAgent === undefined ? {} : { boundAgent: ports.boundAgent }),
         ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
         ...(effort ? { onSetEffort: () => {} } : {}),
       },
@@ -329,10 +331,59 @@ function chatDoctorSurface(
   };
 }
 
+/** A chat's report popup (`/agent`, `/cost`, `/workflows`, `/help`) in one state: the short exchange behind it, the command typed and routed by the host. */
+function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefinition {
+  return {
+    name: `report-${state}`,
+    title,
+    exitKey: 'Esc',
+    landmark: REPORT_LANDMARKS[state],
+    belowFloor: /too small for this popup/iu,
+    popup: reportPopupBox,
+    setup: () => ({
+      seed: SHORT_CONVERSATION,
+      reports: reportsPortFor('standalone-chat', state),
+    }),
+    notes:
+      'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing the command, through the chat host’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveReport(m, (line) => m.typeLine(line), state);
+    },
+  };
+}
+
 export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   chatDoctorSurface('checks', 'The /doctor popup over the chat: the quick tier’s checks'),
   chatDoctorSurface('line', 'The /doctor popup over the chat: the deep tier’s confirmation line'),
   chatDoctorSurface('done', 'The /doctor popup over the chat: the deep result with MCP rows'),
+  chatReportSurface('agent', 'The /agent popup over the chat: the bound agent’s fields'),
+  chatReportSurface('cost', 'The /cost popup over the chat: the report with nothing held'),
+  chatReportSurface(
+    'cost-held',
+    'The /cost popup over the chat: a held estimate and the release control',
+  ),
+  chatReportSurface(
+    'cost-release',
+    'The /cost popup over the chat: the release’s confirmation line (a typed --release)',
+  ),
+  chatReportSurface('cost-done', 'The /cost popup over the chat: the release’s result'),
+  chatReportSurface('cost-loading', 'The /cost popup over the chat: the session cost being read'),
+  chatReportSurface(
+    'cost-error',
+    'The /cost popup over the chat: the session cost could not be read',
+  ),
+  chatReportSurface('workflows', 'The /workflows popup over the chat: the project’s catalog'),
+  chatReportSurface('workflows-empty', 'The /workflows popup over the chat: an empty project'),
+  chatReportSurface(
+    'workflows-loading',
+    'The /workflows popup over the chat: the catalog being read',
+  ),
+  chatReportSurface(
+    'workflows-error',
+    'The /workflows popup over the chat: the catalog could not be listed',
+  ),
+  chatReportSurface('help', 'The /help popup over the chat: its commands and keys'),
   {
     name: 'popup',
     title: 'A popup over the chat (the test layer’s report popup)',
@@ -426,17 +477,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     selectedRow: 'npm, 1 argument',
     setup: setupWith({ permissions: CHAT_PERMISSIONS }),
     open: typeLineAndWait('/permissions', 'Permissions · ask mode'),
-  },
-  {
-    name: 'sheet-agent',
-    title: 'The docked /agent sheet',
-    exitKey: 'Esc',
-    landmark: 'Agent · relavium-chat',
-    setup: setupWith({
-      boundAgent: () =>
-        boundAgentView(buildDefaultChatAgent('claude-opus-4-8', 'high', 'anthropic'), 'high'),
-    }),
-    open: typeLineAndWait('/agent', 'Agent · relavium-chat'),
   },
   {
     name: 'mode-prompt',

@@ -155,7 +155,7 @@ export interface PasteEditableFlags {
   readonly mentionOpen: boolean; // `@`-mention completion
   readonly modelPickerOpen: boolean; // `/models`
   readonly effortPickerOpen: boolean; // `/effort`
-  readonly chatSheetOpen: boolean; // a docked sheet: `/permissions` (ADR-0137) or `/agent` (ADR-0140)
+  readonly chatSheetOpen: boolean; // the docked `/permissions` sheet (ADR-0137)
   readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
 }
 

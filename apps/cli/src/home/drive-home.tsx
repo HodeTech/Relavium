@@ -102,6 +102,7 @@ import {
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
+import { openReport } from '../popups/report-port.js';
 import { createNotificationChannel } from '../popups/notifications.js';
 import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
@@ -1144,7 +1145,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           onSetEffort,
           permissions,
-          boundAgent,
+          reports,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1309,8 +1310,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onSetEffort,
           // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
           ...(permissions === undefined ? {} : { permissions }),
-          // ADR-0140 §3: `/agent` opens the sheet of the agent THIS session holds (a reseat or a `/clear` wires a new chat, so a new view).
-          boundAgent,
+          // ADR-0148 §10: `/agent`, `/cost`, `/workflows` and `/help` open report popups over THIS session (a reseat or a `/clear` wires a
+          // new chat, so a new port): its bound agent, its cost, its project's catalog and the keys of a chat.
+          ...(reports === undefined
+            ? {}
+            : {
+                reports: {
+                  ...reports,
+                  surface: 'home-chat' as const,
+                  ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+                  plainGlyphs: !deps.global.color,
+                },
+              }),
           // ADR-0148 §8: `/doctor` opens the popup over this chat, with THIS session's read-only MCP report and owner.
           doctor: {
             scope: doctorScope,
@@ -2109,6 +2120,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }).catch((cause: unknown) => {
             ownership?.surface.work.failure(cause);
           });
+        },
+        // `/agent`, `/cost`, `/workflows` and `/help` open their report popup on the Home's host (ADR-0148 §10) over the chat in front, with its
+        // port; the code is loaded the first time (`openReport`), never at start.
+        openReport: ({ line, chat, turnInFlight }) => {
+          const host = popups;
+          if (host === undefined || homeInputSealed) return;
+          void openReport({ host, port: chat, line, origin: 'chat', turnInFlight }).catch(
+            (cause: unknown) => {
+              ownership?.surface.work.failure(cause);
+            },
+          );
         },
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,

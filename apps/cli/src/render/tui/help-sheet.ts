@@ -34,6 +34,10 @@ export interface HelpKeyEvent {
   readonly return?: boolean;
   readonly escape?: boolean;
   readonly downArrow?: boolean;
+  readonly tab?: boolean;
+  readonly shift?: boolean;
+  readonly pageUp?: boolean;
+  readonly pageDown?: boolean;
 }
 
 /** One key press as the controller receives it: the typed character (empty for a named key) and the key flags. */

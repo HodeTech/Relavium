@@ -296,6 +296,7 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/render/tui/emphasis.ts',
   'apps/cli/src/render/tui/format.ts',
   'apps/cli/src/render/tui/palette-entries.ts',
+  'apps/cli/src/render/tui/chat-keys.ts',
   'apps/cli/src/render/tui/sheet-frame.ts',
   'apps/cli/src/render/tui/tui-constants.ts',
   'apps/cli/src/render/tui/place-label.ts',

@@ -23,7 +23,6 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['model-picker', 'the /models picker'],
   ['effort-picker', 'the /effort picker'],
   ['sheet-permissions', 'the docked /permissions sheet'],
-  ['sheet-agent', 'the docked /agent sheet'],
   ['mode-prompt', 'the /mode flow’s native card (the startup default)'],
   ['approval-file-edit', 'the approval card of a file edit'],
   ['approval-command', 'the approval card of a command'],
@@ -43,6 +42,18 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['doctor-checks', 'the /doctor popup: the quick tier’s checks'],
   ['doctor-line', 'the /doctor popup: the deep tier’s confirmation line'],
   ['doctor-done', 'the /doctor popup: the deep result with the session’s MCP rows'],
+  ['report-agent', 'the /agent popup: the bound agent’s fields'],
+  ['report-cost', 'the /cost popup: the report with nothing held'],
+  ['report-cost-held', 'the /cost popup: a held estimate and the release control'],
+  ['report-cost-release', 'the /cost popup: the release’s confirmation line'],
+  ['report-cost-done', 'the /cost popup: the release’s result'],
+  ['report-cost-loading', 'the /cost popup: the session cost being read'],
+  ['report-cost-error', 'the /cost popup: the session cost could not be read'],
+  ['report-workflows', 'the /workflows popup: the project’s catalog'],
+  ['report-workflows-empty', 'the /workflows popup: an empty project'],
+  ['report-workflows-loading', 'the /workflows popup: the catalog being read'],
+  ['report-workflows-error', 'the /workflows popup: the catalog could not be listed'],
+  ['report-help', 'the /help popup: the commands and keys of a chat'],
 ];
 
 export const PRODUCT_SURFACES: readonly ProductSurface[] = [

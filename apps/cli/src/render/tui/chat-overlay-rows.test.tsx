@@ -6,15 +6,14 @@ import { cleanup, render } from 'ink-testing-library';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { boundAgentView } from '../../chat/bound-agent-view.js';
-import { buildDefaultChatAgent } from '../../chat/default-agent.js';
 import type { ReplCommand } from '../../commands/repl-commands.js';
-import { agentChatSheet } from './chat-sheet.js';
+import { permissionsChatSheet } from './chat-sheet.js';
 import { ChatSheetView } from './chat-sheet-view.js';
 import { EffortTierList } from './effort-tier-list.js';
 import { settleFrames } from './harness-util.js';
 import { MentionView } from './mention-view.js';
 import { ModelPickerView } from './model-picker-view.js';
+import { initialPermissionsSheetState } from './permissions-sheet.js';
 import type { ModelPickerState } from './model-picker.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import type { PaletteList } from './palette-reducer.js';
@@ -273,11 +272,22 @@ const VIEWS: readonly { readonly name: string; readonly view: () => ReactElement
     ),
   },
   {
-    name: 'the docked agent sheet',
+    name: 'the docked permissions sheet',
     view: () => (
       <ChatSheetView
-        state={agentChatSheet(
-          boundAgentView(buildDefaultChatAgent('claude-opus-4-8', 'high', 'anthropic'), 'high'),
+        state={permissionsChatSheet(
+          initialPermissionsSheetState(
+            {
+              project: {
+                ok: true,
+                rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
+              },
+              session: [],
+            },
+            'chat',
+            'ask',
+            0,
+          ),
         )}
         color
         columns={100}

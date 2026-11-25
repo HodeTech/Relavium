@@ -68,6 +68,7 @@ import {
   openingKeyOf,
   reducePopupKey,
   withContent,
+  type PopupControl,
   type PopupFrame,
   type PopupKey,
   type PopupKeyAction,
@@ -131,8 +132,16 @@ export interface PopupContext {
   readonly signal: AbortSignal;
   /** The step the popup is on now (or `undefined` once it is closed). */
   readonly stepIndex: () => number | undefined;
-  /** Put a result into a step of THIS popup. `false` (and nothing changes) when the popup is closed or replaced: a late result lands nowhere. */
-  readonly setContent: (stepIndex: number, content: PopupContent) => boolean;
+  /**
+   * Put a result into a step of THIS popup. `false` (and nothing changes) when the popup is closed or replaced: a late result lands nowhere.
+   * `controls`, when given, sets the letters the step answers to from now on (a control that exists only once the result is known); `[]` takes
+   * them away, and absent keeps the ones it has.
+   */
+  readonly setContent: (
+    stepIndex: number,
+    content: PopupContent,
+    controls?: readonly PopupControl[],
+  ) => boolean;
   /** Move THIS popup to a step. `false` when it is closed, or the step does not exist. */
   readonly goToStep: (stepIndex: number) => boolean;
   /** Close THIS popup (and a child it opened): the command's own close, after it has applied what it was for. */
@@ -499,11 +508,11 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       runId,
       signal,
       stepIndex: () => recordOf(runId)?.frame.stepIndex,
-      setContent: (stepIndex, content) => {
+      setContent: (stepIndex, content, controls) => {
         const live = recordOf(runId);
         if (live === undefined || stepIndex < 0 || stepIndex >= live.frame.steps.length)
           return false;
-        live.frame = withContent(live.frame, stepIndex, content);
+        live.frame = withContent(live.frame, stepIndex, content, controls);
         if (stepIndex === live.frame.stepIndex)
           live.loadingSince = content.kind === 'loading' ? now() : undefined;
         publish();

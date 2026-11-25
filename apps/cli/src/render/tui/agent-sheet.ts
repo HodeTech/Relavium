@@ -1,47 +1,27 @@
 import type { BoundAgentView } from '../../chat/bound-agent-view.js';
 import { NO_TOOLS_DECLARED } from '../../history/agents-model.js';
-import type { ChatKey } from './chat-input.js';
 import { sanitizeInline } from '../sanitize.js';
-import { isInterruptKey } from './interrupt-keymap.js';
-import { legend, legendSpans } from './legend.js';
-import {
-  SHEET_KEYS,
-  SHEET_LEGEND_EMPTY_ITEMS,
-  SHEET_MIN_COLUMNS,
-  SHEET_MIN_ROWS,
-  tooSmallSheetLines,
-} from './permissions-sheet.js';
 import {
   clampSpans,
   clipLine,
-  titleRule,
-  usableColumns,
   wrappedLines,
-  type SheetGeometry,
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
-import { cardRowBudget } from './tool-review-card.js';
 import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /**
- * The `/agent` sheet ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3,
- * MVP-8 step 5): the agent the CURRENT chat is bound to, with the fields of the `/agents` detail and the provider and model the session
- * runs on. A docked, keyboard-owning overlay of the family `/permissions` belongs to ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
- * §1), and the same pure half: the lines to draw and the fold of one keystroke. It owns no `useInput` and imports no React.
+ * The pure field formatting of the agent a chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §3, MVP-8 step 5): the agent the CURRENT chat runs, with the fields of the `/agents` detail and the provider and model the session runs on.
+ * It was the body of a docked sheet; **the sheet is retired** (MVP-11 step 4b: `/agent` is a report popup, `popups/agent-popup.ts`), and this
+ * module is what is left of it, because two surfaces still say the same fields: the popup (which scrubs every string of the view with the
+ * full floor first) and the plain, `--json` and one-shot chat's notice ({@link agentNotice}, whose text is pinned byte for byte).
  *
- * Read-only by construction: the state is the {@link BoundAgentView} the session's own definition made, so there is nothing to select, to
- * arm or to withdraw. It says two things the definition alone cannot: which declared tools this chat's host does not wire (a mark after the
- * name, and how many are offered), and the file the agent was read from, as a relative label. `Esc` and `Ctrl+C` close it, and every other key is dropped (no key is typing into the composer behind it). It takes
- * no more rows than the permissions sheet does ({@link cardRowBudget}: twelve at 80×24), the rule that carries its title and the legend
- * always drawn, and a field that does not fit is cut with `…` rather than scrolled, because a sheet that scrolls needs keys to scroll with.
+ * Read-only by construction: the state is the {@link BoundAgentView} the session's own definition made. It says two things the definition
+ * alone cannot: which declared tools this chat's host does not wire (a mark after the name, and how many are offered), and the file the agent
+ * was read from, as a relative label. A field that does not fit is cut with `…` rather than scrolled.
  */
 
-/** What a keystroke does to the open sheet: close it, or nothing (the key is dropped). */
-export type AgentSheetStep = 'close' | 'stay';
-
-/** The rows the sheet always draws besides the body: the rule that carries the title, and the legend. */
-const FIXED_ROWS = 2;
 /** The fields that always take one row: the name, the provider, the model and the temperature with the reasoning effort. */
 const FIELD_ROWS = 4;
 /** What a declared tool is marked with when the chat's host does not wire it: the model is never offered it. */
@@ -60,21 +40,14 @@ const INDENT = '  ';
 /** The width the first of two fields on one row takes after its label, so the second label starts in one column. */
 const PAIR_VALUE_WIDTH = 12;
 /** What a row says of a field the definition leaves out, and of a tier the session does not use. */
-const NOT_SET = 'not set';
+export const NOT_SET = 'not set';
 /** What the name row says of the built-in default agent. */
 export const BUILT_IN_AGENT_NOTE = 'the built-in chat agent';
 /** What the prompt rows say of an agent whose prompt is empty. */
-const EMPTY_PROMPT = '(empty)';
-/** What a host says when the view of the bound agent cannot be made and the sheet therefore does not open. */
-export const AGENT_UNREADABLE = 'Could not read the agent.';
+export const EMPTY_PROMPT = '(empty)';
 /** The width and the room of the same fields as a notice (a chat with no sheet to open): a notice is not clipped to a terminal. */
 const NOTICE_WIDTH = 78;
 const NOTICE_ROOM = FIELD_ROWS + 1 + TOOL_LINES_MAX + PROMPT_LINES_MAX;
-
-/** The keys that close the sheet: `Esc` and `Ctrl+C`. Every other key, a paste included, is dropped by the host. */
-export function foldAgentSheetKey(input: string, key: ChatKey): AgentSheetStep {
-  return key.escape === true || isInterruptKey(input, key) ? 'close' : 'stay';
-}
 
 export function agentSheetTitle(view: BoundAgentView): string {
   return `Agent · ${view.id}`;
@@ -119,7 +92,7 @@ function wrappedField(label: string, value: string, width: number, max: number):
 }
 
 /** What the name row says: the agent's own name, and that it is the built-in agent when it is. */
-function nameText(view: BoundAgentView): string {
+export function nameText(view: BoundAgentView): string {
   const name = view.name ?? NOT_SET;
   return view.builtIn ? `${name} · ${BUILT_IN_AGENT_NOTE}` : name;
 }
@@ -148,12 +121,12 @@ interface ToolItem {
 }
 
 /** The tool grant as the sheet says it: the count that leads (only where a declared tool is not offered), and the names, each with its mark. */
-interface ToolsParts {
+export interface ToolsParts {
   readonly lead: string | undefined;
   readonly items: readonly ToolItem[];
 }
 
-function toolsParts(view: BoundAgentView): ToolsParts {
+export function toolsParts(view: BoundAgentView): ToolsParts {
   const { detail } = view;
   if (detail.tools.length === 0 && detail.toolsMore === 0)
     return { lead: undefined, items: [{ text: NO_TOOLS_DECLARED, marked: false }] };
@@ -196,7 +169,11 @@ const LEFT_OUT = '…';
  * `lead` and `items` packed into lines of at most `width` columns, wrapping BETWEEN names and never inside one, so a mark is not split from its
  * name over two lines. A name wider than a line is cut with `…`. Every name is followed by a comma but the last, and a run left out ({@link LEFT_OUT}) by none.
  */
-function packedTools(lead: string | undefined, items: readonly string[], width: number): string[] {
+export function packedTools(
+  lead: string | undefined,
+  items: readonly string[],
+  width: number,
+): string[] {
   const tokens = [
     ...(lead === undefined ? [] : [lead]),
     ...items.map((item, index) =>
@@ -330,59 +307,21 @@ export function agentSheetBody(
 }
 
 /**
- * The last floor of everything this sheet draws: every line passes `sanitizeInline` once more, as the tab host's lines do at its painter. Every
- * string of the view is already scrubbed where the view is made, so this changes nothing a view built through `boundAgentView` holds; it is
- * here so that a field added later, or a view built another way, cannot put a control sequence on a terminal. A span that the cut leaves
- * outside its line is clamped.
+ * The last floor of the notice: every line passes `sanitizeInline` once more. Every string of the view is already scrubbed where the view is
+ * made, so this changes nothing a view built through `boundAgentView` holds; it is here so that a field added later, or a view built another
+ * way, cannot put a control sequence on a terminal. (The popup does not rely on it: it passes every string through the full scrub first.)
  */
-function floored(lines: readonly SheetLine[]): readonly SheetLine[] {
-  return lines.map((line) => {
-    const text = sanitizeInline(line.text);
-    if (text === line.text) return line;
-    return {
-      ...line,
-      text,
-      ...(line.spans === undefined ? {} : { spans: clampSpans(line.spans, text.length) }),
-    };
-  });
+function floored(lines: readonly SheetLine[]): readonly string[] {
+  return lines.map((line) => sanitizeInline(line.text));
 }
 
 /**
- * The sheet's lines, top to bottom, for a terminal of this size: the rule that carries the title, the fields, and the legend; below the
- * floor of 80×24 (ADR-0122 §7.3) the title, why, and the way out, exactly as the permissions sheet draws it.
- */
-export function agentSheetLines(
-  view: BoundAgentView,
-  geometry: SheetGeometry,
-): readonly SheetLine[] {
-  return floored(layoutLines(view, geometry));
-}
-
-function layoutLines(view: BoundAgentView, geometry: SheetGeometry): readonly SheetLine[] {
-  const title = agentSheetTitle(view);
-  if (geometry.columns < SHEET_MIN_COLUMNS || geometry.terminalRows < SHEET_MIN_ROWS)
-    return tooSmallSheetLines(title);
-  const width = usableColumns(geometry.columns);
-  const legendText = clipLine(legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close), width);
-  return [
-    titleRule(title, width),
-    ...agentSheetBody(view, width, cardRowBudget(geometry.terminalRows) - FIXED_ROWS),
-    {
-      kind: 'legend',
-      text: legendText,
-      spans: clampSpans(legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close), legendText.length),
-    },
-  ];
-}
-
-/**
- * The same fields as a notice, for a chat that has no sheet to open (a plain, `--json` or one-shot chat, which the sheet's keys cannot
- * reach): the title and the body lines, trailing blanks removed, joined by newlines. Built from {@link agentSheetBody}, so the two cannot
- * name different fields.
+ * The same fields as a notice, for a chat that has no popup to open (a plain, `--json` or one-shot chat): the title and the body lines,
+ * trailing blanks removed, joined by newlines. Built from {@link agentSheetBody}, so the notice and the popup cannot name different fields.
  */
 export function agentNotice(view: BoundAgentView): string {
   return [
     sanitizeInline(agentSheetTitle(view)),
-    ...floored(agentSheetBody(view, NOTICE_WIDTH, NOTICE_ROOM)).map((line) => line.text.trimEnd()),
+    ...floored(agentSheetBody(view, NOTICE_WIDTH, NOTICE_ROOM)).map((line) => line.trimEnd()),
   ].join('\n');
 }

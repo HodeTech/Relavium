@@ -17,6 +17,11 @@ import {
   type NotificationChannel,
 } from '../../../popups/notifications.js';
 import { openDoctor, type DoctorPort } from '../../../popups/doctor-port.js';
+import {
+  openReport,
+  type ParsedReportLine,
+  type ReportsPort,
+} from '../../../popups/report-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import type { ChatStoreController } from '../chat-store.js';
@@ -88,6 +93,11 @@ export interface HomeSetup {
    * the landing and, with a session whose `doctor` is set, for the chat it hosts. Absent ⇒ `/doctor` runs the quick tier into the notice.
    */
   readonly doctor?: DoctorPort | undefined;
+  /**
+   * Given, the controller opens the report popups (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10) on the Home's popup host as `driveHome`
+   * wires it (`openReport`) for the chat it hosts, whose session carries the port. Absent ⇒ those commands are dispatched to the chat.
+   */
+  readonly reports?: ReportsPort | undefined;
 }
 
 export type NativePromptChannel = ReturnType<typeof createNativePromptChannel>;
@@ -157,6 +167,7 @@ export function mountHome(
     placement: variant.renderer === 'alt' ? 'overlay' : 'replace',
   });
   const doctor = setup.doctor;
+  const reports = setup.reports;
   let rendererFlush: NoticeFlush | undefined;
   const context: HomeContext = {
     channel,
@@ -203,6 +214,21 @@ export function mountHome(
               origin: chat === undefined ? 'home' : 'chat',
               now: popupNow,
             });
+          },
+        }),
+    ...(reports === undefined
+      ? {}
+      : {
+          openReport: ({
+            line,
+            chat,
+            turnInFlight,
+          }: {
+            readonly line: ParsedReportLine;
+            readonly chat: ReportsPort;
+            readonly turnInFlight: () => boolean;
+          }) => {
+            void openReport({ host: popups, port: chat, line, origin: 'chat', turnInFlight });
           },
         }),
     onExit: () => {},

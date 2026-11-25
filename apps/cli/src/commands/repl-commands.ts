@@ -46,8 +46,8 @@ export interface ReplCommandContext {
    * `/agent` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5)
    * — show the agent THIS chat is bound to, read-only: its id and name, the provider and model the session runs on, the tool grant as the
    * definition declares it, the temperature, the reasoning effort and the head of the system prompt. The interactive hosts (the standalone
-   * chat and the in-Home chat) intercept the command and open the docked sheet before it gets here, as they do `/permissions`; this runs
-   * where there is no sheet to open (a plain, `--json` or one-shot chat) and prints the same fields as a notice. Chat-only: the landing has
+   * chat and the in-Home chat) intercept the command and open the report popup before it gets here ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10); this runs where there is no popup to open (a plain, `--json` or one-shot chat) and prints the same fields as a notice. Chat-only: the landing has
    * no session, so it answers the word itself (ADR-0140 §3) and never runs this.
    */
   readonly showAgent: () => void | Promise<void>;

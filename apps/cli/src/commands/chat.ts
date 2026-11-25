@@ -63,9 +63,13 @@ import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import type { DoctorPort } from '../popups/doctor-port.js';
+import type { ReportMembers, ReportsPort, WorkflowsReading } from '../popups/report-port.js';
+import { releaseHeldEstimates } from '../chat/cost-release.js';
+import { CHAT_KEYS } from '../render/tui/chat-keys.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
   catalogNotice,
+  NO_PROJECT_NOTICE,
   clearedNotice,
   compactionNotice,
   COMPACTION_UNKNOWN_WINDOW_NOTICE,
@@ -329,8 +333,8 @@ export interface ChatDriveContext {
    *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
   /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   *  §3): a typed (or palette-selected) bare `/agent` opens the docked sheet over it. Present on an interactive (TTY, non-`--json`) driver
-   *  only; absent ⇒ `/agent` dispatches and prints the same fields as a notice. */
+   *  §3), made afresh on every call: the same function `reports.agent` hands the `/agent` popup, kept for a driver (and its tests) that reads it
+   *  directly. Present on an interactive (TTY, non-`--json`) driver only. */
   readonly boundAgent?: () => BoundAgentView;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
@@ -419,6 +423,13 @@ export interface ChatDriveContext {
    * a typed or palette-selected `/doctor`; a plain or `--json` driver has none, and `/doctor` prints exactly the text report it printed before.
    */
   readonly doctor?: DoctorPort | undefined;
+  /**
+   * The report popups' port (ADR-0148 §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. Present on an
+   * interactive (TTY, non-`--json`) driver only, where the ink chat opens the popup for a typed or palette-selected line; a plain, `--json` or
+   * one-shot driver has none, and each command prints exactly the text it printed before. {@link ChatDriveContext.boundAgent} is the same view
+   * `reports.agent` reads (a driver and its tests read it directly).
+   */
+  readonly reports?: ReportsPort | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -1868,10 +1879,15 @@ export interface ChatLineHandler extends ChatModeControl {
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
    *  present on an interactive session only, where there is someone to ask and a store to read. */
   readonly permissions: PermissionsPort | undefined;
-  /** The agent this session is bound to, as the `/agent` sheet and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+  /** The agent this session is bound to, as the `/agent` popup and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    *  §3): read from the definition the session holds, never from a file, with the reasoning tier the session is using now; built afresh
    *  on every call. */
   readonly boundAgent: () => BoundAgentView;
+  /**
+   * What the report popups read from this session (ADR-0148 §10): the bound agent, the session's cost (read and released), the project's
+   * catalog and the keys of a chat. Present on an interactive session only; the host adds the surface, the owner and the glyph form.
+   */
+  readonly reports: ReportMembers | undefined;
 }
 
 /**
@@ -2076,12 +2092,40 @@ export function createChatLineHandler(
   // copy, so it is the provider and model the chat runs on now), scrubbed by the `/agents` detail's own builder, and the reasoning tier the
   // session is using NOW, which is the footer's (`store.getSnapshot().reasoningEffort`): `/effort` changes it on the session and never on
   // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows. The tools this chat's host does not
-  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the sheet marks a
+  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the popup marks a
   // declared tool that the model is never offered and names the file the person chose.
   const boundAgent = (): BoundAgentView =>
     boundAgentView(built.agent, store.getSnapshot().reasoningEffort, {
       wiredTools: built.wiredTools,
       sourceLabel: built.agentSourceLabel,
+    });
+
+  /** The project's catalog, scanned now: `no-project`, or the workflows and the agents (an invalid entry kept). Throws what `discoverCatalog` throws. */
+  const scanCatalogs = ():
+    | { readonly kind: 'no-project' }
+    | {
+        readonly kind: 'catalog';
+        readonly workflows: CatalogEntry[];
+        readonly agents: CatalogEntry[];
+      } => {
+    const { projectConfigDir, homeDir } = readLiveConfig();
+    if (projectConfigDir === undefined) return { kind: 'no-project' };
+    const scan = (kind: CatalogKind): CatalogEntry[] =>
+      discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
+    return { kind: 'catalog', workflows: scan('workflows'), agents: scan('agents') };
+  };
+  /** Why a catalog scan failed, in the fault's own sanitized words as a transcript may carry them (never an absolute path). */
+  const listFailureReason = (err: unknown): string => workflowListFailureReason(faultToShow(err));
+  /**
+   * Clear the held estimates of THIS session by the user's decision: the durable record, then the live governor, in that order and through
+   * the one function the `/cost` popup's confirmed step calls too (ADR-0074 §1).
+   */
+  const releaseHeldCommitments = (): ReturnType<typeof releaseHeldEstimates> =>
+    releaseHeldEstimates({
+      store: opened.store,
+      sessionId: built.sessionId,
+      governor: built.governor,
+      now: Date.now,
     });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
@@ -2151,22 +2195,19 @@ export function createChatLineHandler(
       // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
       // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
       try {
-        const { projectConfigDir, homeDir } = readLiveConfig();
-        if (projectConfigDir === undefined) {
-          // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
-          emitOutput('No .relavium/ project found from the current directory.');
-          return;
-        }
-        const scan = (kind: CatalogKind): CatalogEntry[] =>
-          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
-        emitOutput(catalogNotice(scan('workflows'), scan('agents')));
+        const scanned = scanCatalogs();
+        // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
+        emitOutput(
+          scanned.kind === 'no-project'
+            ? NO_PROJECT_NOTICE
+            : catalogNotice(scanned.workflows, scanned.agents),
+        );
       } catch (err) {
         workOwner?.failure(err);
         // A catalog fault says why in its own words (the cap: "too many workflow files …"), as the Home's picker and `relavium list` do, so a
         // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
         // absolute path stays on the error's `cause`, never in the message.
-        const shown = faultToShow(err);
-        emitOutput(`could not list workflows: ${workflowListFailureReason(shown)}`);
+        emitOutput(`could not list workflows: ${listFailureReason(err)}`);
       }
     },
     // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.
@@ -2175,8 +2216,8 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
-    // `/agent` (ADR-0140 §3): the interactive hosts open the docked sheet before dispatch, so this is what a plain, `--json` or one-shot
-    // chat, which has no sheet, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
+    // `/agent` (ADR-0140 §3): the interactive hosts open the report popup before dispatch (ADR-0148 §10), so this is what a plain, `--json` or
+    // one-shot chat, which has no popup, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
     showAgent: () => {
       emitOutput(agentNotice(boundAgent()));
     },
@@ -2192,10 +2233,7 @@ export function createChatLineHandler(
         // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
         // session seeds its cap from — clearing only the live governor let a released commitment come straight
         // back on the next `chat-resume`), then the in-memory governor.
-        const released = release
-          ? opened.store.releaseSessionConservativeCommitments(built.sessionId, Date.now())
-          : undefined;
-        if (release) built.governor?.releaseConservativeCommitments();
+        const released = release ? releaseHeldCommitments().durable : undefined;
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
         const { totalCostMicrocents, rows, coverage, models } =
@@ -2522,6 +2560,39 @@ export function createChatLineHandler(
           { grants: commandGrants, session: modeControl.commandApprovals },
           'chat',
         )
+      : undefined,
+    // The report popups' members (ADR-0148 §10): interactive only, where there is a popup host to open them on.
+    reports: interactive
+      ? {
+          agent: boundAgent,
+          cost: {
+            // One snapshot of the rows and the total they are printed under (a concurrent process's cost write cannot land between them), and
+            // what the live governor holds: read only in work the popup starts (`cost-session.ts`), never while a frame is drawn.
+            read: () => {
+              const { totalCostMicrocents, rows, coverage, models } =
+                opened.store.loadSessionCostBreakdown(built.sessionId);
+              return {
+                totalCostMicrocents,
+                rows,
+                coverage,
+                models,
+                governor: built.governor?.conservativeState(),
+              };
+            },
+            release: releaseHeldCommitments,
+          },
+          workflows: {
+            read: (): WorkflowsReading => {
+              try {
+                return scanCatalogs();
+              } catch (err) {
+                workOwner?.failure(err);
+                return { kind: 'fault', reason: listFailureReason(err) };
+              }
+            },
+          },
+          help: { keys: Object.values(CHAT_KEYS) },
+        }
       : undefined,
   };
 }
@@ -3243,6 +3314,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onSetEffort,
     permissions,
     boundAgent,
+    reports,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3354,8 +3426,20 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {}),
       // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
       ...(interactive && permissions !== undefined ? { permissions } : {}),
-      // The `/agent` sheet opens only in an interactive chat: a plain or `--json` driver has no sheet, and the command prints a notice there.
+      // The same view `reports.agent` reads, for a driver (and its tests) that reads it directly: an interactive chat only.
       ...(interactive ? { boundAgent } : {}),
+      // The report popups (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10) open only in an interactive chat; a plain, `--json` or one-shot
+      // driver has no port and each command prints the text it printed before.
+      ...(interactive && reports !== undefined
+        ? {
+            reports: {
+              ...reports,
+              surface: 'standalone-chat' as const,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+              plainGlyphs: !deps.global.color,
+            },
+          }
+        : {}),
       // The `/doctor` popup opens only in an interactive chat (ADR-0148 §8); a plain or `--json` driver prints the text report as before.
       ...(interactive
         ? {

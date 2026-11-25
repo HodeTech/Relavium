@@ -10,27 +10,19 @@ import { AGENT_PROMPT_HEAD_CHARS, AGENT_TOOLS_MAX } from '../../history/agents-m
 import {
   agentNotice,
   agentSheetBody,
-  agentSheetLines,
   agentSheetTitle,
   BUILT_IN_AGENT_NOTE,
   boundToolsText,
-  foldAgentSheetKey,
   NOT_WIRED_MARK,
 } from './agent-sheet.js';
-import type { ChatKey } from './chat-input.js';
-import { permissionsChatSheet, agentChatSheet, permissionsSheetOf } from './chat-sheet.js';
-import {
-  initialPermissionsSheetState,
-  SHEET_LEGEND_EMPTY,
-  SHEET_TOO_SMALL_TEXT,
-} from './permissions-sheet.js';
+import { usableColumns } from './sheet-frame.js';
 import { cardRowBudget } from './tool-review-card.js';
 import { displayWidth } from './viewport.js';
 
 /**
- * The `/agent` sheet's PURE half (ADR-0140 §3): what it lists, that it fits the rows and columns the permissions sheet fits, that its keys
- * are `Esc` and `Ctrl+C` and nothing else, and that the notice a sheetless chat prints names the same fields. The hosts that mount it are
- * `agent-sheet-host.test.tsx` (the standalone chat) and `home-controller.test.ts` / `home-app.test.tsx` (the in-Home chat).
+ * The pure field formatting of the bound agent (ADR-0140 §3), what is left of the `/agent` sheet (MVP-11 step 4b retired the sheet; the popup
+ * is `popups/agent-popup.test.ts`): what it lists, that it fits the room and the columns the sheet's budget gave it, and that the notice a
+ * plain chat prints names the same fields, byte for byte. The sheet's frame, its keys and its slot are gone with the sheet.
  */
 
 // A key-shaped string: the `sk-` prefix and thirty alphanumerics. Built from parts so no literal credential sits in the source.
@@ -54,6 +46,13 @@ const ESCAPES = /[\u001b\u0007]/u;
 
 const texts = (lines: readonly { readonly text: string }[]): string[] =>
   lines.map((line) => line.text);
+
+/**
+ * The fields at a terminal size, in the room the retired sheet gave them: its columns and the rows of the permissions sheet's budget less
+ * the sheet's rule and legend. Kept as the stress the body's own fitting is held to; the popup gives the body more room.
+ */
+const fieldsAt = (view: BoundAgentView, size: { columns: number; terminalRows: number }) =>
+  agentSheetBody(view, usableColumns(size.columns), cardRowBudget(size.terminalRows) - 2);
 const SIZES = [
   { columns: 80, terminalRows: 24 },
   { columns: 100, terminalRows: 30 },
@@ -61,26 +60,21 @@ const SIZES = [
   { columns: 200, terminalRows: 60 },
 ] as const;
 
-describe('what the sheet lists', () => {
-  it('draws the id in the rule, then the name, provider, model, temperature, reasoning effort, tool grant and prompt head, and the way out', () => {
+describe('what the fields list', () => {
+  it('names the id in the title, then the name, provider, model, temperature, reasoning effort, tool grant and prompt head', () => {
     const view = viewOf(
       definition({ temperature: 0.4, reasoning_effort: 'high', tools: ['read_file', 'edit_file'] }),
       'high',
     );
-    const lines = agentSheetLines(view, { columns: 80, terminalRows: 24 });
-    const out = texts(lines);
-    expect(lines[0]?.kind).toBe('rule');
-    expect(out[0]).toContain('Agent · reviewer');
-    const body = out.slice(1, -1).join('\n');
+    const out = texts(fieldsAt(view, { columns: 80, terminalRows: 24 }));
+    expect(agentSheetTitle(view)).toBe('Agent · reviewer');
+    const body = out.join('\n');
     expect(body).toMatch(/Name\s+Code reviewer/u);
     expect(body).toMatch(/Provider\s+anthropic/u);
     expect(body).toMatch(/Model\s+claude-sonnet-4-6/u);
     expect(body).toMatch(/Temperature\s+0\.4\s+Reasoning effort\s+high/u);
     expect(body).toMatch(/Tools\s+read_file, edit_file/u);
     expect(body).toMatch(/System prompt\s+You review code and say what is wrong with it\./u);
-    expect(lines.at(-1)?.kind).toBe('legend');
-    expect(out.at(-1)).toBe(SHEET_LEGEND_EMPTY);
-    expect(SHEET_LEGEND_EMPTY).toBe('Esc / [Ctrl+C] close');
   });
 
   it('says what a definition leaves out instead of leaving a blank: no name, no temperature, no effort, no tools, an empty prompt', () => {
@@ -102,8 +96,8 @@ describe('what the sheet lists', () => {
     // exactly what it is handed, and nothing else (no catalog, no file).
     const original = definition();
     const reseated = { ...original, model: 'claude-opus-4-8', provider: 'anthropic' as const };
-    const was = texts(agentSheetLines(viewOf(original), SIZES[0])).join('\n');
-    const now = texts(agentSheetLines(viewOf(reseated), SIZES[0])).join('\n');
+    const was = texts(fieldsAt(viewOf(original), SIZES[0])).join('\n');
+    const now = texts(fieldsAt(viewOf(reseated), SIZES[0])).join('\n');
     expect(was).toContain('claude-sonnet-4-6');
     expect(was).not.toContain('claude-opus-4-8');
     expect(now).toContain('claude-opus-4-8');
@@ -116,7 +110,7 @@ describe('what the sheet lists', () => {
         system_prompt: `${'x'.repeat(AGENT_PROMPT_HEAD_CHARS - 12)} token ${KEY} ${'y'.repeat(200)}`,
       }),
     );
-    const everything = texts(agentSheetLines(view, SIZES[1])).join('\n') + agentNotice(view);
+    const everything = texts(fieldsAt(view, SIZES[1])).join('\n') + agentNotice(view);
     expect(everything).not.toContain(KEY);
     expect(everything).not.toContain('sk-A1b2');
     expect(view.detail.promptHead).not.toContain('sk-');
@@ -124,7 +118,7 @@ describe('what the sheet lists', () => {
 
   it('shows a secret-shaped tool name and name masked too: every free-form string takes the one floor', () => {
     const view = viewOf(definition({ name: `bot ${KEY}`, tools: [KEY] }));
-    const everything = texts(agentSheetLines(view, SIZES[1])).join('\n');
+    const everything = texts(fieldsAt(view, SIZES[1])).join('\n');
     expect(everything).not.toContain(KEY);
   });
 
@@ -134,7 +128,7 @@ describe('what the sheet lists', () => {
     const builtInBody = texts(agentSheetBody(builtIn, 78, 10)).join('\n');
     expect(builtInBody).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
     expect(builtInBody).toContain(BUILT_IN_AGENT_NOTE);
-    expect(texts(agentSheetLines(builtIn, SIZES[0]))[0]).toContain('Agent · relavium-chat');
+    expect(agentSheetTitle(builtIn)).toBe('Agent · relavium-chat');
     // A repository file may be named `relavium-chat`: the id alone is not what makes an agent the built-in one.
     const imitation = viewOf({
       ...buildDefaultChatAgent('claude-sonnet-4-6', undefined, 'anthropic'),
@@ -151,14 +145,6 @@ describe('what the sheet lists', () => {
         tools: ['read_file', 'http_request'],
       }).builtIn,
     ).toBe(false);
-  });
-
-  it('keeps the title short enough to leave room for the rule: a very long id is cut', () => {
-    const view = viewOf(definition({ id: 'a'.repeat(400) }));
-    for (const size of SIZES) {
-      const rule = agentSheetLines(view, size)[0];
-      expect(displayWidth(rule?.text ?? '')).toBeLessThanOrEqual(Math.min(size.columns - 2, 100));
-    }
   });
 });
 
@@ -179,7 +165,7 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       `2 of 4 offered: read_file, ask_user ${NOT_WIRED_MARK}, search_files, invoke_agent ${NOT_WIRED_MARK}`,
     );
     // On the sheet at 80×24 and in the notice a chat with no sheet prints: the same words.
-    const drawn = texts(agentSheetLines(view, { columns: 80, terminalRows: 24 })).join('\n');
+    const drawn = texts(fieldsAt(view, { columns: 80, terminalRows: 24 })).join('\n');
     expect(drawn).toMatch(
       /Tools\s+2 of 4 offered: read_file,\s+ask_user \(not available in this chat\), search_files,\s+invoke_agent \(not available in this chat\)/u,
     );
@@ -244,7 +230,7 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       (_, index) => `a_long_tool_name_${String(index)}`,
     );
     const view = hostView(definition({ tools: many }), many.slice(0, 7));
-    const drawn = texts(agentSheetLines(view, { columns: 80, terminalRows: 24 })).join('\n');
+    const drawn = texts(fieldsAt(view, { columns: 80, terminalRows: 24 })).join('\n');
     expect(drawn).toMatch(/Tools\s+7 of 64 offered:/u);
     expect(drawn).toContain(`a_long_tool_name_7 ${NOT_WIRED_MARK}`);
     expect(drawn).toContain('…');
@@ -258,7 +244,7 @@ describe('the tools this chat does not offer, and the file the agent was read fr
     const view = hostView(agent, wired);
     expect(declared).toHaveLength(9);
     for (const [name, text] of [
-      ['the sheet at 80×24', texts(agentSheetLines(view, SIZES[0])).join('\n')],
+      ['the sheet at 80×24', texts(fieldsAt(view, SIZES[0])).join('\n')],
       ['the notice', agentNotice(view)],
     ] as const) {
       expect(text, name).toMatch(/Tools\s+7 of 9 offered: read_file, list_directory,/u);
@@ -267,16 +253,14 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       // The names that are offered are what a cut leaves out, shown by one `…`, and the order of what stays is the declared order.
       expect(text.indexOf('run_command'), name).toBeLessThan(text.indexOf('ask_user'));
     }
-    expect(texts(agentSheetLines(view, SIZES[0])).join('\n')).toMatch(
-      /search_files, … run_command/u,
-    );
+    expect(texts(fieldsAt(view, SIZES[0])).join('\n')).toMatch(/search_files, … run_command/u);
   });
 
   it('never splits a mark over two lines, at any width a sheet is drawn at', () => {
     const tools = ['read_file', 'ask_user', 'search_files', 'invoke_agent', 'http_request'];
     const view = hostView(definition({ tools }), ['read_file', 'search_files']);
     for (const size of SIZES) {
-      const lines = texts(agentSheetLines(view, size));
+      const lines = texts(fieldsAt(view, size));
       const marks = lines.filter((line) => line.includes('(not')).length;
       expect(marks, `${String(size.columns)}x${String(size.terminalRows)}`).toBeGreaterThan(0);
       for (const line of lines) {
@@ -339,7 +323,7 @@ describe('the tools this chat does not offer, and the file the agent was read fr
     }
   });
 
-  it('is no taller at 80×24 than before, with the longest grant of marked tools and the longest label: twelve rows, the File and the count among them', () => {
+  it('is no taller at 80×24 than before, with the longest grant of marked tools and the longest label: ten rows, the File and the count among them', () => {
     const many = Array.from(
       { length: AGENT_TOOLS_MAX },
       (_, index) => `a_long_tool_name_${String(index)}`,
@@ -356,12 +340,12 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       `.relavium/agents/${'long-directory-name/'.repeat(8)}reviewer.agent.yaml`,
     );
     for (const size of SIZES) {
-      const lines = agentSheetLines(worst, size);
+      const lines = fieldsAt(worst, size);
       const out = texts(lines);
       expect(
         lines.length,
         `${String(size.columns)}x${String(size.terminalRows)}`,
-      ).toBeLessThanOrEqual(cardRowBudget(size.terminalRows));
+      ).toBeLessThanOrEqual(cardRowBudget(size.terminalRows) - 2);
       for (const line of lines)
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(
           Math.min(size.columns - 2, 100),
@@ -369,13 +353,12 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       expect(out.join('\n')).toMatch(/File\s+…?.*reviewer\.agent\.yaml/u);
       expect(out.join('\n')).toMatch(/Tools\s+3 of 64 offered:/u);
       expect(out.join('\n')).toContain('System prompt');
-      expect(lines.at(-1)?.kind).toBe('legend');
     }
-    const small = agentSheetLines(worst, { columns: 80, terminalRows: 24 });
-    expect(small).toHaveLength(12);
+    const small = fieldsAt(worst, { columns: 80, terminalRows: 24 });
+    expect(small).toHaveLength(10);
     // The grant with marks takes a third line, and the head of the prompt keeps the two that are left.
     const prompt = texts(small).findIndex((line) => line.includes('System prompt'));
-    expect(texts(small).slice(prompt, -1)).toHaveLength(2);
+    expect(texts(small).slice(prompt)).toHaveLength(2);
     expect(
       texts(small).slice(
         texts(small).findIndex((line) => line.includes('Tools')),
@@ -390,18 +373,8 @@ describe('the tools this chat does not offer, and the file the agent was read fr
       ...made,
       sourceLabel: 'agents/\u001b[31mevil\u001b]0;pwned\u0007.agent.yaml',
     };
-    for (const size of SIZES) {
-      const drawn = texts(agentSheetLines(hostile, size)).join('\n');
-      expect(drawn).not.toMatch(ESCAPES);
-      expect(drawn).toContain('.agent.yaml');
-    }
     expect(agentNotice(hostile)).not.toMatch(ESCAPES);
-  });
-
-  it('keeps the spans of the File row inside it', () => {
-    const view = hostView(definition(), [], `${'d/'.repeat(100)}x.agent.yaml`);
-    for (const line of agentSheetLines(view, SIZES[0]))
-      for (const span of line.spans ?? []) expect(span.to).toBeLessThanOrEqual(line.text.length);
+    expect(agentNotice(hostile)).toContain('.agent.yaml');
   });
 });
 
@@ -447,8 +420,8 @@ describe('the reasoning effort the row shows', () => {
   });
 });
 
-describe('the last floor of what the sheet draws', () => {
-  it('strips a control sequence put straight into a view field, whichever field it is in, from the sheet and from the notice', () => {
+describe('the last floor of the notice', () => {
+  it('strips a control sequence put straight into a view field, whichever field it is in', () => {
     // A view built by hand skips the scrub the model does at construction: the floor is the draw-time guard that a field added later, or a
     // view built another way, cannot bypass.
     const made = viewOf(definition({ tools: ['read_file'] }), 'high');
@@ -464,25 +437,12 @@ describe('the last floor of what the sheet draws', () => {
         promptHead: 'be\u001b[0m nice\nsecond line',
       },
     };
-    for (const size of SIZES) {
-      const drawn = texts(agentSheetLines(hostile, size)).join('\n');
-      expect(drawn, `${String(size.columns)}x${String(size.terminalRows)}`).not.toMatch(ESCAPES);
-      expect(drawn).toContain('reviewer');
-      expect(drawn).toContain('claude');
-    }
     const notice = agentNotice(hostile);
     expect(notice).not.toMatch(ESCAPES);
     expect(notice).toContain('claude');
-  });
-
-  it('keeps the spans of a line the floor shortened inside it', () => {
-    const made = viewOf(definition(), undefined);
-    const hostile: BoundAgentView = {
-      ...made,
-      detail: { ...made.detail, model: `m${'\u001b[31m'.repeat(6)}` },
-    };
-    for (const line of agentSheetLines(hostile, SIZES[0]))
-      for (const span of line.spans ?? []) expect(span.to).toBeLessThanOrEqual(line.text.length);
+    expect(notice).toContain('reviewer');
+    // A line break of the prompt's head is one line of the notice, not a forged row of it.
+    expect(notice.split('\n').filter((line) => line.startsWith('second line'))).toEqual([]);
   });
 });
 
@@ -501,10 +461,10 @@ describe('the room it takes', () => {
   );
 
   it.each(SIZES)(
-    'is no taller than the permissions sheet’s budget and no wider than the terminal, at $columns×$terminalRows, even for the longest definition',
+    'is no taller than the sheet’s old budget and no wider than the terminal, at $columns×$terminalRows, even for the longest definition',
     (size) => {
-      const lines = agentSheetLines(worst, size);
-      expect(lines.length).toBeLessThanOrEqual(cardRowBudget(size.terminalRows));
+      const lines = fieldsAt(worst, size);
+      expect(lines.length).toBeLessThanOrEqual(cardRowBudget(size.terminalRows) - 2);
       for (const line of lines)
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(
           Math.min(size.columns - 2, 100),
@@ -512,12 +472,10 @@ describe('the room it takes', () => {
     },
   );
 
-  it('uses the twelve rows of an 80×24 terminal, the rule and the legend always among them, and cuts what does not fit with …', () => {
-    const lines = agentSheetLines(worst, { columns: 80, terminalRows: 24 });
-    expect(lines).toHaveLength(12);
-    expect(lines[0]?.kind).toBe('rule');
-    expect(lines.at(-1)?.kind).toBe('legend');
-    const body = texts(lines.slice(1, -1));
+  it('uses the ten field rows of an 80×24 terminal and cuts what does not fit with …', () => {
+    const lines = fieldsAt(worst, { columns: 80, terminalRows: 24 });
+    expect(lines).toHaveLength(10);
+    const body = texts(lines);
     expect(
       body.some((line) => line.endsWith('…')),
       'a cut is shown',
@@ -527,61 +485,16 @@ describe('the room it takes', () => {
   });
 
   it('gives a bigger terminal more of the grant and the prompt, never more than the definition has', () => {
-    const small = agentSheetLines(worst, { columns: 80, terminalRows: 24 }).length;
-    const big = agentSheetLines(worst, { columns: 120, terminalRows: 50 }).length;
+    const small = fieldsAt(worst, { columns: 80, terminalRows: 24 }).length;
+    const big = fieldsAt(worst, { columns: 120, terminalRows: 50 }).length;
     expect(big).toBeGreaterThan(small);
-    const short = agentSheetLines(viewOf(definition()), { columns: 120, terminalRows: 50 });
+    const short = fieldsAt(viewOf(definition()), { columns: 120, terminalRows: 50 });
     expect(short.length, 'a short definition does not pad').toBeLessThan(10);
   });
-
-  it.each([
-    { columns: 79, terminalRows: 24 },
-    { columns: 80, terminalRows: 23 },
-    { columns: 40, terminalRows: 10 },
-  ])(
-    'below the floor ($columns×$terminalRows) draws the title, why, and the way out, and none of the fields',
-    (size) => {
-      const view = viewOf(definition());
-      const lines = agentSheetLines(view, size);
-      expect(texts(lines).slice(1)).toEqual([SHEET_TOO_SMALL_TEXT, 'Esc / [Ctrl+C] close']);
-      expect(lines[0]?.text).toContain(agentSheetTitle(view));
-      expect(texts(lines).join('\n')).not.toContain('claude-sonnet-4-6');
-    },
-  );
 });
 
-describe('its keys', () => {
-  const press = (input: string, key: ChatKey) => foldAgentSheetKey(input, key);
-
-  it('closes on Esc and on Ctrl+C', () => {
-    expect(press('', { escape: true })).toBe('close');
-    expect(press('c', { ctrl: true })).toBe('close');
-    expect(press('C', { ctrl: true })).toBe('close');
-  });
-
-  it('drops every other key: letters, Enter, the arrows, the page keys, the withdraw keys, a chord, a meta key', () => {
-    const others: readonly (readonly [string, ChatKey])[] = [
-      ['x', {}],
-      ['d', {}],
-      ['', { return: true }],
-      ['', { upArrow: true }],
-      ['', { downArrow: true }],
-      ['', { pageDown: true }],
-      ['', { backspace: true }],
-      ['', { delete: true }],
-      ['', { tab: true }],
-      ['o', { ctrl: true }],
-      ['y', { ctrl: true }],
-      ['c', { meta: true }],
-      ['/', {}],
-    ];
-    for (const [input, key] of others)
-      expect(press(input, key), `${JSON.stringify([input, key])}`).toBe('stay');
-  });
-});
-
-describe('the notice of a chat that has no sheet to open', () => {
-  it('names the same fields the sheet names, from the same builder', () => {
+describe('the notice of a chat that has no popup to open', () => {
+  it('names the same fields the popup names, from the same builder', () => {
     const view = viewOf(
       definition({ temperature: 0.2, reasoning_effort: 'low', tools: ['read_file', 'find_files'] }),
     );
@@ -597,30 +510,11 @@ describe('the notice of a chat that has no sheet to open', () => {
     expect(notice).toContain('You review code and say what is wrong with it.');
   });
 
-  it('is as scrubbed as the sheet, and carries no path and no control character', () => {
+  it('is as scrubbed as the popup’s floor, and carries no path and no control character', () => {
     const view = viewOf(definition({ system_prompt: `${KEY}\u001b[31m\u202e hidden` }));
     const notice = agentNotice(view);
     expect(notice).not.toContain(KEY);
     // eslint-disable-next-line no-control-regex -- the point of the test: no control character reaches a terminal
     expect(notice).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f\u202e]/u);
-  });
-});
-
-describe('the one sheet slot of a chat', () => {
-  it('holds one kind at a time, and the permissions accessor sees only the permissions kind', () => {
-    const agent = agentChatSheet(viewOf(definition()));
-    const permissions = permissionsChatSheet(
-      initialPermissionsSheetState(
-        { project: { ok: true, rows: [] }, session: [] },
-        'chat',
-        'ask',
-        0,
-      ),
-    );
-    expect(agent.kind).toBe('agent');
-    expect(permissions.kind).toBe('permissions');
-    expect(permissionsSheetOf(agent)).toBeUndefined();
-    expect(permissionsSheetOf(undefined)).toBeUndefined();
-    expect(permissionsSheetOf(permissions)?.surface).toBe('chat');
   });
 });

@@ -1,13 +1,10 @@
 import '../frames.js';
 
-import { boundAgentView } from '../../../../chat/bound-agent-view.js';
-import { buildDefaultChatAgent } from '../../../../chat/default-agent.js';
 import type {
   PermissionsSnapshot,
   ProjectGrantRow,
   SessionApprovalRow,
 } from '../../../../permissions/chat-permissions.js';
-import { agentSheetLines } from '../../agent-sheet.js';
 import { emptyEditor } from '../../chat-input.js';
 import { helpSheetLines, HELP_TOO_SMALL } from '../../help-sheet.js';
 import { layoutHomeNotice } from '../../home-notice.js';
@@ -39,7 +36,7 @@ import { isHintShaped } from '../hint-shape.js';
 import { label, type Producer, type Recorder, type StateRows } from '../golden.js';
 
 /**
- * The sheets' hint producers: the permissions sheet (its legend, its row chip, the sentences under the list), the agent sheet's and the
+ * The sheets' hint producers: the permissions sheet (its legend, its row chip, the sentences under the list) and the
  * help sheet's legends and the help sheet's key listing, and the Home's notice footer. Every string is recorded through the function that
  * builds it, at the sizes a legend's clipping can differ at.
  */
@@ -347,23 +344,6 @@ const permissionsSheetRoles: Recorder = () => {
   return out;
 };
 
-// ---- The agent sheet ---------------------------------------------------------------------------------------------------------
-
-const AGENT_VIEW = boundAgentView(buildDefaultChatAgent('claude-sonnet-4-6'), undefined);
-
-/** The agent sheet's legend: only the way out, at both sizes and below the floor. */
-const agentSheet: Recorder = () => ({
-  ...bySize('legend', (geometry) => footRows(agentSheetLines(AGENT_VIEW, geometry), { last: 1 })),
-  'below the floor': agentSheetLines(AGENT_VIEW, BELOW_FLOOR).map((line) => line.text),
-});
-
-const agentSheetRoles: Recorder = () => ({
-  'legend roles': rolesOf(
-    lineOfKind(agentSheetLines(AGENT_VIEW, GEOMETRIES[0].geometry), 'legend'),
-  ),
-  'too-small legend roles': rolesOf(lineOfKind(agentSheetLines(AGENT_VIEW, BELOW_FLOOR), 'legend')),
-});
-
 // ---- The help sheet ----------------------------------------------------------------------------------------------------------
 
 /** The rows of the `Keys of the Home` section: a key listing, one row to a key, down to the legend. */
@@ -435,17 +415,6 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
       'The roles the permissions sheet gives its keys: `[d / Del]` danger and `[Enter]` warn in the legend, the chip and the hint key on the rows, idle versus armed.',
   },
   {
-    id: 'agent-sheet',
-    file: 'render/tui/agent-sheet.ts',
-    describe:
-      'The /agent sheet’s legend (`Esc close`), at both sizes and the frame below the floor.',
-  },
-  {
-    id: 'agent-sheet-roles',
-    file: 'render/tui/agent-sheet.ts',
-    describe: 'The role the /agent sheet’s legend key takes, drawn and below the floor.',
-  },
-  {
     id: 'help-sheet',
     file: 'render/tui/help-sheet.ts',
     describe:
@@ -462,8 +431,6 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
 export const SHEETS_RECORDERS = {
   'permissions-sheet': permissionsSheet,
   'permissions-sheet-roles': permissionsSheetRoles,
-  'agent-sheet': agentSheet,
-  'agent-sheet-roles': agentSheetRoles,
   'help-sheet': helpSheet,
   'home-notice': homeNotice,
 } as const satisfies Readonly<Record<string, Recorder>>;

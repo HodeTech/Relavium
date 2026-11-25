@@ -1386,16 +1386,6 @@
     "state=armed legend": "Enter=warn  Esc=strong",
     "state=empty legend": "Esc / [Ctrl+C]=strong"
   },
-  "agent-sheet": {
-    "legend cols=80,100 [1]": "Esc / [Ctrl+C] close",
-    "below the floor [1]": "─ Agent · relavium-chat ────────────────────────────",
-    "below the floor [2]": "Enlarge the terminal to use this screen.",
-    "below the floor [3]": "Esc / [Ctrl+C] close"
-  },
-  "agent-sheet-roles": {
-    "legend roles": "Esc / [Ctrl+C]=strong",
-    "too-small legend roles": "Esc / [Ctrl+C]=strong"
-  },
   "help-sheet": {
     "constant=HELP_TOO_SMALL": "Enlarge the terminal.",
     "keys section cols=80,100 [1]": "Keys of the Home",
@@ -1781,5 +1771,77 @@
     "step=checks content=error colour=off [2]": " [r] quick check · [d] deep check · [c] copy · Esc close",
     "step=checks content=error colour=on [1]": "⟦dim:  [r] runs them again.                                               ⟧",
     "step=checks content=error colour=on [2]": " ⟦bold: [r]⟧⟦dim:  quick check · ⟧⟦bold: [d]⟧⟦dim:  deep check · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "agent-popup": {
+    "content=report colour=off [1]": " ↑/↓ scroll · Esc close",
+    "content=report colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=error colour=off [1]": " Esc close",
+    "content=error colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "cost-popup": {
+    "step=cost content=loading colour=off [1]": " Esc cancel",
+    "step=cost content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "step=cost content=nothing-held colour=off [1]": " ↑/↓ scroll · Esc close",
+    "step=cost content=nothing-held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=cost content=held colour=off [1]": " ↑/↓ scroll · [r] release held estimates · Esc close",
+    "step=cost content=held colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [r]⟧⟦dim:  release held estimates · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=cost content=error colour=off [1]": " Esc close",
+    "step=cost content=error colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=release content=line colour=off [1]": " [Ctrl+Y] release · Esc cancel",
+    "step=release content=line colour=on [1]": " ⟦bold: [Ctrl+Y]⟧⟦dim:  release · ⟧⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "step=release content=loading colour=off [1]": " Esc cancel",
+    "step=release content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "step=release content=nothing-held colour=off [1]": " Esc goes back.",
+    "step=release content=nothing-held colour=off [2]": " Esc cancel",
+    "step=release content=nothing-held colour=on [1]": "⟦dim:  Esc goes back.                                                     ⟧",
+    "step=release content=nothing-held colour=on [2]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "step=release content=turn-in-flight colour=off [1]": " Esc cancel",
+    "step=release content=turn-in-flight colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "step=done content=released colour=off [1]": " Enter / Esc close",
+    "step=done content=released colour=on [1]": " ⟦bold: Enter / Esc⟧⟦dim:  close⟧",
+    "step=done content=released-with-total colour=off [1]": " Enter / Esc close",
+    "step=done content=released-with-total colour=on [1]": " ⟦bold: Enter / Esc⟧⟦dim:  close⟧",
+    "step=done content=failed colour=off [1]": " Enter / Esc close",
+    "step=done content=failed colour=on [1]": " ⟦bold: Enter / Esc⟧⟦dim:  close⟧"
+  },
+  "workflows-popup": {
+    "content=loading colour=off [1]": " Esc cancel",
+    "content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "content=catalog colour=off [1]": " ↑/↓ scroll · Esc close",
+    "content=catalog colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=empty-project colour=off [1]": " Add a workflow or an agent to the project. Esc closes.",
+    "content=empty-project colour=off [2]": " Esc close",
+    "content=empty-project colour=on [1]": "⟦dim:  Add a workflow or an agent to the project. Esc closes.             ⟧",
+    "content=empty-project colour=on [2]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=no-project colour=off [1]": " Open Relavium in a project folder, or use /init on the Home. Esc …",
+    "content=no-project colour=off [2]": " Esc close",
+    "content=no-project colour=on [1]": "⟦dim:  Open Relavium in a project folder, or use /init on the Home. Esc … ⟧",
+    "content=no-project colour=on [2]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=fault colour=off [1]": " Close this and try again. Esc closes.",
+    "content=fault colour=off [2]": " Esc close",
+    "content=fault colour=on [1]": "⟦dim:  Close this and try again. Esc closes.                              ⟧",
+    "content=fault colour=on [2]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=not-run colour=off [1]": " Close this and try again. Esc closes.",
+    "content=not-run colour=off [2]": " Esc close",
+    "content=not-run colour=on [1]": "⟦dim:  Close this and try again. Esc closes.                              ⟧",
+    "content=not-run colour=on [2]": " ⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "help-popup": {
+    "surface=standalone-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
+    "surface=standalone-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
+    "surface=standalone-chat colour=off [3]": "                 session; [d] withdraws one.",
+    "surface=standalone-chat colour=off [4]": " ↑/↓ scroll · Esc close",
+    "surface=standalone-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
+    "surface=standalone-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
+    "surface=standalone-chat colour=on [3]": "                 session; [d] withdraws one.",
+    "surface=standalone-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "surface=home-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
+    "surface=home-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
+    "surface=home-chat colour=off [3]": "                 session; [d] withdraws one.",
+    "surface=home-chat colour=off [4]": " ↑/↓ scroll · Esc close",
+    "surface=home-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
+    "surface=home-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
+    "surface=home-chat colour=on [3]": "                 session; [d] withdraws one.",
+    "surface=home-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   }
 }

@@ -1,0 +1,285 @@
+// Chalk's level is read once, when it is first imported: the matrix's own first import (see `force-color.ts`).
+import './force-color.js';
+
+/**
+ * The keys `/help` lists for a chat ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §10, MVP-11 step 4b): every one is PRESSED on a mounted chat and must do what its verb says, in the stand-alone chat and in the chat the Home
+ * hosts, as the Home's help sheet presses each key of the landing (`home-help-sheet.test.ts`). A help that names a key cannot name one the chat
+ * does not have, or say it does something else, and a key added to the chat's own handler has to be listed here to be documented.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import { nextMode } from '../../chat/chat-mode.js';
+import { CHAT_KEYS } from './chat-keys.js';
+import type { HelpKeyPress } from './help-sheet.js';
+import {
+  mountHostedChat,
+  mountStandaloneChat,
+  type ChatMount,
+} from './surface-matrix/chat-host.js';
+import type { Variant } from './surface-matrix/variants.js';
+import type { SessionViewSeed } from './session-view-model.js';
+
+type Id = keyof typeof CHAT_KEYS;
+type Host = 'chat' | 'standalone-chat';
+
+/** The bytes a terminal sends for a press the data module names (`Ctrl+J` is a line feed, `Shift+Tab` a back-tab). */
+function bytesOf({ input, key }: HelpKeyPress): string {
+  if (key.ctrl === true) return String.fromCharCode(input.toUpperCase().charCodeAt(0) - 64);
+  if (key.return === true) return '\r';
+  if (key.escape === true) return '\u001b';
+  if (key.tab === true && key.shift === true) return '\u001b[Z';
+  if (key.pageUp === true) return '\u001b[5~';
+  if (key.pageDown === true) return '\u001b[6~';
+  return input;
+}
+
+const pressAll = (m: ChatMount, id: Id, only?: number): void => {
+  CHAT_KEYS[id].presses.forEach((press, index) => {
+    if (only === undefined || index === only) m.key(bytesOf(press));
+  });
+};
+
+const MENTION_READER = {
+  list: () =>
+    Promise.resolve([
+      { name: 'src', type: 'directory' as const, path: 'src' },
+      { name: 'README.md', type: 'file' as const, path: 'README.md' },
+    ]),
+  read: () => Promise.resolve({ content: 'x', sizeBytes: 1 }),
+};
+
+/** A conversation long enough to scroll in the full-screen view. */
+const LONG: SessionViewSeed = {
+  transcript: Array.from({ length: 40 }, (_, turn) => [
+    { role: 'user' as const, text: `question ${String(turn)} about the thing` },
+    { role: 'assistant' as const, text: `answer ${String(turn)}` },
+  ]).flat(),
+};
+
+interface Mounted {
+  readonly m: ChatMount;
+  readonly onModeChange: ReturnType<typeof vi.fn>;
+  readonly onAbort: ReturnType<typeof vi.fn>;
+}
+
+async function mount(host: Host, variant: Variant, seed?: SessionViewSeed): Promise<Mounted> {
+  const onModeChange = vi.fn();
+  const onAbort = vi.fn();
+  const ports = { mentionReader: MENTION_READER, onModeChange, onAbort };
+  const m =
+    host === 'chat'
+      ? await mountHostedChat(variant, {
+          ...(seed === undefined ? {} : { seed }),
+          hosted: { session: ports },
+        })
+      : mountStandaloneChat(variant, {
+          ...(seed === undefined ? {} : { seed }),
+          standalone: ports,
+        });
+  await m.settle();
+  return { m, onModeChange, onAbort };
+}
+
+const ALT: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 30 } };
+
+/** Each key's check: what its verb says, on a chat that has it. The table must name every key of the data module. */
+const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
+  send: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('hello');
+      await m.settle();
+      pressAll(m, 'send');
+      await vi.waitFor(() => expect(m.submitted).toEqual(['hello']));
+      // `or run the command`: a typed command goes the same way.
+      m.key('/mode');
+      await m.settle();
+      pressAll(m, 'send');
+      await vi.waitFor(() => expect(m.submitted).toEqual(['hello', '/mode']));
+    } finally {
+      m.unmount();
+    }
+  },
+  newline: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('a');
+      await m.settle();
+      pressAll(m, 'newline');
+      m.key('b');
+      await m.settle();
+      // The line break is in what is sent: one message of two lines, and nothing was sent by the key itself.
+      expect(m.submitted).toEqual([]);
+      m.key('\r');
+      await vi.waitFor(() => expect(m.submitted).toEqual(['a\nb']));
+    } finally {
+      m.unmount();
+    }
+  },
+  commands: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      pressAll(m, 'commands');
+      await m.until(() => m.text().includes('Enter run'));
+      expect(m.text()).toContain('Enter run');
+      m.key('\u001b');
+      // A lone `Esc` is told from the start of a key sequence after a short wait of the terminal's own, so this waits in real time.
+      await vi.waitFor(() => expect(m.text()).not.toContain('Enter run'), {
+        timeout: 3000,
+        interval: 15,
+      });
+      // From an empty prompt only: with something typed, `/` is a character of the message.
+      m.key('a');
+      await m.settle();
+      pressAll(m, 'commands');
+      await m.settle();
+      expect(m.text()).not.toContain('Enter run');
+      m.key('\r');
+      await vi.waitFor(() => expect(m.submitted).toEqual(['a/']));
+    } finally {
+      m.unmount();
+    }
+  },
+  files: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      pressAll(m, 'files');
+      await m.until(() => m.text().includes('README.md'));
+      expect(m.text()).toContain('README.md');
+      expect(m.submitted).toEqual([]);
+    } finally {
+      m.unmount();
+    }
+  },
+  search: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      pressAll(m, 'search');
+      await m.until(() => /search/iu.test(m.text()));
+      expect(m.text()).toMatch(/search/iu);
+      expect(m.submitted).toEqual([]);
+    } finally {
+      m.unmount();
+    }
+  },
+  mode: async (host) => {
+    const { m, onModeChange } = await mount(host, ALT);
+    try {
+      const was = m.store.getSnapshot().mode;
+      pressAll(m, 'mode');
+      await vi.waitFor(() => expect(onModeChange).toHaveBeenCalledOnce());
+      expect(onModeChange).toHaveBeenCalledWith(nextMode(was));
+    } finally {
+      m.unmount();
+    }
+  },
+  thinking: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      expect(m.store.getSnapshot().reasoningVisible).toBe(false);
+      pressAll(m, 'thinking');
+      await vi.waitFor(() => expect(m.store.getSnapshot().reasoningVisible).toBe(true));
+      pressAll(m, 'thinking');
+      await vi.waitFor(() => expect(m.store.getSnapshot().reasoningVisible).toBe(false));
+    } finally {
+      m.unmount();
+    }
+  },
+  stop: async (host) => {
+    const { m, onAbort } = await mount(host, ALT);
+    try {
+      // Idle, `Esc` stops nothing: it asks no turn to stop.
+      pressAll(m, 'stop');
+      await m.settle();
+      expect(onAbort).not.toHaveBeenCalled();
+      m.store.apply({
+        type: 'session:turn_started',
+        sessionId: 'matrix-session',
+        sequenceNumber: 1,
+        timestamp: '2026-11-25T00:00:00.000Z',
+      });
+      await m.settle();
+      pressAll(m, 'stop');
+      await vi.waitFor(() => expect(onAbort).toHaveBeenCalledOnce());
+      // `keep the chat`: nothing ended it.
+      expect(m.submitted).not.toContain('/cancel');
+    } finally {
+      m.unmount();
+    }
+  },
+  scroll: async (host) => {
+    const { m } = await mount(host, ALT, LONG);
+    try {
+      await m.until(() => m.text().includes('answer 39'));
+      expect(m.text()).toContain('answer 39');
+      // PgUp moves back through the conversation until the first turn is on screen, and PgDn brings the last one back.
+      for (let page = 0; page < 12; page += 1) {
+        pressAll(m, 'scroll', 0);
+        await m.settle();
+      }
+      expect(m.text()).toContain('question 0 ');
+      expect(m.text()).not.toContain('answer 39');
+      for (let page = 0; page < 12; page += 1) {
+        pressAll(m, 'scroll', 1);
+        await m.settle();
+      }
+      expect(m.text()).toContain('answer 39');
+      // `the full-screen view`: the inline view keeps the terminal's own scrollback, and these keys scroll nothing there.
+      const inline = await mount(host, { ...ALT, renderer: 'inline' }, LONG);
+      try {
+        const shown = inline.m.text();
+        for (let page = 0; page < 6; page += 1) {
+          pressAll(inline.m, 'scroll', 0);
+          await inline.m.settle();
+        }
+        expect(inline.m.text()).toBe(shown);
+      } finally {
+        inline.m.unmount();
+      }
+    } finally {
+      m.unmount();
+    }
+  },
+  interrupt: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('draft text');
+      await m.until(() => m.text().includes('draft text'));
+      // With a draft the first press clears it and arms nothing: the next press is a first press again.
+      pressAll(m, 'interrupt');
+      await m.until(() => !m.text().includes('draft text'));
+      expect(m.text()).not.toContain('draft text');
+      expect(m.submitted).toEqual([]);
+      // Empty, the first press arms and the second ends the chat.
+      pressAll(m, 'interrupt');
+      await m.settle();
+      expect(m.submitted).not.toContain('/cancel');
+      pressAll(m, 'interrupt');
+      await vi.waitFor(() => expect(m.submitted).toContain('/cancel'));
+    } finally {
+      m.unmount();
+    }
+  },
+};
+
+describe('every key `/help` lists for a chat does what its verb says', () => {
+  it('has a check for every key of the data module, and none for a key that is not in it', () => {
+    expect(Object.keys(CHECKS).sort()).toEqual(Object.keys(CHAT_KEYS).sort());
+  });
+
+  it('names each key once, with a verb that names no key (a key in a sentence is the legend builder’s token)', () => {
+    const names = Object.values(CHAT_KEYS).map((key) => key.keys);
+    expect(new Set(names).size).toBe(names.length);
+    for (const key of Object.values(CHAT_KEYS)) {
+      expect(key.presses.length).toBeGreaterThan(0);
+      expect(key.verb).not.toMatch(/\b(?:Esc|Enter|Ctrl\+|Tab|PgUp|PgDn)\b/u);
+    }
+  });
+
+  describe.each(['standalone-chat', 'chat'] as const)('in the %s host', (host) => {
+    it.each(Object.keys(CHAT_KEYS) as Id[])('%s', async (id) => {
+      await CHECKS[id](host);
+    });
+  });
+});

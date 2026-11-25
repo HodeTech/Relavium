@@ -42,7 +42,7 @@ export interface OverlayFlags {
   readonly modelPicker: boolean;
   /** The `/effort` tier overlay (a chat). */
   readonly effortPicker: boolean;
-  /** The chat's docked sheet: `/permissions` or `/agent`. */
+  /** The chat's docked sheet: `/permissions`. */
   readonly chatSheet: boolean;
   /** A screen is in front of the landing: the run view, a gate card, the tab host or the help sheet (the Home only). */
   readonly screen: boolean;
