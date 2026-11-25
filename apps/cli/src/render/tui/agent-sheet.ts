@@ -8,7 +8,7 @@ import {
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
+import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
 
 /**
  * The pure field formatting of the agent a chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -35,8 +35,9 @@ const PROMPT_LINES_MIN = 3;
 const PROMPT_LINES_AT_MARKS = 2;
 /** Below this many rows for the tool grant and the head together, the grant is held to {@link TOOL_LINES_AT_FLOOR} lines (three where it has marks). */
 const ROOM_FOR_FULL_GRANT = 8;
-const LABEL_WIDTH = 18;
-const INDENT = '  ';
+/** The width of a field's label, and so the column its value starts in, and the indent of every field: the sheet's, the popup's and the notice's. */
+export const LABEL_WIDTH = 18;
+export const INDENT = '  ';
 /** The width the first of two fields on one row takes after its label, so the second label starts in one column. */
 const PAIR_VALUE_WIDTH = 12;
 /** What a row says of a field the definition leaves out, and of a tier the session does not use. */
@@ -53,9 +54,14 @@ export function agentSheetTitle(view: BoundAgentView): string {
   return `Agent · ${view.id}`;
 }
 
+/** What a field's row starts with: the indent and its label padded to {@link LABEL_WIDTH}, so every value starts in one column. */
+export function fieldLead(label: string): string {
+  return `${INDENT}${label.padEnd(LABEL_WIDTH)}`;
+}
+
 /** A label and its value on one row: the label dimmed. */
 function field(label: string, value: string, width: number): SheetLine {
-  const lead = `${INDENT}${label.padEnd(LABEL_WIDTH)}`;
+  const lead = fieldLead(label);
   const text = clipLine(`${lead}${value}`, width);
   return {
     kind: 'row',
@@ -70,7 +76,7 @@ function pairedFields(
   second: readonly [label: string, value: string],
   width: number,
 ): SheetLine {
-  const firstLead = `${INDENT}${first[0].padEnd(LABEL_WIDTH)}`;
+  const firstLead = fieldLead(first[0]);
   const firstShown = clipLine(first[1], PAIR_VALUE_WIDTH - 1).padEnd(PAIR_VALUE_WIDTH);
   const secondAt = firstLead.length + firstShown.length;
   const text = clipLine(`${firstLead}${firstShown}${second[0]}  ${second[1]}`, width);
@@ -167,13 +173,10 @@ const LEFT_OUT = '…';
 
 /**
  * `lead` and `items` packed into lines of at most `width` columns, wrapping BETWEEN names and never inside one, so a mark is not split from its
- * name over two lines. A name wider than a line is cut with `…`. Every name is followed by a comma but the last, and a run left out ({@link LEFT_OUT}) by none.
+ * name over two lines. A name wider than a line is left on a line of its own, whole ({@link packedTools} cuts it, {@link wrappedTools} wraps it).
+ * Every name is followed by a comma but the last, and a run left out ({@link LEFT_OUT}) by none.
  */
-export function packedTools(
-  lead: string | undefined,
-  items: readonly string[],
-  width: number,
-): string[] {
+function packTokens(lead: string | undefined, items: readonly string[], width: number): string[] {
   const tokens = [
     ...(lead === undefined ? [] : [lead]),
     ...items.map((item, index) =>
@@ -190,7 +193,30 @@ export function packedTools(
     }
   }
   rows.push(current);
-  return rows.map((row) => clipLine(row, width));
+  return rows;
+}
+
+/** {@link packTokens}, a name wider than a line cut with `…`: the sheet and the notice, whose rows are bounded. */
+export function packedTools(
+  lead: string | undefined,
+  items: readonly string[],
+  width: number,
+): string[] {
+  return packTokens(lead, items, width).map((row) => clipLine(row, width));
+}
+
+/**
+ * {@link packTokens}, a name wider than a line wrapped onto the lines after it instead of cut: the popup, which scrolls where a sheet cannot, so
+ * the whole of a name is on screen and in the copy. A name that fits is never split, and a row is never wider than `width`.
+ */
+export function wrappedTools(
+  lead: string | undefined,
+  items: readonly string[],
+  width: number,
+): string[] {
+  return packTokens(lead, items, width).flatMap((row) =>
+    displayWidth(row) <= width ? [row] : wrapWords(row, width).map((line) => line.trimEnd()),
+  );
 }
 
 /**

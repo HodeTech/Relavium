@@ -240,9 +240,11 @@ describe('the backdrop-dim property through the real pipeline', () => {
   });
 
   it('a terminal that closes the dim after a bold cell and never opens it again (the encoder’s drop) is named too', async () => {
-    // Every close of bold-and-dim (`ESC[22m`) not followed by the dim again: what ink's own re-encoding does to the cell after a bold one.
-    const dropAfterClose = (chunk: string): string =>
-      chunk.replaceAll(`${ESC}[22m${ESC}[2m`, `${ESC}[22m`);
+    // Every close of bold-and-dim (`ESC[22m`) not followed by the dim again on its row: what ink's own re-encoding does to the cell after a
+    // bold one. The re-open is dropped whether it follows the close at once or after plain cells: the popup's top rule ends in a blank cell
+    // of its own (its gutter), so the dim of the backdrop beside it is opened again after that cell, not straight after the close.
+    const reopenAfterClose = new RegExp(`(${ESC}\\[22m[^${ESC}\\n]*)${ESC}\\[2m`, 'gu');
+    const dropAfterClose = (chunk: string): string => chunk.replace(reopenAfterClose, '$1');
     const problems = problemsOf(entry, await runCell(entry, alt, { tamper: dropAfterClose }));
     expect(problems.some((problem) => problem.startsWith('backdrop-dim:'))).toBe(true);
   });

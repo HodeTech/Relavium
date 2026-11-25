@@ -40,6 +40,8 @@ describe('the /doctor port a chat driver is handed', () => {
   let client: DbClient;
   const savedHome = new Map<string, string | undefined>();
   let run = 0;
+  /** The provider seam the last chat was handed: the very object the doctor's port must carry in its probes. */
+  let wiredProviders: ReturnType<typeof scriptedResolver> | undefined;
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), 'relavium-chat-doctor-port-cwd-'));
     home = mkdtempSync(join(tmpdir(), 'relavium-chat-doctor-port-home-'));
@@ -85,10 +87,11 @@ describe('the /doctor port a chat driver is handed', () => {
       configPath: undefined,
       verbosity: 'normal',
     };
+    wiredProviders = scriptedResolver([textTurn('unused')]);
     const deps: ChatCommandDeps = {
       io: { ...io, stdoutIsTty: interactive },
       global,
-      providers: scriptedResolver([textTurn('unused')]),
+      providers: wiredProviders,
       openSessionStore: () => ({
         store: createSessionStore(client.db),
         db: client.db,
@@ -106,8 +109,15 @@ describe('the /doctor port a chat driver is handed', () => {
   it('an interactive chat is handed the port of its session, on the stand-alone surface, with the provider seam', async () => {
     const [first] = await portsOf(true, false);
     expect(first?.port?.surface).toBe('standalone-chat');
-    expect(first?.port?.probes.providers).toBeDefined();
-    expect(first?.port?.probes.deepMcp).toBeDefined();
+    // The very seam the chat was handed, not another one that merely exists: the popup reads key presence and destinations through it.
+    expect(wiredProviders).toBeDefined();
+    expect(first?.port?.probes.providers === wiredProviders, 'the chat’s provider seam').toBe(true);
+    // The session’s MCP report: this chat has no agent servers, and says so in the doctor's own words.
+    const deepMcp = first?.port?.probes.deepMcp;
+    if (deepMcp === undefined) throw new Error('a chat’s port reports its MCP servers');
+    expect(await deepMcp()).toEqual([
+      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+    ]);
   });
 
   it('a plain and a --json driver are handed none: /doctor prints the text report there', async () => {

@@ -8,7 +8,12 @@ import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { ReportsPort } from '../popups/report-port.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
-import { chatCommand, type ChatCommandDeps, type ChatDriver } from './chat.js';
+import {
+  chatCommand,
+  type ChatCommandDeps,
+  type ChatDriveContext,
+  type ChatDriver,
+} from './chat.js';
 
 /**
  * The report popups' port a chat driver is handed ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
@@ -68,7 +73,8 @@ describe('the report port a chat driver is handed', () => {
     inspect: (seen: {
       readonly reports: ReportsPort | undefined;
       readonly sessionId: string;
-      readonly boundAgent: boolean;
+      /** The driver's own `ctx.boundAgent`: the one view the port's `agent` member has to be. */
+      readonly boundAgent: ChatDriveContext['boundAgent'];
     }) => void | Promise<void>,
   ): Promise<void> {
     const { io } = captureIo();
@@ -80,7 +86,7 @@ describe('the report port a chat driver is handed', () => {
       await inspect({
         reports: ctx.reports,
         sessionId: ctx.handle.sessionId,
-        boundAgent: ctx.boundAgent !== undefined,
+        boundAgent: ctx.boundAgent,
       });
       return { kind: 'exit' };
     };
@@ -111,9 +117,15 @@ describe('the report port a chat driver is handed', () => {
   it('an interactive chat is handed all four members, on the stand-alone surface', async () => {
     await drive(true, false, async ({ reports, boundAgent }) => {
       expect(reports?.surface).toBe('standalone-chat');
-      expect(reports?.agent).toBeDefined();
-      expect(reports?.cost).toBeDefined();
-      expect(reports?.workflows).toBeDefined();
+      // Each member is the thing it names, built over THIS session: the agent is the very function the driver reads its bound agent through,
+      // the cost port reads and releases, the catalog port reads (their behaviour is the tests below).
+      expect(boundAgent).toBeDefined();
+      expect(reports?.agent).toBe(boundAgent);
+      expect(Object.keys(reports?.cost ?? {}).sort()).toEqual(['read', 'release']);
+      expect(typeof reports?.cost?.read).toBe('function');
+      expect(typeof reports?.cost?.release).toBe('function');
+      expect(Object.keys(reports?.workflows ?? {})).toEqual(['read']);
+      expect(typeof reports?.workflows?.read).toBe('function');
       // `[c] copy` rides the driver's one clipboard closure (the same OSC 52 path as `/copy` and the doctor's `[c]`), and the plain glyph form follows colour.
       expect(reports?.plainGlyphs).toBe(true);
       expect(await reports?.clipboard?.('copied text')).toEqual({
@@ -123,6 +135,11 @@ describe('the report port a chat driver is handed', () => {
       expect(reports?.help?.keys.map((key) => key.keys)).toEqual([
         'Enter',
         'Ctrl+J',
+        '↑/↓',
+        'Ctrl+A/Ctrl+E',
+        'Ctrl+W',
+        'Ctrl+U',
+        'Ctrl+K',
         '/',
         '@',
         'Ctrl+R',
@@ -130,10 +147,12 @@ describe('the report port a chat driver is handed', () => {
         'Ctrl+T',
         'Esc',
         'PgUp/PgDn',
+        'Mouse wheel',
+        'Mouse drag',
+        'Ctrl+Z',
         'Ctrl+C',
       ]);
       // The same view `ctx.boundAgent` hands a driver that reads it directly.
-      expect(boundAgent).toBe(true);
       expect(reports?.agent?.().id).toBe('relavium-chat');
     });
   });

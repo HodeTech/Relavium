@@ -12,12 +12,10 @@
 import { inertLegendText } from '../render/tui/legend.js';
 import { authorLine } from '../render/tui/run-card-model.js';
 import { wrapWords } from '../render/tui/viewport.js';
-import { POPUP_FLOOR, POPUP_MAX_WIDTH, POPUP_SIDE_MARGIN, popupMargin } from './geometry.js';
+import { POPUP_FLOOR, popupInnerWidth } from './geometry.js';
 
 /** The columns a popup's text has at the smallest terminal it is drawn on (80 columns): every line a report writes fits it whole. */
-export const REPORT_TEXT_COLUMNS =
-  Math.min(POPUP_FLOOR.columns - 2 * popupMargin(POPUP_FLOOR.columns), POPUP_MAX_WIDTH) -
-  2 * POPUP_SIDE_MARGIN;
+export const REPORT_TEXT_COLUMNS = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
 
 /**
  * The full scrub of a surface with a chord step (ADR-0145 §5): the run cards' author-text floor, then key tokens and legend separators made

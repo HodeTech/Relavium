@@ -333,13 +333,14 @@ function chatDoctorSurface(
 
 /**
  * The legend row of a report popup's report state, whole on one row of every cell (ADR-0148 §1: every report offers `[c] copy`, and the copy is
- * the control the legend keeps longest). The states that are not a report (loading, a failure, the release line and its result) name no copy.
+ * the control the legend keeps longest; `↑/↓ scroll` is named only where the report overflows its page, which `help` does and the others do not). The states that are not a report (loading, a failure, the release line and its result) name no copy.
  */
-const REPORT_LEGEND_ROW: Readonly<Partial<Record<ReportState, string>>> = {
-  agent: '↑/↓ scroll · [c] copy · Esc close',
-  cost: '↑/↓ scroll · [c] copy · Esc close',
-  'cost-held': '↑/↓ scroll · [r] release held estimates · [c] copy · Esc close',
-  workflows: '↑/↓ scroll · [c] copy · Esc close',
+const REPORT_LEGEND_ROW: Readonly<Partial<Record<ReportState, string | readonly string[]>>> = {
+  // `/agent` fits its page in the alternate screen and overflows the inline form's shorter one, so it may draw either.
+  agent: ['[c] copy · Esc close', '↑/↓ scroll · [c] copy · Esc close'],
+  cost: '[c] copy · Esc close',
+  'cost-held': '[r] release held estimates · [c] copy · Esc close',
+  workflows: '[c] copy · Esc close',
   help: '↑/↓ scroll · [c] copy · Esc close',
 };
 

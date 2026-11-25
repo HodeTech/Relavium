@@ -114,8 +114,27 @@ export interface ReportsPort {
 /** The members of a {@link ReportsPort} that come from the session's own line handler (the host adds the surface, the owner and the glyph form). */
 export type ReportMembers = Pick<ReportsPort, 'agent' | 'cost' | 'workflows' | 'help'>;
 
-/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows` or `/help`. */
-export type ReportKind = 'agent' | 'cost' | 'workflows' | 'help';
+/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows` or `/help`: the name of the member of the port that makes it a popup. */
+export type ReportKind = keyof ReportMembers;
+
+/** One report: the port member it needs, the command that names it, and whether the command takes `--release`. */
+interface ReportDefinition {
+  readonly kind: ReportKind;
+  readonly command: string;
+  readonly takesRelease: boolean;
+}
+
+/**
+ * The reports, in one table: what a typed line is matched against ({@link parseReportLine}) and what a port has to hold for the report to be a
+ * popup ({@link reportAvailable}: the member that is named like the kind). A fifth report is one member of the port, one row here and one opener
+ * in `report-session.ts` (its table is typed over {@link ReportKind}, and `report-port.test.ts` opens every row).
+ */
+export const REPORTS = [
+  { kind: 'agent', command: '/agent', takesRelease: false },
+  { kind: 'cost', command: '/cost', takesRelease: true },
+  { kind: 'workflows', command: '/workflows', takesRelease: false },
+  { kind: 'help', command: '/help', takesRelease: false },
+] as const satisfies readonly ReportDefinition[];
 
 export interface ParsedReportLine {
   readonly kind: ReportKind;
@@ -130,34 +149,17 @@ export interface ParsedReportLine {
  */
 export function parseReportLine(line: string): ParsedReportLine | undefined {
   const [name, ...tokens] = line.trim().split(/\s+/u);
-  switch (name) {
-    case '/agent':
-    case '/workflows':
-    case '/help':
-      return tokens.length === 0
-        ? { kind: name.slice(1) as 'agent' | 'workflows' | 'help' }
-        : undefined;
-    case '/cost':
-      return tokens.every((token) => token === '--release')
-        ? { kind: 'cost', release: tokens.length > 0 }
-        : undefined;
-    default:
-      return undefined;
-  }
+  const report = REPORTS.find((candidate) => candidate.command === name);
+  if (report === undefined) return undefined;
+  if (!report.takesRelease) return tokens.length === 0 ? { kind: report.kind } : undefined;
+  return tokens.every((token) => token === '--release')
+    ? { kind: report.kind, release: tokens.length > 0 }
+    : undefined;
 }
 
 /** Whether `port` has what the report `kind` needs: a host that did not wire one prints its text, as before. */
 export function reportAvailable(port: ReportsPort, kind: ReportKind): boolean {
-  switch (kind) {
-    case 'agent':
-      return port.agent !== undefined;
-    case 'cost':
-      return port.cost !== undefined;
-    case 'workflows':
-      return port.workflows !== undefined;
-    case 'help':
-      return port.help !== undefined;
-  }
+  return port[kind] !== undefined;
 }
 
 /** What a host asks for when it opens a report. */

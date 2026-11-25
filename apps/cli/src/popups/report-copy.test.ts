@@ -10,14 +10,21 @@ import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js
 import { buildPaletteEntries } from '../render/tui/palette-entries.js';
 import { CHAT_KEYS } from '../render/tui/chat-keys.js';
 import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { agentReportLines } from './agent-popup.js';
 import { COST_STEP, costReportLines } from './cost-popup.js';
 import { ENTER, ESC, CTRL } from './doctor.test-support.js';
 import { popupText } from './frame-model.js';
 import { helpLines } from './help-popup.js';
 import { popupLegend } from './popup-reducer.js';
-import { copyControlsFor, reportCopyNotice, reportCopyText } from './report-copy.js';
+import {
+  copyControlsFor,
+  reportCopyNotice,
+  reportCopyText,
+  reportCopyUnavailable,
+} from './report-copy.js';
 import type { ReportsPort } from './report-port.js';
+import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
 import {
   catalogEntry,
   costReading,
@@ -209,7 +216,13 @@ describe('what a hostile field never carries to the clipboard', () => {
       clipboard: clip.writer,
     });
     const text = await copied(r, clip.texts);
-    clean(text.slice(text.indexOf('Keys')));
+    // The heading is there: a slice from a missing heading would be the whole text, or its last character, and prove nothing.
+    expect(text.split('\n')).toContain('Keys');
+    const keys = text.slice(text.indexOf('\nKeys\n'));
+    // The key row is there with the visible start of the hostile name, so there is something that has to be clean.
+    expect(keys.split('\n').length).toBeGreaterThan(1);
+    expect(keys).toMatch(/^ {2}x/mu);
+    clean(keys);
   });
 });
 
@@ -383,7 +396,7 @@ describe('what [c] says', () => {
       r.press('c');
       await settleWork();
       expect(r.notifications.getSnapshot().current?.text).toBe(
-        `${label} report: copying is not available here.`,
+        `${label}: copying is not available here.`,
       );
       // That one line is the whole of what the press said: no write was attempted behind it, so no second line waits.
       expect(r.notifications.getSnapshot().queued).toBe(0);
@@ -397,14 +410,14 @@ describe('what [c] says', () => {
     r.press('c');
     await settleWork();
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      `Workflows report: sent ${String((written.texts[0] ?? '').length)} characters to the terminal clipboard.`,
+      `Workflows: sent ${String((written.texts[0] ?? '').length)} characters to the terminal clipboard.`,
     );
     expect(r.notifications.getSnapshot().queued).toBe(0);
     for (const [outcome, said] of [
-      [{ kind: 'failed' } as const, 'Workflows report: the clipboard request failed.'],
+      [{ kind: 'failed' } as const, 'Workflows: the clipboard request failed.'],
       [
         { kind: 'too-large', base64Length: 99_999, limit: 74_994 } as const,
-        'Workflows report: too large for the terminal clipboard.',
+        'Workflows: too large for the terminal clipboard.',
       ],
     ] as const) {
       const clip = spyClipboard(outcome);
@@ -423,10 +436,24 @@ describe('what [c] says', () => {
     const r = await opened('help', { help: { keys: KEYS }, clipboard: clip.writer });
     r.press('c');
     await settleWork();
-    expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Help report: the clipboard request failed.',
-    );
+    expect(r.notifications.getSnapshot().current?.text).toBe('Help: the clipboard request failed.');
     expect(r.notifications.getSnapshot().current?.text).not.toContain('PRIVATE');
+  });
+
+  it('every sentence of a copy fits the popup’s legend row at the 80-column floor, whatever the report’s name and a six-digit count', () => {
+    for (const label of ['Agent', 'Cost', 'Workflows', 'Help']) {
+      const said = [
+        reportCopyNotice(label, { kind: 'written', characters: 999_999 }),
+        reportCopyNotice(label, { kind: 'failed' }),
+        reportCopyNotice(label, { kind: 'too-large', base64Length: 99_999, limit: 74_994 }),
+        reportCopyUnavailable(label),
+      ];
+      expect(said.filter((text) => text !== undefined)).toHaveLength(4);
+      for (const text of said) {
+        expect(displayWidth(text ?? ''), text).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+        expect(text).toMatch(new RegExp(`^${label}: `, 'u'));
+      }
+    }
   });
 
   it('an empty write says nothing', () => {

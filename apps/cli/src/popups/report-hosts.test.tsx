@@ -23,6 +23,7 @@ import {
 } from '../render/tui/surface-matrix/report-fixture.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { COST_STEP } from './cost-popup.js';
+import { reportCopyText } from './report-copy.js';
 import { openReport, type ReportsPort } from './report-port.js';
 
 type Host = 'chat' | 'standalone-chat';
@@ -133,8 +134,14 @@ describe.each(HOSTS)('the reports in the %s host', (host) => {
           m.skip(600);
           m.key('c');
           await vi.waitFor(() => expect(written).toHaveLength(1));
-          expect(written[0]?.length).toBeGreaterThan(20);
-          const said = `${{ agent: 'Agent', cost: 'Cost', workflows: 'Workflows', help: 'Help' }[id as 'agent']} report: sent ${String(written[0]?.length)} characters to the terminal clipboard.`;
+          // What was written is the report the popup draws: its own lines, one to a row (the popup's step holds them), not just something of a size.
+          const frame = m.popups.getSnapshot().frame;
+          const shown = frame?.steps[frame.stepIndex]?.content;
+          if (shown?.kind !== 'report') throw new Error('the step shows a report');
+          expect(shown.lines.length).toBeGreaterThan(1);
+          expect(written[0]).toBe(reportCopyText(shown.lines, false));
+          expect(written[0]?.split('\n')).toHaveLength(shown.lines.length);
+          const said = `${{ agent: 'Agent', cost: 'Cost', workflows: 'Workflows', help: 'Help' }[id as 'agent']}: sent ${String(written[0]?.length)} characters to the terminal clipboard.`;
           expect(m.submitted).toEqual([]);
           m.key(KEYS.escape);
           await closes(m);

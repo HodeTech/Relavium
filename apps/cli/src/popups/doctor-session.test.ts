@@ -10,7 +10,13 @@ import { ENDPOINT_CHANGED_DETAIL } from '../chat/doctor-deep.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { FetchLike } from '../engine/validated-fetch.js';
 import { CONSENT_LEAD, CONSENT_MCP, DOCTOR_STEP } from './doctor-popup.js';
-import { deepRunInFlight, DOCTOR_PRESENCE_BOUND_MS, STILL_STOPPING } from './doctor-session.js';
+import {
+  chordRefusedText,
+  copyNotice,
+  deepRunInFlight,
+  DOCTOR_PRESENCE_BOUND_MS,
+  STILL_STOPPING,
+} from './doctor-session.js';
 import {
   CTRL,
   DOWN,
@@ -23,9 +29,11 @@ import {
   stubProbes,
   stubResolver,
 } from './doctor.test-support.js';
-import { CHORD_STEP_WINDOW_MS } from './popup-host.js';
-import { popupLegend } from './popup-reducer.js';
+import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
+import { CHORD_STEP_WINDOW_MS, type ChordRefusal } from './popup-host.js';
+import { currentStep, popupLegend } from './popup-reducer.js';
 import { legend } from '../render/tui/legend.js';
+import { displayWidth } from '../render/tui/viewport.js';
 
 // Test keys assembled at runtime (no contiguous secret literal: leakwatch).
 const KEY = ['sk', 'ant', 'doctor', 'ABCDEF1234567890'].join('-');
@@ -184,8 +192,10 @@ describe('the consent line (ADR-0148 §8)', () => {
     expect(seam.keyFor).not.toHaveBeenCalled();
     const frame = r.host.getSnapshot().frame;
     if (frame === undefined) throw new Error('open');
-    expect(legend(popupLegend(frame).items, popupLegend(frame).exit)).toBe(
-      '[Ctrl+Y] send · Esc cancel',
+    // The way out of the line is named by the host's own legend (`Esc cancel` until the host says `Esc back` where it goes back): the answer key
+    // is named first either way, and that is what this test pins.
+    expect(legend(popupLegend(frame).items, popupLegend(frame).exit)).toMatch(
+      /^\[Ctrl\+Y\] send · Esc (cancel|back)$/u,
     );
   });
 
@@ -217,7 +227,7 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
     expect(r.step()).toBe(DOCTOR_STEP.checks);
-    expect(r.notifications.getSnapshot().current?.text).toContain('the line was not on screen yet');
+    expect(r.notifications.getSnapshot().current?.text).toContain('Not confirmed: not yet shown.');
   });
 
   it('does not count at 799 ms from the acknowledgement, though 1099 ms after the [d] that armed it', async () => {
@@ -229,7 +239,9 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     expect(anthropic.requests).toHaveLength(0);
     // A refused chord disarms the line and says so.
     expect(r.step()).toBe(DOCTOR_STEP.checks);
-    expect(r.notifications.getSnapshot().current?.text).toContain('Deep check not confirmed');
+    expect(r.notifications.getSnapshot().current?.text).toContain(
+      'Not confirmed: pressed too soon.',
+    );
   });
 
   it('counts at 800 ms from the acknowledgement, and sends exactly one request to the provider the line named', async () => {
@@ -267,14 +279,14 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     r.open({ probes: stubProbes(seam.resolver) }, true);
     expect(r.step()).toBe(DOCTOR_STEP.line);
     await settleWork();
-    // A Ctrl+Y before the popup's first frame: the opening guard drops it (any other key would have disarmed the line), and it is counted.
+    // A Ctrl+Y before the popup's first frame: the opening guard drops it, and it is counted as a key typed over the line (the host says
+    // what becomes of the line and why; here only that nothing is ever sent for it).
     ctrlY(r);
-    expect(r.step()).toBe(DOCTOR_STEP.line);
     r.show();
     r.clock.advance(1000);
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
-    expect(r.notifications.getSnapshot().current?.text).toContain('a key was typed');
+    expect(r.notifications.getSnapshot().current?.text).toMatch(/^Not confirmed: /u);
   });
 
   it('counts from a `/doctor --deep` line nobody typed over', async () => {
@@ -294,14 +306,13 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     r.press('d');
     await settleWork();
     r.hide();
-    ctrlY(r); // dropped: its frame was not on screen; counted as typing (every other key would have disarmed the line)
-    expect(r.step()).toBe(DOCTOR_STEP.line);
+    ctrlY(r); // dropped: its frame was not on screen; counted as typing (the host says what becomes of the line and why)
     r.reveal();
     r.show();
     r.clock.advance(1000);
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
-    expect(r.notifications.getSnapshot().current?.text).toContain('a key was typed');
+    expect(r.notifications.getSnapshot().current?.text).toMatch(/^Not confirmed: /u);
   });
 
   it('does not count on the heels of another key (a double tap, a key repeat): the quiet gap', async () => {
@@ -824,5 +835,621 @@ describe('what a provider says stays out of the row and the copy (ADR-0148 §8)'
     expect(r.step()).toBe(DOCTOR_STEP.detail);
     expect(r.words()).not.toContain(KEY);
     expect(r.words()).not.toContain(OTHER_KEY);
+  });
+});
+
+/** The letters the checks step answers to now, as the host reads them. */
+function controlKeys(r: Rig): string[] {
+  const frame = r.host.getSnapshot().frame;
+  if (frame === undefined) throw new Error('no popup is open');
+  return (currentStep(frame).spec.controls ?? []).map((control) => control.key);
+}
+
+/** The legend the popup draws now. */
+function legendOf(r: Rig): string {
+  const frame = r.host.getSnapshot().frame;
+  if (frame === undefined) throw new Error('no popup is open');
+  const { items, exit } = popupLegend(frame);
+  return legend(items, exit);
+}
+
+/** A loop whose pauses can be held: while held, a pause waits until `release`. */
+function holdableLoop() {
+  let held = false;
+  const waiting: (() => void)[] = [];
+  return {
+    yieldToLoop: (): Promise<void> =>
+      held
+        ? new Promise<void>((resolve) => {
+            waiting.push(resolve);
+          })
+        : Promise.resolve(),
+    hold: (): void => {
+      held = true;
+    },
+    release: (): void => {
+      held = false;
+      for (const resume of waiting.splice(0)) resume();
+    },
+  };
+}
+
+describe('[c] copies a report only when there is one (D1)', () => {
+  const FAILING = (): { globalArtifacts: () => never } => ({
+    globalArtifacts: () => {
+      throw new Error('the global folder could not be read');
+    },
+  });
+
+  it('the checks could not run: the step is the error, [c] is not listed, and a [c] pressed anyway copies nothing', async () => {
+    const r = doctorRig();
+    const seam = stubResolver({ keys: {}, providers: {} });
+    const copied: string[] = [];
+    r.open({
+      probes: stubProbes(seam.resolver, FAILING()),
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    expect(r.words()).toContain('The checks could not run.');
+    expect(controlKeys(r)).toEqual(['r', 'd']);
+    expect(legendOf(r)).not.toContain('copy');
+    r.press('c');
+    await settleWork();
+    expect(copied).toEqual([]);
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+  });
+
+  it('the copy itself refuses when the checks are not shown, whatever reached it: the handler called directly sends nothing', async () => {
+    const r = doctorRig();
+    const seam = stubResolver({ keys: {}, providers: {} });
+    const copied: string[] = [];
+    const opened = r.open({
+      probes: stubProbes(seam.resolver, FAILING()),
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    if (!opened.opened) throw new Error('open');
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    r.handlers()?.control?.(opened.context, 'c');
+    await settleWork();
+    expect(copied).toEqual([]);
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+  });
+
+  it('with a kept deep result and the checks reloading, there is still no report: [c] is not listed and the copy sends nothing', async () => {
+    const r = doctorRig();
+    const loop = holdableLoop();
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    const copied: string[] = [];
+    const opened = r.open(
+      {
+        probes: stubProbes(seam.resolver),
+        clipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      },
+      false,
+      loop.yieldToLoop,
+    );
+    if (!opened.opened) throw new Error('open');
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r);
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    expect(r.words()).toContain('Anthropic key works');
+    expect(controlKeys(r)).toEqual(['r', 'd', 'c']);
+    r.clock.advance(600);
+    // [r] again, and the quick tier waits: the deep result is kept, but the step is loading and has no report to copy.
+    loop.hold();
+    r.press('r');
+    await settleWork();
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('loading');
+    expect(controlKeys(r)).toEqual(['r', 'd']);
+    r.press('c');
+    r.handlers()?.control?.(opened.context, 'c');
+    await settleWork();
+    expect(copied).toEqual([]);
+    // Once the checks land again the copy is listed and works.
+    loop.release();
+    await settleWork();
+    expect(controlKeys(r)).toEqual(['r', 'd', 'c']);
+    r.clock.advance(600);
+    r.press('c');
+    await settleWork();
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toContain('doctor: ');
+    expect(copied[0]).toContain('OS keychain');
+  });
+
+  it('the deep check could not run: [c] is not listed there either, and [r] and [d] still are', async () => {
+    const r = doctorRig();
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    const deepMcp = vi.fn(() => Promise.reject(new Error('mcp down')));
+    r.open({ probes: stubProbes(seam.resolver, { deepMcp }), surface: 'home-chat' });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r);
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    expect(controlKeys(r)).toEqual(['r', 'd']);
+  });
+});
+
+describe('the deep rows’ age is the age at the moment the person looks (D2)', () => {
+  /** A kept deep result, landed now, on a popup that stays open. */
+  async function withKeptResult() {
+    const opened = await openedWithKey();
+    await arm(opened.r);
+    opened.r.clock.advance(1000);
+    ctrlY(opened.r);
+    await settleWork();
+    expect(opened.r.words()).toContain('Deep check, 0s ago');
+    return opened;
+  }
+
+  it('coming back from a row’s detail reads the age again', async () => {
+    const { r } = await withKeptResult();
+    r.clock.advance(13_000);
+    r.press('', ENTER);
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+    r.clock.advance(7000);
+    r.press('', ESC);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.words()).toContain('Deep check, 20s ago');
+    expect(r.words()).not.toContain('Deep check, 0s ago');
+  });
+
+  it('coming back from the confirmation line reads the age again, after ten minutes as after ten seconds', async () => {
+    const { r } = await withKeptResult();
+    r.clock.advance(613_000);
+    r.press('d');
+    await settleWork();
+    expect(r.step()).toBe(DOCTOR_STEP.line);
+    r.press('', ESC);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.words()).toContain('Deep check, 10m13s ago');
+  });
+
+  it('[r] lands with the age at the moment it lands, not at the moment it was pressed', async () => {
+    const { r, seam } = await withKeptResult();
+    r.clock.advance(30_000);
+    // The first presence read takes a second and a half (a keychain that asks): the rows land that much later.
+    seam.availability.mockImplementationOnce(() => {
+      r.clock.advance(1500);
+      return {
+        status: 'usable',
+        source: { kind: 'keychain', label: 'OS keychain' },
+        keychainHealth: 'available',
+      };
+    });
+    r.press('r');
+    await settleWork();
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('list');
+    expect(r.words()).toContain('Deep check, 31s ago');
+  });
+
+  it('a step that says the checks could not run is left as it is when the popup comes back to it', async () => {
+    const r = doctorRig();
+    const seam = stubResolver({ keys: {}, providers: {} });
+    r.open({
+      probes: stubProbes(seam.resolver, {
+        globalArtifacts: () => {
+          throw new Error('the global folder could not be read');
+        },
+      }),
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    r.press('d');
+    await settleWork();
+    expect(r.step()).toBe(DOCTOR_STEP.line);
+    r.press('', ESC);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.content(DOCTOR_STEP.checks).kind).toBe('error');
+    expect(r.words()).toContain('The checks could not run.');
+  });
+});
+
+describe('the detail step says only what is true of its keys (D3)', () => {
+  it('[r] and [c] do nothing on a row’s detail, and Esc goes back to the checks where they work', async () => {
+    const r = doctorRig();
+    const seam = stubResolver({ keys: {}, providers: {} });
+    const copied: string[] = [];
+    let reads = 0;
+    const probes = stubProbes(seam.resolver, {
+      keychain: () => {
+        reads += 1;
+        throw new Error('backend down');
+      },
+    });
+    r.open({
+      probes,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    r.press('', ENTER);
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+    expect(r.words()).toContain('Esc goes back to the checks, where [r] checks again.');
+    expect(r.words()).not.toContain('Press [r]');
+    expect(legendOf(r)).not.toContain('quick check');
+    expect(legendOf(r)).not.toContain('copy');
+    const before = reads;
+    r.press('r');
+    r.press('c');
+    await settleWork();
+    expect(reads).toBe(before);
+    expect(copied).toEqual([]);
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+    // What the sentence promises: back on the checks, [r] checks again.
+    r.press('', ESC);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    r.press('r');
+    await settleWork();
+    expect(reads).toBe(before + 1);
+  });
+});
+
+describe('the quick tier’s presence reads and its bound (D6)', () => {
+  it('the bound is two seconds, and a read that ends exactly on it is still followed by the next one', async () => {
+    expect(DOCTOR_PRESENCE_BOUND_MS).toBe(2000);
+    const r = doctorRig();
+    const seam = stubResolver({ keys: { anthropic: KEY, openai: OTHER_KEY }, providers: {} });
+    const usable = {
+      status: 'usable',
+      source: { kind: 'keychain', label: 'OS keychain' },
+      keychainHealth: 'available',
+    } as const;
+    // The first read takes exactly the bound; the second takes one millisecond more: the third is past it.
+    seam.availability.mockImplementationOnce(() => {
+      r.clock.advance(2000);
+      return usable;
+    });
+    seam.availability.mockImplementationOnce(() => {
+      r.clock.advance(1);
+      return usable;
+    });
+    r.open({ probes: stubProbes(seam.resolver) });
+    r.show();
+    await settleWork();
+    expect(seam.availability).toHaveBeenCalledTimes(2);
+    expect(r.words()).toContain(
+      '2 of 4 providers have a key; 2 could not be checked (Google Gemini, DeepSeek)',
+    );
+  });
+});
+
+describe('what the person is told is short enough for the popup and in these words (D4)', () => {
+  // The most columns a notification may take in a popup at 80×24: the host's own constant, which is the popup's inner width.
+  const inner = POPUP_NOTICE_MAX_COLUMNS;
+
+  it.each([
+    ['unseen', 'Not confirmed: not yet shown. Nothing was sent; [d] asks again.'],
+    ['early', 'Not confirmed: pressed too soon. Nothing was sent; [d] asks again.'],
+    ['expired', 'Not confirmed: time ran out. Nothing was sent; [d] asks again.'],
+    ['typed', 'Not confirmed: a key was typed. Nothing was sent; [d] asks again.'],
+  ] as const satisfies readonly (readonly [ChordRefusal, string])[])(
+    'a Ctrl+Y that did not count (%s) says why, that nothing was sent, and how to ask again',
+    (reason, words) => {
+      expect(chordRefusedText(reason)).toBe(words);
+      expect(displayWidth(chordRefusedText(reason))).toBeLessThanOrEqual(inner);
+    },
+  );
+
+  it('every sentence of the copy and of the still-stopping line fits the inner width of a popup at 80 columns', () => {
+    expect(inner).toBe(66);
+    const biggest = 99_999; // a report cannot be longer than the terminal’s clipboard takes
+    const said = [
+      copyNotice({ kind: 'written', characters: biggest }),
+      copyNotice({ kind: 'failed' }),
+      copyNotice({ kind: 'too-large', base64Length: 80_000, limit: 74_994 }),
+      STILL_STOPPING,
+    ];
+    for (const text of said) {
+      if (text === undefined) throw new Error('a sentence');
+      expect(displayWidth(text), text).toBeLessThanOrEqual(inner);
+    }
+  });
+
+  it('says what happened to the copy, in these words, and nothing when nothing was selected', () => {
+    expect(copyNotice({ kind: 'written', characters: 1234 })).toBe(
+      'Doctor report: sent 1234 characters to the terminal clipboard.',
+    );
+    expect(copyNotice({ kind: 'failed' })).toBe('Doctor report: the clipboard request failed.');
+    expect(copyNotice({ kind: 'too-large', base64Length: 80_000, limit: 74_994 })).toBe(
+      'Doctor report: too large for the terminal clipboard.',
+    );
+    expect(copyNotice({ kind: 'empty' })).toBeUndefined();
+  });
+
+  it('the line that is still stopping says so in these words', () => {
+    expect(STILL_STOPPING).toBe(
+      'The last deep check is still stopping, so nothing new is sent yet.',
+    );
+  });
+
+  it('[c] with no way to copy says so, and the report goes nowhere', async () => {
+    const { r } = await openedWithKey();
+    r.press('c');
+    await settleWork();
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Doctor report: copying is not available here.',
+    );
+  });
+
+  it('[c] says how many characters went to the terminal clipboard', async () => {
+    const r = doctorRig();
+    const seam = stubResolver({ keys: {}, providers: {} });
+    const copied: string[] = [];
+    r.open({
+      probes: stubProbes(seam.resolver),
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    r.press('c');
+    await settleWork();
+    expect(copied).toHaveLength(1);
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      `Doctor report: sent ${String(copied[0]?.length)} characters to the terminal clipboard.`,
+    );
+  });
+
+  it.each([
+    [false, '  ✓ ok  OS keychain  reachable'],
+    [true, '  ok  OS keychain  reachable'],
+  ] as const)(
+    'the copied report is in the glyph form of the screen (plain glyphs: %s)',
+    async (plain, line) => {
+      const r = doctorRig();
+      const seam = stubResolver({ keys: {}, providers: {} });
+      const copied: string[] = [];
+      r.open({
+        probes: stubProbes(seam.resolver),
+        plainGlyphs: plain,
+        clipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      });
+      r.show();
+      await settleWork();
+      r.clock.advance(600);
+      r.press('c');
+      await settleWork();
+      expect(copied[0]?.split('\n')).toContain(line);
+    },
+  );
+});
+
+describe('the deep tier’s run is refused a destination it can no longer name (D6, B13)', () => {
+  it('a destination the resolver can no longer name after arming is never contacted', async () => {
+    const { r, anthropic, seam } = await openedWithKey();
+    await arm(r);
+    delete seam.origins.anthropic; // the resolver can no longer say where the key would go
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    expect(anthropic.requests).toHaveLength(0);
+    expect(seam.keyFor).not.toHaveBeenCalled();
+    expect(r.words()).toContain(ENDPOINT_CHANGED_DETAIL);
+  });
+});
+
+describe('what a kept result shows is the session’s own (D6, B32, B48)', () => {
+  it('a kept deep result shows the MCP rows only in the session that reported them, and the provider rows in any', async () => {
+    const r = doctorRig();
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    const deepMcp = vi.fn(() =>
+      Promise.resolve([
+        { id: 'mcp:files', label: 'files', status: 'ok' as const, detail: 'connected' },
+      ]),
+    );
+    r.open({
+      probes: stubProbes(seam.resolver, { deepMcp }),
+      surface: 'home-chat',
+      resultKey: 'session-A',
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r);
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    expect(r.words()).toContain('ok files connected');
+    r.press('', ESC);
+    expect(r.host.getSnapshot().open).toBe(false);
+    // The same host, another session: the provider rows are shown again, the MCP rows are not.
+    r.open({
+      probes: stubProbes(seam.resolver, { deepMcp }),
+      surface: 'home-chat',
+      resultKey: 'session-B',
+    });
+    r.show();
+    await settleWork();
+    expect(r.words()).toContain('Anthropic key works');
+    expect(r.words()).not.toContain('files connected');
+    r.press('', ESC);
+    // And in the session that reported them, they are still there.
+    r.open({
+      probes: stubProbes(seam.resolver, { deepMcp }),
+      surface: 'home-chat',
+      resultKey: 'session-A',
+    });
+    r.show();
+    await settleWork();
+    expect(r.words()).toContain('ok files connected');
+  });
+
+  it('a provider that has a key but whose destination cannot be named is not on the line, and nothing is offered to answer', async () => {
+    const r = doctorRig();
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    delete seam.origins.anthropic;
+    r.open({ probes: stubProbes(seam.resolver) });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    r.press('d');
+    await settleWork();
+    expect(r.step()).toBe(DOCTOR_STEP.line);
+    expect(r.content().kind).toBe('empty');
+    expect(r.words()).toContain('No provider’s key and endpoint could both be read');
+    r.show();
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    expect(anthropic.requests).toHaveLength(0);
+    expect(seam.keyFor).not.toHaveBeenCalled();
+    expect(deepRunInFlight(r.scope)).toBe(false);
+  });
+});
+
+describe('a line that does not fit the page is never answered (D5)', () => {
+  it('four providers at the longest origins: the line says it cannot be confirmed, and a Ctrl+Y on it sends nothing', async () => {
+    const r = doctorRig();
+    const providers = {
+      anthropic: recordingProvider('anthropic'),
+      openai: recordingProvider('openai'),
+      gemini: recordingProvider('gemini'),
+      deepseek: recordingProvider('deepseek'),
+    };
+    const host = (lead: string): string =>
+      `https://${[lead.repeat(63), lead.repeat(63), lead.repeat(63), lead.repeat(61)].join('.')}:65535`;
+    const seam = stubResolver({
+      keys: { anthropic: KEY, openai: KEY, gemini: KEY, deepseek: KEY },
+      providers,
+      origins: {
+        anthropic: host('a'),
+        openai: host('b'),
+        gemini: host('c'),
+        deepseek: host('d'),
+      },
+    });
+    r.open({ probes: stubProbes(seam.resolver) });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    r.press('d');
+    await settleWork();
+    r.show();
+    expect(r.step()).toBe(DOCTOR_STEP.line);
+    expect(r.content().kind).toBe('empty');
+    expect(r.words()).toContain('These destinations are too long to confirm, so nothing is sent.');
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    for (const provider of Object.values(providers)) expect(provider.requests).toEqual([]);
+    expect(seam.keyFor).not.toHaveBeenCalled();
+    expect(deepRunInFlight(r.scope)).toBe(false);
+  });
+});
+
+describe('the heading counts the deep rows (D6, E11)', () => {
+  it('a provider that failed makes the checks a failure', async () => {
+    const r = doctorRig();
+    const anthropic = recordingProvider('anthropic', () => Promise.reject(new Error('boom')));
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    r.open({ probes: stubProbes(seam.resolver) });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r);
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    const content = r.content(DOCTOR_STEP.checks);
+    if (content.kind !== 'list') throw new Error('list');
+    expect(content.heading?.text).toBe('doctor: 1 check failed');
+  });
+});
+
+describe('an MCP server’s label is as untrusted as its detail, in the copy and in the detail step (D6, E14, E33)', () => {
+  /** A chat whose session reports one MCP server with the label `label`, its deep result landed. */
+  async function withMcpLabel(
+    label: string,
+    clipboard?: (text: string) => { kind: 'written'; characters: number },
+  ) {
+    const r = doctorRig();
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    const deepMcp = vi.fn(() =>
+      Promise.resolve([{ id: 'mcp:evil', label, status: 'ok' as const, detail: 'connected' }]),
+    );
+    r.open({
+      probes: stubProbes(seam.resolver, { deepMcp }),
+      surface: 'home-chat',
+      ...(clipboard === undefined ? {} : { clipboard }),
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r);
+    r.clock.advance(1000);
+    ctrlY(r);
+    await settleWork();
+    r.clock.advance(600);
+    return r;
+  }
+
+  it('the copied report carries neither an escape nor a key token from the label', async () => {
+    const copied: string[] = [];
+    const r = await withMcpLabel('files\u001b[31m [Ctrl+Y] send', (text) => {
+      copied.push(text);
+      return { kind: 'written', characters: text.length };
+    });
+    r.press('c');
+    await settleWork();
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toContain('files');
+    expect(copied[0]).not.toContain('\u001b');
+    expect(copied[0]).not.toContain('[Ctrl+Y]');
+  });
+
+  it('the detail step carries no key token from the label either', async () => {
+    const r = await withMcpLabel('files [Ctrl+Y] send');
+    for (let index = 0; index < 30; index += 1) {
+      const frame = r.host.getSnapshot().frame;
+      const content = r.content(DOCTOR_STEP.checks);
+      if (frame === undefined || content.kind !== 'list') throw new Error('list');
+      if (content.rows[frame.steps[0]?.selected ?? 0]?.id === 'deep:mcp:evil') break;
+      r.press('', DOWN);
+    }
+    r.press('', ENTER);
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+    expect(r.words()).toContain('files');
+    expect(r.words()).not.toContain('[Ctrl+Y]');
   });
 });

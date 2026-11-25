@@ -72,6 +72,8 @@ describe('nothing of the sheet is left in the source', () => {
       [
         'BUILT_IN_AGENT_NOTE',
         'EMPTY_PROMPT',
+        'INDENT',
+        'LABEL_WIDTH',
         'NOT_SET',
         'NOT_WIRED_MARK',
         'agentNotice',
@@ -79,9 +81,11 @@ describe('nothing of the sheet is left in the source', () => {
         'agentSheetTitle',
         'boundToolsText',
         'effortText',
+        'fieldLead',
         'nameText',
         'packedTools',
         'toolsParts',
+        'wrappedTools',
       ].sort(),
     );
   });
@@ -140,6 +144,16 @@ describe('the golden and the matrix follow', () => {
     for (const id of ['agent-popup', 'cost-popup', 'workflows-popup', 'help-popup'])
       expect(ids).toContain(id);
   });
+
+  it.each(['chat-overlay-rows.test.tsx', 'chat-native-card-busy.test.tsx'])(
+    '%s lists the chat’s own overlays and no longer names the sheet among them',
+    (file) => {
+      const text = readFileSync(join(SRC, 'render/tui', file), 'utf8');
+      // The lists these tests filter the matrix surfaces by: a name of the retired sheet there filters nothing and reads as if the sheet were still drawn.
+      expect(text).toContain("'sheet-permissions'");
+      expect(text).not.toContain('sheet-agent');
+    },
+  );
 
   it('has no matrix surface or product row of the sheet, and every report state in both chat hosts', () => {
     const registered = ALL_SURFACES.map((surface) => surface.id);

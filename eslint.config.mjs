@@ -305,6 +305,7 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/render/surface.ts',
   'apps/cli/src/onboarding/setup-notes.ts',
   'apps/cli/src/popups/geometry.ts',
+  'apps/cli/src/popups/turn-in-flight.ts',
   'tools/lint-fixtures/forbidden-in-data-module.ts',
 ];
 const ENGINE_NODE_GLOBALS = [

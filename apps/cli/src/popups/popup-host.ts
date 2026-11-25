@@ -9,8 +9,11 @@
  * in ONE notification and opens nothing.
  *
  * **One key history** (§2). Every key and paste a popup takes is stamped on the host's ONE key history (`ChordHistory`, shared with the chat
- * store's approval guards and the Home's chord cards) as typing, and a key that closes or answers a popup as a resolution, so a key typed into
- * a popup is seen by the guards of a card that opens next and a key held through a popup's `Enter` cannot answer that card.
+ * store's approval guards and the Home's chord cards) as typing, and a key that RESOLVES something as a resolution: `Enter` on a step that
+ * answers it, `Esc` or `Ctrl+C` that closes a popup, a `Ctrl+Y` that answered a confirmation line, and a `Ctrl+Y` that answered nothing (on a
+ * line that refused it, or on any step that is not a line: a refused affirmative, so a held key keeps restarting the lockout). A control letter
+ * (`[r]`, `[d]`, `[c]`) resolves nothing and is not stamped: it is not what a key held through the popup could answer a card with. So a key
+ * typed into a popup is seen by the guards of a card that opens next, and a key held through a popup cannot answer that card.
  *
  * **The opening guard** (§3, `opening-guard.ts`) is applied to every popup: a key before the first measured and flushed frame is dropped, nothing
  * answers for half a second after it appeared, and an answer needs a key that arrived after it did. The leaving keys always work.
@@ -26,36 +29,47 @@
  * **Stacking** (§5): a popup may open one other; the depth is two. A child is a new frame with its own run id, opening guard, abort and
  * buffers; `Esc` on its first step returns to the opener with the opener's state intact; `Ctrl+C` closes the whole stack.
  *
- * **Identity** (§2, ADR-0147 §2): {@link PopupHost.getSnapshot} is reference-stable until something the frame draws changes; the loading clock is
- * NOT in it (it is a display value read through {@link PopupHost.clock}), so a tick never makes a new frame and never restarts a guard.
+ * **Identity** (§2, ADR-0147 §2): {@link PopupHost.getSnapshot} is reference-stable until something the frame draws changes: the top popup's
+ * frame, the depth, and the live notification the frame draws in its legend row ({@link PopupHostSnapshot.notice}). The loading clock is NOT in
+ * it (it is a display value read through {@link PopupHost.clock}), so a tick never makes a new frame and never restarts a guard.
+ *
+ * **Notifications** (§2). While a popup is open the host's notification is drawn in the popup's own legend row, so the popup host says whether
+ * the channel is held (`NotificationChannel.popupHold`): while the step offers a chord answer or holds a secret, or the frame is not drawn
+ * (below the floor), and not otherwise. A new or expired notification is a new frame.
  *
  * **A confirmation line** (§3, §8; a step with `chord`) is answered by `Ctrl+Y` through the approval card's own chord guard (`chord-guard.ts`,
  * {@link CHORD_STEP_GUARD}), on top of the opening guard. The `Ctrl+Y` counts only when the line's exact frame is measured and flushed on screen
  * now, at least the confirmation constant (800 ms) after THAT frame was acknowledged (the dwell origin is the acknowledgement, never the key that
- * armed the line, and a new frame of the line, a resize or a re-measure, restarts it), within the confirmation window, after a quiet gap, outside
- * the lockout of a key that resolved something just before the line was armed, and only when no key that is not a navigation key reached the
- * popup since the line was armed (a key dropped because its frame was not seen yet counts). A `Ctrl+Y` that does not count DISARMS the line and
- * is stamped as a resolution, so a held key's auto-repeat can never answer it, nor a line it re-arms. Every other key but the navigation keys,
- * and a paste, disarms it too; nothing but the command's own `chord` handler hears an answer.
+ * armed the line, and a new frame of the line, a resize, a re-measure or a notification, restarts it), within the confirmation window
+ * ({@link CHORD_STEP_WINDOW_MS}, counted from the same acknowledgement), after a quiet gap, outside the lockout of a key that resolved something
+ * before the key that armed the line, and only when no key that is not a navigation key reached the popup since the line was armed (a key
+ * dropped because its frame was not seen yet counts). A `Ctrl+Y` that does not count, the one the frame or the opening guard dropped included,
+ * DISARMS the line at once, is stamped as a resolution and is told to the command (`chordRefused`, with why), so a held key's auto-repeat can
+ * never answer it, nor a line it re-arms, and the person sees why. Every other key but the navigation keys, and a paste, disarms it too (a typed
+ * one is told as `typed`; `Esc` and `Ctrl+C` are cancels and are not). When the window runs out the host disarms the line itself and tells it as
+ * `expired`, so a line never offers an answer it can no longer take. Nothing but the command's own `chord` handler hears an answer.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
 import {
   createChordGuard,
   createChordHistory,
+  reduceChordKey,
   type ChordGuard,
   type ChordHistory,
   type ChordStamp,
 } from '../render/tui/chord-guard.js';
+import { SHEET_CONFIRM_WINDOW_MS } from '../render/tui/permissions-sheet.js';
+import { clipLine } from '../render/tui/sheet-frame.js';
 import {
-  APPROVAL_CONFIRM_MAX_MS,
   APPROVAL_CONFIRM_MIN_MS,
   APPROVAL_LOCKOUT_MS,
   APPROVAL_QUIET_MS,
   type ApprovalGuard,
 } from '../render/tui/tool-review-model.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { loadingElapsedText, type PopupContent, type PopupListRow } from './frame-model.js';
-import { popupFits, type PopupPlacement } from './geometry.js';
+import { POPUP_NOTICE_MAX_COLUMNS, popupFits, type PopupPlacement } from './geometry.js';
 import type { NotificationChannel, Schedule } from './notifications.js';
 import { unrefTimer } from './notifications.js';
 import { createOpeningGuard, type OpeningGuard } from './opening-guard.js';
@@ -88,13 +102,18 @@ export const CHORD_STEP_GUARD: ApprovalGuard = Object.freeze({
   lockoutMs: APPROVAL_LOCKOUT_MS,
 });
 
-/** How long after its frame was acknowledged a confirmation line can still be answered: the approval's confirmation window. */
-export const CHORD_STEP_WINDOW_MS = APPROVAL_CONFIRM_MAX_MS;
+/**
+ * How long after its frame was acknowledged a confirmation line can still be answered: the window of the `[d]`-arms family (ADR-0137's
+ * withdrawal question, `SHEET_CONFIRM_WINDOW_MS`, 10 s), long enough to read a line that names several origins. Each new acknowledged frame
+ * of the line restarts it; when it runs out the host disarms the line and says so.
+ */
+export const CHORD_STEP_WINDOW_MS = SHEET_CONFIRM_WINDOW_MS;
 
 /**
- * Why a `Ctrl+Y` on a confirmation line did not count: its frame was never acknowledged (`unseen`), a guard layer refused it (`early`: the
- * dwell, the quiet gap or the lockout), the confirmation window had passed (`expired`), or a key that is not a navigation key reached the popup
- * after the line was armed (`typed`). Each one disarms the line.
+ * Why a `Ctrl+Y` on a confirmation line did not count, or why the line went away unanswered: its frame was not seen, or the line was still being
+ * prepared (`unseen`); the opening guard's settle time or a guard layer refused it (`early`: the dwell, the quiet gap or the lockout); the
+ * confirmation window had passed (`expired`, also when the host disarms a line nobody answered in time); or a key that is not a navigation key
+ * reached the popup after the line was armed (`typed`, also when such a key or a paste disarms the line). Each one disarms the line.
  */
 export type ChordRefusal = 'unseen' | 'early' | 'expired' | 'typed';
 
@@ -148,7 +167,7 @@ export interface PopupContext {
   readonly close: () => void;
   /** Open a child popup over this one (depth two at most). */
   readonly openChild: (spec: PopupSpec, handlers?: PopupHandlers) => PopupOpenResult;
-  /** One line on the hint row (the host's notification channel). */
+  /** One line for the host's notification channel (drawn in the popup's legend row while it is open, on the hint row otherwise). */
   readonly notify: (text: string) => void;
 }
 
@@ -160,7 +179,10 @@ export interface PopupHandlers {
   readonly control?: ((context: PopupContext, key: string) => void) | undefined;
   /** `Ctrl+Y` answered a confirmation line, through every layer of its guard. The ONLY way a line is answered. */
   readonly chord?: ((context: PopupContext) => void) | undefined;
-  /** A `Ctrl+Y` on a confirmation line did not count, and the line was disarmed. Never an answer. */
+  /**
+   * A confirmation line that offered (or was preparing) an answer went away unanswered: a `Ctrl+Y` that did not count, a key typed over it, or
+   * its window ran out. The line is already disarmed when this is called. Never an answer.
+   */
   readonly chordRefused?: ((context: PopupContext, reason: ChordRefusal) => void) | undefined;
   /** A key moved the popup to another step (`Esc` back, a disarmed line). Not called for a step the command moved to itself. */
   readonly stepChanged?: ((context: PopupContext, from: number, to: number) => void) | undefined;
@@ -175,6 +197,11 @@ export interface PopupHostSnapshot {
   readonly placement: PopupPlacement;
   /** The popup on top (the one drawn and the one keys go to). */
   readonly frame: PopupFrame | undefined;
+  /**
+   * The host's live notification while a popup is open: the frame draws it in its legend row in place of the legend (the hint row it is drawn
+   * on otherwise is under the popup). Part of the identity: a new or expired notification is a new frame. Absent with no popup open.
+   */
+  readonly notice?: string | undefined;
 }
 
 export interface PopupHost {
@@ -210,6 +237,15 @@ export interface PopupHost {
   readonly dispose: () => void;
 }
 
+/**
+ * A popup's title and the words after it as one notification that fits {@link POPUP_NOTICE_MAX_COLUMNS} (it is drawn in a popup's legend row,
+ * one row): the title is cut first, with the ellipsis, never the words that say what happened.
+ */
+function titled(title: string, rest: string): string {
+  const room = POPUP_NOTICE_MAX_COLUMNS - displayWidth(rest);
+  return `${clipLine(sanitizeInline(title), Math.max(1, room))}${rest}`;
+}
+
 /** What a refused open says (one notification; ADR-0148 §2). The words name the reason, never a key: the legend owns those. */
 export function refusedOpenText(title: string, reason: PopupRefusal): string {
   const why: Readonly<Record<PopupRefusal, string>> = {
@@ -223,35 +259,40 @@ export function refusedOpenText(title: string, reason: PopupRefusal): string {
     depth: 'two popups are already open',
     closed: 'the screen is closing',
   };
-  return `${title} cannot open now: ${why[reason]}`;
+  return titled(title, ` cannot open now: ${why[reason]}`);
 }
 
 /** What a popup closed by the system says. */
 export function closedUnansweredText(title: string, reason: 'sheet' | 'error' | 'resize'): string {
   switch (reason) {
     case 'sheet':
-      return `${title} closed: a question needs your answer`;
+      return titled(title, ' closed: a question needs your answer');
     case 'error':
-      return `${title} closed: it could not be shown`;
+      return titled(title, ' closed: it could not be shown');
     case 'resize':
-      return `${title} closed: the terminal is too small, nothing was answered`;
+      return titled(title, ' closed: terminal too small, nothing was answered');
   }
 }
 
 /**
  * A confirmation line that is armed: how many keys that are not navigation keys had reached the popup when it was armed (the key that armed it
- * included), what the key history said just before that key, and the guard of its answer.
+ * included), when the key history last saw a resolution just before that key (the lockout is measured against it), the guard of its answer, and
+ * the timer that disarms it when its window runs out.
  */
 interface ChordArming {
   readonly typedWhenArmed: number;
   readonly lastResolvedAt: number;
-  readonly lastForeignKeyAt: number;
   /** The one chord guard (`chord-guard.ts`) over the host's history: its dwell restarts at every acknowledged frame of the line. */
   readonly guard: ChordGuard;
+  /** Cancels the expiry timer while one is scheduled (from the line's acknowledged frame, while it offers its answer). */
+  cancelExpiry: (() => void) | undefined;
 }
 
 /** What the key history said just before a key (its stamp), or now when no key moved the popup. */
-type ArmingEvidence = Pick<ChordStamp, 'lastResolvedAt' | 'lastForeignKeyAt'>;
+type ArmingEvidence = Pick<ChordStamp, 'lastResolvedAt'>;
+
+/** What a confirmation line shows: an answer to give (`answer`), one still being prepared (`preparing`), or nothing to confirm (`nothing`). */
+type LineOffer = 'answer' | 'preparing' | 'nothing';
 
 /** One open popup and what it holds that is not drawn. */
 interface FrameRecord {
@@ -264,8 +305,8 @@ interface FrameRecord {
   /** The confirmation line's evidence while the popup is on one, else `undefined`. */
   chord: ChordArming | undefined;
   /**
-   * How many keys that are not navigation keys, and pastes, have reached THIS popup, seen or not. A count, not a time: a key that arrives in the
-   * same millisecond as the one that armed a line is still a key after it.
+   * How many keys that are not navigation keys have reached THIS popup, seen or not (a paste on a confirmation line disarms it outright). A
+   * count, not a time: a key that arrives in the same millisecond as the one that armed a line is still a key after it.
    */
   typed: number;
 }
@@ -275,11 +316,11 @@ export interface PopupHostOptions {
   readonly now?: (() => number) | undefined;
   /** The host's ONE key history (shared with the chat store and the Home's chord cards). Default: one of its own. */
   readonly history?: ChordHistory | undefined;
-  /** The host's notification channel, for a refused open and a popup closed by the system. */
+  /** The host's notification channel: a refused open and a popup closed by the system, and what an open popup draws in its legend row. */
   readonly notifications?: NotificationChannel | undefined;
   /** Where popups are drawn: `overlay` in the alternate screen, `replace` inline. */
   readonly placement: PopupPlacement;
-  /** The loading clock's timer (production: an unref'd timeout). */
+  /** The loading clock's and the line expiry's timer (production: an unref'd timeout). */
   readonly schedule?: Schedule | undefined;
   /** The opening guard's settle time (default 500 ms); a test that isolates another rule passes `0`. */
   readonly settleMs?: number | undefined;
@@ -288,7 +329,7 @@ export interface PopupHostOptions {
 const CLOSED: Omit<PopupHostSnapshot, 'placement'> = { open: false, depth: 0, frame: undefined };
 
 /** The most a paste puts into a filter line: a filter is a word or two, never a document. */
-const PASTE_LIMIT = 200;
+export const PASTE_LIMIT = 200;
 
 export function createPopupHost(options: PopupHostOptions): PopupHost {
   const now = options.now ?? (() => performance.now());
@@ -296,6 +337,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   const chord = createChordGuard({ now, history });
   const schedule = options.schedule ?? unrefTimer;
   const placement = options.placement;
+  const channel = options.notifications;
   const stack: FrameRecord[] = [];
   const listeners = new Set<() => void>();
   const clockListeners = new Set<() => void>();
@@ -307,30 +349,45 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   let disposed = false;
   let clockText: string | undefined;
   let cancelClock: (() => void) | undefined;
+  /** Whether the terminal holds a popup at its last known size (a frame below the floor is a notice, with no legend row to draw a notification). */
+  let fitsTerminal = true;
   /** The stamp of the key being handled, while it is: a step a handler moves to during it is armed against what came before THAT key. */
   let keyStamp: ChordStamp | undefined;
 
   const top = (): FrameRecord | undefined => stack.at(-1);
 
   /** What the history says now, for a line armed by no key (a popup opened on it, or a command that moved there on its own). */
-  const evidenceNow = (): ArmingEvidence =>
-    keyStamp ?? {
-      lastResolvedAt: history.lastResolvedAt,
-      lastForeignKeyAt: history.lastForeignKeyAt,
-    };
+  const evidenceNow = (): ArmingEvidence => keyStamp ?? { lastResolvedAt: history.lastResolvedAt };
+
+  const lineOffer = (record: FrameRecord): LineOffer => {
+    const kind = currentStep(record.frame).state.content.kind;
+    return kind === 'report' ? 'answer' : kind === 'loading' ? 'preparing' : 'nothing';
+  };
+
+  const stopExpiry = (arming: ChordArming | undefined): void => {
+    if (arming === undefined) return;
+    arming.cancelExpiry?.();
+    arming.cancelExpiry = undefined;
+  };
+
+  /** A new frame of the record's line has not been seen yet: its dwell (and so its window) starts again at ITS acknowledgement. */
+  const beginLine = (record: FrameRecord | undefined): void => {
+    record?.chord?.guard.begin();
+    stopExpiry(record?.chord);
+  };
 
   /** Arm the record's confirmation line when its step is one (and disarm it otherwise): a new guard, its dwell not started (a guard starts with none). */
   const rearm = (record: FrameRecord, before: ArmingEvidence): void => {
+    stopExpiry(record.chord);
     if (!onChordStep(record.frame)) {
       record.chord = undefined;
       return;
     }
-    const guard = createChordGuard({ now, history, guard: CHORD_STEP_GUARD });
     record.chord = {
       typedWhenArmed: record.typed,
       lastResolvedAt: before.lastResolvedAt,
-      lastForeignKeyAt: before.lastForeignKeyAt,
-      guard,
+      guard: createChordGuard({ now, history, guard: CHORD_STEP_GUARD }),
+      cancelExpiry: undefined,
     };
   };
 
@@ -375,33 +432,71 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     cancelClock ??= schedule(tickClock, 1000);
   }
 
+  /**
+   * Tell the channel whether the open popup holds it: while its step offers a chord answer (a line drawn with its answer) or holds a secret,
+   * and while its frame is not drawn (below the floor). With none open the host's own hold applies again.
+   */
+  const syncHold = (): void => {
+    if (channel === undefined) return;
+    const record = top();
+    if (record === undefined || disposed) {
+      channel.popupHold(undefined);
+      return;
+    }
+    const { spec } = currentStep(record.frame);
+    const offersChord = onChordStep(record.frame) && lineOffer(record) === 'answer';
+    channel.popupHold(spec.holds === 'secret' || offersChord || !fitsTerminal);
+  };
+
+  /** The notification the top popup draws now, or `undefined`. */
+  const liveNotice = (): string | undefined =>
+    stack.length === 0 ? undefined : channel?.getSnapshot().current?.text;
+
   const publish = (): void => {
+    // First, so a notification it lets through (or holds back) is already in the snapshot built below; it may publish once itself.
+    syncHold();
     const record = top();
     const next: PopupHostSnapshot =
       record === undefined
         ? { ...CLOSED, placement }
-        : { open: true, depth: stack.length === 1 ? 1 : 2, placement, frame: record.frame };
+        : {
+            open: true,
+            depth: stack.length === 1 ? 1 : 2,
+            placement,
+            frame: record.frame,
+            notice: liveNotice(),
+          };
     if (
       next.open !== snapshot.open ||
       next.depth !== snapshot.depth ||
-      next.frame !== snapshot.frame
+      next.frame !== snapshot.frame ||
+      next.notice !== snapshot.notice
     ) {
-      // A new frame of a confirmation line has not been seen yet: its dwell starts again at ITS acknowledgement.
-      if (next.frame !== snapshot.frame) record?.chord?.guard.begin();
+      // A new frame of a confirmation line (a notification appearing or going included) has not been seen yet.
+      if (next.frame !== snapshot.frame || next.notice !== snapshot.notice) beginLine(record);
       snapshot = next;
     }
     syncClock();
     for (const listener of listeners) listener();
   };
 
-  const notify = (text: string): void => options.notifications?.notify(text);
+  // A notification that comes or goes while a popup is open is a new frame of it (it is drawn in the legend row).
+  const stopNotices = channel?.subscribe(() => {
+    if (!disposed && stack.length > 0 && liveNotice() !== snapshot.notice) publish();
+  });
+
+  const notify = (text: string): void => channel?.notify(text);
 
   /** Close the top `count` popups, each with `reason`: abort its work, drop what it held, tell its command. */
   const closeTop = (count: number, reason: PopupCloseReason): void => {
     const closed: FrameRecord[] = [];
     for (let index = 0; index < count && stack.length > 0; index += 1) {
       const record = stack.pop();
-      if (record !== undefined) closed.push(record);
+      if (record !== undefined) {
+        stopExpiry(record.chord);
+        record.chord = undefined;
+        closed.push(record);
+      }
     }
     publish();
     for (const record of closed) {
@@ -424,6 +519,38 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     } catch (cause) {
       host.fail(cause);
     }
+  };
+
+  /** Tell the command why its line went away unanswered (never an answer). */
+  const tellRefused = (record: FrameRecord, reason: ChordRefusal): void => {
+    const refused = record.handlers.chordRefused;
+    if (refused === undefined) return;
+    const { runId } = record.frame;
+    guarded(() => refused(contextOf(runId), reason));
+  };
+
+  /** The window of the record's line runs from ITS acknowledged frame: when it runs out the host disarms the line and says so. */
+  const startExpiry = (record: FrameRecord): void => {
+    const arming = record.chord;
+    if (arming === undefined || lineOffer(record) !== 'answer') return;
+    const shownAt = arming.guard.shownAt();
+    if (shownAt === undefined) return;
+    stopExpiry(arming);
+    const due = (): void => {
+      arming.cancelExpiry = undefined;
+      if (disposed || record.chord !== arming || top() !== record) return;
+      if (arming.guard.shownAt() !== shownAt) return;
+      // A line is expired when MORE than the window has passed since its frame was acknowledged (the last moment of it still answers).
+      const left = shownAt + CHORD_STEP_WINDOW_MS - now();
+      if (left >= 0) {
+        arming.cancelExpiry = schedule(due, left + 1);
+        return;
+      }
+      if (lineOffer(record) !== 'answer') return;
+      disarm(record);
+      tellRefused(record, 'expired');
+    };
+    arming.cancelExpiry = schedule(due, CHORD_STEP_WINDOW_MS + 1);
   };
 
   const push = (spec: PopupSpec, handlers: PopupHandlers): PopupOpenResult => {
@@ -458,7 +585,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   };
 
   /** Disarm the record's confirmation line: back to the step it came from (closed when it has none), answered by nothing. */
-  const disarm = (record: FrameRecord): void => {
+  function disarm(record: FrameRecord): void {
     const back = backOf(record.frame.spec, record.frame.stepIndex);
     if (back < 0) {
       closeTop(stack.length - stack.indexOf(record), 'escape');
@@ -470,6 +597,17 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       const { runId } = record.frame;
       guarded(() => changed(contextOf(runId), from, back));
     }
+  }
+
+  /**
+   * A `Ctrl+Y` that reached the record's confirmation line and does not answer it: it is a resolution on the history (its auto-repeat cannot
+   * answer a line it re-arms), the line is disarmed at once, and the command is told why, when the line offered (or was preparing) an answer.
+   */
+  const refuseChord = (record: FrameRecord, stamp: ChordStamp, reason: ChordRefusal): void => {
+    chord.resolved(stamp);
+    if (lineOffer(record) === 'nothing') return;
+    disarm(record);
+    tellRefused(record, reason);
   };
 
   /**
@@ -488,11 +626,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     if (shownAt === undefined) return 'unseen';
     if (stamp.now - shownAt > CHORD_STEP_WINDOW_MS) return 'expired';
     // The one chord guard decides the dwell, the quiet gap and the lockout, against the history as it stood before the key that armed the line.
+    // Its typeahead layer is off (`CHORD_STEP_GUARD.typeaheadMs` is 0: the `typed` count above replaces it), so the foreign time is not read.
     const answer = arming.guard.decide(
       {
         now: stamp.now,
         previousKeyAt: stamp.previousKeyAt,
-        lastForeignKeyAt: arming.lastForeignKeyAt,
+        lastForeignKeyAt: stamp.lastForeignKeyAt,
         lastResolvedAt: arming.lastResolvedAt,
       },
       'allow',
@@ -549,6 +688,30 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     stamp: ChordStamp,
     typedBefore: number,
   ): boolean => {
+    if (action.kind === 'chord') {
+      const offer = lineOffer(record);
+      // A line still being prepared is not on screen yet: the key is no answer, and the line goes (the person sees why).
+      if (offer === 'preparing') {
+        refuseChord(record, stamp, 'unseen');
+        return true;
+      }
+      // A line with nothing to confirm takes no answer and stays (it says what to do instead); the key is still a refused affirmative.
+      if (offer === 'nothing') {
+        chord.resolved(stamp);
+        return true;
+      }
+      const refusal = chordRefusal(record, stamp, typedBefore);
+      if (refusal !== undefined) {
+        refuseChord(record, stamp, refusal);
+        return true;
+      }
+      // Answered: the guard stamped the resolution on the host's history, so a held key cannot answer what this answer opens.
+      stopExpiry(record.chord);
+      const answer = record.handlers.chord;
+      const { runId } = record.frame;
+      if (answer !== undefined) guarded(() => answer(contextOf(runId)));
+      return true;
+    }
     const fold = foldPopupAction(record.frame, action, Math.max(1, pageRows?.() ?? 1));
     switch (fold.kind) {
       case 'frame': {
@@ -561,22 +724,9 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         }
         return true;
       }
-      case 'chord': {
-        const { runId } = record.frame;
-        const refusal = chordRefusal(record, stamp, typedBefore);
-        if (refusal === undefined) {
-          // Answered: the guard stamped the resolution on the host's history, so a held key cannot answer what this answer opens.
-          const answer = record.handlers.chord;
-          if (answer !== undefined) guarded(() => answer(contextOf(runId)));
-          return true;
-        }
-        // Not an answer: the line is disarmed, and the key counts as a resolution, so its auto-repeat cannot answer a line it re-arms.
-        chord.resolved(stamp);
-        disarm(record);
-        const refused = record.handlers.chordRefused;
-        if (refused !== undefined) guarded(() => refused(contextOf(runId), refusal));
+      case 'chord':
+        // Reached only through the branch above (the fold's own chord is the pure reducer's): nothing to do here.
         return true;
-      }
       case 'close':
         chord.resolved(stamp);
         closeTop(1, 'escape');
@@ -593,7 +743,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         return true;
       }
       case 'control': {
-        chord.resolved(stamp);
+        // A control letter resolves nothing (it runs a check, arms a line, copies): it is not stamped, so it locks no line it arms.
         const { runId } = record.frame;
         const control = record.handlers.control;
         if (control !== undefined) guarded(() => control(contextOf(runId), fold.key));
@@ -631,19 +781,39 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       chord.foreign(stamp);
       const step = currentStep(record.frame).spec;
       const action = reducePopupKey(input, key, step);
+      // A `Ctrl+Y` on a step that is not a confirmation line answers nothing: a refused affirmative, which restarts the lockout, so a key held
+      // through the step that arms a line cannot answer that line on its auto-repeat.
+      if (action.kind !== 'chord' && reduceChordKey(input, key) === 'allow') chord.resolved(stamp);
       const kind = openingKeyOf(action);
       // Every key that is not a navigation key is evidence against a confirmation line armed before it, seen or not (the line's `typed` rule).
       const typedBefore = record.typed;
       if (kind === 'answer' || kind === 'type') record.typed += 1;
-      // A frame nobody has seen takes no key but the ones that leave (it is typing, already counted above).
-      if (kind !== 'leave' && visibility?.(snapshot) !== true) return true;
-      if (!record.guard.admits(kind, stamp.now)) return true;
+      // A frame nobody has seen takes no key but the ones that leave (it is typing, already counted above), and the opening guard takes none
+      // that came too soon. A `Ctrl+Y` dropped there on a confirmation line still disarms it, and the person is told why.
+      const seen = kind === 'leave' || visibility?.(snapshot) === true;
+      if (!seen || !record.guard.admits(kind, stamp.now)) {
+        if (action.kind === 'chord') {
+          const appearedAt = record.guard.shownAt();
+          const before = !seen || appearedAt === undefined || stamp.now <= appearedAt;
+          refuseChord(
+            record,
+            stamp,
+            before || lineOffer(record) === 'preparing' ? 'unseen' : 'early',
+          );
+        }
+        return true;
+      }
+      // Whether the line offered an answer, read before the key moves the popup: a key typed over it is told as `typed`.
+      const offered =
+        action.kind === 'disarm' && action.cause === 'typed' && lineOffer(record) !== 'nothing';
       keyStamp = stamp;
       try {
-        return applyKey(record, action, stamp, typedBefore);
+        applyKey(record, action, stamp, typedBefore);
       } finally {
         keyStamp = undefined;
       }
+      if (offered) tellRefused(record, 'typed');
+      return true;
     },
     paste: (text) => {
       const record = top();
@@ -652,7 +822,9 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       chord.foreign(stamp);
       // A paste answers nothing: on a confirmation line it disarms it, seen or not (so it never has to be counted against an answer).
       if (onChordStep(record.frame)) {
+        const offered = lineOffer(record) !== 'nothing';
         disarm(record);
+        if (offered) tellRefused(record, 'typed');
         return true;
       }
       // Typed text goes only into a text field (§3): a step with no filter takes no paste, and one that is not on screen takes none.
@@ -681,13 +853,20 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       notify(closedUnansweredText(title, 'error'));
     },
     resized: (columns, rows) => {
+      fitsTerminal = popupFits(columns, rows);
       const record = top();
       if (record === undefined) return;
       // The frame is measured again: a confirmation line's dwell restarts at the acknowledgement of the frame drawn at the new size.
-      record.chord?.guard.begin();
-      if (popupFits(columns, rows)) return;
+      beginLine(record);
+      if (fitsTerminal) {
+        syncHold();
+        return;
+      }
       // Below the floor the frame is replaced by a notice. A step that holds a chord or a secret is not left pending behind it.
-      if (currentStep(record.frame).spec.holds === undefined) return;
+      if (currentStep(record.frame).spec.holds === undefined) {
+        syncHold();
+        return;
+      }
       const title = record.frame.spec.title;
       closeTop(stack.length, 'resize');
       notify(closedUnansweredText(title, 'resize'));
@@ -707,9 +886,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     shown: (frame) => {
       if (frame !== snapshot || !snapshot.open) return;
       const record = top();
-      record?.guard.shown();
-      // Every NEW acknowledged frame of a confirmation line is its dwell origin (the acknowledgement tells only a new frame).
-      record?.chord?.guard.shown();
+      if (record === undefined) return;
+      record.guard.shown();
+      // Every NEW acknowledged frame of a confirmation line is its dwell origin and the start of its window (the acknowledgement tells only a
+      // new frame).
+      record.chord?.guard.shown();
+      startExpiry(record);
     },
     clock: {
       subscribe: (listener) => {
@@ -720,9 +902,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     },
     dispose: () => {
       if (disposed) return;
-      closeTop(stack.length, 'dispose');
+      // First: a command's close hook that opens a popup during the teardown is refused (`closed`), never pushed into a host that is going.
       disposed = true;
+      closeTop(stack.length, 'dispose');
       stopClock();
+      stopNotices?.();
+      channel?.popupHold(undefined);
       listeners.clear();
       clockListeners.clear();
     },

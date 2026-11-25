@@ -42,11 +42,13 @@ import {
   popupFrameLines,
   popupNoticeLegend,
   popupNoticeLines,
+  reportPageRows,
   type PopupFrameParts,
 } from './frame-model.js';
 import {
   INLINE_LIST_MAX_ROWS,
   popupGeometry,
+  popupInnerWidth,
   type PopupBoxGeometry,
   type PopupGeometry,
   type PopupPlacement,
@@ -161,16 +163,21 @@ function HostPopup(
       : (() => {
           const { spec, state } = currentStep(frame);
           const filter = spec.filter === true ? state.filter : undefined;
+          const kind = frame.spec.kind ?? 'standard';
+          // The body's row count depends on the glyph form (a cut ends in the table's ellipsis, `…` or `...`): count it in the form it is drawn in.
           return popupGeometry({
             columns: size.cols,
             rows: size.rows,
-            kind: frame.spec.kind ?? 'standard',
+            kind,
             placement: snapshot.placement,
             rail: railOf(frame).names.length > 1,
-            bodyRows: naturalBodyRows(
-              state.content,
-              { ...state, filter },
-              snapshot.placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+            bodyRows: withGlyphForm(!color, () =>
+              naturalBodyRows(
+                state.content,
+                { ...state, filter },
+                snapshot.placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+                popupInnerWidth(size.cols, kind),
+              ),
             ),
           });
         })();
@@ -191,7 +198,7 @@ function HostPopup(
     acknowledgement.commit(snapshot, node.current, expectedFrame(geometry), props.flush);
   });
   if (frame === undefined || geometry === undefined) return null;
-  const legendParts = popupLegend(frame);
+  const { spec, state } = currentStep(frame);
   if (!geometry.fits)
     return (
       <PopupNotice
@@ -199,17 +206,21 @@ function HostPopup(
         color={color}
         placement={snapshot.placement}
         columns={size.cols}
-        legend={legendParts}
+        legend={withGlyphForm(!color, () => popupLegend(frame))}
       />
     );
-  const { spec, state } = currentStep(frame);
   const rail = railOf(frame);
   const parts: PopupFrameParts = {
     title: frame.spec.title,
     origin: frame.spec.origin,
     steps: rail.names,
     stepIndex: rail.index,
-    legend: legendParts,
+    // The legend is judged on the page this frame draws (a report that fits names no scroll).
+    legend: withGlyphForm(!color, () =>
+      popupLegend(frame, reportPageRows(geometry, spec.filter === true)),
+    ),
+    // The host's live notification, in the legend row while the popup covers the hint row.
+    notice: snapshot.notice,
   };
   const lines = withGlyphForm(!color, () =>
     popupFrameLines(

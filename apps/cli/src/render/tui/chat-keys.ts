@@ -13,7 +13,29 @@
  * and the glyph table holds it.
  */
 
-import type { HelpKey } from './help-sheet.js';
+import type { HelpKey, HelpKeyEvent, HelpKeyPress } from './help-sheet.js';
+
+/** The press of a key of the chat: the landing's own flags and `↑`, which the chat's history recall and the Home's `↓` row do not share. */
+export interface ChatKeyPress extends HelpKeyPress {
+  readonly key: HelpKeyEvent & { readonly upArrow?: boolean };
+}
+
+/** A key of the chat: how it is written, what it does, and the presses that do it. */
+export interface ChatKeyDefinition extends Omit<HelpKey, 'presses'> {
+  readonly presses: readonly ChatKeyPress[];
+}
+
+/**
+ * The bytes of the mouse reports (SGR 1006) the full-screen chat reads: a wheel notch up or down, and a drag along the whole of the second row
+ * of the screen (the press at its first column, the motion past its last, the release).
+ */
+export const MOUSE_REPORTS = {
+  wheelUp: '\u001b[<64;10;5M',
+  wheelDown: '\u001b[<65;10;5M',
+  press: '\u001b[<0;1;2M',
+  drag: '\u001b[<32;99;2M',
+  release: '\u001b[<0;99;2m',
+} as const;
 
 export const CHAT_KEYS = {
   send: {
@@ -25,6 +47,37 @@ export const CHAT_KEYS = {
     keys: 'Ctrl+J',
     verb: 'add a line to what you are typing',
     presses: [{ input: 'j', key: { ctrl: true } }],
+  },
+  history: {
+    keys: '↑/↓',
+    verb: 'recall what you sent before, from the first or the last line of the prompt',
+    presses: [
+      { input: '', key: { upArrow: true } },
+      { input: '', key: { downArrow: true } },
+    ],
+  },
+  lineEdges: {
+    keys: 'Ctrl+A/Ctrl+E',
+    verb: 'move to the start or the end of the line',
+    presses: [
+      { input: 'a', key: { ctrl: true } },
+      { input: 'e', key: { ctrl: true } },
+    ],
+  },
+  deleteWord: {
+    keys: 'Ctrl+W',
+    verb: 'delete the word before the cursor',
+    presses: [{ input: 'w', key: { ctrl: true } }],
+  },
+  deleteToStart: {
+    keys: 'Ctrl+U',
+    verb: 'delete from the cursor back to the start of the line',
+    presses: [{ input: 'u', key: { ctrl: true } }],
+  },
+  deleteToEnd: {
+    keys: 'Ctrl+K',
+    verb: 'delete from the cursor to the end of the line',
+    presses: [{ input: 'k', key: { ctrl: true } }],
   },
   commands: {
     keys: '/',
@@ -64,9 +117,31 @@ export const CHAT_KEYS = {
       { input: '', key: { pageDown: true } },
     ],
   },
+  wheel: {
+    keys: 'Mouse wheel',
+    verb: 'scroll the conversation (the full-screen view)',
+    presses: [
+      { input: MOUSE_REPORTS.wheelUp, key: {} },
+      { input: MOUSE_REPORTS.wheelDown, key: {} },
+    ],
+  },
+  select: {
+    keys: 'Mouse drag',
+    verb: 'select text and copy it (the full-screen view)',
+    presses: [
+      { input: MOUSE_REPORTS.press, key: {} },
+      { input: MOUSE_REPORTS.drag, key: {} },
+      { input: MOUSE_REPORTS.release, key: {} },
+    ],
+  },
+  suspend: {
+    keys: 'Ctrl+Z',
+    verb: 'send the chat to the background of the shell, where the system has job control',
+    presses: [{ input: 'z', key: { ctrl: true } }],
+  },
   interrupt: {
     keys: 'Ctrl+C',
     verb: 'clear what you typed; on an empty prompt, press twice to end the chat',
     presses: [{ input: 'c', key: { ctrl: true } }],
   },
-} as const satisfies Readonly<Record<string, HelpKey>>;
+} as const satisfies Readonly<Record<string, ChatKeyDefinition>>;

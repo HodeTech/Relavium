@@ -10,8 +10,7 @@ import './force-color.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { nextMode } from '../../chat/chat-mode.js';
-import { CHAT_KEYS } from './chat-keys.js';
-import type { HelpKeyPress } from './help-sheet.js';
+import { CHAT_KEYS, type ChatKeyPress } from './chat-keys.js';
 import {
   mountHostedChat,
   mountStandaloneChat,
@@ -19,20 +18,26 @@ import {
 } from './surface-matrix/chat-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import type { SessionViewSeed } from './session-view-model.js';
+import type { ClipboardWriter } from '../clipboard.js';
 
 type Id = keyof typeof CHAT_KEYS;
 type Host = 'chat' | 'standalone-chat';
 
-/** The bytes a terminal sends for a press the data module names (`Ctrl+J` is a line feed, `Shift+Tab` a back-tab). */
-function bytesOf({ input, key }: HelpKeyPress): string {
+/** The bytes a terminal sends for a press the data module names (`Ctrl+J` is a line feed, `Shift+Tab` a back-tab, an arrow an escape sequence). */
+function bytesOf({ input, key }: ChatKeyPress): string {
   if (key.ctrl === true) return String.fromCharCode(input.toUpperCase().charCodeAt(0) - 64);
   if (key.return === true) return '\r';
   if (key.escape === true) return '\u001b';
   if (key.tab === true && key.shift === true) return '\u001b[Z';
   if (key.pageUp === true) return '\u001b[5~';
   if (key.pageDown === true) return '\u001b[6~';
+  if (key.upArrow === true) return '\u001b[A';
+  if (key.downArrow === true) return '\u001b[B';
   return input;
 }
+
+/** Left arrow, the way a terminal sends it: the editor's cursor motion the kill checks start from. */
+const LEFT = '\u001b[D';
 
 const pressAll = (m: ChatMount, id: Id, only?: number): void => {
   CHAT_KEYS[id].presses.forEach((press, index) => {
@@ -63,7 +68,18 @@ interface Mounted {
   readonly onAbort: ReturnType<typeof vi.fn>;
 }
 
-async function mount(host: Host, variant: Variant, seed?: SessionViewSeed): Promise<Mounted> {
+/** What a host is handed besides the session's ports: the job control request and the clipboard of the selection (both are RootApp's and ChatApp's own props). */
+interface Wiring {
+  readonly onSuspend?: () => void;
+  readonly clipboard?: ClipboardWriter;
+}
+
+async function mount(
+  host: Host,
+  variant: Variant,
+  seed?: SessionViewSeed,
+  wiring: Wiring = {},
+): Promise<Mounted> {
   const onModeChange = vi.fn();
   const onAbort = vi.fn();
   const ports = { mentionReader: MENTION_READER, onModeChange, onAbort };
@@ -71,11 +87,11 @@ async function mount(host: Host, variant: Variant, seed?: SessionViewSeed): Prom
     host === 'chat'
       ? await mountHostedChat(variant, {
           ...(seed === undefined ? {} : { seed }),
-          hosted: { session: ports },
+          hosted: { session: ports, home: { props: wiring } },
         })
       : mountStandaloneChat(variant, {
           ...(seed === undefined ? {} : { seed }),
-          standalone: ports,
+          standalone: { ...ports, ...wiring },
         });
   await m.settle();
   return { m, onModeChange, onAbort };
@@ -113,6 +129,96 @@ const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
       expect(m.submitted).toEqual([]);
       m.key('\r');
       await vi.waitFor(() => expect(m.submitted).toEqual(['a\nb']));
+    } finally {
+      m.unmount();
+    }
+  },
+  history: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('earlier question');
+      await m.settle();
+      pressAll(m, 'send');
+      await vi.waitFor(() => expect(m.submitted).toEqual(['earlier question']));
+      await m.settle();
+      expect(m.text()).not.toContain('earlier question');
+      // `↑` on the first line brings back what was sent, and `↓` goes forward again to the empty prompt.
+      pressAll(m, 'history', 0);
+      await m.until(() => m.text().includes('earlier question'));
+      expect(m.text()).toContain('earlier question');
+      expect(m.submitted).toEqual(['earlier question']);
+      pressAll(m, 'history', 1);
+      await m.until(() => !m.text().includes('earlier question'));
+      expect(m.text()).not.toContain('earlier question');
+    } finally {
+      m.unmount();
+    }
+  },
+  lineEdges: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('abc');
+      await m.settle();
+      // One key at a time: bytes written together reach the terminal's reader as one chunk, which is text.
+      pressAll(m, 'lineEdges', 0);
+      await m.settle();
+      m.key('X');
+      await m.settle();
+      pressAll(m, 'lineEdges', 1);
+      await m.settle();
+      m.key('Y');
+      await m.settle();
+      pressAll(m, 'send');
+      // The start of the line took the `X`, and the end of the line took the `Y`.
+      await vi.waitFor(() => expect(m.submitted).toEqual(['XabcY']));
+    } finally {
+      m.unmount();
+    }
+  },
+  deleteWord: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('one two');
+      await m.settle();
+      pressAll(m, 'deleteWord');
+      await m.settle();
+      m.key('X');
+      await m.settle();
+      pressAll(m, 'send');
+      // Only the word before the cursor went.
+      await vi.waitFor(() => expect(m.submitted).toEqual(['one X']));
+    } finally {
+      m.unmount();
+    }
+  },
+  deleteToStart: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('abcdef');
+      await m.settle();
+      m.key(LEFT.repeat(3));
+      await m.settle();
+      pressAll(m, 'deleteToStart');
+      await m.settle();
+      pressAll(m, 'send');
+      // What was before the cursor went, what was after it stayed.
+      await vi.waitFor(() => expect(m.submitted).toEqual(['def']));
+    } finally {
+      m.unmount();
+    }
+  },
+  deleteToEnd: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('abcdef');
+      await m.settle();
+      m.key(LEFT.repeat(3));
+      await m.settle();
+      pressAll(m, 'deleteToEnd');
+      await m.settle();
+      pressAll(m, 'send');
+      // What was after the cursor went, what was before it stayed.
+      await vi.waitFor(() => expect(m.submitted).toEqual(['abc']));
     } finally {
       m.unmount();
     }
@@ -241,6 +347,67 @@ const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
       m.unmount();
     }
   },
+  wheel: async (host) => {
+    const { m } = await mount(host, ALT, LONG);
+    try {
+      await m.until(() => m.text().includes('answer 39'));
+      // Wheel up moves back through the conversation to the first turn, and wheel down brings the last one back.
+      for (let notch = 0; notch < 40; notch += 1) {
+        pressAll(m, 'wheel', 0);
+        await m.settle();
+      }
+      expect(m.text()).toContain('question 0 ');
+      expect(m.text()).not.toContain('answer 39');
+      for (let notch = 0; notch < 40; notch += 1) {
+        pressAll(m, 'wheel', 1);
+        await m.settle();
+      }
+      expect(m.text()).toContain('answer 39');
+      // The reports were consumed: none of their bytes were typed into the prompt.
+      expect(m.text()).not.toContain('<64;');
+      expect(m.submitted).toEqual([]);
+    } finally {
+      m.unmount();
+    }
+  },
+  select: async (host) => {
+    const copied: string[] = [];
+    const { m } = await mount(host, ALT, LONG, {
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    try {
+      await m.until(() => m.text().includes('answer 39'));
+      const row = (m.text().split('\n')[1] ?? '').trimEnd();
+      expect(row).toMatch(/question|answer/u);
+      // Press at the start of the second row, drag past its end, release: the whole of that row is what was copied.
+      for (const press of CHAT_KEYS.select.presses) {
+        m.key(bytesOf(press));
+        await m.settle();
+      }
+      await vi.waitFor(() => expect(copied.map((text) => text.trimEnd())).toEqual([row]));
+      expect(m.submitted).toEqual([]);
+    } finally {
+      m.unmount();
+    }
+  },
+  suspend: async (host) => {
+    const onSuspend = vi.fn();
+    const { m } = await mount(host, ALT, undefined, { onSuspend });
+    try {
+      m.key('draft');
+      await m.settle();
+      pressAll(m, 'suspend');
+      await vi.waitFor(() => expect(onSuspend).toHaveBeenCalledOnce());
+      // It is the shell's job control, not text and not a message: the draft is as it was, and nothing was sent.
+      expect(m.text()).toContain('draft');
+      expect(m.submitted).toEqual([]);
+    } finally {
+      m.unmount();
+    }
+  },
   interrupt: async (host) => {
     const { m } = await mount(host, ALT);
     try {
@@ -266,6 +433,41 @@ const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
 describe('every key `/help` lists for a chat does what its verb says', () => {
   it('has a check for every key of the data module, and none for a key that is not in it', () => {
     expect(Object.keys(CHECKS).sort()).toEqual(Object.keys(CHAT_KEYS).sort());
+  });
+
+  it('says exactly these words for exactly these keys, in this order (a verb changed to say something else is a decision, not a drift)', () => {
+    expect(Object.entries(CHAT_KEYS).map(([id, key]) => [id, key.keys, key.verb])).toEqual([
+      ['send', 'Enter', 'send what you typed, or run the command'],
+      ['newline', 'Ctrl+J', 'add a line to what you are typing'],
+      [
+        'history',
+        '↑/↓',
+        'recall what you sent before, from the first or the last line of the prompt',
+      ],
+      ['lineEdges', 'Ctrl+A/Ctrl+E', 'move to the start or the end of the line'],
+      ['deleteWord', 'Ctrl+W', 'delete the word before the cursor'],
+      ['deleteToStart', 'Ctrl+U', 'delete from the cursor back to the start of the line'],
+      ['deleteToEnd', 'Ctrl+K', 'delete from the cursor to the end of the line'],
+      ['commands', '/', 'the commands, from an empty prompt'],
+      ['files', '@', 'attach a file by name, from the start of a word'],
+      ['search', 'Ctrl+R', 'search the messages you sent before'],
+      ['mode', 'Shift+Tab', 'change the mode, between turns'],
+      ['thinking', 'Ctrl+T', 'show or hide the reasoning of the model'],
+      ['stop', 'Esc', 'stop the running turn and keep the chat'],
+      ['scroll', 'PgUp/PgDn', 'scroll the conversation (the full-screen view)'],
+      ['wheel', 'Mouse wheel', 'scroll the conversation (the full-screen view)'],
+      ['select', 'Mouse drag', 'select text and copy it (the full-screen view)'],
+      [
+        'suspend',
+        'Ctrl+Z',
+        'send the chat to the background of the shell, where the system has job control',
+      ],
+      [
+        'interrupt',
+        'Ctrl+C',
+        'clear what you typed; on an empty prompt, press twice to end the chat',
+      ],
+    ]);
   });
 
   it('names each key once, with a verb that names no key (a key in a sentence is the legend builder’s token)', () => {

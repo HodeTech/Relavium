@@ -18,19 +18,18 @@ import {
   agentSheetTitle,
   effortText,
   EMPTY_PROMPT,
+  fieldLead,
+  INDENT,
+  LABEL_WIDTH,
   nameText,
   NOT_SET,
-  packedTools,
   toolsParts,
+  wrappedTools,
 } from '../render/tui/agent-sheet.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
 import { copyControlsFor } from './report-copy.js';
 import { REPORT_TEXT_COLUMNS, reportText, wrapHanging } from './report-text.js';
-
-/** The width of a field's label, and so the column its value starts in (the same two as the `/agents` detail and the retired sheet). */
-const LABEL_WIDTH = 18;
-const INDENT = '  ';
 
 /** What the popup says when the view of the agent cannot be made. */
 export const AGENT_REPORT_UNREADABLE = {
@@ -64,26 +63,23 @@ export function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
 
 /** One field: its label, then its value, which wraps under itself (nothing is cut: a popup scrolls where a sheet could not). */
 function field(label: string, value: string): string[] {
-  const lead = `${INDENT}${label.padEnd(LABEL_WIDTH)}`;
+  const lead = fieldLead(label);
   return wrapHanging(`${lead}${value}`, REPORT_TEXT_COLUMNS, lead.length);
 }
 
 /**
  * The tool grant as rows: the count that leads (only where a declared tool is not offered) and the names, each with its mark, wrapped BETWEEN
- * names and never inside one, so a mark is never split from its name over two lines. Nothing is left out: a popup scrolls where a sheet cut.
+ * names so a mark is never split from its name over two lines, and a name that is wider than the room wrapped onto the rows after it. Nothing
+ * is cut or left out: a popup scrolls where a sheet cut, so the whole of every tool id is on screen and in the copy.
  */
 function toolsField(view: BoundAgentView): string[] {
   const { lead, items } = toolsParts(view);
-  const rows = packedTools(
+  const rows = wrappedTools(
     lead,
     items.map((item) => item.text),
     REPORT_TEXT_COLUMNS - INDENT.length - LABEL_WIDTH,
   );
-  return rows.map((row, index) =>
-    index === 0
-      ? `${INDENT}${'Tools'.padEnd(LABEL_WIDTH)}${row}`
-      : `${INDENT}${' '.repeat(LABEL_WIDTH)}${row}`,
-  );
+  return rows.map((row, index) => `${index === 0 ? fieldLead('Tools') : fieldLead('')}${row}`);
 }
 
 /**

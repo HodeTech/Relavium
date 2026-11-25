@@ -6,10 +6,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { catalogNotice } from '../chat/repl-info.js';
 import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { ESC } from './doctor.test-support.js';
 import { openFrame } from './popup-reducer.js';
 import { catalogEntry, fakeWorkflows, reportRig, settleWork } from './report.test-support.js';
-import { workflowsContent, workflowsSpec } from './workflows-popup.js';
+import { REPORT_TEXT_COLUMNS } from './report-text.js';
+import {
+  WORKFLOWS_FAULT,
+  workflowsContent,
+  workflowsFailedContent,
+  workflowsSpec,
+} from './workflows-popup.js';
 
 // Built at runtime (no contiguous secret literal: leakwatch).
 const SECRET = ['sk', 'ant', 'flows', 'ABCDEF1234567890XYZ'].join('-');
@@ -55,10 +62,33 @@ describe('the content', () => {
       reason: `too many workflow files\u001b[31m [Ctrl+Y] ${SECRET}`,
     });
     if (fault.kind !== 'error') throw new Error('an error');
-    expect(fault.what).toContain('Could not list the workflows: too many workflow files');
-    expect(fault.what).not.toContain('\u001b');
-    expect(fault.what).not.toContain('Ctrl+Y');
-    expect(fault.what).not.toContain(SECRET);
+    // The fixed sentence first, then the fault's own words on the line after it, scrubbed.
+    expect(fault.what).toBe(WORKFLOWS_FAULT);
+    expect(fault.next).toContain('too many workflow files');
+    for (const text of [fault.what, fault.next]) {
+      expect(text).not.toContain('\u001b');
+      expect(text).not.toContain('Ctrl+Y');
+      expect(text).not.toContain(SECRET);
+    }
+  });
+
+  it('every sentence the popup composes fits the popup at the 80-column floor (an error’s first line has a glyph before it), and none repeats what the legend says of Esc', () => {
+    const contents = [
+      workflowsContent({ kind: 'no-project' }),
+      workflowsContent({ kind: 'catalog', workflows: [], agents: [] }),
+      workflowsContent({ kind: 'fault', reason: 'too many workflow files' }),
+      workflowsFailedContent(),
+    ];
+    expect(contents.map((content) => content.kind)).toEqual(['empty', 'empty', 'error', 'error']);
+    for (const content of contents) {
+      if (content.kind !== 'empty' && content.kind !== 'error') throw new Error('a state');
+      const glyph = content.kind === 'error' ? 2 : 0;
+      expect(displayWidth(content.what), content.what).toBeLessThanOrEqual(
+        REPORT_TEXT_COLUMNS - glyph,
+      );
+      expect(displayWidth(content.next), content.next).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+      expect(`${content.what} ${content.next}`).not.toMatch(/\bEsc\b/u);
+    }
   });
 
   it('wraps a long slug under itself and cuts nothing', () => {

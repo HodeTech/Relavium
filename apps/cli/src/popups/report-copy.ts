@@ -33,15 +33,15 @@ export function reportCopyText(lines: readonly string[], plainGlyphs: boolean): 
   return withGlyphForm(plainGlyphs, () => lines.map((line) => popupText(line)).join('\n'));
 }
 
-/** What a copy says, in the doctor's sentences, under the report's name (`Cost report: sent 412 characters to the terminal clipboard.`). */
+/** What a copy says, in the doctor's sentences, under the report's name and short enough for the popup's legend row, where it is drawn (`Cost: sent 412 characters to the terminal clipboard.`). */
 export function reportCopyNotice(label: string, outcome: ClipboardOutcome): string | undefined {
   switch (outcome.kind) {
     case 'written':
-      return `${label} report: sent ${String(outcome.characters)} characters to the terminal clipboard.`;
+      return `${label}: sent ${String(outcome.characters)} characters to the terminal clipboard.`;
     case 'failed':
-      return `${label} report: the clipboard request failed.`;
+      return `${label}: the clipboard request failed.`;
     case 'too-large':
-      return `${label} report: too large for the terminal clipboard.`;
+      return `${label}: too large for the terminal clipboard.`;
     case 'empty':
       return undefined;
   }
@@ -49,7 +49,7 @@ export function reportCopyNotice(label: string, outcome: ClipboardOutcome): stri
 
 /** What `[c]` says when the host wired no clipboard: copying is not available here. The control is still offered, and says so. */
 export function reportCopyUnavailable(label: string): string {
-  return `${label} report: copying is not available here.`;
+  return `${label}: copying is not available here.`;
 }
 
 /**

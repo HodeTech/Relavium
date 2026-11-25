@@ -15,7 +15,7 @@
  *
  * The keys that leave (`Esc`, `Ctrl+C`) are always admitted: leaving answers nothing, and a popup must never trap the person.
  *
- * Pure and framework-free; the clock is injected (`popup-opening-guard.test.ts` drives it), production passes `performance.now`.
+ * Pure and framework-free; the clock is injected (`opening-guard.test.ts` drives it), production passes `performance.now`.
  */
 
 /** How long a popup has been on screen before an `Enter` (or a control that acts) counts. About half a second (§3). */

@@ -9,9 +9,10 @@ import {
   popupFrameLines,
   popupNoticeLegend,
   popupNoticeLines,
+  reportPageRows,
   type PopupContent,
 } from '../../../../popups/frame-model.js';
-import { popupGeometry } from '../../../../popups/geometry.js';
+import { popupGeometry, popupInnerWidth } from '../../../../popups/geometry.js';
 import { nativePopupLegend } from '../../../../popups/native-popup-body.js';
 import {
   currentStep,
@@ -29,6 +30,7 @@ import { PopupFrameView } from '../../../../popups/popup-slot.js';
 import type { DoctorCheck } from '../../../../chat/doctor.js';
 import {
   checksContent,
+  doctorChecksControls,
   consentContent,
   detailContent,
   doctorSpec,
@@ -150,13 +152,14 @@ const spec = (steps: readonly PopupStep[]): PopupSpec => ({
   steps,
 });
 
-/** The rows of the frame of `frame` (its current step), drawn by the frame model at 80×24 in the form colour asks for. */
+/**
+ * The rows of the frame of `frame` (its current step), drawn by the frame model at 80×24 in the form colour asks for, as the slot draws them:
+ * its body asked for at the inner width (a state's sentences wrap), its legend judged on the page it draws (unless `legendParts` is given).
+ */
 export function frameRows(
   frame: PopupFrame,
   color: boolean,
-  legendParts: { readonly items: readonly LegendItem[]; readonly exit: LegendExit } = popupLegend(
-    frame,
-  ),
+  legendParts?: { readonly items: readonly LegendItem[]; readonly exit: LegendExit },
 ) {
   const { spec: current, state } = currentStep(frame);
   const body = { ...state, filter: current.filter === true ? state.filter : undefined };
@@ -167,7 +170,7 @@ export function frameRows(
     kind: 'standard',
     placement: 'overlay',
     rail: rail.names.length > 1,
-    bodyRows: naturalBodyRows(state.content, body),
+    bodyRows: naturalBodyRows(state.content, body, undefined, popupInnerWidth(80, 'standard')),
   });
   if (!geometry.fits) throw new Error('refused');
   return withGlyphForm(!color, () =>
@@ -177,7 +180,8 @@ export function frameRows(
         origin: frame.spec.origin,
         steps: rail.names,
         stepIndex: rail.index,
-        legend: legendParts,
+        legend:
+          legendParts ?? popupLegend(frame, reportPageRows(geometry, body.filter !== undefined)),
       },
       popupBody(state.content, body, geometry),
       geometry,
@@ -345,7 +349,12 @@ const recordDoctor: Recorder = (): StateRows => {
     ],
   };
   const checksFrame = (view: DoctorView): PopupFrame =>
-    withContent(openFrame(doctorSpec('home', false), 1), DOCTOR_STEP.checks, checksContent(view));
+    withContent(
+      openFrame(doctorSpec('home', false), 1),
+      DOCTOR_STEP.checks,
+      checksContent(view),
+      doctorChecksControls(true),
+    );
   const at = (frame: PopupFrame, step: number, content?: Parameters<typeof withContent>[2]) =>
     ({
       ...(content === undefined ? frame : withContent(frame, step, content)),
@@ -415,11 +424,16 @@ const recordDoctor: Recorder = (): StateRows => {
     ),
     ...frameStates(
       label({ step: 'checks', content: 'error' }),
-      withContent(base, DOCTOR_STEP.checks, {
-        kind: 'error',
-        what: 'The checks could not run.',
-        next: '[r] runs them again.',
-      }),
+      withContent(
+        base,
+        DOCTOR_STEP.checks,
+        {
+          kind: 'error',
+          what: 'The checks could not run.',
+          next: '[r] runs them again.',
+        },
+        doctorChecksControls(false),
+      ),
     ),
   };
 };

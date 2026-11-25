@@ -240,15 +240,130 @@ describe('the legend names exactly the keys the fold reads', () => {
     expect(parts.exit.class).toBe('step');
   });
 
-  it('a loading step says its Esc cancels; a report says it scrolls; a one-row list does not offer select', () => {
+  it('a loading first step says its Esc cancels; a report that overflows its page says it scrolls; a one-row list does not offer select', () => {
     const loading = openFrame(spec([step({ content: { kind: 'loading', what: 'Checking' } })]), 1);
     expect(legend(popupLegend(loading).items, popupLegend(loading).exit)).toBe('Esc cancel');
-    const report = openFrame(spec([step({ content: { kind: 'report', lines: ['x'] } })]), 1);
-    expect(legend(popupLegend(report).items, popupLegend(report).exit)).toBe(
-      '↑/↓ scroll · Esc close',
-    );
     const single = openFrame(spec([step({ content: { kind: 'list', rows: [row('one')] } })]), 1);
     expect(legend(popupLegend(single).items, popupLegend(single).exit)).toBe('Esc close');
+  });
+});
+
+describe('`↑/↓ scroll` is named only for a report that does not fit its page (MVP-11 step 4 review)', () => {
+  const report = (count: number): PopupFrame =>
+    openFrame(
+      spec([
+        step({
+          content: {
+            kind: 'report',
+            lines: Array.from({ length: count }, (_, i) => `l${String(i)}`),
+          },
+        }),
+      ]),
+      1,
+    );
+  const said = (frame: PopupFrame, rows?: number): string => {
+    const parts = popupLegend(frame, rows);
+    return legend(parts.items, parts.exit);
+  };
+
+  it('on the page the frame draws: one line more than the page scrolls, a page of lines does not', () => {
+    expect(said(report(5), 5)).toBe('Esc close');
+    expect(said(report(6), 5)).toBe('↑/↓ scroll · Esc close');
+    expect(said(report(1), 1)).toBe('Esc close');
+    expect(said(report(2), 1)).toBe('↑/↓ scroll · Esc close');
+  });
+
+  it('without a page, on the page of a standard popup at the floor (18 body rows for one step, 17 with a rail)', () => {
+    expect(said(report(1))).toBe('Esc close');
+    expect(said(report(18))).toBe('Esc close');
+    expect(said(report(19))).toBe('↑/↓ scroll · Esc close');
+    const railed = (count: number): PopupFrame => ({
+      ...openFrame(
+        spec([
+          step(),
+          step({
+            name: 'Two',
+            content: {
+              kind: 'report',
+              lines: Array.from({ length: count }, (_, i) => `l${String(i)}`),
+            },
+          }),
+        ]),
+        1,
+      ),
+      stepIndex: 1,
+    });
+    expect(said(railed(17))).toBe('[Ctrl+C] close · Esc back');
+    expect(said(railed(18))).toBe('↑/↓ scroll · [Ctrl+C] close · Esc back');
+  });
+
+  it('every legend the fold scrolls is a legend that says so: the key moves the report exactly when it is named', () => {
+    for (const [count, page] of [
+      [5, 5],
+      [6, 5],
+      [1, 1],
+      [2, 1],
+    ] as const) {
+      const frame = report(count);
+      const moved = foldPopupAction(frame, { kind: 'move', delta: 1 }, page).kind === 'frame';
+      expect(said(frame, page).includes('scroll'), `${String(count)} in ${String(page)}`).toBe(
+        moved,
+      );
+    }
+  });
+});
+
+describe('the way back says what Esc does there (MVP-11 step 4 review)', () => {
+  const LINE: PopupStep = {
+    name: 'Line',
+    content: { kind: 'report', lines: ['Sends one small request'] },
+    back: 0,
+    holds: 'chord',
+    chord: { verb: 'send' },
+  };
+  const said = (frame: PopupFrame): string => {
+    const parts = popupLegend(frame);
+    return legend(parts.items, parts.exit);
+  };
+  const on = (line: PopupStep, content?: PopupContent): PopupFrame => {
+    const frame = { ...openFrame(spec([step(), line]), 1), stepIndex: 1 };
+    return content === undefined ? frame : withContent(frame, 1, content);
+  };
+
+  it('a confirmation line steps back, whatever it shows: answer drawn, being prepared, nothing to confirm, failed', () => {
+    expect(said(on(LINE))).toBe('[Ctrl+Y] send · Esc back');
+    expect(said(on(LINE, { kind: 'loading', what: 'Reading' }))).toBe('Esc back');
+    expect(
+      said(on(LINE, { kind: 'empty', what: 'No provider has a key.', next: 'Add one.' })),
+    ).toBe('Esc back');
+    expect(said(on(LINE, { kind: 'error', what: 'It failed.', next: 'Esc goes back.' }))).toBe(
+      'Esc back',
+    );
+    expect(popupLegend(on(LINE)).exit.class).toBe('step');
+  });
+
+  it('a confirmation line that is the first step closes, and cancels only while it is being prepared', () => {
+    const first = (content: PopupContent): PopupFrame =>
+      openFrame(spec([{ ...LINE, back: undefined, content }]), 1);
+    expect(said(first({ kind: 'report', lines: ['x'] }))).toBe('[Ctrl+Y] send · Esc close');
+    expect(said(first({ kind: 'empty', what: 'none', next: 'go' }))).toBe('Esc close');
+    expect(said(first({ kind: 'loading', what: 'Reading' }))).toBe('Esc cancel');
+    expect(popupLegend(first({ kind: 'loading', what: 'Reading' })).exit.class).toBe('close');
+  });
+
+  it('a later step that is loading goes back (Esc does not stop its work there); a first step that is loading cancels', () => {
+    const later = {
+      ...openFrame(
+        spec([step(), step({ name: 'Two', content: { kind: 'loading', what: 'x' } })]),
+        1,
+      ),
+      stepIndex: 1,
+    };
+    expect(said(later)).toBe('[Ctrl+C] close · Esc back');
+    expect(press(later, '', { escape: true }).kind).toBe('frame');
+    const first = openFrame(spec([step({ content: { kind: 'loading', what: 'x' } })]), 1);
+    expect(said(first)).toBe('Esc cancel');
+    expect(press(first, '', { escape: true }).kind).toBe('close');
   });
 });
 
@@ -260,12 +375,13 @@ describe('the letters a step answers to can arrive with its content (ADR-0148 §
   it('a step with no control answers no letter, and one the content brought answers it, in the fold and in the legend', () => {
     const bare = two();
     expect(press(bare, 'r').kind).toBe('unchanged');
-    expect(legend(popupLegend(bare).items, popupLegend(bare).exit)).toBe('↑/↓ scroll · Esc close');
+    // A one-line report fits its page: it names no scroll.
+    expect(legend(popupLegend(bare).items, popupLegend(bare).exit)).toBe('Esc close');
     const offered = withContent(bare, 0, REPORT, R);
     expect(currentStep(offered).spec.controls).toEqual(R);
     expect(press(offered, 'r')).toEqual({ kind: 'control', key: 'r' });
     expect(legend(popupLegend(offered).items, popupLegend(offered).exit)).toBe(
-      '↑/↓ scroll · r release · Esc close'.replace('r release', '[r] release'),
+      '[r] release · Esc close',
     );
   });
 
@@ -318,8 +434,31 @@ describe('a final step: the end of a flow (MVP-11 step 4b)', () => {
     expect(press(plain, '', { escape: true }).kind).toBe('frame');
   });
 
-  it('Enter answers it and Ctrl+C closes everything, as on any step', () => {
-    expect(press(flow(), '', { return: true })).toEqual({ kind: 'enter', row: undefined });
+  it('Enter closes it as Esc does, whatever it shows (a failed result, nothing, a load), and Ctrl+C closes everything', () => {
+    expect(press(flow(), '', { return: true })).toEqual({ kind: 'close' });
+    for (const content of [
+      { kind: 'error', what: 'The release could not be completed.', next: 'Esc closes.' },
+      { kind: 'empty', what: 'Nothing.', next: 'Esc closes.' },
+      { kind: 'loading', what: 'Reading' },
+      { kind: 'list', rows: [] },
+    ] as const satisfies readonly PopupContent[])
+      expect(press(withContent(flow(), 2, content), '', { return: true }), content.kind).toEqual({
+        kind: 'close',
+      });
+    // The same step without `final` refuses Enter on a failed result (it has nothing to answer).
+    const plain = withContent(
+      {
+        ...flow(),
+        spec: spec([
+          step(),
+          step({ name: 'B', back: 0 }),
+          step({ name: 'C', back: 1, enter: 'close' }),
+        ]),
+      },
+      2,
+      { kind: 'error', what: 'x', next: 'y' },
+    );
+    expect(press(plain, '', { return: true }).kind).toBe('unchanged');
     expect(press(flow(), 'c', { ctrl: true }).kind).toBe('close-all');
   });
 

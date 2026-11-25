@@ -168,8 +168,9 @@ const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   exitGuard: ['screenSlot', 'stripPause', 'activePoll', 'pageNotice'],
   // Rows are `replacesBody`'s: a native prompt drawn as a popup in the overlay keeps the body drawn behind it.
   nativePrompt: ['scrollKeys', 'pointer', 'mouseCapture', 'revokesCustody'],
-  // A popup owns every key and keeps the body drawn (its prompt and hint stay, dimmed behind it later); a card under it loses custody. It does
-  // not release the mouse (toggling reporting for a transient state is churn, and a report is consumed by the pointer gate).
+  // A popup owns every key and keeps the body drawn (its prompt and hint stay, dimmed behind it in the alternate screen with colour on:
+  // `BackdropDim`, `popup-slot.tsx`'s `dimsBackdrop`); a card under it loses custody. It does not release the mouse (toggling reporting for a
+  // transient state is churn, and a report is consumed by the pointer gate).
   popup: [
     'screenSlot',
     'scrollKeys',

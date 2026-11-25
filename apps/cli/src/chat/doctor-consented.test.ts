@@ -55,6 +55,12 @@ describe('providerEndpointOrigin', () => {
     'Custom endpoint: https://gateway.example/v1',
     'Official endpoint: https://user:pass@api.example',
     'Custom endpoint: https://gateway.example extra',
+    // Not a URL at all, in the words the origin is written in (the whole text must be exactly the pinned form, and its address must parse).
+    'Custom endpoint: not a url',
+    'Custom endpoint: notaurl',
+    // Text before the pinned form is not the pinned form.
+    'prefix Custom endpoint: https://x',
+    'prefix Official endpoint: https://api.anthropic.com',
   ])('is unknown for anything but an exact https origin: %s', (context) => {
     const resolver: ProviderResolver = {
       resolveProvider: () => undefined,
@@ -96,6 +102,21 @@ describe('runConsentedProviderChecks', () => {
     const anthropic = recordingProvider('anthropic');
     const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
     seam.origins.anthropic = 'https://moved.example';
+    const checks = await runConsentedProviderChecks(
+      [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
+      { resolver: seam.resolver, lifecycle: lifecycle() },
+    );
+    expect(checks[0]).toMatchObject({ status: 'fail', detail: ENDPOINT_CHANGED_DETAIL });
+    expect(anthropic.requests).toEqual([]);
+    expect(seam.keyFor).not.toHaveBeenCalled();
+  });
+
+  it('refuses a destination the resolver can no longer name at all, and reads no key for it', async () => {
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+    // The resolver’s pinned destination became the one it says when a custom endpoint was refused: no origin can be read from it.
+    delete seam.origins.anthropic;
+    expect(providerEndpointOrigin(seam.resolver, 'anthropic')).toBeUndefined();
     const checks = await runConsentedProviderChecks(
       [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
       { resolver: seam.resolver, lifecycle: lifecycle() },

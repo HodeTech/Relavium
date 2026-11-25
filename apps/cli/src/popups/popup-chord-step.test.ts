@@ -7,9 +7,9 @@ import { describe, expect, it } from 'vitest';
 
 import { legend } from '../render/tui/legend.js';
 import { displayWidth } from '../render/tui/viewport.js';
-import { DOCTOR_TEXT_COLUMNS, doctorSpec } from './doctor-popup.js';
+import { consentContent, DOCTOR_TEXT_COLUMNS, doctorSpec } from './doctor-popup.js';
 import { popupFrameLines } from './frame-model.js';
-import { popupGeometry, type PopupBoxGeometry } from './geometry.js';
+import { POPUP_NOTICE_MAX_COLUMNS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
 import {
   backOf,
   foldPopupAction,
@@ -21,6 +21,7 @@ import {
   withContent,
   type PopupFrame,
   type PopupKey,
+  type PopupSpec,
   type PopupStep,
 } from './popup-reducer.js';
 
@@ -37,18 +38,21 @@ const keyOn = (input: string, key: PopupKey = {}) => reducePopupKey(input, key, 
 describe('a key on a confirmation line', () => {
   it('Ctrl+Y is the answer and nothing else is', () => {
     expect(keyOn('y', { ctrl: true })).toEqual({ kind: 'chord' });
-    expect(keyOn('y', { ctrl: true, meta: true })).toEqual({ kind: 'disarm' });
-    expect(keyOn('y')).toEqual({ kind: 'disarm' });
+    expect(keyOn('y', { ctrl: true, meta: true })).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('y')).toEqual({ kind: 'disarm', cause: 'typed' });
   });
 
-  it('Esc steps back; Ctrl+C, a letter, Enter, Backspace and any other chord disarm; the navigation keys only move', () => {
+  it('Esc steps back; Ctrl+C (a cancel), a letter, Enter, Backspace and any other chord (typed) disarm; the navigation keys only move', () => {
     expect(keyOn('', { escape: true })).toEqual({ kind: 'leave' });
-    expect(keyOn('c', { ctrl: true })).toEqual({ kind: 'disarm' });
-    expect(keyOn('\u0003')).toEqual({ kind: 'disarm' });
-    expect(keyOn('x')).toEqual({ kind: 'disarm' });
-    expect(keyOn('', { return: true })).toEqual({ kind: 'disarm' });
-    expect(keyOn('', { backspace: true })).toEqual({ kind: 'disarm' });
-    expect(keyOn('n', { ctrl: true })).toEqual({ kind: 'disarm' });
+    expect(keyOn('c', { ctrl: true })).toEqual({ kind: 'disarm', cause: 'interrupt' });
+    expect(keyOn('C', { ctrl: true })).toEqual({ kind: 'disarm', cause: 'interrupt' });
+    expect(keyOn('\u0003')).toEqual({ kind: 'disarm', cause: 'interrupt' });
+    expect(keyOn('c', { ctrl: true, meta: true })).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('c')).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('x')).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('', { return: true })).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('', { backspace: true })).toEqual({ kind: 'disarm', cause: 'typed' });
+    expect(keyOn('n', { ctrl: true })).toEqual({ kind: 'disarm', cause: 'typed' });
     expect(keyOn('', { upArrow: true })).toEqual({ kind: 'move', delta: -1 });
     expect(keyOn('', { downArrow: true })).toEqual({ kind: 'move', delta: 1 });
     expect(keyOn('', { pageDown: true })).toEqual({ kind: 'page', delta: 1 });
@@ -57,7 +61,8 @@ describe('a key on a confirmation line', () => {
 
   it('for the opening guard the answer is an answer and disarming is leaving (admitted on a frame nobody has seen)', () => {
     expect(openingKeyOf({ kind: 'chord' })).toBe('answer');
-    expect(openingKeyOf({ kind: 'disarm' })).toBe('leave');
+    expect(openingKeyOf({ kind: 'disarm', cause: 'typed' })).toBe('leave');
+    expect(openingKeyOf({ kind: 'disarm', cause: 'interrupt' })).toBe('leave');
   });
 });
 
@@ -73,7 +78,7 @@ describe('folding on a confirmation line', () => {
   });
 
   it('disarming and Esc go back to the step the line names (the checks), not the step before it', () => {
-    for (const action of [{ kind: 'disarm' }, { kind: 'leave' }] as const) {
+    for (const action of [{ kind: 'disarm', cause: 'typed' }, { kind: 'leave' }] as const) {
       const fold = foldPopupAction(ready, action, 18);
       expect(fold.kind).toBe('frame');
       if (fold.kind === 'frame') expect(fold.frame.stepIndex).toBe(0);
@@ -82,7 +87,9 @@ describe('folding on a confirmation line', () => {
 
   it('a line on the first step closes when it is disarmed', () => {
     const only = openFrame({ id: 'one', title: '/one', origin: 'home', steps: [LINE] }, 1);
-    expect(foldPopupAction(only, { kind: 'disarm' }, 18)).toEqual({ kind: 'close' });
+    expect(foldPopupAction(only, { kind: 'disarm', cause: 'typed' }, 18)).toEqual({
+      kind: 'close',
+    });
   });
 });
 
@@ -118,7 +125,7 @@ describe('branching steps and their rail', () => {
 });
 
 describe('a loading step answers nothing and names nothing that answers', () => {
-  const frame = openFrame(doctorSpec('home', false), 1);
+  const frame = openFrame(checksSpec(), 1);
 
   it('its Enter and its controls do nothing; Esc still cancels', () => {
     expect(foldPopupAction(frame, { kind: 'enter' }, 18)).toEqual({ kind: 'unchanged' });
@@ -131,12 +138,40 @@ describe('a loading step answers nothing and names nothing that answers', () => 
   });
 });
 
+/**
+ * A popup of the doctor's shape (a checks list with three controls and an `Enter`, a detail and a confirmation line reached from it), written
+ * here so the reducer's rules are pinned whatever the doctor's own spec does next (its tests pin the spec).
+ */
+function checksSpec(): PopupSpec {
+  return {
+    id: 'checks',
+    title: '/checks',
+    origin: 'home',
+    rail: 'path',
+    steps: [
+      {
+        name: 'Checks',
+        content: { kind: 'loading', what: 'Checking' },
+        enter: 'details',
+        controls: [
+          { key: 'r', verb: 'quick check' },
+          { key: 'd', verb: 'deep check' },
+          { key: 'c', verb: 'copy' },
+        ],
+        legendKeep: ['d', 'r', 'Enter', 'c'],
+      },
+      { name: 'Detail', content: { kind: 'report', lines: [] }, back: 0 },
+      { ...LINE, content: { kind: 'loading', what: 'Reading' } },
+    ],
+  };
+}
+
 describe('a step that says there is nothing, or that it failed, has nothing for Enter', () => {
   it.each([
     { kind: 'empty', what: 'Nothing here.', next: 'Try later.' },
     { kind: 'error', what: 'It failed.', next: 'Try again.' },
   ] as const)('%o: Enter does nothing and is not named; the controls still are', (content) => {
-    const frame = withContent(openFrame(doctorSpec('home', false), 1), 0, content);
+    const frame = withContent(openFrame(checksSpec(), 1), 0, content);
     expect(foldPopupAction(frame, { kind: 'enter' }, 18)).toEqual({ kind: 'unchanged' });
     const parts = popupLegend(frame);
     expect(legend(parts.items, parts.exit)).toBe(
@@ -146,7 +181,7 @@ describe('a step that says there is nothing, or that it failed, has nothing for 
 });
 
 describe('the legend a step keeps longest', () => {
-  const rows = withContent(openFrame(doctorSpec('home', false), 1), 0, {
+  const rows = withContent(openFrame(checksSpec(), 1), 0, {
     kind: 'list',
     rows: [
       { id: 'a', label: 'a' },
@@ -194,8 +229,34 @@ describe('the legend a step keeps longest', () => {
     );
   });
 
-  it('the text a popup writes fits the narrowest popup whole', () => {
-    expect(DOCTOR_TEXT_COLUMNS).toBe(66);
-    expect(displayWidth('x'.repeat(DOCTOR_TEXT_COLUMNS))).toBe(66);
+  it('the text a popup writes fits the narrowest popup whole: its column is the geometry’s inner width at the floor, and a real line fits it', () => {
+    const floor = popupGeometry({
+      columns: 80,
+      rows: 24,
+      kind: 'standard',
+      placement: 'overlay',
+      rail: true,
+      bodyRows: 1,
+    });
+    if (!floor.fits) throw new Error('fits');
+    // The number the geometry itself computes, not a fixture measured against itself.
+    expect(floor.innerWidth).toBe(66);
+    expect(DOCTOR_TEXT_COLUMNS).toBe(floor.innerWidth);
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(floor.innerWidth);
+    // A real line the doctor draws, with four origins and an unnamed provider, at its longest: every row of it fits whole.
+    const line = consentContent(
+      [
+        { providerId: 'anthropic', origin: 'https://api.anthropic.com' },
+        { providerId: 'openai', origin: 'https://api.openai.com' },
+        { providerId: 'gemini', origin: 'https://generativelanguage.googleapis.com' },
+        { providerId: 'deepseek', origin: 'https://api.deepseek.com' },
+      ],
+      ['openai'],
+      'home-chat',
+    );
+    if (line.kind !== 'report') throw new Error('a drawn line is a report');
+    expect(line.lines.length).toBeGreaterThan(3);
+    for (const text of line.lines)
+      expect(displayWidth(text), text).toBeLessThanOrEqual(floor.innerWidth);
   });
 });

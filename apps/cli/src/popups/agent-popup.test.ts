@@ -17,6 +17,7 @@ import {
   agentUnreadableContent,
 } from './agent-popup.js';
 import { openFrame } from './popup-reducer.js';
+import { reportCopyText } from './report-copy.js';
 import { REPORT_TEXT_COLUMNS } from './report-text.js';
 
 // Built at runtime (no contiguous secret literal: leakwatch).
@@ -105,6 +106,37 @@ describe('the fields', () => {
     expect(lines.join('').replaceAll(/\s+/gu, '')).toContain('reviewer.agent.yaml');
     expect(body).toContain('tool_number_29');
     expect(lines.length).toBeGreaterThan(18);
+  });
+
+  it('wraps a tool id that is wider than the room onto the rows after it, so the whole id is on screen and in the copy (it is never cut with …)', () => {
+    const longId = `mcp__${'a'.repeat(52)}`;
+    const longer = `mcp__${'b'.repeat(120)}`;
+    expect(longId).toHaveLength(57);
+    const view = boundAgentView(
+      definition({ tools: ['read_file', longId, 'ask_user', longer] }),
+      undefined,
+    );
+    const lines = agentReportLines(view);
+    for (const line of lines)
+      expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+    const toolRows = lines.slice(
+      lines.findIndex((line) => /^ {2}Tools {2}/u.test(line)),
+      lines.findIndex((line) => /^ {2}System prompt/u.test(line)),
+    );
+    // Every name is there whole once the wrapped rows are put back together (a name that is broken is broken where the room ended).
+    const packed = toolRows.map((row) => row.slice(20).trim()).join('');
+    expect(packed).toContain(longId);
+    expect(packed).toContain(longer);
+    expect(packed).not.toContain('…');
+    // A name that fits is not split, and several short names still share a row.
+    expect(toolRows[0]).toContain('read_file,');
+    expect(toolRows.join('\n')).toContain('ask_user,');
+    // The row each wrapped name continues on starts in the value column, as every other continuation does.
+    for (const row of toolRows.slice(1)) expect(row.startsWith(' '.repeat(20))).toBe(true);
+    // What is copied is what is drawn: every row, the wrapped name's rows included, and the name whole once they are put back together.
+    const copied = reportCopyText(lines, false);
+    expect(copied.split('\n')).toEqual(lines);
+    expect(copied.replaceAll(/\s+/gu, '')).toContain(longId);
   });
 
   it('is a report of one step whose only control is [c] copy, and an agent whose view cannot be made is an error state with none', () => {

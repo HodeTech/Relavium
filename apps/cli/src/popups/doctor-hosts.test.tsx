@@ -139,7 +139,9 @@ describe.each(HOSTS)('/doctor in the %s host', (host) => {
         await typeLine(m, '/doctor --deep');
         await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
         expect(doctorStep(m)).toBe(DOCTOR_STEP.line);
-        expect(m.frame().join('\n')).toContain('Sends one small request with your key to:');
+        expect(m.frame().join('\n')).toContain(
+          'Sends one small request per provider, with its key, to:',
+        );
       } finally {
         m.unmount();
       }

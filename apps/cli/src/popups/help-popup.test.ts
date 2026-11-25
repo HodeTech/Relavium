@@ -2,7 +2,7 @@
  * The `/help` popup in a chat ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §10;
  * MVP-11 step 4b): the commands of the chat's own palette, in the palette's order and on the surface's own words, and the keys the chat has.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { buildPaletteEntries } from '../render/tui/palette-entries.js';
 import { CHAT_KEYS } from '../render/tui/chat-keys.js';
@@ -12,6 +12,12 @@ import { helpContent, helpLines, helpSpec } from './help-popup.js';
 import { openFrame } from './popup-reducer.js';
 import { REPORT_TEXT_COLUMNS } from './report-text.js';
 import type { ReportSurface } from './report-port.js';
+
+// The registry's own function, spied on: it still does what it does, and what the popup asks it is recorded.
+vi.mock('../render/tui/palette-entries.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../render/tui/palette-entries.js')>();
+  return { ...actual, buildPaletteEntries: vi.fn(actual.buildPaletteEntries) };
+});
 
 // Built at runtime (no contiguous secret literal: leakwatch).
 const SECRET = ['sk', 'ant', 'help', 'ABCDEF1234567890XYZ'].join('-');
@@ -114,4 +120,125 @@ describe('what the port hands in is scrubbed', () => {
       expect(keyLines).not.toContain(' · ');
     },
   );
+});
+
+/**
+ * The commands of each surface, as the registry lists them today, written out. The tests above compare the popup with the registry called as the
+ * popup calls it, so a registry call that asks for the wrong thing would be mirrored on both sides: these lists are the oracle that is not.
+ */
+const STANDALONE_COMMANDS = [
+  'models',
+  'mode',
+  'effort',
+  'thinking',
+  'permissions',
+  'trim',
+  'compact',
+  'cost',
+  'details',
+  'agent',
+  'workflows',
+  'doctor',
+  'help',
+  'copy',
+  'export',
+  'edit',
+  'scrollback',
+  'clear',
+  'cancel',
+  'exit',
+] as const;
+const HOME_CHAT_COMMANDS = [
+  ...STANDALONE_COMMANDS.slice(0, STANDALONE_COMMANDS.indexOf('clear')),
+  'resume',
+  'clear',
+  'cancel',
+  'exit',
+] as const;
+
+describe('the commands, by literal', () => {
+  it.each([
+    ['standalone-chat', STANDALONE_COMMANDS],
+    ['home-chat', HOME_CHAT_COMMANDS],
+  ] as const)('%s lists exactly these commands, in this order, `/exit` last', (surface, names) => {
+    const rows = commandRows(helpLines(surface, KEYS));
+    expect(rows.map((row) => row.trim().split(/\s+/u)[0])).toEqual(names.map((name) => `/${name}`));
+    expect(rows.at(-1)?.trim().split(/\s+/u)[0]).toBe('/exit');
+  });
+
+  it.each(['standalone-chat', 'home-chat'] as const)(
+    '%s reads the palette as a chat that has a conversation and a key, with no turn running: every row can act',
+    (surface) => {
+      vi.mocked(buildPaletteEntries).mockClear();
+      helpLines(surface, KEYS);
+      expect(buildPaletteEntries).toHaveBeenCalledTimes(1);
+      expect(buildPaletteEntries).toHaveBeenCalledWith(surface, {
+        hasSession: true,
+        hasKey: true,
+        turnRunning: false,
+      });
+    },
+  );
+
+  it('says why a row cannot act beside it, in the registry’s words, and nothing beside a row that can', () => {
+    const real = vi.mocked(buildPaletteEntries).getMockImplementation();
+    const entries = real?.('standalone-chat', {}) ?? [];
+    expect(entries.length).toBeGreaterThan(10);
+    vi.mocked(buildPaletteEntries).mockReturnValueOnce(
+      entries.map((entry) =>
+        entry.command.name === 'clear'
+          ? { ...entry, enabled: false, reason: 'no conversation to clear' }
+          : entry,
+      ),
+    );
+    const lines = helpLines('standalone-chat', KEYS);
+    const text = lines.slice(0, lines.indexOf('Keys')).join(' ').replaceAll(/\s+/gu, ' ');
+    const why = '(unavailable: no conversation to clear)';
+    // On the row of `/clear`, after its description and before the next command's name.
+    expect(text.indexOf(why)).toBeGreaterThan(text.indexOf('/clear End this conversation'));
+    expect(text.indexOf(why)).toBeLessThan(text.indexOf('/cancel'));
+    expect(text.match(/unavailable/gu)).toHaveLength(1);
+  });
+});
+
+describe('the layout of the two columns', () => {
+  it.each(['standalone-chat', 'home-chat'] as const)(
+    '%s: the commands’ words start in one column, wide enough for the longest name; a key’s words in the column of the longest key',
+    (surface) => {
+      const lines = helpLines(surface, KEYS);
+      expect(lines[0]).toBe('Commands');
+      // The longest command is `/permissions` (12): two spaces of indent, the name padded to 12, two spaces.
+      const COMMAND_COLUMN = 2 + 12 + 2;
+      const commands = commandRows(lines);
+      expect(commands.length).toBeGreaterThan(10);
+      for (const row of commands) {
+        const name = row.trim().split(/\s+/u)[0] ?? '';
+        expect(row.slice(0, COMMAND_COLUMN), row).toBe(`  ${name.padEnd(12)}  `);
+        expect(row.charAt(COMMAND_COLUMN), row).not.toBe(' ');
+      }
+      // A section ends with one blank line, and the keys follow their heading directly.
+      const keys = lines.indexOf('Keys');
+      expect(lines[keys - 1]).toBe('');
+      expect(lines[keys - 2]).not.toBe('');
+      // The longest key is `Ctrl+A/Ctrl+E` (13).
+      const KEY_COLUMN = 2 + 13 + 2;
+      const rows = lines.slice(keys + 1);
+      for (const key of KEYS) {
+        const row = rows.find((line) => line.startsWith(`  ${key.keys.padEnd(13)}  `));
+        expect(row, key.keys).toBeDefined();
+        expect(row?.charAt(KEY_COLUMN), key.keys).not.toBe(' ');
+      }
+    },
+  );
+
+  it('the columns follow the longest name that is listed, not a width written into the popup', () => {
+    const lines = helpLines('standalone-chat', [
+      { keys: 'Enter', verb: 'send it' },
+      { keys: 'Shift+Tab', verb: 'change the mode' },
+    ]);
+    expect(lines.slice(lines.indexOf('Keys') + 1)).toEqual([
+      '  Enter      send it',
+      '  Shift+Tab  change the mode',
+    ]);
+  });
 });

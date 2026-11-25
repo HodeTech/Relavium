@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   openReport,
   parseReportLine,
+  REPORTS,
   reportAvailable,
   type ParsedReportLine,
   type ReportKind,
@@ -60,6 +61,37 @@ describe('parseReportLine', () => {
     for (const kind of ['agent', 'workflows', 'help'] as const)
       expect(parseReportLine(`/${kind}`)).not.toHaveProperty('release');
   });
+});
+
+describe('REPORTS: one table for the line, the availability and the opener', () => {
+  it('names each report once, by the command that is its own name', () => {
+    expect(REPORTS.map((report) => [report.kind, report.command, report.takesRelease])).toEqual([
+      ['agent', '/agent', false],
+      ['cost', '/cost', true],
+      ['workflows', '/workflows', false],
+      ['help', '/help', false],
+    ]);
+  });
+
+  it.each(REPORTS.map((report) => [report.kind, report.command] as const))(
+    '%s: its command parses to it, and a port that holds it opens the popup of that name',
+    (kind, command) => {
+      expect(parseReportLine(command)?.kind).toBe(kind);
+      const r = reportRig();
+      const port: ReportsPort = {
+        surface: 'standalone-chat',
+        agent: () => {
+          throw new Error('the view cannot be made');
+        },
+        cost: { read: () => new Promise(() => undefined), release: vi.fn() },
+        workflows: { read: () => new Promise(() => undefined) },
+        help: { keys: [] },
+      };
+      const opened = r.open(port, { kind });
+      expect(opened.opened).toBe(true);
+      expect(r.host.getSnapshot().frame?.spec.id).toBe(kind);
+    },
+  );
 });
 
 describe('reportAvailable', () => {

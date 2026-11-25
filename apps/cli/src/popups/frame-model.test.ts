@@ -20,7 +20,12 @@ import {
   type PopupFrameParts,
   type PopupListRow,
 } from './frame-model.js';
-import { INLINE_LIST_MAX_ROWS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
+import {
+  INLINE_LIST_MAX_ROWS,
+  popupGeometry,
+  popupInnerWidth,
+  type PopupBoxGeometry,
+} from './geometry.js';
 
 function geometryFor(
   columns: number,
@@ -75,10 +80,12 @@ function frame(
   const geometry = geometryFor(
     options.columns ?? 80,
     options.rows ?? 24,
+    // As the slot asks for it: the rows its body wraps to at the inner width.
     naturalBodyRows(
       content,
       state,
       options.placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+      popupInnerWidth(options.columns ?? 80, 'standard'),
     ),
     steps.length > 1,
     options.placement,
@@ -119,9 +126,9 @@ describe('every row of the frame is exactly the frame’s width (opacity is the 
 describe('the four parts, in order', () => {
   it('the top edge carries the name on the left and the origin on the right', () => {
     const { text } = frame({ kind: 'list', rows: rows(2) });
-    expect(text[0]).toMatch(/^─ \/doctor ─+ from Home ─$/u);
+    expect(text[0]).toMatch(/^ ─ \/doctor ─+ from Home ─ $/u);
     expect(frame({ kind: 'list', rows: rows(2) }, { parts: { origin: 'chat' } }).text[0]).toMatch(
-      / from chat ─$/u,
+      / from chat ─ $/u,
     );
   });
 
@@ -140,7 +147,7 @@ describe('the four parts, in order', () => {
       { ascii: true, parts: { steps: ['Workflow', 'Inputs', 'Confirm'], stepIndex: 1 } },
     );
     expect(text[1]?.trim()).toBe('ok Workflow .. @ Inputs .. o Confirm');
-    expect(text[0]).toMatch(/^- \/doctor -+ from Home · step 2 of 3 -$/u);
+    expect(text[0]).toMatch(/^ - \/doctor -+ from Home · step 2 of 3 - $/u);
   });
 
   it('a one-step popup has no rail', () => {
@@ -153,7 +160,7 @@ describe('the four parts, in order', () => {
     expect(text[1]?.trimEnd()).toBe(' › row 0');
     expect(text[2]?.trimEnd()).toBe('   row 1');
     expect(text.at(-2)?.trim()).toBe('↑/↓ select · [c] copy · Esc close');
-    expect(text.at(-1)).toBe('─'.repeat(68));
+    expect(text.at(-1)).toBe(` ${'─'.repeat(66)} `);
   });
 });
 
@@ -361,5 +368,188 @@ describe('the notice names the popup’s own leaving keys', () => {
     });
     const lines = withGlyphForm(false, () => popupNoticeLines('below-floor', later, 60));
     expect(lines.at(-1)?.text.trim()).toBe('[Ctrl+C] close · Esc back');
+  });
+});
+
+describe('the rule rows keep a blank cell at each end (MVP-11 step 4 review: a rule never touches the backdrop)', () => {
+  it.each([
+    [80, false],
+    [80, true],
+    [100, false],
+  ])(
+    'at %s columns (plain glyphs %s): the top and bottom rules span the inner width, inside one blank cell each side',
+    (columns, ascii) => {
+      const { geometry, lines, text } = frame({ kind: 'list', rows: rows(2) }, { columns, ascii });
+      const rule = ascii ? '-' : '─';
+      for (const row of [text[0] ?? '', text.at(-1) ?? '']) {
+        expect(displayWidth(row)).toBe(geometry.width);
+        expect(row.startsWith(` ${rule}`), row).toBe(true);
+        expect(row.endsWith(`${rule} `), row).toBe(true);
+      }
+      // The text width is the geometry's: 66 at 80 columns, unchanged by the gutter.
+      expect(geometry.innerWidth).toBe(columns === 80 ? 66 : 74);
+      expect(text.at(-1)).toBe(` ${rule.repeat(geometry.innerWidth)} `);
+      // The spans moved with the gutter: the title is still the strong stretch.
+      const top = lines[0];
+      const strong = top?.spans?.find((span) => span.role === 'strong');
+      expect(top?.text.slice(strong?.from, strong?.to)).toBe('/doctor');
+    },
+  );
+});
+
+describe('a live notification is drawn in the legend row while the popup is open (MVP-11 step 4 review)', () => {
+  it('in place of the legend, on one row, cut with the ellipsis at the inner width, in both placements', () => {
+    for (const placement of ['overlay', 'replace'] as const) {
+      const shown = frame(
+        { kind: 'list', rows: rows(2) },
+        {
+          placement,
+          parts: { notice: 'Doctor report: sent 164 characters to the terminal clipboard.' },
+        },
+      );
+      const plain = frame({ kind: 'list', rows: rows(2) }, { placement });
+      expect(shown.text.length).toBe(plain.text.length);
+      expect(shown.text.at(-2)?.trim()).toBe(
+        'Doctor report: sent 164 characters to the terminal clipboard.',
+      );
+      expect(shown.lines.at(-2)?.kind).toBe('notice');
+      expect(shown.text.at(-2)).not.toContain('Esc close');
+      expect(plain.text.at(-2)?.trim()).toBe('↑/↓ select · [c] copy · Esc close');
+    }
+    const long = frame(
+      { kind: 'list', rows: rows(2) },
+      { parts: { notice: `${'word '.repeat(30)}END` } },
+    );
+    const row = long.text.at(-2) ?? '';
+    expect(displayWidth(row)).toBe(long.geometry.width);
+    expect(row.trim().endsWith('…')).toBe(true);
+    expect(row).not.toContain('END');
+    expect(long.text.length).toBe(long.geometry.height);
+  });
+});
+
+/** `count` columns of distinct words (`w01 w02 …`), whole words only. */
+function sentence(count: number, tag: string): string {
+  let out = '';
+  for (let index = 1; out.length < count; index += 1)
+    out += `${out === '' ? '' : ' '}${tag}${String(index).padStart(2, '0')}`;
+  return out.slice(0, count).trimEnd();
+}
+
+describe('an empty or error state wraps what it says and what to do, and shows both whole (MVP-11 step 4 review)', () => {
+  it.each([
+    [80, 24],
+    [100, 30],
+  ])('at %s × %s, for every sentence of 70 to 110 columns', (columns, terminalRows) => {
+    for (let width = 70; width <= 110; width += 1)
+      for (const kind of ['empty', 'error'] as const) {
+        const what = sentence(width, 'a');
+        const next = sentence(width, 'b');
+        const content: PopupContent =
+          kind === 'empty' ? { kind, what, next } : { kind, what, next };
+        const { geometry, text } = frame(content, { columns, rows: terminalRows });
+        const body = text.slice(1, 1 + geometry.bodyRows).map((row) => row.trim());
+        const drawn = body.join(' ').replace(/\s+/gu, ' ');
+        const lead = kind === 'error' ? '✗ ' : '';
+        expect(drawn, `${kind} ${String(width)}`).toBe(`${lead}${what} ${next}`);
+        expect(drawn).not.toContain('…');
+        for (const row of text) expect(displayWidth(row)).toBe(geometry.width);
+      }
+  });
+
+  it('asks the geometry for the rows its sentences wrap to, and one row each without a width', () => {
+    const content: PopupContent = {
+      kind: 'empty',
+      what: sentence(100, 'a'),
+      next: sentence(70, 'b'),
+    };
+    expect(naturalBodyRows(content, { selected: 0, offset: 0 }, undefined, 66)).toBe(4);
+    expect(naturalBodyRows(content, { selected: 0, offset: 0 }, undefined, 200)).toBe(2);
+    expect(naturalBodyRows(content, { selected: 0, offset: 0, filter: '' }, undefined, 66)).toBe(5);
+    expect(naturalBodyRows(content, { selected: 0, offset: 0 })).toBe(2);
+  });
+
+  it('cuts with the ellipsis only when the popup has no more rows', () => {
+    const content: PopupContent = {
+      kind: 'error',
+      what: sentence(400, 'a'),
+      next: sentence(400, 'b'),
+    };
+    const geometry = geometryFor(80, 24, 3);
+    const body = withGlyphForm(false, () =>
+      popupBody(content, { selected: 0, offset: 0 }, geometry),
+    );
+    expect(body.lines).toHaveLength(3);
+    expect(body.lines[2]?.text.endsWith('…')).toBe(true);
+    for (const line of body.lines) expect(displayWidth(line.text)).toBeLessThanOrEqual(66);
+  });
+});
+
+describe('a line or paragraph separator never reaches a drawn row (MVP-11 step 4 review: the opacity of every row)', () => {
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  const hostile = (text: string): string => `${text}${LS}${PS}${LS}${LS}end`;
+
+  it('in every row of every part, at several scroll offsets, with the width measure and the terminal agreeing', () => {
+    const contents: readonly PopupContent[] = [
+      {
+        kind: 'list',
+        heading: { status: 'warning', statusWord: 'warning', text: hostile('heading') },
+        rows: Array.from({ length: 30 }, (_, index) => ({
+          id: `r${String(index)}`,
+          label: hostile(`label ${String(index)}`),
+          detail: hostile('detail'),
+          statusWord: hostile('ok'),
+          status: 'completed' as const,
+        })),
+      },
+      {
+        kind: 'report',
+        lines: Array.from({ length: 40 }, (_, index) => hostile(`line ${String(index)}`)),
+      },
+      { kind: 'empty', what: hostile('what'), next: hostile('next') },
+      { kind: 'error', what: hostile('what'), next: hostile('next') },
+      { kind: 'loading', what: hostile('loading') },
+    ];
+    for (const content of contents)
+      for (const at of [0, 7, 25, 39])
+        for (const notice of [undefined, hostile('a notice')]) {
+          const { geometry, text } = frame(content, {
+            selected: Math.min(at, 29),
+            offset: at,
+            parts: {
+              title: hostile('/doctor'),
+              steps: [hostile('One'), hostile('Two')],
+              stepIndex: 1,
+              notice,
+              legend: { items: [{ text: hostile('a legend text') }], exit: exitKey.close() },
+            },
+          });
+          for (const row of text) {
+            expect(row.includes(LS) || row.includes(PS), JSON.stringify(row)).toBe(false);
+            expect(displayWidth(row)).toBe(geometry.width);
+          }
+        }
+  });
+
+  it('in a filter line', () => {
+    const geometry = geometryFor(80, 24, 4);
+    const body = popupBody(
+      { kind: 'list', rows: rows(3) },
+      { selected: 0, offset: 0, filter: hostile('typed') },
+      geometry,
+    );
+    expect(body.lines[0]?.text.includes(LS)).toBe(false);
+    expect(body.lines[0]?.text.includes(PS)).toBe(false);
+  });
+});
+
+describe('the notice in place of a popup covers its rows to the terminal’s edge (MVP-11 step 4 review)', () => {
+  it.each([79, 60, 120])('at %s columns every row is exactly the terminal’s width', (columns) => {
+    const lines = withGlyphForm(false, () =>
+      popupNoticeLines('below-floor', { items: [], exit: exitKey.close() }, columns),
+    );
+    for (const line of lines) expect(displayWidth(line.text)).toBe(columns);
+    expect(lines[0]?.text.trim()).toBe('Terminal too small for this popup — enlarge it to 80×24');
   });
 });

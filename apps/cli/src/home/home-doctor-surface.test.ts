@@ -98,14 +98,26 @@ it('the Home’s /doctor opens its popup, which names /import and no shell comma
     expect(report()).not.toContain('relavium import');
     expect(controller.getSnapshot().notice).toBeUndefined();
     popups.closeAll('escape');
+    // A line typed into the prompt (pasted: a lone `/` would open the palette instead) is answered by the landing, and the prompt does not keep
+    // `/doctor` behind the popup.
+    controller.handlePaste('/doctor');
+    expect(controller.getSnapshot().input.text).toBe('/doctor');
+    controller.handleKey('', { return: true });
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('doctor'), {
+      timeout: 5000,
+    });
+    expect(controller.getSnapshot().input.text).toBe('');
+    popups.closeAll('escape');
     // The deep tier is new on the Home: a typed `/doctor --deep` opens the popup on its confirmation line (it still needs its chord).
-    for (const char of '/doctor --deep') controller.handleKey(char, {});
+    controller.handlePaste('/doctor --deep');
+    expect(controller.getSnapshot().input.text).toBe('/doctor --deep');
     controller.handleKey('', { return: true });
     await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(2), {
       timeout: 5000,
     });
     expect(popups.getSnapshot().frame?.spec.id).toBe('doctor');
     expect(controller.getSnapshot().notice).toBeUndefined();
+    expect(controller.getSnapshot().input.text).toBe('');
     popups.closeAll('escape');
     controller.handleKey('c', { ctrl: true });
     controller.handleKey('c', { ctrl: true });

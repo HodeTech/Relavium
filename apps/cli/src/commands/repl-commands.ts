@@ -492,7 +492,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     placements: inChats({
       group: 'model',
       rank: 30,
-      description: 'Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
+      description: 'Set the reasoning-effort tier: off / low / medium / high / max.',
       surface: 'popup',
     }),
   },

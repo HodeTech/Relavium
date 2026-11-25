@@ -60,7 +60,7 @@ export const doctorPopupBox = (variant: Variant, live?: PopupFrame): PopupBox =>
 export const DOCTOR_LANDMARKS = {
   checks: 'doctor: all checks passed',
   detail: 'Keys stored in the OS keychain can be read.',
-  line: 'Sends one small request with your key to:',
+  line: 'Sends one small request per provider, with its key, to:',
   running: 'Asking each provider with its key',
   done: 'Deep check, ',
   empty: 'No provider has a key, so the deep check has nothing to send.',

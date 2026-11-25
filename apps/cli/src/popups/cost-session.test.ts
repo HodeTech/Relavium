@@ -97,8 +97,46 @@ describe('the report (ADR-0148 §10)', () => {
     expect(none.r.notifications.getSnapshot().current).toBeUndefined();
   });
 
-  it('offers [r] for a record known not to be durable, even where the rows hold nothing', async () => {
-    const { r } = await opened(0, { durabilityBroken: true });
+  it('offers no [r] for a record known not to be durable when nothing is held: the warning stays in the report, and the key does nothing', async () => {
+    const { r, fake } = await opened(0, { durabilityBroken: true });
+    expect(r.controls()).toEqual(['c']);
+    expect(r.words()).toContain('could not be written durably');
+    const frame = r.host.getSnapshot().frame;
+    expect(frame && JSON.stringify(popupLegend(frame).items)).not.toContain('release');
+    r.press('r');
+    expect(r.step()).toBe(COST_STEP.cost);
+    expect(fake.calls).toEqual(['read']);
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+  });
+
+  it('a typed /cost --release with a broken record and nothing held still opens the (empty) release step, with the warning in the report behind it', async () => {
+    const r = reportRig();
+    const fake = fakeCost({ held: 0, durabilityBroken: true });
+    r.open({ cost: fake.port }, { kind: 'cost', release: true });
+    r.show();
+    await settleWork();
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content().kind).toBe('empty');
+    expect(r.words()).toContain('Nothing is held against this session’s cap.');
+    expect(r.content(COST_STEP.cost).kind).toBe('report');
+    expect(r.words()).not.toContain('could not be written durably');
+    r.clock.advance(600);
+    r.press('', ESC);
+    expect(r.step()).toBe(COST_STEP.cost);
+    expect(r.words()).toContain('could not be written durably');
+    expect(fake.release).not.toHaveBeenCalled();
+  });
+
+  it('offers [r] for what the live governor holds when the record could not be written, even where the rows hold nothing', async () => {
+    const r = reportRig();
+    const fake = fakeCost({ held: 700, durabilityBroken: true });
+    // The rows of this reading hold nothing; the governor alone does.
+    fake.read.mockImplementation(() =>
+      costReading(0, { microcents: 700, durabilityBroken: true }, []),
+    );
+    r.open({ cost: fake.port }, { kind: 'cost', release: false });
+    r.show();
+    await settleWork();
     expect(r.controls()).toEqual(['r', 'c']);
     expect(r.words()).toContain('could not be written durably');
   });
@@ -140,6 +178,38 @@ describe('the report (ADR-0148 §10)', () => {
     await settleWork();
     expect(r.words()).toContain('unexpected error');
     expect(r.words()).not.toContain('/private/path');
+  });
+
+  it('a typed /cost --release whose read fails says so on the release step, not "Reading the session cost" for ever', async () => {
+    const r = reportRig();
+    const failure = vi.fn();
+    const read = vi.fn(() => {
+      throw new CliError('invalid_invocation', `PRIVATE /tmp/session-db ${SECRET}`);
+    });
+    r.open(
+      { cost: { read, release: vi.fn() }, workOwner: { failure, enter: (op) => op() } },
+      { kind: 'cost', release: true },
+    );
+    r.show();
+    // While it reads, the step on screen is the release step, loading.
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content().kind).toBe('loading');
+    await settleWork();
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content(COST_STEP.release)).toEqual({
+      kind: 'error',
+      what: 'Could not read the session cost: invalid_invocation',
+      next: 'Close this and try again.',
+    });
+    expect(r.words()).not.toContain('Reading the session cost');
+    expect(r.words()).not.toContain('PRIVATE');
+    expect(r.words()).not.toContain(SECRET);
+    // The report behind it says the same and offers nothing, and nothing can be answered on the step that failed.
+    expect(r.content(COST_STEP.cost).kind).toBe('error');
+    expect(r.controls()).toEqual([]);
+    r.clock.advance(2000);
+    ctrlY(r);
+    expect(failure).toHaveBeenCalledOnce();
   });
 
   it('lands nothing in a popup that has closed or been replaced (a stale run)', async () => {
@@ -232,8 +302,9 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
     expect(r.step()).toBe(COST_STEP.cost);
-    expect(r.notifications.getSnapshot().current?.text).toContain('Release not confirmed');
-    expect(r.notifications.getSnapshot().current?.text).toContain('Nothing was released.');
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Not released: the line was not on screen yet.',
+    );
   });
 
   it('Ctrl+Y 799 ms after the acknowledged frame releases nothing; 800 ms releases', async () => {
@@ -468,7 +539,8 @@ describe('the answer (what the release does, and what it will not do)', () => {
     arm(r, 900);
     const frame = r.host.getSnapshot().frame;
     expect(frame?.stepIndex).toBe(COST_STEP.release);
-    expect(frame && JSON.stringify(popupLegend(frame).exit)).toContain('cancel');
+    // The way out of the line is `Esc` (the host words it; this step is not final, so it is not the result step's `Enter / Esc close`).
+    expect(frame && popupLegend(frame).exit).toMatchObject({ keys: 'Esc' });
     ctrlY(r);
     const done = r.host.getSnapshot().frame;
     expect(done && popupLegend(done).exit).toMatchObject({ keys: ['Enter', 'Esc'], verb: 'close' });

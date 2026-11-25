@@ -35,8 +35,10 @@ const BackdropDimContext = createContext(false);
 
 /**
  * Draws everything under it as the backdrop of an open popup when `dimmed`. It renders its children and no host node, so the layout is the
- * same with and without it. Its value is a boolean, so a subscriber of a host that re-renders for a popup's own state change re-renders
- * nothing here: the descendants re-render only when the boolean does, when a popup opens or closes.
+ * same with and without it. Its value is a boolean, so a context change (a popup opening or closing) re-renders the readers of the context and
+ * nothing else, and a reader that is `memo`'d re-renders only when the boolean changes. It does not stop a re-render that comes from above:
+ * a host root that re-renders on a popup's own key (the chat root does) re-renders the body under it, `Text` sites included, as it would
+ * without this provider (a reviewer counted 84 body `Text` renders per popup key in a chat).
  */
 export function BackdropDim(
   props: Readonly<{ dimmed: boolean; children?: ReactNode }>,

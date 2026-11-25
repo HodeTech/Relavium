@@ -246,13 +246,19 @@ export function checkSelectedRow(observation: Observation, text: string): Violat
  * landmark on screen, and may leave the legend's words whole with another row's tail after them. Only a row that is exactly the legend
  * passes.
  */
-export function checkLegendRow(observation: Observation, row: string): Violation[] {
-  return observation.lines.some((line) => line.trim() === row)
+export function checkLegendRow(
+  observation: Observation,
+  row: string | readonly string[],
+): Violation[] {
+  // A surface whose legend depends on whether its content overflows the page (a report that scrolls inline and fits in the alternate screen)
+  // names every form it may draw: one of them must be on a row by itself, whole.
+  const accepted = typeof row === 'string' ? [row] : row;
+  return observation.lines.some((line) => accepted.includes(line.trim()))
     ? []
     : [
         {
           property: 'legend-row',
-          message: `the legend row "${row}" is not on a row of the frame by itself, whole`,
+          message: `the legend row ${accepted.map((form) => `"${form}"`).join(' or ')} is not on a row of the frame by itself, whole`,
         },
       ];
 }
@@ -485,7 +491,7 @@ export interface PropertyExpectations {
   /** The words of the key that leaves the surface; absent ⇒ the exit key is not asserted (a below-floor notice has none). */
   readonly exitKey?: string | undefined;
   /** The surface's own legend row, exactly as written; absent ⇒ not asserted (a surface with no one row of its own, or below the floor). */
-  readonly legendRow?: string | undefined;
+  readonly legendRow?: string | readonly string[] | undefined;
   /**
    * Words only the surface's selected row has, or several such words (a list's selected row AND the selected tab above it); absent ⇒ the
    * selected row is not asserted (a surface with no selection, or below the floor).

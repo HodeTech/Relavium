@@ -11,9 +11,13 @@ import { createChatStore } from '../render/tui/chat-store.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { APPROVAL_TYPEAHEAD_MS } from '../render/tui/tool-review-model.js';
-import { createNotificationChannel, type Schedule } from './notifications.js';
+import { displayWidth } from '../render/tui/viewport.js';
+import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
+import { createNotificationChannel, NOTIFICATION_MS, type Schedule } from './notifications.js';
 import {
+  closedUnansweredText,
   createPopupHost,
+  PASTE_LIMIT,
   refusedOpenText,
   type PopupContext,
   type PopupHandlers,
@@ -534,3 +538,378 @@ describe('dispose', () => {
 function fail(): never {
   throw new Error('expected an open popup');
 }
+
+// ---- MVP-11 step 4, review round 1 -----------------------------------------------------------------------------------------------
+
+/** A confirmation line answered by `Ctrl+Y`, reached from a list (its `back`), with a report long enough to scroll on a one-row page. */
+const LINE_STEP: PopupStep = {
+  name: 'Confirm',
+  content: {
+    kind: 'report',
+    lines: ['Sends one request to:', '  https://a.example', 'Nothing else.'],
+  },
+  back: 0,
+  holds: 'chord',
+  chord: { verb: 'send' },
+};
+const lineSpec = (over: Partial<PopupSpec> = {}): PopupSpec =>
+  spec({ steps: [{ ...LIST, controls: [{ key: 'd', verb: 'arm' }] }, LINE_STEP], ...over });
+const CTRL_Y = { ctrl: true } as const;
+
+describe('which keys are resolutions on the host’s key history (ADR-0148 §2)', () => {
+  it('Esc that closes and Ctrl+C that closes the stack are; a control letter is not (it resolves nothing)', () => {
+    for (const [input, key, resolves] of [
+      ['', ESC, true],
+      ['c', { ctrl: true }, true],
+      ['r', {}, false],
+    ] as const) {
+      const r = rig();
+      r.openSettled(spec(), { control: () => undefined });
+      const before = r.history.lastResolvedAt;
+      const at = r.time.now();
+      r.host.input(input, key);
+      expect(r.history.lastResolvedAt, `${input} ${JSON.stringify(key)}`).toBe(
+        resolves ? at : before,
+      );
+    }
+  });
+
+  it('a paste is a foreign key on it', () => {
+    const r = rig();
+    r.openSettled();
+    const at = r.time.now();
+    r.host.paste('abc');
+    expect(r.history.lastForeignKeyAt).toBe(at);
+  });
+
+  it('an answered Ctrl+Y is a resolution on the SHARED history (the line’s guard writes the host’s, not one of its own)', () => {
+    const r = rig();
+    const chord = vi.fn();
+    r.openSettled(lineSpec({ initialStep: 1 }), { chord });
+    r.show();
+    r.time.advance(900);
+    const at = r.time.now();
+    r.host.input('y', CTRL_Y);
+    expect(chord).toHaveBeenCalledOnce();
+    expect(r.history.lastResolvedAt).toBe(at);
+  });
+});
+
+describe('a scroll of a confirmation line is not a step change (ADR-0148 §3)', () => {
+  it('fires no stepChanged, keeps the line armed, and a later Ctrl+Y still answers', () => {
+    const r = rig();
+    const chord = vi.fn();
+    const stepChanged = vi.fn();
+    r.openSettled(lineSpec({ initialStep: 1 }), { chord, stepChanged });
+    r.host.bindPageRows(() => 1);
+    r.show();
+    r.time.advance(100);
+    const before = r.host.getSnapshot();
+    r.host.input('', DOWN);
+    expect(r.host.getSnapshot()).not.toBe(before);
+    expect(currentStep(r.host.getSnapshot().frame ?? fail()).state.offset).toBe(1);
+    expect(stepChanged).not.toHaveBeenCalled();
+    r.show();
+    r.time.advance(800);
+    r.host.input('y', CTRL_Y);
+    expect(chord).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-arm the line: a Ctrl+Y counted on it before the scroll still refuses the answer as typed', () => {
+    const r = rig();
+    const chord = vi.fn();
+    const chordRefused = vi.fn();
+    let context: PopupContext | undefined;
+    const opened = r.host.openForUser(
+      lineSpec({
+        initialStep: 1,
+        steps: [
+          LIST,
+          {
+            ...LINE_STEP,
+            content: { kind: 'empty', what: 'Nothing to confirm.', next: 'Esc goes back.' },
+          },
+        ],
+      }),
+      { chord, chordRefused },
+    );
+    if (opened.opened) context = opened.context;
+    r.show();
+    r.time.advance(600);
+    // On a line with nothing to confirm a Ctrl+Y answers nothing and the line stays: it is counted as a key on the line.
+    r.host.input('y', CTRL_Y);
+    expect(currentStep(r.host.getSnapshot().frame ?? fail()).state.content.kind).toBe('empty');
+    expect(r.host.getSnapshot().frame?.stepIndex).toBe(1);
+    // The line now has something to confirm (a command's late result), and is scrolled.
+    context?.setContent(1, LINE_STEP.content);
+    r.host.bindPageRows(() => 1);
+    r.show();
+    r.time.advance(100);
+    r.host.input('', DOWN);
+    r.show();
+    r.time.advance(2400);
+    r.host.input('y', CTRL_Y);
+    expect(chord).not.toHaveBeenCalled();
+    expect(chordRefused).toHaveBeenCalledWith(expect.anything(), 'typed');
+  });
+});
+
+describe('a stack of depth two closes as one (ADR-0148 §2, §5; cannot arise in the product before unit 6)', () => {
+  function stacked() {
+    const r = rig();
+    const closed: string[] = [];
+    const opened = r.host.openForUser(spec({ title: '/parent' }), {
+      closed: (why) => closed.push(`parent:${why}`),
+    });
+    if (!opened.opened) throw new Error('open');
+    const child = opened.context.openChild(spec({ id: 'child', title: '/child' }), {
+      closed: (why) => closed.push(`child:${why}`),
+    });
+    expect(child.opened).toBe(true);
+    return { ...r, closed, opener: opened.context };
+  }
+
+  it('a sheet arriving closes the child, then its opener, and names the opener', () => {
+    const r = stacked();
+    r.host.sheetArrived();
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(r.closed).toEqual(['child:sheet', 'parent:sheet']);
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      '/parent closed: a question needs your answer',
+    );
+  });
+
+  it('a popup that throws closes the whole stack, not only the child', () => {
+    const r = stacked();
+    r.host.fail(new Error('x'));
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(r.closed).toEqual(['child:error', 'parent:error']);
+  });
+
+  it('the opener closing itself (its own context) takes its child with it', () => {
+    const r = stacked();
+    r.opener.close();
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(r.closed).toEqual(['child:command', 'parent:command']);
+  });
+});
+
+describe('the opening and the frame acknowledgement', () => {
+  it('a shown() for a snapshot that was replaced starts nothing: the new popup is not on screen yet', () => {
+    const r = rig();
+    const enter = vi.fn();
+    r.host.openForUser(spec());
+    const stale = r.host.getSnapshot();
+    r.host.closeAll('command');
+    r.host.openForUser(spec({ id: 'second' }), { enter });
+    r.host.shown(stale);
+    r.time.advance(600);
+    r.host.input('', DOWN);
+    r.host.input('', ENTER);
+    expect(currentStep(r.host.getSnapshot().frame ?? fail()).state.selected).toBe(0);
+    expect(enter).not.toHaveBeenCalled();
+  });
+
+  it('a result for a step that does not exist lands nowhere', () => {
+    const r = rig();
+    const opened = r.host.openForUser(spec());
+    if (!opened.opened) throw new Error('open');
+    const before = r.host.getSnapshot();
+    expect(opened.context.setContent(1, { kind: 'loading', what: 'x' })).toBe(false);
+    expect(opened.context.setContent(-1, { kind: 'loading', what: 'x' })).toBe(false);
+    expect(opened.context.goToStep(1)).toBe(false);
+    expect(opened.context.goToStep(-1)).toBe(false);
+    expect(r.host.getSnapshot()).toBe(before);
+    // The last step that exists does take one.
+    expect(opened.context.setContent(0, { kind: 'loading', what: 'x' })).toBe(true);
+  });
+
+  it('a second open says why, in one notification', () => {
+    const r = rig();
+    r.host.openForUser(spec({ title: '/one' }));
+    r.host.openForUser(spec({ id: 'two', title: '/two' }));
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      '/two cannot open now: another popup is open',
+    );
+  });
+
+  it('the loading clock wakes its listeners only when its text changed (nothing for the first five seconds)', () => {
+    const r = rig();
+    r.host.openForUser(spec({ steps: [{ name: 'L', content: { kind: 'loading', what: 'w' } }] }));
+    let wakes = 0;
+    r.host.clock.subscribe(() => {
+      wakes += 1;
+    });
+    r.time.advance(4000);
+    expect(wakes).toBe(0);
+    r.time.advance(2000);
+    expect(wakes).toBe(2);
+  });
+});
+
+describe('a paste into a filter (ADR-0148 §3)', () => {
+  it('is one line of at most 200 characters (the limit, pinned by its number)', () => {
+    expect(PASTE_LIMIT).toBe(200);
+    const r = rig();
+    r.openSettled(spec({ steps: [{ ...LIST, filter: true }] }));
+    r.host.paste(`a\n\tb${'x'.repeat(300)}`);
+    const filter = currentStep(r.host.getSnapshot().frame ?? fail()).state.filter;
+    expect(filter).toHaveLength(200);
+    expect(filter.startsWith('a b')).toBe(true);
+  });
+
+  it('is dropped while the frame is not on screen', () => {
+    const r = rig();
+    r.openSettled(spec({ steps: [{ ...LIST, filter: true }] }));
+    r.hide();
+    r.host.paste('abc');
+    expect(currentStep(r.host.getSnapshot().frame ?? fail()).state.filter).toBe('');
+  });
+});
+
+describe('dispose tears the host down first (MVP-11 step 4 review)', () => {
+  it('a close hook that opens a popup during the teardown is refused, and nothing is left open or ticking', () => {
+    const r = rig();
+    const reopened: unknown[] = [];
+    r.openSettled(spec({ steps: [{ name: 'L', content: { kind: 'loading', what: 'w' } }] }), {
+      closed: () => {
+        reopened.push(r.host.openForUser(spec({ id: 'again' })));
+      },
+    });
+    r.host.dispose();
+    expect(reopened).toEqual([{ opened: false, reason: 'closed' }]);
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(r.time.live()).toBe(0);
+  });
+});
+
+describe('the host’s notification, drawn in the open popup’s legend row (MVP-11 step 4 review)', () => {
+  it('is part of the snapshot: a notification that comes is a new frame, and one that goes is another', () => {
+    const r = rig();
+    r.openSettled();
+    const plain = r.host.getSnapshot();
+    expect(plain.notice).toBeUndefined();
+    r.notifications.notify('Test report: sent 12 characters to the terminal clipboard.');
+    const noticed = r.host.getSnapshot();
+    expect(noticed).not.toBe(plain);
+    expect(noticed.notice).toBe('Test report: sent 12 characters to the terminal clipboard.');
+    expect(noticed.frame).toBe(plain.frame);
+    r.time.advance(NOTIFICATION_MS);
+    expect(r.host.getSnapshot().notice).toBeUndefined();
+    expect(r.host.getSnapshot()).not.toBe(noticed);
+  });
+
+  it('every field of an open snapshot is identity; the list is closed (a new field needs a decision)', () => {
+    const r = rig();
+    r.openSettled(spec(), {
+      control: (context) => {
+        context.openChild(spec({ id: 'child', title: '/child' }));
+      },
+    });
+    const keys = Object.keys(r.host.getSnapshot()).sort();
+    expect(keys).toEqual(['depth', 'frame', 'notice', 'open', 'placement']);
+    // `frame`: a move; `notice`: a notification; `depth` (and `frame`): a child; `open`: closing. `placement` is the host's, fixed for its life.
+    const first = r.host.getSnapshot();
+    r.host.input('', DOWN);
+    const moved = r.host.getSnapshot();
+    expect(moved).not.toBe(first);
+    expect(moved.frame).not.toBe(first.frame);
+    r.notifications.notify('a notice');
+    const noticed = r.host.getSnapshot();
+    expect(noticed).not.toBe(moved);
+    r.host.input('r', {});
+    expect(r.host.getSnapshot().depth).toBe(2);
+    expect(r.host.getSnapshot()).not.toBe(noticed);
+    r.host.closeAll('command');
+    expect(r.host.getSnapshot().open).toBe(false);
+  });
+
+  it('a line still being prepared lets a notification through; once it offers its answer, the notification leaves the frame (held)', () => {
+    const r = rig();
+    const chord = vi.fn();
+    let context: PopupContext | undefined;
+    const opened = r.host.openForUser(
+      lineSpec({
+        initialStep: 1,
+        steps: [LIST, { ...LINE_STEP, content: { kind: 'loading', what: 'Reading' } }],
+      }),
+      { chord },
+    );
+    if (opened.opened) context = opened.context;
+    r.show();
+    r.time.advance(600);
+    // While the line is being prepared the channel is not held: a notification shows in the legend row.
+    r.notifications.notify('something happened');
+    expect(r.host.getSnapshot().notice).toBe('something happened');
+    // The line lands: it offers an answer, so the channel is held and the notification leaves the frame at the same moment.
+    context?.setContent(1, LINE_STEP.content);
+    expect(r.host.getSnapshot().notice).toBeUndefined();
+    expect(r.notifications.getSnapshot()).toMatchObject({ held: true, queued: 1 });
+  });
+
+  it('is held while the step offers a chord answer or holds a secret, and below the floor; let through otherwise', () => {
+    const r = rig();
+    r.openSettled(spec({ steps: [{ ...LIST, holds: 'secret' }] }));
+    r.notifications.notify('held back');
+    expect(r.notifications.getSnapshot().held).toBe(true);
+    expect(r.host.getSnapshot().notice).toBeUndefined();
+    r.host.closeAll('command');
+    expect(r.notifications.getSnapshot().current?.text).toBe('held back');
+    const below = rig();
+    below.openSettled();
+    below.host.resized(79, 24);
+    below.notifications.notify('not drawn');
+    expect(below.notifications.getSnapshot().held).toBe(true);
+    below.host.resized(80, 24);
+    expect(below.host.getSnapshot().notice).toBe('not drawn');
+  });
+});
+
+describe('what the host says fits one row of the popup at the floor (MVP-11 step 4 review)', () => {
+  const REFUSALS = [
+    'turn-running',
+    'card-open',
+    'sheet-open',
+    'armed',
+    'starting',
+    'overlay-open',
+    'popup-open',
+    'depth',
+    'closed',
+  ] as const;
+  const TITLES = [
+    '/doctor',
+    '/cost',
+    '/agent',
+    '/workflows',
+    '/help',
+    '/permissions',
+    'Test report',
+  ];
+
+  it('every refusal and every closing text of every popup title, at most POPUP_NOTICE_MAX_COLUMNS (66) columns', () => {
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(66);
+    for (const title of TITLES) {
+      for (const reason of REFUSALS) {
+        const text = refusedOpenText(title, reason);
+        expect(displayWidth(text), text).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+        expect(text.startsWith(title), text).toBe(true);
+      }
+      for (const reason of ['sheet', 'error', 'resize'] as const) {
+        const text = closedUnansweredText(title, reason);
+        expect(displayWidth(text), text).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+        expect(text.startsWith(title), text).toBe(true);
+      }
+    }
+  });
+
+  it('a title too long for the row is cut first, with the ellipsis; the words that say why stay whole', () => {
+    const title = `/${'x'.repeat(100)}`;
+    const text = closedUnansweredText(title, 'resize');
+    expect(displayWidth(text)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    expect(text.endsWith('… closed: terminal too small, nothing was answered')).toBe(true);
+    const refused = refusedOpenText(title, 'card-open');
+    expect(displayWidth(refused)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    expect(refused.endsWith('… cannot open now: a card is waiting for your answer')).toBe(true);
+  });
+});

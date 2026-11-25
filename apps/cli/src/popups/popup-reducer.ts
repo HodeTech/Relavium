@@ -12,9 +12,11 @@
 
 import { reduceChordKey } from '../render/tui/chord-guard.js';
 import { exitKey, type LegendExit, type LegendItem } from '../render/tui/legend.js';
-import type { PopupKind } from './geometry.js';
+import { POPUP_FLOOR, popupGeometry, popupInnerWidth, type PopupKind } from './geometry.js';
 import {
+  naturalBodyRows,
   reportMaxOffset,
+  reportPageRows,
   type PopupContent,
   type PopupListRow,
   type PopupOrigin,
@@ -43,7 +45,8 @@ export interface PopupStep {
   readonly initialRow?: string | undefined;
   /**
    * The step holds a chord answer or a secret: a sheet that arrives, or a resize below the floor, closes it unanswered and clears what it
-   * holds (§2, §4). None of this part's popups has one; the rule is the host's and is pinned here.
+   * holds (§2, §4), and the notification channel is held while it is shown. The doctor's and `/cost`'s confirmation lines set `holds: 'chord'`
+   * (with `chord`); the rule is the host's (`popup-host.ts`).
    */
   readonly holds?: 'chord' | 'secret' | undefined;
   /** What the `Esc` of this step says it does when it is the first step (default `close`). */
@@ -54,9 +57,9 @@ export interface PopupStep {
    */
   readonly back?: number | undefined;
   /**
-   * The step is the END of a flow: a persistent result the person reads and closes. `Esc` closes the popup from it (there is nothing to go
-   * back to: a step back would re-arm what the flow just did), and its legend says `Enter / Esc close`. The rail still counts the steps that led
-   * to it (`back`), so it reads `✓ Release ╌╌ ◉ Done`.
+   * The step is the END of a flow: a persistent result the person reads and closes. `Esc` and `Enter` close the popup from it, whatever it
+   * shows (there is nothing to go back to: a step back would re-arm what the flow just did), and its legend says `Enter / Esc close`. The rail
+   * still counts the steps that led to it (`back`), so it reads `✓ Release ╌╌ ◉ Done`.
    */
   readonly final?: true | undefined;
   /**
@@ -142,8 +145,11 @@ export type PopupKeyAction =
   | { readonly kind: 'backspace' }
   /** `Ctrl+Y` on a confirmation line: the host's chord guard decides whether it answers. */
   | { readonly kind: 'chord' }
-  /** Any key on a confirmation line that is not `Ctrl+Y`, `Esc` or a navigation key (`Ctrl+C` among them): the line is disarmed. */
-  | { readonly kind: 'disarm' }
+  /**
+   * Any key on a confirmation line that is not `Ctrl+Y`, `Esc` or a navigation key: the line is disarmed. `interrupt` is `Ctrl+C` (a cancel,
+   * as `Esc` is: the host says nothing); `typed` is every other key (a letter, `Enter`, another chord), which the host tells the command about.
+   */
+  | { readonly kind: 'disarm'; readonly cause: 'typed' | 'interrupt' }
   | { readonly kind: 'none' };
 
 /** The rows a list step shows: its rows with the filter applied (the label or the detail contains it, case folded). */
@@ -246,10 +252,18 @@ export function currentStep(frame: PopupFrame): {
   };
 }
 
+/** `Ctrl+C`, as a key and as the byte a terminal sends for it: the interrupt that closes a popup (and only disarms a confirmation line). */
+function isInterrupt(input: string, key: PopupKey): boolean {
+  return (
+    (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'c') || input === '\u0003'
+  );
+}
+
 /**
  * A key on a confirmation line (a step with `chord`, ADR-0148 §3 and §8): exactly `Ctrl+Y` is the answer (the one chord the guard reads,
  * `reduceChordKey`), `Esc` steps back, the navigation keys move (they disarm nothing), and EVERY other key disarms the line: `Ctrl+C` first
- * disarms rather than closes, and a letter, `Enter`, a `Ctrl+N` or a key the reducer cannot name is not an answer either.
+ * disarms rather than closes (a cancel, `interrupt`), and a letter, `Enter`, a `Ctrl+N` or a key the reducer cannot name is not an answer
+ * either (`typed`).
  */
 function reduceChordStepKey(input: string, key: PopupKey): PopupKeyAction {
   if (reduceChordKey(input, key) === 'allow') return { kind: 'chord' };
@@ -260,15 +274,13 @@ function reduceChordStepKey(input: string, key: PopupKey): PopupKeyAction {
   if (key.pageDown === true) return { kind: 'page', delta: 1 };
   if (key.home === true) return { kind: 'jump', to: 'first' };
   if (key.end === true) return { kind: 'jump', to: 'last' };
-  return { kind: 'disarm' };
+  return { kind: 'disarm', cause: isInterrupt(input, key) ? 'interrupt' : 'typed' };
 }
 
 /** Map one key to what it means on `step` (see the module header). */
 export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): PopupKeyAction {
   if (step.chord !== undefined) return reduceChordStepKey(input, key);
-  if (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'c')
-    return { kind: 'close-all' };
-  if (input === '\u0003') return { kind: 'close-all' };
+  if (isInterrupt(input, key)) return { kind: 'close-all' };
   if (key.escape === true) return { kind: 'leave' };
   if (key.return === true) return { kind: 'enter' };
   if (key.upArrow === true) return { kind: 'move', delta: -1 };
@@ -317,7 +329,7 @@ export function openingKeyOf(action: PopupKeyAction): OpeningKey {
 export type PopupFold =
   /** It stays open in this state (a move, a page, a filter edit, a step back). */
   | { readonly kind: 'frame'; readonly frame: PopupFrame }
-  /** `Esc` on its first step: this popup closes (a child returns to its opener). */
+  /** `Esc` on its first step, or `Esc` or `Enter` on a `final` step: this popup closes (a child returns to its opener). */
   | { readonly kind: 'close' }
   /** `Ctrl+C`: the whole stack closes, and no exit window is armed. */
   | { readonly kind: 'close-all' }
@@ -432,6 +444,8 @@ export function foldPopupAction(
         ? { kind: 'unchanged' }
         : { kind: 'chord' };
     case 'enter': {
+      // The end of a flow closes on `Enter` as on `Esc`, whatever it shows (a failed result too): its legend says `Enter / Esc close`.
+      if (spec.final === true) return { kind: 'close' };
       // A step that is loading, or that says there is nothing (empty) or that it failed (error), has nothing for `Enter` to answer.
       if (spec.enter === undefined || loading || nothingToChoose(state.content))
         return { kind: 'unchanged' };
@@ -470,13 +484,42 @@ export const POPUP_KEYS = {
 } as const;
 
 /**
- * The legend of the top popup's step, built by the one legend builder ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
- * §3): its keys in the order a person reaches for them, then the way back, which is always last and always written. On the first step `Esc`
- * closes (the `close` class, in the step's own word); on a later step it goes back (the `step` class) and `[Ctrl+C] close` is named before it;
- * with a filter typed `Esc` clears it first (a step too). A step that is loading says its `Esc` cancels, which it really does (closing aborts
- * the popup's work).
+ * The rows a report of `frame`'s step is drawn in on a standard popup at the floor (80×24, the alternate screen): the page {@link popupLegend}
+ * judges an overflow on when its caller has no geometry of its own.
  */
-export function popupLegend(frame: PopupFrame): {
+function floorReportRows(frame: PopupFrame): number {
+  const { spec, state } = currentStep(frame);
+  const filter = spec.filter === true ? state.filter : undefined;
+  const kind = frame.spec.kind ?? 'standard';
+  const geometry = popupGeometry({
+    columns: POPUP_FLOOR.columns,
+    rows: POPUP_FLOOR.rows,
+    kind,
+    placement: 'overlay',
+    rail: railOf(frame).names.length > 1,
+    bodyRows: naturalBodyRows(
+      state.content,
+      { ...state, filter },
+      undefined,
+      popupInnerWidth(POPUP_FLOOR.columns, kind),
+    ),
+  });
+  return geometry.fits ? reportPageRows(geometry, filter !== undefined) : 1;
+}
+
+/**
+ * The legend of the top popup's step, built by the one legend builder ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
+ * §3): its keys in the order a person reaches for them, then the way back, which is always last and always written. The way back says what
+ * `Esc` does there: it goes back (the `step` class, `Esc back`) wherever the step has a step to go back to, and `[Ctrl+C] close` is named before
+ * it on a step that is not a confirmation line; it closes on the first step (the `close` class, in the step's own word); with a filter typed it
+ * clears the filter first (a step too); and it says `cancel` only where it stops work in flight: a first step that is loading (closing aborts
+ * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page: `reportRows`, the rows the frame draws it in (the slot
+ * passes its geometry's); absent ⇒ the page of a standard popup at the floor.
+ */
+export function popupLegend(
+  frame: PopupFrame,
+  reportRows?: number,
+): {
   readonly items: readonly LegendItem[];
   readonly exit: LegendExit;
   /** How long each item is kept when the row does not fit (higher is kept longer), parallel to `items`; absent ⇒ by position. */
@@ -488,20 +531,25 @@ export function popupLegend(frame: PopupFrame): {
   // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
   if (spec.final === true)
     return { items, exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
-  // A confirmation line says its one answer and nothing else, and its `Esc` steps back (it disarms); `Ctrl+C` disarms it too, so it is not
-  // named as closing. While the line is being prepared, or when there is nothing to confirm, it names no answer.
+  const back = backOf(frame.spec, frame.stepIndex) >= 0;
+  // A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. While the line is being
+  // prepared, or when there is nothing to confirm, it names no answer. Its `Esc` steps back to the step it came from (it disarms), and on a
+  // first step it closes.
   if (spec.chord !== undefined) {
     if (state.content.kind === 'report')
       items.push({ keys: POPUP_KEYS.chord, verb: spec.chord.verb });
-    const exit =
-      backOf(frame.spec, frame.stepIndex) >= 0
-        ? exitKey.step(POPUP_KEYS.leave, 'cancel')
-        : exitKey.close(POPUP_KEYS.leave, 'cancel');
+    const exit = back
+      ? exitKey.step(POPUP_KEYS.leave, 'back')
+      : exitKey.close(POPUP_KEYS.leave, loading ? 'cancel' : (spec.exitVerb ?? 'close'));
     return { items, exit };
   }
   if (state.content.kind === 'list' && visibleRows(state).length > 1)
     items.push({ keys: POPUP_KEYS.select, verb: 'select' });
-  if (state.content.kind === 'report') items.push({ keys: POPUP_KEYS.scroll, verb: 'scroll' });
+  if (
+    state.content.kind === 'report' &&
+    state.content.lines.length > (reportRows ?? floorReportRows(frame))
+  )
+    items.push({ keys: POPUP_KEYS.scroll, verb: 'scroll' });
   // A step that is loading answers nothing yet, so it names no key that answers (ADR-0148 §5: its cancel key is the one it really has); one
   // that says there is nothing, or that it failed, names no `Enter`.
   if (!loading) {
@@ -524,7 +572,7 @@ export function popupLegend(frame: PopupFrame): {
     items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
     return withPriority(exitKey.step(POPUP_KEYS.leave, 'clear the filter'));
   }
-  if (frame.stepIndex > 0) {
+  if (back) {
     items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
     return withPriority(exitKey.step(POPUP_KEYS.leave, 'back'));
   }

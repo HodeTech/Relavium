@@ -24,6 +24,11 @@
  * be asked a second time by a reopened popup: `[d]` then says the last check is still stopping. A COMPLETED result is kept for the process and
  * shown again, with its age; an aborted one is never kept.
  *
+ * **The checks step's letters follow what it shows.** `[r]` and `[d]` are always listed; `[c] copy` only while the rows are shown (never while
+ * the step loads or says the checks could not run: a copy of that would be a report of nothing). The deep rows' age is read when the rows are
+ * built, which is when a result lands and each time the popup comes back to the checks step, so it is the age at the moment the person looks.
+ * `[r]` and `[c]` belong to the checks step: on a row's detail they do nothing, and `Esc` goes back to the checks, where they work.
+ *
  * **MCP is only reported.** In a chat the deep tier adds the session's MCP rows from the probes' read-only report (the bound agent's declared
  * servers and the tools the manager skipped): nothing connects, spawns or contacts a server. The Home has no session, so it has no MCP rows.
  */
@@ -49,6 +54,7 @@ import {
   checksContent,
   consentContent,
   detailContent,
+  doctorChecksControls,
   doctorCopyText,
   doctorRowId,
   doctorSpec,
@@ -60,6 +66,7 @@ import {
   type DoctorView,
 } from './doctor-popup.js';
 import type { DoctorOpenRequest } from './doctor-port.js';
+import type { PopupContent } from './frame-model.js';
 import type { ChordRefusal, PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
 
 /** How long the presence reads of one check may take before the rest are not read (each read is synchronous: a keychain may prompt). */
@@ -117,15 +124,18 @@ function presenceOf(resolver: ProviderResolver, id: ProviderId): boolean | undef
   return undefined;
 }
 
-/** What the person is told when a `Ctrl+Y` did not count (it disarmed the line). */
+/**
+ * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): the reason in a few words, and what that means. At most 66 columns,
+ * the inner width of a popup at the smallest terminal, so the notification is never cut.
+ */
 export function chordRefusedText(reason: ChordRefusal): string {
   const why: Readonly<Record<ChordRefusal, string>> = {
-    unseen: 'the line was not on screen yet',
-    early: 'it came too soon after the line appeared',
-    expired: 'the time to confirm had passed',
-    typed: 'a key was typed after the line appeared',
+    unseen: 'not yet shown',
+    early: 'pressed too soon',
+    expired: 'time ran out',
+    typed: 'a key was typed',
   };
-  return `Deep check not confirmed: ${why[reason]}. Nothing was sent; ${keyToken('d')} asks again.`;
+  return `Not confirmed: ${why[reason]}. Nothing was sent; ${keyToken('d')} asks again.`;
 }
 
 /** What `[c]` says: what was sent to the terminal's clipboard, never the text. */
@@ -163,6 +173,8 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
   let quickProgress: string = DOCTOR_LOADING.quick;
   let quickGeneration = 0;
   let deepRunning = false;
+  /** Whether the checks step shows the rows now (and so has a report to copy), as opposed to loading or an error. */
+  let rowsShown = false;
   let arming = 0;
   let armed:
     | { readonly id: number; readonly targets: readonly ConsentTarget[] | undefined }
@@ -179,13 +191,20 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
     };
   };
 
-  /** The checks step, from what is known now: the deep run's wait, the quick tier's, or the rows. */
+  /**
+   * Put `content` on the checks step with the letters it answers to: `[c]` only while the rows are shown (a loading step or an error has no
+   * report, and a copy of one would be a report of nothing).
+   */
+  const showChecks = (context: PopupContext, content: PopupContent): void => {
+    rowsShown = content.kind === 'list';
+    context.setContent(DOCTOR_STEP.checks, content, doctorChecksControls(rowsShown));
+  };
+
+  /** The checks step, from what is known now: the deep run's wait, the quick tier's, or the rows (the deep rows' age is read now). */
   const refresh = (context: PopupContext): void => {
-    if (deepRunning)
-      context.setContent(DOCTOR_STEP.checks, { kind: 'loading', what: DOCTOR_LOADING.deep });
-    else if (quick === undefined)
-      context.setContent(DOCTOR_STEP.checks, { kind: 'loading', what: quickProgress });
-    else context.setContent(DOCTOR_STEP.checks, checksContent(view()));
+    if (deepRunning) showChecks(context, { kind: 'loading', what: DOCTOR_LOADING.deep });
+    else if (quick === undefined) showChecks(context, { kind: 'loading', what: quickProgress });
+    else showChecks(context, checksContent(view()));
   };
 
   /** Each provider's key presence, read one at a time off the render, until the bound; a key past it falls back on the host's sample. */
@@ -259,7 +278,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
       if (!live()) return;
       quick = undefined;
       try {
-        context.setContent(DOCTOR_STEP.checks, {
+        showChecks(context, {
           kind: 'error',
           what: 'The checks could not run.',
           next: `${keyToken('r')} runs them again.`,
@@ -306,8 +325,10 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
           if (origin === undefined) notNamed.push(providerId);
           else targets.push({ providerId, origin });
         }
-        armed = { id, targets };
-        context.setContent(DOCTOR_STEP.line, consentContent(targets, notNamed, port.surface));
+        const content = consentContent(targets, notNamed, port.surface);
+        // Only a line that was drawn whole can be answered: one that is refused (it does not fit the page) names nothing to confirm.
+        armed = { id, targets: content.kind === 'report' ? targets : [] };
+        context.setContent(DOCTOR_STEP.line, content);
       },
       (cause: unknown) => {
         port.workOwner?.failure(cause);
@@ -405,7 +426,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
           owner?.failure(cause);
           if (controller.signal.aborted) return;
           deepRunning = false;
-          context.setContent(DOCTOR_STEP.checks, {
+          showChecks(context, {
             kind: 'error',
             what: 'The deep check could not run.',
             next: `${keyToken('r')} runs the quick check again.`,
@@ -430,6 +451,9 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
   };
 
   const copy = (context: PopupContext): void => {
+    // The report is what the checks step shows: while it loads, or says the checks could not run, there is none (a kept deep result alone is
+    // not the report either).
+    if (!rowsShown) return;
     const clipboard = port.clipboard;
     if (clipboard === undefined) {
       context.notify('Doctor report: copying is not available here.');
@@ -483,9 +507,12 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
       armed = undefined;
       context.notify(chordRefusedText(reason));
     },
-    stepChanged: (_context, from) => {
+    stepChanged: (context, from, to) => {
       // Leaving the line forgets what it named: a later `[d]` reads the providers again.
       if (from === DOCTOR_STEP.line) armed = undefined;
+      // Back on the checks, the deep rows' age is read again (it was the age when they were last built, however long ago): no timer, only
+      // the moment the person looks. A step that is loading or failed has no age to show: it is left as it is (a failure is not turned back into a wait).
+      if (to === DOCTOR_STEP.checks && rowsShown) refresh(context);
     },
     closed: () => {
       armed = undefined;

@@ -51,7 +51,6 @@ const OVERLAYS = [
   'mention',
   'reverse-search',
   'sheet-permissions',
-  'sheet-agent',
 ] as const;
 
 const OVERLAY_SURFACES = CHAT_SURFACES.filter((entry) =>

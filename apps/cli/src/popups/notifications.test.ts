@@ -5,7 +5,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createNotificationChannel, NOTIFICATION_MS, type Schedule } from './notifications.js';
+import {
+  createNotificationChannel,
+  NOTIFICATION_MS,
+  notificationText,
+  type Schedule,
+} from './notifications.js';
 
 /** A manual timer: what is due runs when the test moves time. */
 function clock() {
@@ -104,12 +109,49 @@ describe('held while a chord or secret surface is shown', () => {
   });
 });
 
-describe('what it shows is safe on the hint row', () => {
-  it('sanitises a control sequence and makes a key token and a separator inert', () => {
+describe('what it shows is safe on the row it is drawn on: the author-text floor (MVP-11 step 4 review)', () => {
+  // Built at runtime (no contiguous secret literal: leakwatch).
+  const ANTHROPIC = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef'].join('-');
+  const GOOGLE = ['AIza', 'SyA1234567890abcdefghijklmnopqrstuv'].join('');
+
+  it('removes a control sequence, an OSC and an answer chord, and keeps the product’s own key tokens and separator as written', () => {
     const time = clock();
     const channel = createNotificationChannel({ schedule: time.schedule });
     channel.notify('\u001b[31mred\u001b[0m [Ctrl+Y] Allow · now');
-    expect(text(channel)).toBe('red (Ctrl+Y) Allow - now');
+    expect(text(channel)).toBe('red [[chord]] Allow · now');
+    channel.dispose();
+    const next = createNotificationChannel({ schedule: time.schedule });
+    next.notify('\u001b]0;pwned\u0007Deep check not confirmed. Nothing was sent; [d] asks again.');
+    expect(text(next)).toBe('Deep check not confirmed. Nothing was sent; [d] asks again.');
+    const sep = createNotificationChannel({ schedule: time.schedule });
+    sep.notify('Resized · key cleared, paste it again');
+    expect(text(sep)).toBe('Resized · key cleared, paste it again');
+  });
+
+  it('scrubs a key a provider or a project could have put in it (an Anthropic key, a Google key)', () => {
+    for (const key of [ANTHROPIC, GOOGLE]) {
+      const channel = createNotificationChannel({ schedule: clock().schedule });
+      channel.notify(`The provider said: ${key} is not valid.`);
+      const shown = text(channel) ?? '';
+      expect(shown).not.toContain(key);
+      expect(shown).not.toContain(key.slice(4, 20));
+      expect(shown.startsWith('The provider said:')).toBe(true);
+    }
+  });
+
+  it('removes the invisible characters and blanks a host glyph', () => {
+    const channel = createNotificationChannel({ schedule: clock().schedule });
+    channel.notify('a\u200bb\u202ec ✓ done');
+    const shown = text(channel) ?? '';
+    expect(shown).not.toMatch(/[\u200b\u202e✓]/u);
+    expect(shown.startsWith('abc')).toBe(true);
+  });
+
+  it('folds a line or paragraph separator to a space (a terminal draws it as nothing, the width measure as a column)', () => {
+    const channel = createNotificationChannel({ schedule: clock().schedule });
+    channel.notify(`one${String.fromCharCode(0x2028)}two${String.fromCharCode(0x2029)}three`);
+    expect(text(channel)).toBe('one two three');
+    expect(notificationText(`x${String.fromCharCode(0x2028)}`)).toBe('x');
   });
 
   it('ignores an empty text', () => {
@@ -140,5 +182,47 @@ describe('the snapshot and the lifetime', () => {
     expect(channel.getSnapshot().current).toBeUndefined();
     channel.notify('after');
     expect(channel.getSnapshot().current).toBeUndefined();
+  });
+});
+
+describe('the popup’s hold: while a popup is open it decides alone (MVP-11 step 4 review)', () => {
+  it('lets a notification through while the host holds its hint row, and holds it while the popup says so', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    // The host holds: inline, an open popup replaces the hint row.
+    channel.hold(true);
+    channel.notify('copied');
+    expect(text(channel)).toBeUndefined();
+    // A popup opens and draws the notification in its own legend row.
+    channel.popupHold(false);
+    expect(text(channel)).toBe('copied');
+    expect(channel.getSnapshot().held).toBe(false);
+    // Its step offers a chord answer: held, and the one showing goes back to the front.
+    time.advance(1000);
+    channel.popupHold(true);
+    expect(text(channel)).toBeUndefined();
+    expect(channel.getSnapshot()).toMatchObject({ held: true, queued: 1 });
+    channel.popupHold(false);
+    expect(text(channel)).toBe('copied');
+    // The popup closes: the host's hold applies again.
+    channel.popupHold(undefined);
+    expect(text(channel)).toBeUndefined();
+    expect(channel.getSnapshot().held).toBe(true);
+    channel.hold(false);
+    expect(text(channel)).toBe('copied');
+  });
+
+  it('a popup that holds overrides a host that does not', () => {
+    const channel = createNotificationChannel({ schedule: clock().schedule });
+    channel.popupHold(true);
+    channel.notify('later');
+    expect(text(channel)).toBeUndefined();
+    channel.hold(false);
+    expect(
+      text(channel),
+      'the host releasing changes nothing while the popup holds',
+    ).toBeUndefined();
+    channel.popupHold(undefined);
+    expect(text(channel)).toBe('later');
   });
 });

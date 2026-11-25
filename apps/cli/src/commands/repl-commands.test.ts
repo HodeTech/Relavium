@@ -217,7 +217,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     'Commands:',
     '  /models  Switch model (opens the catalog picker).',
     '  /mode  Choose the mode; Shift+Tab changes this chat only.',
-    '  /effort  Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
+    '  /effort  Set the reasoning-effort tier: off / low / medium / high / max.',
     '  /thinking  Show or hide the reasoning ("thinking") panel (or [Ctrl+T] to toggle).',
     '  /permissions  Open the permissions sheet: the commands remembered for this project and approved for this session; [d] withdraws one.',
     '  /trim  Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',

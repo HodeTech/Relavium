@@ -53,6 +53,25 @@ export function popupMargin(columns: number): number {
   return columns >= 100 ? 8 : 6;
 }
 
+/** The frame's width of a popup of `kind` on a terminal of `columns` (see the module header): what every row of it is filled to. */
+export function popupWidth(columns: number, kind: PopupKind): number {
+  return kind === 'inspection'
+    ? columns - 2
+    : Math.min(columns - 2 * popupMargin(columns), POPUP_MAX_WIDTH);
+}
+
+/** The columns a row's text may use in a popup of `kind` on a terminal of `columns`: the frame's width less the margin on each side. */
+export function popupInnerWidth(columns: number, kind: PopupKind): number {
+  return popupWidth(columns, kind) - 2 * POPUP_SIDE_MARGIN;
+}
+
+/**
+ * The most columns a notification may take and still be read whole inside a standard popup at the floor (80×24: 66): while a popup is open the
+ * notification is drawn in the popup's own legend row, fitted to its inner width (`frame-model.ts`). Every text a popup or its host passes to the
+ * notification channel fits this; a longer one is cut with the ellipsis there. Derived from the geometry, never typed.
+ */
+export const POPUP_NOTICE_MAX_COLUMNS = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
+
 /** Whether a terminal of this size can hold a popup: at least 80×24, in whole cells. */
 export function popupFits(columns: number, rows: number): boolean {
   return (
@@ -120,10 +139,7 @@ export function popupGeometry(input: PopupGeometryInput): PopupGeometry {
   if (!popupFits(columns, rows)) return { fits: false, reason: 'below-floor' };
   const railRows = input.rail ? POPUP_RAIL_ROWS : 0;
   const chrome = POPUP_FRAME_ROWS + railRows;
-  const width =
-    kind === 'inspection'
-      ? columns - 2
-      : Math.min(columns - 2 * popupMargin(columns), POPUP_MAX_WIDTH);
+  const width = popupWidth(columns, kind);
   const tallest = kind === 'inspection' ? rows - 1 : POPUP_STANDARD_MAX_ROWS;
   // A block in the flow shares the live region with what else it draws, and the whole region stays at most `rows − 1` lines.
   const room =
@@ -144,7 +160,7 @@ export function popupGeometry(input: PopupGeometryInput): PopupGeometry {
     height,
     left: overlay ? Math.floor((columns - width) / 2) : 0,
     top: overlay ? Math.floor((rows - height) / 2) : 0,
-    innerWidth: width - 2 * POPUP_SIDE_MARGIN,
+    innerWidth: popupInnerWidth(columns, kind),
     maxBodyRows,
     bodyRows,
     listRows: placement === 'replace' ? Math.min(maxBodyRows, INLINE_LIST_MAX_ROWS) : maxBodyRows,

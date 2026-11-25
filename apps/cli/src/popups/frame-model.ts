@@ -1,22 +1,26 @@
 /**
  * The popup's frame, as rows of text ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1, §4 and §5): the ONE pure model of what a popup draws, whichever driver feeds its body (the popup host's reducer, or the native prompt
- * channel's snapshot) and whichever placement it is drawn in. The view (`popup-frame-view.tsx`) only paints these rows.
+ * channel's snapshot) and whichever placement it is drawn in. The view (`PopupFrameView` in `popup-slot.tsx`) only paints these rows.
  *
  * **Four parts, always in this order** (§1): the top edge (the command's name on the left, the origin on the right, and `step 2 of 3` for a
  * popup of more than one step, so a glyph is never the only carrier of the step); the step rail, only for more than one step, in the Home rail's
  * language (`✓ done ╌╌ ◉ current ╌╌ ○ to come`, each glyph from the table, with its plain form when colour is off); the body; and the legend,
- * which always ends with the way back and is the last thing truncated. A bottom edge closes the frame.
+ * which always ends with the way back and is the last thing truncated. A bottom edge closes the frame. While a notification is live the legend
+ * row draws it instead, fitted to the row and cut with the ellipsis, never wrapped (the hint row it is drawn on otherwise is under the popup).
  *
  * **Every row is exactly the frame's width** (§4). A row is filled with spaces to the width, because the spike showed that a row one cell short
  * lets the body behind it show through at its edge: the padding is what makes the popup opaque, and opacity is the safety property. The frame's
  * sides are open, a tray as the sheet's frame is (ADR-0147 §1): the glyph table has no vertical frame glyph, and the open sides are what the
  * inline form must draw anyway (§4: rules without side bars, which a screen reader would voice on every line). One column of margin inside
- * each side keeps a row's text off the body behind it.
+ * each side keeps a row's text off the body behind it, and the top and bottom rules keep it too (a blank cell at each end), so a rule never
+ * touches a word of the backdrop and reads as part of it.
  *
  * **Text is untrusted.** A title, a row, a detail or a report line can carry a name a project, a provider or a model wrote, so every string is
- * passed through the inline sanitiser (control and bidirectional characters) and the host-glyph blanking (a row cannot draw `✓`, `›` or a rule
- * the host draws), and is clipped to its row. The status glyphs and the selection marker are drawn by the model from the table, by role.
+ * passed through the inline sanitiser (control and bidirectional characters), the host-glyph blanking (a row cannot draw `✓`, `›` or a rule
+ * the host draws) and the line-separator fold ({@link foldLineSeparators}), and is clipped to its row. The status glyphs and the selection
+ * marker are drawn by the model from the table, by role. An `empty` or `error` state wraps its two sentences to the row, so what to do is
+ * never cut off a row the popup still has.
  *
  * Pure and `.ts`: it reads the glyph form in force, so a view runs it inside `withGlyphForm(!color, …)` (`glyph-form-scope.test.ts`).
  */
@@ -45,8 +49,8 @@ import {
   type SheetLine,
   type SheetSpan,
 } from '../render/tui/sheet-frame.js';
-import { displayWidth } from '../render/tui/viewport.js';
-import { POPUP_MAX_WIDTH, POPUP_SIDE_MARGIN, type PopupBoxGeometry } from './geometry.js';
+import { displayWidth, wrapWords } from '../render/tui/viewport.js';
+import { POPUP_SIDE_MARGIN, type PopupBoxGeometry } from './geometry.js';
 
 /** Where the popup was opened from, said on its top edge. */
 export type PopupOrigin = 'home' | 'chat';
@@ -118,9 +122,24 @@ export function loadingElapsedText(elapsedMs: number): string | undefined {
   return `${String(Math.floor(elapsedMs / 1000))} s`;
 }
 
-/** Text from a command, a project, a provider or a model, made safe to draw beside the host's own marks: sanitised and host-glyph blanked. */
+/**
+ * The line and paragraph separators (the `Zl` and `Zp` categories: U+2028 and U+2029). The inline sanitiser and the author-text scrub keep them,
+ * the width measure counts each as one column and a terminal draws them as nothing, so a row that carried N of them would be drawn N cells
+ * short and the body behind the popup would show through its edge (ADR-0148 §4: the padding is what makes the popup opaque).
+ */
+const LINE_SEPARATORS = /[\p{Zl}\p{Zp}]/gu;
+
+/** `text` with every line or paragraph separator folded to one space (one UTF-16 unit for one: a span over the text does not move). */
+export function foldLineSeparators(text: string): string {
+  return text.replace(LINE_SEPARATORS, ' ');
+}
+
+/**
+ * Text from a command, a project, a provider or a model, made safe to draw beside the host's own marks: sanitised, host-glyph blanked, and its
+ * line separators folded (the last step for every row of untrusted text the frame draws).
+ */
 export function popupText(text: string): string {
-  return blankHostGlyphs(sanitizeInline(text));
+  return foldLineSeparators(blankHostGlyphs(sanitizeInline(text)));
 }
 
 /** The body as the frame needs it: its rows (not yet padded) and the window's position, for a caller that keeps the selection in view. */
@@ -137,22 +156,49 @@ export interface PopupBodyState {
   readonly filter?: string | undefined;
 }
 
+/** `text` as rows of at most `width` columns, nothing cut (a long word is broken where it must be); never an empty list. */
+function wrapRows(text: string, width: number): readonly string[] {
+  const rows = wrapWords(text, Math.max(1, width)).map((row) => row.trimEnd());
+  return rows.length === 0 ? [''] : rows;
+}
+
+/**
+ * The rows an `empty` or an `error` state draws at `width`: what it says (an error's first row carries the failed glyph), then what to do, each
+ * wrapped whole. One function for the count the geometry is asked for and for the rows drawn, so the two cannot disagree.
+ */
+function stateRows(
+  content: Extract<PopupContent, { readonly kind: 'empty' | 'error' }>,
+  width: number,
+): { readonly what: readonly string[]; readonly next: readonly string[] } {
+  const lead = content.kind === 'error' ? `${glyph('failed')} ` : '';
+  return {
+    what: wrapRows(`${lead}${popupText(content.what)}`, width),
+    next: wrapRows(popupText(content.next), width),
+  };
+}
+
 /**
  * How many body rows `content` would like: what the geometry is asked for. A list or a report asks for every row it has, or `maxListRows`
- * (a block in the flow windows a list to ten rows, `INLINE_LIST_MAX_ROWS`), so the block is never padded with rows its list cannot use.
+ * (a block in the flow windows a list to ten rows, `INLINE_LIST_MAX_ROWS`), so the block is never padded with rows its list cannot use. An
+ * `empty` or `error` state asks for the rows its two sentences wrap to at `innerWidth` (the geometry's, from `popupInnerWidth`); without one it
+ * asks for one row each, and the body cuts what does not fit with the ellipsis.
  */
 export function naturalBodyRows(
   content: PopupContent,
   state: PopupBodyState,
   maxListRows = Number.POSITIVE_INFINITY,
+  innerWidth?: number,
 ): number {
   const filterRows = state.filter === undefined ? 0 : 1;
   switch (content.kind) {
     case 'loading':
       return filterRows + 1;
     case 'empty':
-    case 'error':
-      return filterRows + 2;
+    case 'error': {
+      if (innerWidth === undefined) return filterRows + 2;
+      const { what, next } = stateRows(content, innerWidth);
+      return filterRows + what.length + next.length;
+    }
     case 'list':
       return (
         filterRows +
@@ -256,6 +302,17 @@ function headingText(heading: PopupHeading): string {
   return `${lead}${popupText(heading.text)}`;
 }
 
+/**
+ * The rows a report is drawn in by {@link popupBody} in `geometry`: the body's rows less the filter line, and at most the list window. A report
+ * of more lines than this overflows its page (it scrolls, and the legend names `↑/↓ scroll`).
+ */
+export function reportPageRows(
+  geometry: Pick<PopupBoxGeometry, 'bodyRows' | 'listRows'>,
+  hasFilter: boolean,
+): number {
+  return Math.min(Math.max(1, geometry.bodyRows - (hasFilter ? 1 : 0)), geometry.listRows);
+}
+
 /** The furthest a report of `total` lines scrolls in a body of `height` rows. */
 export function reportMaxOffset(total: number, height: number): number {
   return Math.max(0, total - height);
@@ -287,13 +344,23 @@ export function popupBody(
       );
       break;
     case 'empty':
-      lines.push(bodyLine('message', popupText(content.what), width));
-      lines.push(bodyLine('text', popupText(content.next), width));
+    case 'error': {
+      // Both sentences whole, wrapped to the row; only a popup that has no more rows cuts them, the last row it keeps ending in the ellipsis.
+      const { what, next } = stateRows(content, width);
+      const wrapped: SheetLine[] = [
+        ...what.map((text) =>
+          bodyLine(content.kind === 'error' ? 'failed' : 'message', text, width),
+        ),
+        ...next.map((text) => bodyLine('text', text, width)),
+      ];
+      if (wrapped.length > room) {
+        const kept = wrapped.slice(0, room);
+        const last = kept.at(-1);
+        if (last !== undefined) kept[kept.length - 1] = bodyLine(last.kind, `${last.text}…`, width);
+        lines.push(...kept);
+      } else lines.push(...wrapped);
       break;
-    case 'error':
-      lines.push(bodyLine('failed', `${glyph('failed')} ${popupText(content.what)}`, width));
-      lines.push(bodyLine('text', popupText(content.next), width));
-      break;
+    }
     case 'list': {
       if (content.heading !== undefined)
         lines.push(bodyLine('message', headingText(content.heading), width));
@@ -305,7 +372,12 @@ export function popupBody(
     }
     case 'report':
       lines.push(
-        ...reportLines(content.lines, state.offset, Math.min(room, geometry.listRows), width),
+        ...reportLines(
+          content.lines,
+          state.offset,
+          reportPageRows(geometry, state.filter !== undefined),
+          width,
+        ),
       );
       break;
   }
@@ -329,6 +401,11 @@ export interface PopupFrameParts {
     readonly exit: LegendExit;
     readonly priority?: readonly number[] | undefined;
   };
+  /**
+   * The live notification while a popup is open (the host's channel, through the popup host's snapshot), drawn in the legend row in place of
+   * the legend for its lifetime: the hint row it is drawn on otherwise is under the popup. Absent ⇒ the legend.
+   */
+  readonly notice?: string | undefined;
 }
 
 /** `text` filled with spaces to exactly `width` columns (it is already clipped to fit). */
@@ -336,10 +413,13 @@ function fill(text: string, width: number): string {
   return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
 }
 
-/** A row of the frame: the margin, the content clipped to the inner width, then spaces to the frame's width. Spans move with the margin. */
+/**
+ * A row of the frame: the margin, the content clipped to the inner width, then spaces to the frame's width. Spans move with the margin. The
+ * content's line separators are folded first, whatever built it: the width measure and the terminal must agree on every cell.
+ */
 function framedRow(line: SheetLine, geometry: PopupBoxGeometry): SheetLine {
   const margin = ' '.repeat(POPUP_SIDE_MARGIN);
-  const content = clipLine(line.text, geometry.innerWidth);
+  const content = clipLine(foldLineSeparators(line.text), geometry.innerWidth);
   const spans = line.spans
     ?.map(
       (span): SheetSpan => ({
@@ -361,30 +441,47 @@ function framedRow(line: SheetLine, geometry: PopupBoxGeometry): SheetLine {
   };
 }
 
-/** The top edge: `─ title ───── from Home · step 2 of 3 ─`, exactly the frame's width; the title is clipped first. */
+/**
+ * The top edge: ` ─ title ───── from Home · step 2 of 3 ─ `, exactly the frame's width; the title is clipped first. The rule spans the inner
+ * width, with the side margin's blank cell at each end: it never touches a word of the body behind the popup (a backdrop drawn without dim,
+ * colour off, would read as part of the title row otherwise).
+ */
 function topEdge(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
   const rule = glyph('thinRule');
+  const width = geometry.innerWidth;
   const right =
     parts.steps.length > 1
       ? `${originLabel(parts.origin)} · step ${String(parts.stepIndex + 1)} of ${String(parts.steps.length)}`
       : originLabel(parts.origin);
   // `─ ` + title + ` ` + at least two rules + ` ` + right + ` ─`
-  const room = geometry.width - displayWidth(right) - 7;
+  const room = width - displayWidth(right) - 7;
   const title = clipLine(popupText(parts.title), Math.max(1, room));
   const lead = `${rule} ${title} `;
   const tail = ` ${right} ${rule}`;
-  const between = Math.max(0, geometry.width - displayWidth(lead) - displayWidth(tail));
-  const text = clipLine(`${lead}${rule.repeat(between)}${tail}`, geometry.width);
+  const between = Math.max(0, width - displayWidth(lead) - displayWidth(tail));
+  const text = clipLine(`${lead}${rule.repeat(between)}${tail}`, width);
+  const gutter = ' '.repeat(POPUP_SIDE_MARGIN);
+  const at = gutter.length;
   // The rule and the origin are dim; the command's name is what the eye looks for.
-  const titleEnd = Math.min(text.length, 2 + title.length);
+  const titleEnd = Math.min(at + text.length, at + 2 + title.length);
   return {
     kind: 'rule',
-    text: fill(text, geometry.width),
+    text: fill(`${gutter}${text}`, geometry.width),
     spans: [
-      { from: 0, to: 2, role: 'dim' },
-      { from: 2, to: titleEnd, role: 'strong' },
-      { from: titleEnd, to: text.length, role: 'dim' },
+      { from: at, to: at + 2, role: 'dim' },
+      { from: at + 2, to: titleEnd, role: 'strong' },
+      { from: titleEnd, to: at + text.length, role: 'dim' },
     ],
+  };
+}
+
+/** The bottom edge: the rule over the inner width, the side margin's blank cell at each end (as the top edge). */
+function bottomEdge(geometry: PopupBoxGeometry): SheetLine {
+  const at = POPUP_SIDE_MARGIN;
+  return {
+    kind: 'rule',
+    text: fill(`${' '.repeat(at)}${glyph('thinRule').repeat(geometry.innerWidth)}`, geometry.width),
+    spans: [{ from: at, to: at + geometry.innerWidth, role: 'dim' }],
   };
 }
 
@@ -411,8 +508,14 @@ function rail(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
   return framedRow({ kind: 'row', text, spans }, geometry);
 }
 
-/** The legend, fitted to the inner width: the way back is always kept and the other items go from the end first. */
+/**
+ * The legend, fitted to the inner width: the way back is always kept and the other items go from the end first. While a notification is live
+ * the row draws it instead, on one row cut with the ellipsis by `framedRow` (which also folds its line separators; it is never wrapped: the
+ * frame's height is the geometry's).
+ */
 function legendRow(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
+  if (parts.notice !== undefined)
+    return framedRow({ kind: 'notice', text: parts.notice }, geometry);
   const items = parts.legend.items.map((item) =>
     'text' in item ? { text: inertLegendText(sanitizeInline(item.text)) } : item,
   );
@@ -458,11 +561,7 @@ export function popupFrameLines(
     ...(geometry.railRows > 0 ? [rail(parts, geometry)] : []),
     ...bodyRows,
     legendRow(parts, geometry),
-    {
-      kind: 'rule',
-      text: glyph('thinRule').repeat(geometry.width),
-      spans: [{ from: 0, to: geometry.width, role: 'dim' }],
-    },
+    bottomEdge(geometry),
   ];
 }
 
@@ -491,14 +590,14 @@ export function popupNoticeText(reason: 'below-floor' | 'no-room'): string {
 
 /**
  * The notice a popup draws in place of its frame (§4: below 80×24, or a block with no room): the reason and the way back, each row filled to
- * one width so the notice is opaque as the frame is. At most `columns` wide.
+ * the terminal's width, `columns`, so the notice is opaque as the frame is and no cell of the body it covers is left at the end of its rows.
  */
 export function popupNoticeLines(
   reason: 'below-floor' | 'no-room',
   keys: { readonly items: readonly LegendItem[]; readonly exit: LegendExit },
   columns: number,
 ): readonly SheetLine[] {
-  const width = Math.max(1, Math.min(columns, POPUP_MAX_WIDTH));
+  const width = Math.max(1, Math.trunc(columns));
   // The reason wraps (at most three rows) rather than losing its end on a narrow terminal; the keys row is the way back.
   const reasonRows = wrappedLines(popupNoticeText(reason), Math.max(1, width - 1), 3);
   const row = clipLine(` ${legend(keys.items, keys.exit)}`, width);

@@ -6,7 +6,8 @@
 import { LEGACY_COST_SENTINEL } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
-import { costNotice } from '../chat/repl-info.js';
+import { costNotice, costParts } from '../chat/repl-info.js';
+import { CLI_ERROR_POLICY, CliError, type CliErrorCode } from '../process/cli-error.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import {
   COST_STEP,
@@ -14,11 +15,22 @@ import {
   costReportLines,
   costSpec,
   heldMicrocents,
+  NOTHING_HELD,
+  RELEASE_FAILED,
   releasable,
   releaseContent,
   releaseDoneContent,
+  releaseFailedContent,
   releasedAmount,
+  releaseRefusedText,
+  TURN_IN_FLIGHT,
+  TURN_IN_FLIGHT_NOTICE,
+  turnInFlightContent,
 } from './cost-popup.js';
+import { costReadFailedContent } from './cost-session.js';
+import { openFrame, railOf } from './popup-reducer.js';
+import type { ChordRefusal } from './popup-host.js';
+import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
 import { REPORT_TEXT_COLUMNS } from './report-text.js';
 import { COMPLETE, costReading, costRow } from './report.test-support.js';
 import type { CostReading } from './report-port.js';
@@ -104,7 +116,7 @@ describe('what is held, and when the release is offered', () => {
     expect(heldMicrocents(costReading(450, { microcents: 100 }))).toBe(450);
   });
 
-  it('offers the release for a held estimate or a record known not to be durable, and for nothing else', () => {
+  it('offers the release for a held estimate and for nothing else: a record known not to be durable, with nothing held, has nothing to release', () => {
     expect(releasable(costReading(0, undefined, []))).toBe(false);
     expect(costControls(costReading(0, undefined, []))).toEqual([{ key: 'c', verb: 'copy' }]);
     expect(releasable(costReading(450))).toBe(true);
@@ -112,8 +124,15 @@ describe('what is held, and when the release is offered', () => {
       { key: 'r', verb: 'release held estimates' },
       { key: 'c', verb: 'copy' },
     ]);
-    expect(releasable(costReading(0, { microcents: 0, durabilityBroken: true }, []))).toBe(true);
+    // The warning is a fact of the report's text; with nothing held `[r]` would only lead to "nothing to release".
+    const broken = costReading(0, { microcents: 0, durabilityBroken: true }, []);
+    expect(releasable(broken)).toBe(false);
+    expect(costControls(broken)).toEqual([{ key: 'c', verb: 'copy' }]);
+    expect(costReportLines(broken).join(' ')).toContain('could not be written durably');
     expect(releasable(costReading(0, { microcents: 0, durabilityBroken: false }, []))).toBe(false);
+    // Held in the governor alone (the record could not be written) it is offered, whether or not the record is known broken.
+    expect(releasable(costReading(0, { microcents: 700, durabilityBroken: true }, []))).toBe(true);
+    expect(releasable(costReading(0, { microcents: 700, durabilityBroken: false }, []))).toBe(true);
   });
 });
 
@@ -165,5 +184,91 @@ describe('the spec', () => {
     expect(spec.steps[COST_STEP.cost]?.controls).toBeUndefined();
     // The copy outlasts the release and the scroll hint on a short legend row.
     expect(spec.steps[COST_STEP.cost]?.legendKeep).toEqual(['c', 'r']);
+  });
+});
+
+describe('the total wraps like every other line (the notice’s words, the popup’s width)', () => {
+  it('a total wider than the popup continues on the next line and no word is lost', () => {
+    const reading: CostReading = {
+      ...costReading(0, undefined, []),
+      coverage: { unverified: true, pendingInvocations: 12, unknownCalls: 34 },
+    };
+    const total = costParts(reading.totalCostMicrocents, reading.rows, {
+      ...(reading.coverage === undefined ? {} : { coverage: reading.coverage }),
+    }).total;
+    // The precondition: this total is wider than the popup, so a report that did not wrap it would draw it cut.
+    expect(displayWidth(total)).toBeGreaterThan(REPORT_TEXT_COLUMNS);
+    const lines = costReportLines(reading);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines)
+      expect(displayWidth(line), line).toBeLessThanOrEqual(REPORT_TEXT_COLUMNS);
+    expect(lines.join(' ').replaceAll(/\s+/gu, ' ')).toContain(total);
+  });
+});
+
+describe('the rail follows the path (rail: path)', () => {
+  it('names only the steps from the first to the current one: the report alone, then the report and the line, then all three', () => {
+    const names = (onRelease: boolean, step?: number) => {
+      const frame = openFrame(costSpec('chat', onRelease), 1);
+      return railOf({ ...frame, stepIndex: step ?? frame.stepIndex });
+    };
+    expect(names(false).names).toEqual(['Cost']);
+    expect(names(true)).toEqual({ names: ['Cost', 'Release'], index: 1 });
+    expect(names(false, COST_STEP.done)).toEqual({ names: ['Cost', 'Release', 'Done'], index: 2 });
+    expect(costSpec('chat', false).rail).toBe('path');
+  });
+});
+
+describe('every text the popup composes fits the popup at the 80-column floor', () => {
+  const REASONS: Readonly<Record<ChordRefusal, true>> = {
+    unseen: true,
+    early: true,
+    expired: true,
+    typed: true,
+  };
+
+  /** The room a line has: the popup's text columns, and two fewer where the frame puts a glyph in front of it (an error’s first line). */
+  const ROOM = REPORT_TEXT_COLUMNS;
+
+  it.each([
+    ['NOTHING_HELD', NOTHING_HELD],
+    ['TURN_IN_FLIGHT', TURN_IN_FLIGHT],
+    ['RELEASE_FAILED', RELEASE_FAILED],
+  ])('%s: each of its two lines fits, with room for the glyph of an error', (_name, texts) => {
+    expect(displayWidth(texts.what)).toBeLessThanOrEqual(ROOM - 2);
+    expect(displayWidth(texts.next)).toBeLessThanOrEqual(ROOM);
+  });
+
+  it('the empty, in-flight and failed contents carry exactly those lines, and none of them says what the legend already says', () => {
+    expect(releaseContent(costReading(0, undefined, []))).toEqual({
+      kind: 'empty',
+      ...NOTHING_HELD,
+    });
+    expect(turnInFlightContent()).toEqual({ kind: 'empty', ...TURN_IN_FLIGHT });
+    expect(releaseFailedContent()).toEqual({ kind: 'error', ...RELEASE_FAILED });
+    for (const texts of [NOTHING_HELD, TURN_IN_FLIGHT, RELEASE_FAILED])
+      expect(`${texts.what} ${texts.next}`).not.toMatch(/\bEsc\b/u);
+  });
+
+  it('the read failure names the code and fits whatever the code is', () => {
+    const isCode = (code: string): code is CliErrorCode => code in CLI_ERROR_POLICY;
+    const codes = Object.keys(CLI_ERROR_POLICY).filter(isCode);
+    expect(codes.length).toBeGreaterThan(5);
+    for (const code of codes) {
+      const content = costReadFailedContent(new CliError(code, 'x'));
+      expect(content.what, code).toContain(code);
+      expect(displayWidth(content.what), code).toBeLessThanOrEqual(ROOM - 2);
+      expect(displayWidth(content.next)).toBeLessThanOrEqual(ROOM);
+    }
+    expect(displayWidth(costReadFailedContent(new Error('x')).what)).toBeLessThanOrEqual(ROOM - 2);
+  });
+
+  it('every notification fits the legend row, and says that nothing was released and why', () => {
+    expect(displayWidth(TURN_IN_FLIGHT_NOTICE)).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+    for (const reason of Object.keys(REASONS) as ChordRefusal[]) {
+      const text = releaseRefusedText(reason);
+      expect(displayWidth(text), reason).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+      expect(text, reason).toMatch(/^Not released: /u);
+    }
   });
 });

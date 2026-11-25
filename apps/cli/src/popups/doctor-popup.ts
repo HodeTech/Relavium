@@ -16,7 +16,11 @@
 
 import type { ProviderId } from '@relavium/llm';
 
-import type { ConsentTarget } from '../chat/doctor-deep.js';
+import {
+  ENDPOINT_CHANGED_DETAIL,
+  KEY_GONE_DETAIL,
+  type ConsentTarget,
+} from '../chat/doctor-deep.js';
 import { doctorAppearance, type DoctorCheck } from '../chat/doctor.js';
 import { KNOWN_PROVIDER_IDS, providerDisplayName } from '../engine/providers.js';
 import { formatElapsed } from '../render/notation.js';
@@ -26,8 +30,14 @@ import { authorLine } from '../render/tui/run-card-model.js';
 import { wrapWords } from '../render/tui/viewport.js';
 import type { DoctorRemedy, DoctorSurface } from './doctor-port.js';
 import type { PopupContent, PopupHeading, PopupListRow, PopupOrigin } from './frame-model.js';
-import { POPUP_FLOOR, POPUP_MAX_WIDTH, POPUP_SIDE_MARGIN, popupMargin } from './geometry.js';
-import type { PopupSpec } from './popup-reducer.js';
+import {
+  POPUP_FLOOR,
+  POPUP_MAX_WIDTH,
+  POPUP_SIDE_MARGIN,
+  popupGeometry,
+  popupMargin,
+} from './geometry.js';
+import type { PopupControl, PopupSpec } from './popup-reducer.js';
 
 /** The popup's steps: the checks (its first), a row's detail and the deep tier's confirmation line, both reached from the checks. */
 export const DOCTOR_STEP = { checks: 0, detail: 1, line: 2 } as const;
@@ -37,9 +47,26 @@ export const DOCTOR_TEXT_COLUMNS =
   Math.min(POPUP_FLOOR.columns - 2 * popupMargin(POPUP_FLOOR.columns), POPUP_MAX_WIDTH) -
   2 * POPUP_SIDE_MARGIN;
 
+/**
+ * The rows of body the doctor popup has at the smallest terminal it is drawn on (80×24, overlay, with its rail): the most a confirmation line
+ * may take and still be on screen WHOLE, with no scrolling, before it can be answered (ADR-0148 §7: everything the answer covers has been seen).
+ */
+export const DOCTOR_LINE_ROWS: number = (() => {
+  const box = popupGeometry({
+    columns: POPUP_FLOOR.columns,
+    rows: POPUP_FLOOR.rows,
+    kind: 'standard',
+    placement: 'overlay',
+    rail: true,
+  });
+  return box.fits ? box.maxBodyRows : 1;
+})();
+
 /** The confirmation line's own words (ADR-0148 §8), around the origins it names. */
-export const CONSENT_LEAD = 'Sends one small request with your key to:';
+export const CONSENT_LEAD = 'Sends one small request per provider, with its key, to:';
 export const CONSENT_MCP = 'MCP servers are only reported, never contacted.';
+/** What the line says when the destinations it would name do not fit the page whole: nothing is offered and nothing is sent. */
+export const CONSENT_TOO_LONG = 'These destinations are too long to confirm, so nothing is sent.';
 
 /**
  * The full scrub of a surface with a chord step (ADR-0145 §5): the run cards' author-text floor (secrets scrubbed, folded, host glyphs blanked,
@@ -49,9 +76,14 @@ export function doctorText(text: string): string {
   return inertLegendText(authorLine(text));
 }
 
-/** `text` in lines of at most `columns`, nothing cut, a long word broken where it must be. */
+/**
+ * `text` in lines of at most `columns`, nothing cut, a long word broken where it must be. `wrapWords` keeps the white space it breaks at, so a
+ * line that ended just before a space would start the next one with it: every continuation line starts where the first does.
+ */
 function wrap(text: string, columns = DOCTOR_TEXT_COLUMNS): string[] {
-  return wrapWords(text, columns).map((line) => line.trimEnd());
+  return wrapWords(text, columns).map((line, index) =>
+    index === 0 ? line.trimEnd() : line.trim(),
+  );
 }
 
 /** The checks' heading: the dominant outcome, a failure before a warning, in the words of the text report (and their plural). */
@@ -128,8 +160,17 @@ export function checksContent(view: DoctorView): PopupContent {
   };
 }
 
-/** The report as text, for `[c]`: the heading and the rows the popup shows, in the same scrubbed words, the glyphs in the form asked for. */
+/** Whether the view has a row to show or to copy: a report of no rows says nothing, and is never headed as an all-clear. */
+export function hasRows(view: DoctorView): boolean {
+  return view.quick.length > 0 || (view.deep?.checks.length ?? 0) > 0;
+}
+
+/**
+ * The report as text, for `[c]`: the heading and the rows the popup shows, in the same scrubbed words, the glyphs in the form asked for. A view
+ * with no row (the checks have not landed) is the empty text, never `doctor: all checks passed` over nothing.
+ */
 export function doctorCopyText(view: DoctorView, ascii: boolean): string {
+  if (!hasRows(view)) return '';
   const heading = doctorHeading([...view.quick, ...(view.deep?.checks ?? [])]);
   const mark = glyphOf(heading.status, ascii);
   const lines = [`${mark === heading.statusWord ? '' : `${mark} `}${heading.text}`];
@@ -156,6 +197,32 @@ export function providersRemedy(surface: DoctorSurface, offered: boolean): strin
       return `Go back to the Home (${keyToken('Ctrl+C')} twice) and use /providers to connect a key or review its source.`;
     case 'standalone-chat':
       return 'Go back to the Home (start Relavium without arguments) and use /providers to connect a key or review its source.';
+  }
+}
+
+/**
+ * What to do about a provider whose request failed, on a surface. The row says only that the request failed, which a wrong key and a network
+ * that did not answer both look like, so the sentence is true for both: check the network if the key is right, and otherwise review the key.
+ * A provider that was not contacted at all (its endpoint changed, or its key could not be read) is a problem of the key's setup, and keeps
+ * {@link providersRemedy}.
+ */
+export function failedProviderRemedy(
+  check: DoctorCheck,
+  surface: DoctorSurface,
+  offered: boolean,
+): string {
+  if (check.detail === ENDPOINT_CHANGED_DETAIL || check.detail === KEY_GONE_DETAIL)
+    return providersRemedy(surface, offered);
+  const lead = 'If the key is right, check your network; otherwise';
+  switch (surface) {
+    case 'home':
+      return offered
+        ? `${lead} press ${keyToken('Enter')} to open /providers and review it.`
+        : `${lead} review it with /providers.`;
+    case 'home-chat':
+      return `${lead} go back to the Home (${keyToken('Ctrl+C')} twice) and review it with /providers.`;
+    case 'standalone-chat':
+      return `${lead} go back to the Home (start Relavium without arguments) and review it with /providers.`;
   }
 }
 
@@ -211,10 +278,11 @@ function whatToDo(
   surface: DoctorSurface,
   offered: boolean,
 ): readonly string[] {
-  const again = `Press ${keyToken('r')} to check again.`;
+  // The detail step has no `[r]` of its own: `Esc` goes back to the checks, where it checks again.
+  const again = `${keyToken('Esc')} goes back to the checks, where ${keyToken('r')} checks again.`;
   if (tier === 'deep' && check.id.startsWith('provider:')) {
     if (check.status === 'ok') return ['The key worked: the request was answered.'];
-    return [providersRemedy(surface, offered)];
+    return [failedProviderRemedy(check, surface, offered)];
   }
   if (tier === 'deep')
     return [
@@ -289,6 +357,13 @@ export function consentContent(
         `Not contacted (its key or its endpoint could not be read): ${unknownOrigin.map(providerDisplayName).join(', ')}.`,
       ),
     );
+  // A line that does not fit the page is never offered: the answer would cover lines that had to be scrolled to, or never were.
+  if (lines.length > DOCTOR_LINE_ROWS)
+    return {
+      kind: 'empty',
+      what: CONSENT_TOO_LONG,
+      next: `${keyToken('Esc')} goes back.`,
+    };
   return { kind: 'report', lines };
 }
 
@@ -300,6 +375,18 @@ export const DOCTOR_LOADING = {
   line: 'Finding the providers that have a key',
   deep: 'Asking each provider with its key',
 } as const;
+
+const QUICK_CONTROL: PopupControl = { key: 'r', verb: 'quick check' };
+const DEEP_CONTROL: PopupControl = { key: 'd', verb: 'deep check' };
+const COPY_CONTROL: PopupControl = { key: 'c', verb: 'copy' };
+
+/**
+ * The letters the checks step answers to: the quick check and the deep check always, and `[c] copy` only while the step shows rows. While it
+ * loads, or says the checks could not run, there is no report to copy, and a copy of one would be a report of nothing.
+ */
+export function doctorChecksControls(rows: boolean): readonly PopupControl[] {
+  return rows ? [QUICK_CONTROL, DEEP_CONTROL, COPY_CONTROL] : [QUICK_CONTROL, DEEP_CONTROL];
+}
 
 /**
  * The popup's spec: three steps, the later two reached from the first (`rail: 'path'`), opened on the line for a typed `/doctor --deep`. With
@@ -317,11 +404,8 @@ export function doctorSpec(origin: PopupOrigin, onLine: boolean, remedies = fals
         name: 'Checks',
         content: { kind: 'loading', what: DOCTOR_LOADING.quick },
         enter: 'details',
-        controls: [
-          { key: 'r', verb: 'quick check' },
-          { key: 'd', verb: 'deep check' },
-          { key: 'c', verb: 'copy' },
-        ],
+        // The first content is the loading words: no rows yet, so no copy (the session sets the letters again with each result).
+        controls: doctorChecksControls(false),
         // At 80 columns not every key fits: the deep check's consent and the re-check are kept longest, the arrows go first.
         legendKeep: ['d', 'r', 'Enter', 'c'],
       },

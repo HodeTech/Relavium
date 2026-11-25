@@ -49,7 +49,7 @@ export interface SurfaceBase {
    * whole, in every cell where the surface renders. An exit key and a landmark can survive a layout that draws a list over the legend, so
    * this is the property that names it. Absent for a surface whose legend is not one fixed row.
    */
-  readonly legendRow?: string | undefined;
+  readonly legendRow?: string | readonly string[] | undefined;
   /**
    * What the surface does below the floor (60×20): a pattern its below-floor text matches (the default is the Home's "too small" notice and
    * the sheets' "enlarge the terminal"), or `'renders'` for a surface that draws normally there and keeps every property, exit key included.

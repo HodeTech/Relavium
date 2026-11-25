@@ -9,7 +9,6 @@
  */
 
 import { catalogParts, CATALOG_EMPTY_NOTICE, NO_PROJECT_NOTICE } from '../chat/repl-info.js';
-import { keyToken } from '../render/tui/legend.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
 import type { WorkflowsReading } from './report-port.js';
@@ -17,6 +16,9 @@ import { reportText, wrapHanging } from './report-text.js';
 
 /** The loading words while the catalog is scanned. */
 export const WORKFLOWS_LOADING = 'Reading the project catalog';
+
+/** What the error state says first when the scan ran and found a fault: the fault's own words follow on the next line. */
+export const WORKFLOWS_FAULT = 'Could not list the workflows.';
 
 /** The content of the one step while the scan runs. */
 export const WORKFLOWS_LOADING_CONTENT: PopupContent = { kind: 'loading', what: WORKFLOWS_LOADING };
@@ -28,13 +30,14 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
       return {
         kind: 'empty',
         what: NO_PROJECT_NOTICE,
-        next: `Open Relavium in a project folder, or use /init on the Home. ${keyToken('Esc')} closes.`,
+        next: 'Open Relavium in a project folder, or use /init on the Home.',
       };
     case 'fault':
+      // The fault's own words are the second line, scrubbed: they are what a project or a catalog cap wrote and are as long as they are.
       return {
         kind: 'error',
-        what: `Could not list the workflows: ${reportText(reading.reason)}`,
-        next: `Close this and try again. ${keyToken('Esc')} closes.`,
+        what: WORKFLOWS_FAULT,
+        next: reportText(reading.reason),
       };
     case 'catalog': {
       const parts = catalogParts(reading.workflows, reading.agents);
@@ -42,7 +45,7 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
         return {
           kind: 'empty',
           what: CATALOG_EMPTY_NOTICE,
-          next: `Add a workflow or an agent to the project. ${keyToken('Esc')} closes.`,
+          next: 'Add a workflow or an agent to the project.',
         };
       return {
         kind: 'report',
@@ -66,7 +69,7 @@ export function workflowsFailedContent(): PopupContent {
   return {
     kind: 'error',
     what: 'The project catalog could not be read.',
-    next: `Close this and try again. ${keyToken('Esc')} closes.`,
+    next: 'Close this and try again.',
   };
 }
 

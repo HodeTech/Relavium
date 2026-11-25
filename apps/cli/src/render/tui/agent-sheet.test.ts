@@ -13,7 +13,12 @@ import {
   agentSheetTitle,
   BUILT_IN_AGENT_NOTE,
   boundToolsText,
+  fieldLead,
+  INDENT,
+  LABEL_WIDTH,
   NOT_WIRED_MARK,
+  packedTools,
+  wrappedTools,
 } from './agent-sheet.js';
 import { usableColumns } from './sheet-frame.js';
 import { cardRowBudget } from './tool-review-card.js';
@@ -516,5 +521,48 @@ describe('the notice of a chat that has no popup to open', () => {
     expect(notice).not.toContain(KEY);
     // eslint-disable-next-line no-control-regex -- the point of the test: no control character reaches a terminal
     expect(notice).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f\u202e]/u);
+  });
+});
+
+describe('packing the tool grant into rows', () => {
+  const WIDE = `mcp__${'w'.repeat(60)}`;
+
+  it('shares the label column of every field: the lead is the indent and the label padded to one width', () => {
+    expect(INDENT).toBe('  ');
+    expect(LABEL_WIDTH).toBe(18);
+    expect(fieldLead('Tools')).toBe(`  Tools${' '.repeat(13)}`);
+    expect(fieldLead('')).toBe(' '.repeat(20));
+    expect(displayWidth(fieldLead('Reasoning effort'))).toBe(20);
+  });
+
+  it('wraps between names, a comma after every name but the last, and never inside a name that fits', () => {
+    const rows = wrappedTools(undefined, ['read_file', 'search_files', 'ask_user'], 24);
+    expect(rows).toEqual(['read_file, search_files,', 'ask_user']);
+    expect(wrappedTools('2 of 3 offered:', ['a', 'b'], 40)).toEqual(['2 of 3 offered: a, b']);
+  });
+
+  it('cuts a name wider than the row with … for the sheet and the notice, and wraps it whole for the popup', () => {
+    const cut = packedTools(undefined, ['read_file', WIDE], 30);
+    expect(cut[0]).toBe('read_file,');
+    expect(cut[1]).toHaveLength(30);
+    expect(cut[1]).toMatch(/…$/u);
+    const wrapped = wrappedTools(undefined, ['read_file', WIDE], 30);
+    expect(wrapped[0]).toBe('read_file,');
+    expect(wrapped.slice(1).join('')).toBe(WIDE);
+    for (const row of wrapped) expect(displayWidth(row)).toBeLessThanOrEqual(30);
+    expect(wrapped.join('')).not.toContain('…');
+  });
+
+  it('wraps a wide marked name by its own words and keeps every character of it', () => {
+    const marked = `${WIDE} ${NOT_WIRED_MARK}`;
+    const rows = wrappedTools('1 of 2 offered:', [marked, 'read_file'], 30);
+    for (const row of rows) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(30);
+      // A row that was broken at a space does not keep it: nothing trails.
+      expect(row).toBe(row.trimEnd());
+    }
+    const text = rows.join(' ').replaceAll(/\s+/gu, '');
+    expect(text).toContain(WIDE);
+    expect(text).toContain(NOT_WIRED_MARK.replaceAll(/\s+/gu, ''));
   });
 });

@@ -2,9 +2,10 @@ import {
   naturalBodyRows,
   popupBody,
   popupFrameLines,
+  reportPageRows,
   type PopupOrigin,
 } from '../../../popups/frame-model.js';
-import { INLINE_LIST_MAX_ROWS, popupGeometry } from '../../../popups/geometry.js';
+import { INLINE_LIST_MAX_ROWS, popupGeometry, popupInnerWidth } from '../../../popups/geometry.js';
 import {
   currentStep,
   openFrame,
@@ -83,24 +84,31 @@ export function testPopupBox(origin: PopupOrigin): (variant: Variant) => PopupBo
 
 /**
  * Where a popup's frame is drawn in a cell, and its rows, from the one geometry function and the frame model exactly as the slot draws them
- * (its rail, its legend, its body in the cell's glyph form). A product popup's surface passes the frame its host has open.
+ * (its rail, its legend judged on the page it draws, its body in the cell's glyph form, and the live notification in its legend row when
+ * `notice` is given). A product popup's surface passes the frame its host has open.
  */
-export function popupBoxOf(frame: PopupFrame | undefined, variant: Variant): PopupBox {
+export function popupBoxOf(
+  frame: PopupFrame | undefined,
+  variant: Variant,
+  notice?: string,
+): PopupBox {
   if (frame === undefined) throw new Error('no popup is open in this cell');
   const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
   const { spec: step, state: opened } = currentStep(frame);
   const state = { ...opened, filter: step.filter === true ? opened.filter : undefined };
   const rail = railOf(frame);
+  const kind = frame.spec.kind ?? 'standard';
   const geometry = popupGeometry({
     columns: variant.size.cols,
     rows: variant.size.rows,
-    kind: frame.spec.kind ?? 'standard',
+    kind,
     placement,
     rail: rail.names.length > 1,
     bodyRows: naturalBodyRows(
       state.content,
       state,
       placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+      popupInnerWidth(variant.size.cols, kind),
     ),
   });
   if (!geometry.fits) throw new Error('the popup does not fit this cell');
@@ -111,7 +119,8 @@ export function popupBoxOf(frame: PopupFrame | undefined, variant: Variant): Pop
         origin: frame.spec.origin,
         steps: rail.names,
         stepIndex: rail.index,
-        legend: popupLegend(frame),
+        legend: popupLegend(frame, reportPageRows(geometry, state.filter !== undefined)),
+        notice,
       },
       popupBody(state.content, state, geometry),
       geometry,

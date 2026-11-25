@@ -18,10 +18,19 @@ import {
   type ChatMount,
 } from '../render/tui/surface-matrix/chat-host.js';
 import { KEYS, mountHome, type HomeMount } from '../render/tui/surface-matrix/home-host.js';
-import { TEST_POPUP_TITLE, testReportPopup } from '../render/tui/surface-matrix/popup-fixture.js';
+import {
+  popupBoxOf,
+  TEST_POPUP_TITLE,
+  testReportPopup,
+} from '../render/tui/surface-matrix/popup-fixture.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
-import { naturalBodyRows, popupBody, popupFrameLines } from './frame-model.js';
-import { INLINE_LIST_MAX_ROWS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
+import { naturalBodyRows, popupBody, popupFrameLines, reportPageRows } from './frame-model.js';
+import {
+  INLINE_LIST_MAX_ROWS,
+  popupGeometry,
+  popupInnerWidth,
+  type PopupBoxGeometry,
+} from './geometry.js';
 import { createPopupHost, type PopupHost } from './popup-host.js';
 import { currentStep, openFrame, popupLegend, type PopupSpec } from './popup-reducer.js';
 
@@ -72,6 +81,7 @@ function modelOf(
       state.content,
       state,
       placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+      popupInnerWidth(variant.size.cols, 'standard'),
     ),
   });
   if (!geometry.fits) throw new Error('refused');
@@ -82,7 +92,7 @@ function modelOf(
         origin: spec.origin,
         steps: spec.steps.map((step) => step.name),
         stepIndex: 0,
-        legend: popupLegend(frame),
+        legend: popupLegend(frame, reportPageRows(geometry, state.filter !== undefined)),
       },
       popupBody(state.content, state, geometry),
       geometry,
@@ -484,6 +494,59 @@ describe('the inline block through a resize (ADR-0148 §4)', () => {
         // popup is `rows − 1` at every render too, but a terminal that SHRINKS below the region it drew a moment ago makes the renderer
         // clear (its frame now overflows the new size, whatever the next frame is): a property of the resize, not of the popup's height.
         if (kind === 'standard') expect(m.raw()).not.toContain('\u001b[3J');
+      } finally {
+        m.unmount();
+      }
+    },
+  );
+});
+
+describe('an empty or error state draws both its sentences whole in a real host (MVP-11 step 4 review)', () => {
+  const WHAT =
+    'There is no project here, so there is nothing to list: no workflow and no agent was found in this folder or above it.';
+  const NEXT =
+    'Open Relavium in a project folder, or use /init on the Home to start one here, then open this list again.';
+
+  it.each([
+    ['home', 'alt'],
+    ['home', 'inline'],
+    ['standalone-chat', 'alt'],
+  ] as const)(
+    'in the %s host (%s): the sentences wrap inside the frame, and it is the frame the model draws',
+    async (host, renderer) => {
+      const variant: Variant = { renderer, color: false, size: { cols: 80, rows: 24 } };
+      const m = await mountIn(host, variant);
+      try {
+        const spec: PopupSpec = {
+          id: 'states',
+          title: '/states',
+          origin: originOf(host),
+          steps: [{ name: 'One', content: { kind: 'empty', what: WHAT, next: NEXT } }],
+        };
+        expect(m.popups.openForUser(spec).opened).toBe(true);
+        await m.until(() => m.frame().join('\n').includes('then open this list again.'));
+        await m.settle();
+        // The popup's own cells, as the model draws them: the drawn frame holds exactly these rows, in its box.
+        const box = popupBoxOf(m.popupFrame(), variant);
+        const frame = m.frame();
+        const first =
+          box.placement === 'overlay'
+            ? box.top
+            : frame.findIndex((row) => row.trimEnd() === (box.rows[0] ?? '').trimEnd());
+        expect(first).toBeGreaterThanOrEqual(0);
+        const left = box.placement === 'overlay' ? box.left : 0;
+        const drawn = box.rows.map((_, index) =>
+          (frame[first + index] ?? '').slice(left, left + box.width).trimEnd(),
+        );
+        expect(drawn).toEqual(box.rows.map((row) => row.trimEnd()));
+        // Both sentences are there whole, wrapped over rows of the popup, and nothing is cut.
+        const words = drawn
+          .map((row) => row.trim())
+          .join(' ')
+          .replace(/\s+/gu, ' ');
+        expect(words).toContain(WHAT);
+        expect(words).toContain(NEXT);
+        expect(words).not.toContain('…');
       } finally {
         m.unmount();
       }

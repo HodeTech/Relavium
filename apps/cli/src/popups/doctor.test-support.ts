@@ -17,7 +17,12 @@ import { openDoctorPopup } from './doctor-session.js';
 import type { DoctorPort } from './doctor-port.js';
 import type { PopupContent } from './frame-model.js';
 import { createNotificationChannel, type Schedule } from './notifications.js';
-import { createPopupHost, type PopupOpenResult } from './popup-host.js';
+import {
+  createPopupHost,
+  type PopupHandlers,
+  type PopupHost,
+  type PopupOpenResult,
+} from './popup-host.js';
 import { currentStep, type PopupKey } from './popup-reducer.js';
 
 /** A manual timer and clock: `advance` runs what falls due, in order. */
@@ -172,6 +177,15 @@ export function doctorRig(options: { readonly settleMs?: number } = {}) {
     placement: 'overlay',
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
   });
+  // The handlers the doctor gave the host, so a test can call one the keys cannot reach (a control the step does not list).
+  let handlers: PopupHandlers | undefined;
+  const spying: PopupHost = {
+    ...host,
+    openForUser: (spec, given) => {
+      handlers = given;
+      return host.openForUser(spec, given);
+    },
+  };
   let painted = true;
   host.bindVisibility(() => painted);
   // The rows a page moves, as a standard popup at 80×24 has them: a short report does not scroll.
@@ -181,14 +195,16 @@ export function doctorRig(options: { readonly settleMs?: number } = {}) {
     port: Omit<DoctorPort, 'scope' | 'surface' | 'resultKey'> &
       Partial<Pick<DoctorPort, 'surface' | 'resultKey'>>,
     deep = false,
+    /** How the checks give the loop back between two reads: a microtask unless a test holds them. */
+    yieldToLoop: () => Promise<void> = () => Promise.resolve(),
   ): PopupOpenResult =>
     openDoctorPopup({
-      host,
+      host: spying,
       port: { scope, surface: 'home', resultKey: 'home', ...port },
       deep,
       origin: 'home',
       now: clock.now,
-      yieldToLoop: () => Promise.resolve(),
+      yieldToLoop,
     });
   const content = (step?: number): PopupContent => {
     const frame = host.getSnapshot().frame;
@@ -205,6 +221,8 @@ export function doctorRig(options: { readonly settleMs?: number } = {}) {
     scope,
     open,
     content,
+    /** The handlers of the popup opened last (what the host calls for a key), for a test that calls one directly. */
+    handlers: (): PopupHandlers | undefined => handlers,
     /** The current frame was measured and flushed now (a NEW frame: the dwell of a line starts here). */
     show: (): void => host.shown(host.getSnapshot()),
     hide: (): void => {

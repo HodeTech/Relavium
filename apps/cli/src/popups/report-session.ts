@@ -16,7 +16,7 @@ import { openCostPopup } from './cost-session.js';
 import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
 import { copyControlsFor, copyReport } from './report-copy.js';
 import { helpContent, helpSpec } from './help-popup.js';
-import type { ReportOpenRequest, ReportsPort } from './report-port.js';
+import type { ReportKind, ReportOpenRequest, ReportsPort } from './report-port.js';
 import type { PopupContent } from './frame-model.js';
 import { macrotask, startReportWork } from './report-work.js';
 import {
@@ -100,16 +100,20 @@ function openWorkflows(request: ReportOpenRequest): PopupOpenResult {
   return opened;
 }
 
+function openCost(request: ReportOpenRequest): PopupOpenResult {
+  const cost = request.port.cost;
+  return cost === undefined ? MISSING : openCostPopup(request, cost);
+}
+
+/** What opens each report: the one table of this file, typed over every kind of the port, so a kind without an opener does not compile. */
+const OPENERS: Readonly<Record<ReportKind, (request: ReportOpenRequest) => PopupOpenResult>> = {
+  agent: openAgent,
+  cost: openCost,
+  workflows: openWorkflows,
+  help: openHelp,
+};
+
 /** Open the report popup `request.line` names; see the module header. A refused open is said by the host in one notification. */
 export function openReportPopup(request: ReportOpenRequest): PopupOpenResult {
-  switch (request.line.kind) {
-    case 'agent':
-      return openAgent(request);
-    case 'help':
-      return openHelp(request);
-    case 'workflows':
-      return openWorkflows(request);
-    case 'cost':
-      return request.port.cost === undefined ? MISSING : openCostPopup(request, request.port.cost);
-  }
+  return OPENERS[request.line.kind](request);
 }

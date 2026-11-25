@@ -9,15 +9,14 @@
  * legacy line and the held estimate. A model id is a provider's text and a shared database's, so it is the one thing the popup does not take from
  * the notice's own sanitiser: every model passes the FULL scrub of the run cards ({@link reportText}).
  *
- * **The release is a step, not a keystroke.** `[r]` is offered only when something is held (a figure in the rows or in the live governor, or a
- * record known not to be durable), and it goes to a confirmation line answered by `Ctrl+Y` through the popup host's chord guard. The line
- * says what changes in the product's words: the amount it lifts from the session's cap, that later turns can spend that much more, and that it
- * cannot be undone. The result is a persistent step that `Enter` and `Esc` close.
+ * **The release is a step, not a keystroke.** `[r]` is offered only when something is held (a figure in the rows or in the live governor), and
+ * it goes to a confirmation line answered by `Ctrl+Y` through the popup host's chord guard. The line says what changes in the product's words:
+ * the amount it lifts from the session's cap, that later turns can spend that much more, and that it cannot be undone. The result is a
+ * persistent step that `Enter` and `Esc` close.
  */
 
 import { costLineText, costParts } from '../chat/repl-info.js';
 import { formatUsdExact } from '../render/notation.js';
-import { keyToken } from '../render/tui/legend.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { ChordRefusal } from './popup-host.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
@@ -34,10 +33,10 @@ export const RELEASE_CONTROL: PopupControl = { key: 'r', verb: 'release held est
 /** The loading words while the session's spend is read, and while the total is read again after a release. */
 export const COST_LOADING = 'Reading the session cost';
 
-/** What the release step says when nothing is held. */
+/** What the release step says when nothing is held (each line fits the popup's text columns at the 80-column floor: the legend names the way back). */
 export const NOTHING_HELD = {
-  what: 'Nothing is held against this session’s cap, so there is nothing to release.',
-  next: `${keyToken('Esc')} goes back.`,
+  what: 'Nothing is held against this session’s cap.',
+  next: 'There is nothing to release.',
 } as const;
 
 /** What the release step says when an answer found a turn in flight: nothing was released. */
@@ -52,7 +51,7 @@ export const TURN_IN_FLIGHT_NOTICE = 'Nothing released: a turn is running.';
 /** What the result step says when the release could not be carried out. */
 export const RELEASE_FAILED = {
   what: 'The release could not be completed.',
-  next: 'The held estimates may still count against the cap; open /cost to check.',
+  next: 'Open /cost to see whether the estimates are still held.',
 } as const;
 
 /** The sum of what the rows hold against the cap, in micro-cents. */
@@ -70,11 +69,12 @@ export function heldMicrocents(reading: CostReading): number {
 }
 
 /**
- * Whether the release control is offered: something is held, or the record of a hold is known not to be durable. With nothing held (and nothing
- * broken) the control is not listed and the report says nothing about releasing.
+ * Whether the release control is offered: something is held against the cap. With nothing held the control is not listed, even where the record
+ * of a hold is known not to be durable: that warning stays a fact of the report's text, but a release then has nothing to clear and `[r]` would
+ * only lead to "nothing to release". A typed `/cost --release` still opens the release step, which says so.
  */
 export function releasable(reading: CostReading): boolean {
-  return heldMicrocents(reading) > 0 || reading.governor?.durabilityBroken === true;
+  return heldMicrocents(reading) > 0;
 }
 
 /**
@@ -138,7 +138,10 @@ export function releaseContent(reading: CostReading): PopupContent {
   };
 }
 
-/** What the person is told when a `Ctrl+Y` did not count (it disarmed the line): nothing was released. */
+/**
+ * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): nothing was released, and why. One short sentence, because the
+ * popup draws it in its legend row.
+ */
 export function releaseRefusedText(reason: ChordRefusal): string {
   const why: Readonly<Record<ChordRefusal, string>> = {
     unseen: 'the line was not on screen yet',
@@ -146,7 +149,7 @@ export function releaseRefusedText(reason: ChordRefusal): string {
     expired: 'the time to confirm had passed',
     typed: 'a key was typed after the line appeared',
   };
-  return `Release not confirmed: ${why[reason]}. Nothing was released.`;
+  return `Not released: ${why[reason]}.`;
 }
 
 /** The release step after an answer found a turn in flight: an empty state, so the line cannot be answered again from stale evidence. */
