@@ -79,6 +79,9 @@ export const CONSENT_LEAD = 'Sends one small request per provider, with its key,
 export const CONSENT_MCP = 'MCP servers are only reported, never contacted.';
 /** What the line says when the destinations it would name do not fit the page whole: nothing is offered and nothing is sent. */
 export const CONSENT_TOO_LONG = 'These destinations are too long to confirm, so nothing is sent.';
+/** The same, said in a block in the flow (inline) when the alternate screen would hold the line whole: `here` is the block, not the product. */
+export const CONSENT_TOO_LONG_HERE =
+  'These destinations are too long to confirm here, so nothing is sent.';
 
 /** The checks' heading: the dominant outcome, a failure before a warning, in the words of the text report (and their plural). */
 export function doctorHeading(checks: readonly DoctorCheck[]): PopupHeading {
@@ -332,16 +335,26 @@ export function detailContent(
 }
 
 /**
- * What a line that is too long for its page tells the person to do, in words that are true where it is drawn: a shorter custom address always
- * helps, and a block in the flow (the accessible mode) can say that the full-screen view has the rows, when the line would be whole there. No
- * shell command is named inside the TUI (ADR-0122 §6).
+ * What a line that is too long for its page says, in words that are true where it is drawn. A shorter custom address always helps. A block in the
+ * flow (the accessible mode, inline) is shorter than the overlay, so a line it cannot hold may be whole in the alternate screen: it is told, to a
+ * person who chose inline, as a mode they can confirm in ("confirm them in full-screen mode", never "use the full-screen view", which is not
+ * where they are), and `here` names the block. No shell command is named inside the TUI (ADR-0122 §6).
  */
-function tooLongNext(lines: number, placement: PopupPlacement | undefined): string {
+function tooLongWords(
+  lines: number,
+  placement: PopupPlacement | undefined,
+): { readonly what: string; readonly next: string } {
   const back = `${keyToken('Esc')} goes back.`;
   const fullScreen = placement === 'replace' && lines <= doctorLineRows('overlay');
   return fullScreen
-    ? `Shorten the custom addresses, or use the full-screen view, which has the rows to show them whole. ${back}`
-    : `Shorten the custom addresses to confirm them. ${back}`;
+    ? {
+        what: CONSENT_TOO_LONG_HERE,
+        next: `Shorten the custom addresses, or confirm them in full-screen mode, which has the rows to show them whole. ${back}`,
+      }
+    : {
+        what: CONSENT_TOO_LONG,
+        next: `Shorten the custom addresses to confirm them. ${back}`,
+      };
 }
 
 /**
@@ -376,11 +389,7 @@ export function consentContent(
     );
   // A line that does not fit the page is never offered: the answer would cover lines that had to be scrolled to, or never were.
   if (lines.length > doctorLineRows(placement))
-    return {
-      kind: 'empty',
-      what: CONSENT_TOO_LONG,
-      next: tooLongNext(lines.length, placement),
-    };
+    return { kind: 'empty', ...tooLongWords(lines.length, placement) };
   return { kind: 'report', lines };
 }
 

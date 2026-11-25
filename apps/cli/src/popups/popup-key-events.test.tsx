@@ -73,13 +73,15 @@ describe('the host: a held Ctrl+Y never answers', () => {
     });
     host.bindVisibility(() => true);
     host.bindOpenGate(() => undefined);
-    host.bindPageRows(() => 18);
     const chord = vi.fn();
     const refusals: ChordRefusal[] = [];
     host.openForUser(spec('chat', 1), {
       chord,
       chordRefused: (_context, reason) => refusals.push(reason),
     });
+    // The page of a standard popup at 80×24, bound after the open as the slot binds it.
+    host.bindPageRows(() => 18);
+    host.bindInnerWidth(() => 66);
     host.shown(host.getSnapshot());
     return {
       host,

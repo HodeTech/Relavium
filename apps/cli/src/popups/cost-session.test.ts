@@ -12,6 +12,7 @@ import { COST_STEP } from './cost-popup.js';
 import { CTRL, ENTER, ESC } from './doctor.test-support.js';
 import { popupLegend } from './popup-reducer.js';
 import { CHORD_STEP_WINDOW_MS } from './popup-host.js';
+import type { CostPort, CostReading, CostRelease } from './report-port.js';
 import {
   costReading,
   costRow,
@@ -26,6 +27,41 @@ const SECRET = ['sk', 'ant', 'cost', 'ABCDEF1234567890XYZ'].join('-');
 
 const ctrlY = (r: ReportRig): boolean => r.press('y', CTRL);
 
+/** A cost port whose held amount a test moves between the reads (what a turn that finishes does), every call recorded in order. */
+function movingCost(initial: number) {
+  let held = initial;
+  const calls: string[] = [];
+  const read = vi.fn((): CostReading => {
+    calls.push('read');
+    return costReading(held);
+  });
+  const release = vi.fn((): CostRelease => {
+    calls.push('release');
+    const outcome = { durable: held, live: held };
+    held = 0;
+    return outcome;
+  });
+  const port: CostPort = { read, release };
+  return { port, read, release, calls, hold: (to: number) => (held = to), heldNow: () => held };
+}
+
+/** `/cost` over a moving port: the first reading landed and the opening guard's settle time passed. */
+async function openedMoving(initial: number, owner?: { failure: (cause: unknown) => void }) {
+  const r = reportRig();
+  const m = movingCost(initial);
+  r.open(
+    {
+      cost: m.port,
+      ...(owner === undefined ? {} : { workOwner: { ...owner, enter: (op) => op() } }),
+    },
+    { kind: 'cost', release: false },
+  );
+  r.show();
+  await settleWork();
+  r.clock.advance(600);
+  return { r, m };
+}
+
 /** Open `/cost`, show its frame and let the read land; the opening guard's settle time passes. */
 async function opened(held = 450, options: { durabilityBroken?: boolean } = {}) {
   const r = reportRig();
@@ -37,9 +73,13 @@ async function opened(held = 450, options: { durabilityBroken?: boolean } = {}) 
   return { r, fake };
 }
 
-/** Press `[r]`, let its frame be acknowledged and wait out `after` ms: the dwell of the line. Returns the time of the acknowledgement. */
-function arm(r: ReportRig, after = 0): number {
+/**
+ * Press `[r]`, let the reading it takes land, let the line's frame be acknowledged and wait out `after` ms: the dwell of the line. Returns the
+ * time of the acknowledgement.
+ */
+async function arm(r: ReportRig, after = 0): Promise<number> {
   r.press('r');
+  await settleWork();
   r.show();
   const at = r.clock.now();
   r.clock.advance(after);
@@ -255,7 +295,7 @@ describe('the report (ADR-0148 §10)', () => {
 describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
   it('[r] goes to a line that says what changes: the amount, that later turns can spend more, and that it cannot be undone', async () => {
     const { r, fake } = await opened(450);
-    arm(r);
+    await arm(r);
     expect(r.step()).toBe(COST_STEP.release);
     const line = r.words().replaceAll(/\s+/gu, ' ');
     expect(line).toContain('lifts about $0.0000045');
@@ -280,7 +320,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
   ])('%s releases nothing: only Ctrl+Y answers the line', (_name, input, key) => {
     return (async () => {
       const { r, fake } = await opened(450);
-      arm(r, 900);
+      await arm(r, 900);
       r.press(input, key);
       expect(fake.release).not.toHaveBeenCalled();
       expect(fake.heldNow()).toBe(450);
@@ -291,7 +331,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
 
   it('a paste releases nothing, and disarms the line', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     r.host.paste('y');
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
@@ -305,19 +345,19 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     expect(fake.release).not.toHaveBeenCalled();
     expect(r.step()).toBe(COST_STEP.cost);
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Nothing released: pressed too soon. [r] asks again.',
+      'Nothing released: too soon, wait 2 s. [r] asks again.',
     );
   });
 
   it('Ctrl+Y 799 ms after the acknowledged frame releases nothing; 800 ms releases', async () => {
     const early = await opened(450);
-    arm(early.r, 799);
+    await arm(early.r, 799);
     ctrlY(early.r);
     expect(early.fake.release).not.toHaveBeenCalled();
     expect(early.r.step()).toBe(COST_STEP.cost);
 
     const exact = await opened(450);
-    arm(exact.r, 800);
+    await arm(exact.r, 800);
     ctrlY(exact.r);
     expect(exact.fake.release).toHaveBeenCalledOnce();
     expect(exact.fake.heldNow()).toBe(0);
@@ -325,14 +365,14 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
 
   it('Ctrl+Y after the confirmation window releases nothing', async () => {
     const { r, fake } = await opened(450);
-    arm(r, CHORD_STEP_WINDOW_MS + 1);
+    await arm(r, CHORD_STEP_WINDOW_MS + 1);
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
   });
 
   it('a key typed after the line was armed makes Ctrl+Y release nothing', async () => {
     const { r, fake } = await opened(450);
-    arm(r);
+    await arm(r);
     r.press('x');
     r.clock.advance(1000);
     ctrlY(r);
@@ -341,7 +381,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
 
   it('a resize below the floor while the line is up closes the popup unanswered, and releases nothing', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     r.host.resized(79, 24);
     expect(r.host.getSnapshot().open).toBe(false);
     expect(fake.release).not.toHaveBeenCalled();
@@ -349,7 +389,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
 
   it('`Esc` on the line goes back to the report and releases nothing', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     r.press('', ESC);
     expect(r.step()).toBe(COST_STEP.cost);
     expect(fake.release).not.toHaveBeenCalled();
@@ -416,14 +456,15 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
 describe('the answer (what the release does, and what it will not do)', () => {
   it('releases the held estimates once and goes to a persistent result with the total read again', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
-    expect(fake.calls).toEqual(['read', 'release']);
+    // The read that opened the popup, the one `[r]` takes for the line, the one the answer takes to compare with the line's figure, then the release.
+    expect(fake.calls).toEqual(['read', 'read', 'read', 'release']);
     expect(r.step()).toBe(COST_STEP.done);
     expect(r.words()).toContain('Released ~$0.0000045 back to the cap.');
     await settleWork();
     // The refreshed total lands under the line, and there is nothing held now.
-    expect(fake.calls).toEqual(['read', 'release', 'read']);
+    expect(fake.calls).toEqual(['read', 'read', 'read', 'release', 'read']);
     expect(r.words()).toContain('Released ~$0.0000045 back to the cap.');
     expect(r.words()).toContain('Session cost: $0.0001');
     // No timer closes it: it stays until it is closed.
@@ -440,7 +481,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     ['Esc', '', ESC],
   ])('%s closes the result, and nothing else is left behind', async (_name, input, key) => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     await settleWork();
     r.clock.advance(600);
@@ -457,7 +498,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     r.show();
     await settleWork();
     r.clock.advance(600);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     expect(r.words()).toContain('Nothing was held against the cap, so nothing was released.');
     expect(fake.release).toHaveBeenCalledOnce();
@@ -470,7 +511,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     r.show();
     await settleWork();
     r.clock.advance(600);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     expect(r.words()).toContain('Released ~$0.000007 back to the cap.');
   });
@@ -482,7 +523,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     r.show();
     await settleWork();
     r.clock.advance(600);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     // Money cleared from the record is a release, not "nothing was held".
     expect(r.words()).toContain('Released ~$0.000007 back to the cap.');
@@ -491,7 +532,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
 
   it('after an answer that found a turn running, the turn ends, Esc goes back and [r] shows the line again: the chord then releases once', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     r.setTurn(true);
     ctrlY(r);
     expect(r.content().kind).toBe('empty');
@@ -502,7 +543,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     r.press('', ESC);
     expect(r.step()).toBe(COST_STEP.cost);
     r.clock.advance(600);
-    arm(r, 900);
+    await arm(r, 900);
     expect(r.step()).toBe(COST_STEP.release);
     expect(r.content().kind).toBe('report');
     expect(r.words()).toContain('lifts about $0.0000045');
@@ -516,7 +557,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
 
   it('releases nothing while a turn is in flight at the answer, says so, and leaves the line unanswerable', async () => {
     const { r, fake } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     // No turn when it opened and none when the line was drawn; one is running at the moment of the answer.
     r.setTurn(true);
     ctrlY(r);
@@ -543,7 +584,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     await settleWork();
     r.clock.advance(600);
     r.setTurn(false);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     expect(fake.release).toHaveBeenCalledOnce();
   });
@@ -564,7 +605,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
     r.show();
     await settleWork();
     r.clock.advance(600);
-    arm(r, 900);
+    await arm(r, 900);
     ctrlY(r);
     expect(r.step()).toBe(COST_STEP.done);
     expect(r.content().kind).toBe('error');
@@ -579,7 +620,7 @@ describe('the answer (what the release does, and what it will not do)', () => {
 
   it('the rail follows the path: report, release line, result', async () => {
     const { r } = await opened(450);
-    arm(r, 900);
+    await arm(r, 900);
     const frame = r.host.getSnapshot().frame;
     expect(frame?.stepIndex).toBe(COST_STEP.release);
     // The way out of the line is `Esc` (the host words it; this step is not final, so it is not the result step's `Enter / Esc close`).
@@ -587,6 +628,156 @@ describe('the answer (what the release does, and what it will not do)', () => {
     ctrlY(r);
     const done = r.host.getSnapshot().frame;
     expect(done && popupLegend(done).exit).toMatchObject({ keys: ['Enter', 'Esc'], verb: 'close' });
+  });
+});
+
+describe('the figure the line names is the amount the answer releases (round 3, security L1)', () => {
+  it('`[r]` reads again: a line made after what was held moved names the figure held NOW, and the release clears that figure', async () => {
+    const { r, m } = await openedMoving(450_000);
+    await arm(r, 900);
+    expect(r.words()).toContain('lifts about $0.0045');
+    // A turn is running at the answer: nothing is released, and the line is gone.
+    r.setTurn(true);
+    ctrlY(r);
+    expect(m.release).not.toHaveBeenCalled();
+    expect(r.words()).toContain('A turn is running, so nothing was released.');
+    // The turn ends and commits more; `Esc` goes back to the report and `[r]` asks again.
+    m.hold(9_900_000);
+    r.setTurn(false);
+    r.clock.advance(600);
+    r.press('', ESC);
+    expect(r.step()).toBe(COST_STEP.cost);
+    r.clock.advance(600);
+    await arm(r, 900);
+    const line = r.words().replaceAll(/\s+/gu, ' ');
+    expect(line).toContain('lifts about $0.0990');
+    expect(line).not.toContain('$0.0045');
+    ctrlY(r);
+    expect(m.release).toHaveBeenCalledOnce();
+    expect(r.words()).toContain('Released ~$0.0990 back to the cap.');
+    expect(m.heldNow()).toBe(0);
+  });
+
+  it('`[r]` says `loading` until its own reading lands, and the report behind the line shows that reading too', async () => {
+    const { r, m } = await openedMoving(450);
+    m.hold(900);
+    r.press('r');
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content().kind).toBe('loading');
+    expect(m.calls).toEqual(['read']);
+    await settleWork();
+    expect(m.calls).toEqual(['read', 'read']);
+    expect(r.content().kind).toBe('report');
+    expect(r.words()).toContain('lifts about $0.000009');
+    const behind = r.content(COST_STEP.cost);
+    expect(behind.kind === 'report' && behind.lines.join(' ')).toContain('~$0.000009');
+  });
+
+  it('a line answered after the held amount GREW releases nothing, says so, and goes back to a report read again, where `[r]` names the new figure and its answer releases it', async () => {
+    const { r, m } = await openedMoving(450);
+    await arm(r, 900);
+    expect(r.words()).toContain('lifts about $0.0000045');
+    m.hold(900); // a commitment landed after the line was drawn
+    ctrlY(r);
+    expect(m.release).not.toHaveBeenCalled();
+    expect(m.heldNow()).toBe(900);
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Nothing released: the amount changed. [r] asks again.',
+    );
+    // The line is gone, and the report behind it is read again.
+    expect(r.step()).toBe(COST_STEP.cost);
+    expect(r.content().kind).toBe('loading');
+    expect(r.controls()).toEqual([]);
+    await settleWork();
+    expect(r.content().kind).toBe('report');
+    expect(r.words().replaceAll(/\s+/gu, ' ')).toContain('~$0.000009 estimated');
+    expect(r.controls()).toEqual(['r', 'c']);
+    expect(m.release).not.toHaveBeenCalled();
+    // `[r]` names the new figure on a line armed afresh, and the answer to THAT line releases what it names.
+    r.show();
+    r.clock.advance(2100);
+    r.show();
+    await arm(r, 900);
+    expect(r.words()).toContain('lifts about $0.000009');
+    expect(r.words()).not.toContain('$0.0000045');
+    ctrlY(r);
+    expect(m.release).toHaveBeenCalledOnce();
+    expect(r.words()).toContain('Released ~$0.000009 back to the cap.');
+    expect(m.heldNow()).toBe(0);
+  });
+
+  it('a line answered after the held amount FELL (released elsewhere) releases nothing, and the report says there is nothing to release', async () => {
+    const { r, m } = await openedMoving(450);
+    await arm(r, 900);
+    m.hold(0);
+    ctrlY(r);
+    expect(m.release).not.toHaveBeenCalled();
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Nothing released: the amount changed. [r] asks again.',
+    );
+    await settleWork();
+    expect(r.step()).toBe(COST_STEP.cost);
+    // Nothing is held now: no `[r]` is offered, only the copy.
+    expect(r.controls()).toEqual(['c']);
+    expect(r.content(COST_STEP.release).kind).toBe('empty');
+  });
+
+  it('a line answered a second time while the report is still being read releases nothing', async () => {
+    const { r, m } = await openedMoving(450);
+    await arm(r, 900);
+    m.hold(900);
+    ctrlY(r);
+    expect(r.content().kind).toBe('loading');
+    r.clock.advance(2100);
+    ctrlY(r);
+    expect(m.release).not.toHaveBeenCalled();
+    expect(m.heldNow()).toBe(900);
+  });
+
+  it('a read that fails at the answer releases nothing, says its CODE, and tells the work owner', async () => {
+    const failure = vi.fn();
+    const { r, m } = await openedMoving(450, { failure });
+    await arm(r, 900);
+    m.read.mockImplementationOnce(() => {
+      throw new CliError('invalid_invocation', `PRIVATE /tmp/session-db ${SECRET}`);
+    });
+    ctrlY(r);
+    expect(m.release).not.toHaveBeenCalled();
+    expect(m.heldNow()).toBe(450);
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content().kind).toBe('error');
+    expect(r.words()).toContain('Could not read the session cost: invalid_invocation');
+    expect(r.words()).not.toContain('PRIVATE');
+    expect(r.words()).not.toContain(SECRET);
+    expect(failure).toHaveBeenCalledOnce();
+  });
+
+  it('a read that is not synchronous cannot be compared inside the section the release is in: nothing is released, and its rejection is not left unhandled', async () => {
+    const failure = vi.fn();
+    const r = reportRig();
+    const release = vi.fn((): CostRelease => ({ durable: 450, live: 450 }));
+    // A plain function and not a spy: a spy takes a returned promise's rejection into its own results, which would hide an unhandled one.
+    let reads = 0;
+    const read = (): CostReading | Promise<CostReading> => {
+      reads += 1;
+      return reads <= 2 ? costReading(450) : Promise.reject(new Error(`PRIVATE ${SECRET}`));
+    };
+    r.open(
+      { cost: { read, release }, workOwner: { failure, enter: (op) => op() } },
+      { kind: 'cost', release: false },
+    );
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    await arm(r, 900);
+    ctrlY(r);
+    await settleWork();
+    expect(reads).toBe(3);
+    expect(release).not.toHaveBeenCalled();
+    expect(r.content().kind).toBe('error');
+    expect(r.words()).toContain('Could not read the session cost: unexpected error');
+    expect(r.words()).not.toContain(SECRET);
+    expect(failure).toHaveBeenCalledOnce();
   });
 });
 

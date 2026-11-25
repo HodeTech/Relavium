@@ -16,6 +16,7 @@ import {
   CONSENT_LEAD,
   CONSENT_MCP,
   CONSENT_TOO_LONG,
+  CONSENT_TOO_LONG_HERE,
   DOCTOR_LINE_ROWS,
   doctorLineRows,
   DOCTOR_LOADING,
@@ -812,8 +813,9 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
       for (const { named, left, targets } of MASKS) {
         const content = consentContent(targets, left, 'standalone-chat', page.placement);
         if (content.kind === 'empty') {
-          // Not offered: nothing to answer, and the sentence says why.
-          expect(content.what).toBe(CONSENT_TOO_LONG);
+          // Not offered: nothing to answer, and the sentence says why (`here` only in the block that the alternate screen would beat).
+          expect([CONSENT_TOO_LONG, CONSENT_TOO_LONG_HERE]).toContain(content.what);
+          if (page.placement !== 'replace') expect(content.what).toBe(CONSENT_TOO_LONG);
           refused += 1;
           continue;
         }
@@ -909,18 +911,31 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
     }
   });
 
-  it('a line the overlay can show says, inline, that the full-screen view has the rows, and says so only there', () => {
+  it('a line the overlay can show says, inline, that it can be confirmed in full-screen mode, and says so only there', () => {
     const three = (['anthropic', 'gemini', 'deepseek'] as const).map((providerId, index) => ({
       providerId,
       origin: longestOrigin(String.fromCharCode(97 + index)),
     }));
     const inline = consentContent(three, [], 'home', 'replace');
     if (inline.kind !== 'empty') throw new Error('empty');
-    expect(inline.what).toBe(CONSENT_TOO_LONG);
-    expect(inline.next).toBe(
-      'Shorten the custom addresses, or use the full-screen view, which has the rows to show them whole. Esc goes back.',
+    expect(inline.what).toBe(CONSENT_TOO_LONG_HERE);
+    expect(inline.what).toBe(
+      'These destinations are too long to confirm here, so nothing is sent.',
     );
-    // No shell command and no /providers, which a chat does not have: only what a person can do on the surface that drew it.
+    expect(inline.next).toBe(
+      'Shorten the custom addresses, or confirm them in full-screen mode, which has the rows to show them whole. Esc goes back.',
+    );
+    // Never "use the full-screen view" to a person who chose inline, no shell command and no /providers, which a chat does not have: only what a
+    // person can do on the surface that drew it.
+    expect(inline.next).not.toContain('use the full-screen view');
     expect(inline.next).not.toMatch(/relavium\s|\/providers/u);
+    // The alternate screen's own line (the overlay) is whole where it is drawn, or is plainly too long: neither says `here` or points elsewhere.
+    for (const placement of ['overlay', undefined] as const) {
+      const other = consentContent(three, [], 'home', placement);
+      if (other.kind === 'empty') {
+        expect(other.what).toBe(CONSENT_TOO_LONG);
+        expect(other.next).not.toContain('full-screen');
+      }
+    }
   });
 });

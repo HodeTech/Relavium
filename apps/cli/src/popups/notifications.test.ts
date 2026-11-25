@@ -287,6 +287,21 @@ describe('the snapshot and the lifetime', () => {
     expect(channel.getSnapshot()).not.toBe(before);
   });
 
+  it('N14: a hold that changes nothing else is still a new snapshot, heard by a listener (`held` is what the hold tests read)', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    const heard = vi.fn();
+    channel.subscribe(heard);
+    const before = channel.getSnapshot();
+    channel.popupHold(true);
+    expect(channel.getSnapshot()).not.toBe(before);
+    expect(channel.getSnapshot()).toEqual({ current: undefined, queued: 0, held: true });
+    expect(heard).toHaveBeenCalledOnce();
+    channel.popupHold(undefined);
+    expect(channel.getSnapshot().held).toBe(false);
+    expect(heard).toHaveBeenCalledTimes(2);
+  });
+
   it('dispose drops what waits and leaves no timer', () => {
     const time = clock();
     const channel = createNotificationChannel({ schedule: time.schedule });

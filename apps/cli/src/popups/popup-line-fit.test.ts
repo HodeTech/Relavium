@@ -5,6 +5,11 @@
  * and answerable with origins never on screen. The rule is the host's, for every chord step (`/doctor`'s and `/cost`'s alike): a line cut short
  * offers nothing (its legend names no `Ctrl+Y`, a `Ctrl+Y` is a refused affirmative that leaves it, the channel is not held), and a line that
  * offered its answer and is cut on a new frame (a smaller page) is disarmed at once and told as `cut`.
+ *
+ * Round 3 (security L2): the rule counted LINES, while the frame cuts each line to the inner width (`…`): a line with one row wider than the
+ * popup was drawn ending in `…` and still answered. A row must also be whole, as drawn: a line with a row wider than the page's inner width
+ * offers nothing exactly like a line with too many rows, and a page that becomes narrower under a line that offered its answer disarms it as
+ * `cut`. The rigs bind the page AFTER the popup opened, as the slot does (it binds it when the popup's first frame is rendered).
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +25,8 @@ import {
   type PopupSpec,
   type PopupStep,
 } from './popup-reducer.js';
+import { framePage } from './popup-slot.js';
+import { popupGeometry } from './geometry.js';
 
 const CTRL_Y: PopupKey = { ctrl: true };
 
@@ -76,8 +83,14 @@ function timers() {
   };
 }
 
-/** A host whose page is `page` rows (what the slot binds from its geometry), the line's popup open on it and its first frame acknowledged. */
-function rig(count: number, page: number) {
+/** The inner width of a standard popup at 80×24 (68 columns less a column of margin on each side). */
+const FLOOR_WIDTH = 66;
+
+/**
+ * A host whose page is `page` rows of `width` columns (what the slot binds from its geometry), the popup `opened` on it (default: the line of
+ * `count` rows) and its first frame acknowledged. The page is bound AFTER the open, as the slot binds it when the popup's first frame renders.
+ */
+function rig(count: number, page: number, width = FLOOR_WIDTH, opened: PopupSpec = spec(count)) {
   const time = timers();
   const notifications = createNotificationChannel({ schedule: time.schedule });
   const history = createChordHistory();
@@ -91,17 +104,21 @@ function rig(count: number, page: number) {
   host.bindVisibility(() => true);
   host.bindOpenGate(() => undefined);
   let rows = page;
-  host.bindPageRows(() => rows);
+  let columns = width;
   const chord = vi.fn();
   const refusals: ChordRefusal[] = [];
-  const opened = host.openForUser(spec(count), {
+  const closed: string[] = [];
+  const open = host.openForUser(opened, {
     chord,
     chordRefused: (_context, reason) => refusals.push(reason),
+    closed: (reason) => closed.push(reason),
     control: (context, key) => {
       if (key === 'd') context.goToStep(1);
     },
   });
-  if (!opened.opened) throw new Error('open');
+  if (!open.opened) throw new Error('open');
+  host.bindPageRows(() => rows);
+  host.bindInnerWidth(() => columns);
   const show = (): void => host.shown(host.getSnapshot());
   show();
   return {
@@ -111,27 +128,195 @@ function rig(count: number, page: number) {
     history,
     chord,
     refusals,
+    closed,
     show,
-    context: (): PopupContext => opened.context,
+    context: (): PopupContext => open.context,
     setPage: (next: number): void => {
       rows = next;
+    },
+    setWidth: (next: number): void => {
+      columns = next;
     },
     step: (): number | undefined => host.getSnapshot().frame?.stepIndex,
   };
 }
+
+/** A line of two rows whose second is exactly `columns` wide (an origin, as the doctor's line names them; at least 18). */
+const wideLine = (columns: number): string[] => [
+  'Sends your key to:',
+  `  https://${'a'.repeat(columns - 18)}.example`,
+];
+
+/** A popup of a list and a line of `lines` its `[d]` arms (or that it opens on: `initialStep`). */
+const linePopup = (lines: readonly string[], initialStep = 1): PopupSpec => ({
+  ...spec(0, initialStep),
+  steps: [LIST, { ...line(0), content: { kind: 'report', lines } }],
+});
 
 /** Past the dwell, the quiet gap and the lockout of anything before: a deliberate press. */
 const PATIENT_MS = 2600;
 
 describe('the one predicate (`lineFitsPage`)', () => {
   it('a report of at least one line and no more lines than the page, and nothing else', () => {
-    expect(lineFitsPage({ kind: 'report', lines: linesOf(10) }, 10)).toBe(true);
-    expect(lineFitsPage({ kind: 'report', lines: linesOf(11) }, 10)).toBe(false);
-    expect(lineFitsPage({ kind: 'report', lines: linesOf(1) }, 1)).toBe(true);
-    expect(lineFitsPage({ kind: 'report', lines: [] }, 10)).toBe(false);
-    expect(lineFitsPage({ kind: 'report', lines: linesOf(1) }, 0)).toBe(false);
-    expect(lineFitsPage({ kind: 'empty', what: 'x', next: 'y' }, 10)).toBe(false);
-    expect(lineFitsPage({ kind: 'loading', what: 'x' }, 10)).toBe(false);
+    expect(lineFitsPage({ kind: 'report', lines: linesOf(10) }, 10, FLOOR_WIDTH)).toBe(true);
+    expect(lineFitsPage({ kind: 'report', lines: linesOf(11) }, 10, FLOOR_WIDTH)).toBe(false);
+    expect(lineFitsPage({ kind: 'report', lines: linesOf(1) }, 1, FLOOR_WIDTH)).toBe(true);
+    expect(lineFitsPage({ kind: 'report', lines: [] }, 10, FLOOR_WIDTH)).toBe(false);
+    expect(lineFitsPage({ kind: 'report', lines: linesOf(1) }, 0, FLOOR_WIDTH)).toBe(false);
+    expect(lineFitsPage({ kind: 'empty', what: 'x', next: 'y' }, 10, FLOOR_WIDTH)).toBe(false);
+    expect(lineFitsPage({ kind: 'loading', what: 'x' }, 10, FLOOR_WIDTH)).toBe(false);
+  });
+
+  it('and none of its lines wider than the row: exactly the inner width is whole, one column more is cut (round 3, security L2)', () => {
+    const exact = wideLine(FLOOR_WIDTH);
+    expect(exact[1]).toHaveLength(FLOOR_WIDTH);
+    expect(lineFitsPage({ kind: 'report', lines: exact }, 10, FLOOR_WIDTH)).toBe(true);
+    expect(
+      lineFitsPage({ kind: 'report', lines: wideLine(FLOOR_WIDTH + 1) }, 10, FLOOR_WIDTH),
+    ).toBe(false);
+    // Display columns, not characters: a wide character is two.
+    expect(lineFitsPage({ kind: 'report', lines: ['漢'.repeat(33)] }, 1, FLOOR_WIDTH)).toBe(true);
+    expect(lineFitsPage({ kind: 'report', lines: ['漢'.repeat(33), 'a'] }, 2, 65)).toBe(false);
+  });
+
+  it('the width is the line AS DRAWN: a tab drawn as a space counts, a control sequence the sanitiser removes does not', () => {
+    // 64 columns, a tab and one more: 65 as written (a tab measures nothing) and 66 as drawn (the tab is drawn as a space).
+    const tabbed = `${'x'.repeat(64)}\tx`;
+    expect(lineFitsPage({ kind: 'report', lines: [tabbed] }, 1, 66)).toBe(true);
+    expect(lineFitsPage({ kind: 'report', lines: [tabbed] }, 1, 65)).toBe(false);
+    // 66 columns drawn, with a colour sequence inside that the sanitiser takes out (it measures four more as written).
+    const coloured = `${'x'.repeat(33)}\u001b[31m${'x'.repeat(33)}`;
+    expect(lineFitsPage({ kind: 'report', lines: [coloured] }, 1, 66)).toBe(true);
+  });
+});
+
+describe('a line with a row wider than its page offers nothing, like a line cut short (round 3, security L2)', () => {
+  it('one column over the inner width: Ctrl+Y answers nothing, the line stays and says nothing, the channel is not held', () => {
+    const r = rig(0, 10, FLOOR_WIDTH, linePopup(wideLine(FLOOR_WIDTH + 1)));
+    r.time.advance(PATIENT_MS);
+    r.host.input('y', CTRL_Y);
+    expect(r.chord).not.toHaveBeenCalled();
+    expect(r.refusals).toEqual([]);
+    expect(r.step()).toBe(1);
+    expect(r.history.lastResolvedAt).toBe(r.time.now());
+    r.notifications.notify('a note');
+    expect(r.notifications.getSnapshot().current?.text).toBe('a note');
+  });
+
+  it('exactly the inner width: answered', () => {
+    const r = rig(0, 10, FLOOR_WIDTH, linePopup(wideLine(FLOOR_WIDTH)));
+    r.time.advance(PATIENT_MS);
+    r.host.input('y', CTRL_Y);
+    expect(r.chord).toHaveBeenCalledOnce();
+  });
+
+  it('its legend names no Ctrl+Y on the row it is drawn in, and names it on a row that holds it', () => {
+    const frame = { ...openFrame(linePopup(wideLine(70)), 1), stepIndex: 1 };
+    const cut = popupLegend(frame, 10, FLOOR_WIDTH);
+    expect(legend(cut.items, cut.exit)).toBe('Esc back');
+    const whole = popupLegend(frame, 10, 74);
+    expect(legend(whole.items, whole.exit)).toBe('[Ctrl+Y] send · Esc back');
+    // With no row of its own the legend judges the row of a popup at the floor (66 columns), as the page.
+    const floor = popupLegend(frame, 10);
+    expect(legend(floor.items, floor.exit)).toBe('Esc back');
+    const fitting = { ...openFrame(linePopup(wideLine(FLOOR_WIDTH)), 1), stepIndex: 1 };
+    const fits = popupLegend(fitting, 10);
+    expect(legend(fits.items, fits.exit)).toBe('[Ctrl+Y] send · Esc back');
+  });
+
+  it('a page that becomes narrower under a line that offered its answer disarms it at its next frame, told as cut', () => {
+    const r = rig(0, 10, 74, linePopup(wideLine(70)));
+    r.time.advance(300);
+    // The resize: the host is told, then the frame at the new size (a 66-column row) is drawn and acknowledged.
+    r.host.resized(80, 24);
+    r.setWidth(FLOOR_WIDTH);
+    r.show();
+    expect(r.step()).toBe(0);
+    expect(r.refusals).toEqual(['cut']);
+    expect(r.chord).not.toHaveBeenCalled();
+    // `[d]` asks again on the narrow page: the line comes back cut and offers nothing.
+    r.time.advance(PATIENT_MS);
+    r.host.input('d', {});
+    r.show();
+    r.time.advance(PATIENT_MS);
+    r.host.input('y', CTRL_Y);
+    expect(r.chord).not.toHaveBeenCalled();
+    expect(r.step()).toBe(1);
+  });
+
+  it('a page that becomes wider under a line that was cut makes it answerable from its next acknowledged frame', () => {
+    const r = rig(0, 10, FLOOR_WIDTH, linePopup(wideLine(70)));
+    r.time.advance(300);
+    r.setWidth(74);
+    r.show();
+    expect(r.refusals).toEqual([]);
+    r.time.advance(PATIENT_MS);
+    r.host.input('y', CTRL_Y);
+    expect(r.chord).toHaveBeenCalledOnce();
+  });
+});
+
+describe('the page is bound after the popup opened, as the slot binds it (round 3, mutants H98 and H15)', () => {
+  it('H98: a line the page cuts does not keep the channel held once its first frame is acknowledged (rows)', () => {
+    const r = rig(14, 10);
+    r.notifications.notify('a note');
+    expect(r.notifications.getSnapshot().held).toBe(false);
+    expect(r.notifications.getSnapshot().current?.text).toBe('a note');
+  });
+
+  it('H98: nor one whose row the page cuts (columns)', () => {
+    const r = rig(0, 10, FLOOR_WIDTH, linePopup(wideLine(FLOOR_WIDTH + 4)));
+    r.notifications.notify('a note');
+    expect(r.notifications.getSnapshot().current?.text).toBe('a note');
+  });
+
+  it('H15: leaving a line that offered its answer for a report longer than the page leaves the popup open, and nothing is told as cut', () => {
+    const report: PopupStep = {
+      name: 'Report',
+      content: { kind: 'report', lines: linesOf(12) },
+      controls: [{ key: 'd', verb: 'arm' }],
+    };
+    const r = rig(0, 5, FLOOR_WIDTH, {
+      ...spec(4),
+      steps: [report, line(4)],
+    });
+    r.time.advance(900);
+    r.host.input('', { escape: true });
+    r.show();
+    expect(r.host.getSnapshot().open).toBe(true);
+    expect(r.step()).toBe(0);
+    expect(r.refusals).toEqual([]);
+    expect(r.closed).toEqual([]);
+  });
+});
+
+describe('the page of a report is its own, not the list window (`framePage`, popup-slot.tsx)', () => {
+  it('a report under a filter line is drawn one row shorter than the window: 17 lines on a 17-row body are cut, and offer nothing', () => {
+    const lines = linesOf(17);
+    const filtered: PopupSpec = {
+      ...spec(17),
+      steps: [LIST, { ...line(17), filter: true }],
+    };
+    const frame = { ...openFrame(filtered, 1), stepIndex: 1 };
+    const geometry = popupGeometry({
+      columns: 80,
+      rows: 24,
+      kind: 'standard',
+      placement: 'overlay',
+      rail: true,
+      bodyRows: 18,
+    });
+    if (!geometry.fits) throw new Error('fits');
+    expect(geometry.listRows).toBe(17);
+    expect(framePage(frame, geometry)).toEqual({ rows: 16, innerWidth: FLOOR_WIDTH });
+    expect(lineFitsPage({ kind: 'report', lines }, framePage(frame, geometry).rows, 66)).toBe(
+      false,
+    );
+    // No frame drawn: one row of no column, so nothing fits.
+    expect(framePage(frame, { fits: false, reason: 'below-floor' })).toEqual({
+      rows: 1,
+      innerWidth: 0,
+    });
   });
 });
 

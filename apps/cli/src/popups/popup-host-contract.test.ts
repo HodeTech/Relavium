@@ -368,3 +368,99 @@ describe('the popup host’s contract (MVP-11 step 4, review round 2, mutation s
     ).toBe('a b');
   });
 });
+
+describe('a line with no step to go back to closes its popup as it is disarmed (round 3, security L4 and mutant H52)', () => {
+  /** A popup whose ONLY step is its confirmation line: a refused `Ctrl+Y` disarms it, and with no step before it that closes the popup. */
+  const lineOnly = (): PopupSpec => spec([{ ...LINE, back: undefined }]);
+
+  it('what the command says about the refusal is raised on the host channel, drawn once the popup is gone', () => {
+    const r = rig();
+    const reasons: string[] = [];
+    const closed: string[] = [];
+    r.host.openForUser(lineOnly(), {
+      chordRefused: (context, reason) => {
+        reasons.push(reason);
+        context.notify(`Nothing was sent: ${reason}.`);
+      },
+      closed: (reason) => closed.push(reason),
+    });
+    r.show();
+    r.time.advance(100);
+    r.host.input('y', CTRL_Y); // inside the opening settle time: early
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(closed).toEqual(['escape']);
+    expect(reasons).toEqual(['early']);
+    expect(r.notifications.getSnapshot().current?.text).toBe('Nothing was sent: early.');
+    // It is the host's: no popup closing later discards it.
+    r.host.closeAll('command');
+    expect(r.notifications.getSnapshot().current?.text).toBe('Nothing was sent: early.');
+  });
+
+  it('the same when the window runs out on it (expired) and when a key typed over it closes it (typed)', () => {
+    for (const how of ['expired', 'typed'] as const) {
+      const r = rig();
+      r.host.openForUser(lineOnly(), {
+        chordRefused: (context, reason) => context.notify(`refused: ${reason}`),
+      });
+      r.show();
+      if (how === 'expired') r.time.advance(CHORD_STEP_WINDOW_MS + 1);
+      else {
+        r.time.advance(600);
+        r.host.input('x', {});
+      }
+      expect(r.host.getSnapshot().open).toBe(false);
+      expect(r.notifications.getSnapshot().current?.text).toBe(`refused: ${how}`);
+    }
+  });
+
+  it('only what the command says in that call: a context it kept says nothing after it', () => {
+    const r = rig();
+    let kept: PopupContext | undefined;
+    r.host.openForUser(lineOnly(), {
+      chordRefused: (context) => {
+        kept = context;
+      },
+    });
+    r.show();
+    r.time.advance(100);
+    r.host.input('y', CTRL_Y);
+    expect(r.host.getSnapshot().open).toBe(false);
+    kept?.notify('a late word');
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+    expect(r.notifications.getSnapshot().queued).toBe(0);
+  });
+
+  it('a line that goes back to a step keeps its words with its popup (they end when it closes)', () => {
+    const r = rig();
+    r.host.openForUser(spec([LIST, LINE], { initialStep: 1 }), {
+      chordRefused: (context, reason) => context.notify(`refused: ${reason}`),
+    });
+    r.show();
+    r.time.advance(100);
+    r.host.input('y', CTRL_Y);
+    expect(r.host.getSnapshot().frame?.stepIndex).toBe(0);
+    expect(r.host.getSnapshot().notice).toBe('refused: early');
+    r.host.closeAll('command');
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+  });
+
+  it('H52: the context the command is told with belongs to a closed run: its signal is aborted and it moves nothing', () => {
+    const r = rig();
+    const signals: boolean[] = [];
+    const steps: (number | undefined)[] = [];
+    const moved: boolean[] = [];
+    r.host.openForUser(lineOnly(), {
+      chordRefused: (context) => {
+        signals.push(context.signal.aborted);
+        steps.push(context.stepIndex());
+        moved.push(context.goToStep(0));
+      },
+    });
+    r.show();
+    r.time.advance(100);
+    r.host.input('y', CTRL_Y);
+    expect(signals).toEqual([true]);
+    expect(steps).toEqual([undefined]);
+    expect(moved).toEqual([false]);
+  });
+});

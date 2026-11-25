@@ -141,19 +141,35 @@ function PopupNotice(
   );
 }
 
+/** The page a step's body is drawn in: its rows and the columns of each row. */
+export interface FramePage {
+  readonly rows: number;
+  readonly innerWidth: number;
+}
+
 /**
- * The rows of the page `frame`'s current step is drawn in, in `geometry`: a report's page (`reportPageRows`, the very rows `popupBody` draws it
- * in, the filter line taken out), else the list window; one row when no frame fits.
+ * The page `frame`'s current step is drawn in, in `geometry`: its rows, a report's page (`reportPageRows`, the very rows `popupBody` draws it
+ * in) else the list window, and the inner width every row is cut to; one row of no column when no frame fits (nothing is drawn).
+ *
+ * A report's own page is not the list window in two ways. It is as short as the report when the report is shorter than the window (the body
+ * asks for no more rows than it has): that never changes what fits (such a report fits both) nor how far it scrolls (it does not scroll). And
+ * it is a row shorter than the window when the step's filter line takes a body row the window still counts (a 17-line report under a filter
+ * line on a 17-row body is drawn cut, `▼ 2 more`): there the window would offer an answer for a line that is not whole, so the page is the
+ * report's own.
  */
 export function framePage(
   frame: PopupFrame | undefined,
   geometry: PopupGeometry | undefined,
-): number {
-  if (frame === undefined || geometry?.fits !== true) return 1;
+): FramePage {
+  if (frame === undefined || geometry?.fits !== true) return { rows: 1, innerWidth: 0 };
   const { spec, state } = currentStep(frame);
-  return state.content.kind === 'report'
-    ? reportPageRows(geometry, spec.filter === true)
-    : geometry.listRows;
+  return {
+    rows:
+      state.content.kind === 'report'
+        ? reportPageRows(geometry, spec.filter === true)
+        : geometry.listRows,
+    innerWidth: geometry.innerWidth,
+  };
 }
 
 /**
@@ -220,13 +236,18 @@ function HostPopup(
             ),
           });
         })();
-  // The rows of the page this frame draws its step's body in: a report's page (what a confirmation line must fit whole to be answered, and
-  // what a page of it scrolls by), else a list's window. Read through a ref, so the host always reads the frame that was drawn last.
-  const pageRef = useRef(1);
+  // The page this frame draws its step's body in: a report's page (what a confirmation line must fit whole to be answered, and what a page of
+  // it scrolls by) else a list's window, and the inner width its rows are cut to (no line of a confirmation line may be cut either). Read
+  // through a ref, so the host always reads the frame that was drawn last.
+  const pageRef = useRef<FramePage>({ rows: 1, innerWidth: 0 });
   pageRef.current = framePage(frame, geometry);
   useLayoutEffect(() => {
-    host.bindPageRows(() => pageRef.current);
-    return () => host.bindPageRows(undefined);
+    host.bindPageRows(() => pageRef.current.rows);
+    host.bindInnerWidth(() => pageRef.current.innerWidth);
+    return () => {
+      host.bindPageRows(undefined);
+      host.bindInnerWidth(undefined);
+    };
   }, [host]);
   useLayoutEffect(() => {
     if (geometry?.fits !== true) {
@@ -254,9 +275,9 @@ function HostPopup(
     steps: rail.names,
     stepIndex: rail.index,
     done: rail.done,
-    // The legend is judged on the page this frame draws (a report that fits names no scroll).
+    // The legend is judged on the page this frame draws (a report that fits names no scroll; a line cut short or with a row cut names no answer).
     legend: withGlyphForm(!color, () =>
-      popupLegend(frame, reportPageRows(geometry, spec.filter === true)),
+      popupLegend(frame, reportPageRows(geometry, spec.filter === true), geometry.innerWidth),
     ),
     // The host's live notification, in the legend row while the popup covers the hint row.
     notice: snapshot.notice,

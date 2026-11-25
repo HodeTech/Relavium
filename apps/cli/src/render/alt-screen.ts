@@ -34,15 +34,26 @@ export const ENTER_ALT_SCREEN = '\x1b[?1049h' + CLEAR_ALT_SCREEN;
 /** The bytes ink writes to enter the alternate screen (`ansiEscapes.enterAlternativeScreen`): its first mount and its re-entry after a suspension. */
 const INK_ENTER_ALT_SCREEN = '\x1b[?1049h';
 
+/** The wrapper made over each stream: ink keeps ONE renderer per stdout object (its `instances` map is keyed by the stream it is given), so a wrapper made anew per call would defeat that. */
+const WRAPPERS = new WeakMap<object, object>();
+
+/** Whether `wrapper` is the proxy {@link homeAfterInkEnter} made over `stream`: a proxy has its target's prototype, and a cache entry is keyed by its target. */
+function isWrapperOf<T extends object>(wrapper: object, stream: T): wrapper is T {
+  return Object.getPrototypeOf(wrapper) === Object.getPrototypeOf(stream);
+}
+
 /**
  * `stream` as ink sees it, with ONE difference: ink's own enter ({@link INK_ENTER_ALT_SCREEN}, written on its first mount and again after a
  * suspension) is written as {@link ENTER_ALT_SCREEN}, the cursor home and the clear included. The bare Home mounts ink with its `alternateScreen`
  * option, so ink writes the enter there and writes no home: the Home's first frame started at the row the shell's cursor was on (twelve shell
  * lines before launch: row twelve) until the first full redraw snapped it up. Every other property and method is the stream's own (bound to it),
- * every other write passes through untouched, and the wrapper holds no state.
+ * every other write passes through untouched. **One wrapper per stream**: the same stream gives the same wrapper, because ink keys its
+ * one-renderer-per-stdout guard on the object it is given and a new proxy per call is a new key.
  */
 export function homeAfterInkEnter<T extends object>(stream: T): T {
-  return new Proxy(stream, {
+  const known = WRAPPERS.get(stream);
+  if (known !== undefined && isWrapperOf(known, stream)) return known;
+  const wrapper = new Proxy(stream, {
     get: (target, property): unknown => {
       const value: unknown = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;
@@ -54,6 +65,8 @@ export function homeAfterInkEnter<T extends object>(stream: T): T {
         ]);
     },
   });
+  WRAPPERS.set(stream, wrapper);
+  return wrapper;
 }
 /** Leave the alternate screen buffer, restoring the primary buffer + its scrollback (DECRST 1049). */
 export const EXIT_ALT_SCREEN = '\x1b[?1049l';

@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { legend } from '../render/tui/legend.js';
-import type { PopupContent, PopupListRow } from './frame-model.js';
+import { popupBody, type PopupContent, type PopupListRow } from './frame-model.js';
 import {
   backOf,
   currentStep,
@@ -473,5 +473,194 @@ describe('a final step: the end of a flow (MVP-11 step 4b)', () => {
     const rail = railOf({ ...flow(), spec: { ...flow().spec, rail: 'path' } });
     expect(rail.names).toEqual(['Pick', 'Release', 'Done']);
     expect(rail.index).toBe(2);
+  });
+});
+
+describe('PgUp and PgDn show every line of a long report (round 3: the marker rows replace a line each)', () => {
+  /**
+   * The lines a person reads by pressing only `key` from the first page (`pageDown`) or the last (`pageUp`): for each page, the indexes of the
+   * report lines the frame model draws between its marker rows, on a page of `page` rows.
+   */
+  function pagesRead(total: number, page: number, key: 'pageDown' | 'pageUp'): number[][] {
+    const lines = Array.from({ length: total }, (_, index) => `report line ${String(index)}`);
+    const content: PopupContent = { kind: 'report', lines };
+    let frame = openFrame(spec([step({ content })]), 1);
+    if (key === 'pageUp')
+      frame = stateOf(foldPopupAction(frame, { kind: 'jump', to: 'last' }, page));
+    const read: number[][] = [];
+    for (let turn = 0; turn <= total; turn += 1) {
+      const body = popupBody(
+        content,
+        { ...currentStep(frame).state, filter: undefined },
+        {
+          bodyRows: page,
+          listRows: page,
+          innerWidth: 66,
+        },
+      );
+      read.push(
+        body.lines
+          .filter((line) => line.kind === 'row')
+          .map((line) => Number(/report line (\d+)/u.exec(line.text)?.[1])),
+      );
+      const fold = foldPopupAction(
+        frame,
+        { kind: 'page', delta: key === 'pageDown' ? 1 : -1 },
+        page,
+      );
+      if (fold.kind !== 'frame') return read;
+      frame = fold.frame;
+    }
+    throw new Error('the pages never ended');
+  }
+
+  const cases = [20, 40, 46, 92, 100].flatMap((total) =>
+    [18, 17, 10, 4, 3, 2, 1].map((page) => [total, page] as const),
+  );
+
+  it.each(cases)(
+    '%i lines on a page of %i: PgDn alone shows every line, each once before the last page',
+    (total, page) => {
+      const pages = pagesRead(total, page, 'pageDown');
+      expect(new Set(pages.flat())).toEqual(new Set(Array.from({ length: total }, (_, i) => i)));
+      for (let at = 1; at < pages.length; at += 1) {
+        const before = pages[at - 1] ?? [];
+        const next = pages[at] ?? [];
+        const lastBefore = Math.max(...before);
+        // No line is skipped between two pages, and none is read twice except where the last page is held at the end.
+        if (at < pages.length - 1) expect(Math.min(...next)).toBe(lastBefore + 1);
+        else expect(Math.min(...next)).toBeLessThanOrEqual(lastBefore + 1);
+      }
+    },
+  );
+
+  it.each(cases)(
+    '%i lines on a page of %i: PgUp alone, from the end, is the mirror',
+    (total, page) => {
+      const pages = pagesRead(total, page, 'pageUp');
+      expect(new Set(pages.flat())).toEqual(new Set(Array.from({ length: total }, (_, i) => i)));
+      for (let at = 1; at < pages.length; at += 1) {
+        const before = pages[at - 1] ?? [];
+        const next = pages[at] ?? [];
+        const firstBefore = Math.min(...before);
+        if (at < pages.length - 1) expect(Math.max(...next)).toBe(firstBefore - 1);
+        else expect(Math.max(...next)).toBeGreaterThanOrEqual(firstBefore - 1);
+      }
+    },
+  );
+
+  it('a page of the alternate screen (18 rows) moves 16 lines, one inline (10 rows) moves 8; a page too short for markers moves whole', () => {
+    const report = openFrame(
+      spec([step({ content: { kind: 'report', lines: Array.from({ length: 100 }, String) } })]),
+      1,
+    );
+    const offset = (fold: ReturnType<typeof foldPopupAction>): number =>
+      currentStep(stateOf(fold)).state.offset;
+    expect(offset(foldPopupAction(report, { kind: 'page', delta: 1 }, 18))).toBe(16);
+    expect(offset(foldPopupAction(report, { kind: 'page', delta: 1 }, 10))).toBe(8);
+    expect(offset(foldPopupAction(report, { kind: 'page', delta: 1 }, 2))).toBe(2);
+  });
+});
+
+describe('the reducer’s edges (round 3 mutation sweep)', () => {
+  const rows = (count: number, detail?: (index: number) => string | undefined): PopupListRow[] =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `r${String(index)}`,
+      label: `row ${String(index)}`,
+      detail: detail?.(index),
+    }));
+  const longList = step({ content: { kind: 'list', rows: rows(20) }, enter: 'go', filter: true });
+  const report = (count: number): PopupStep =>
+    step({
+      content: { kind: 'report', lines: Array.from({ length: count }, (_, i) => `l${String(i)}`) },
+    });
+  const line: PopupStep = {
+    name: 'Confirm',
+    content: { kind: 'report', lines: ['a'] },
+    chord: { verb: 'send' },
+    holds: 'chord',
+    back: 0,
+  };
+
+  it('R20: PgUp is a page up and PgDn a page down, on a list and on a line', () => {
+    expect(reducePopupKey('', { pageUp: true }, longList)).toEqual({ kind: 'page', delta: -1 });
+    expect(reducePopupKey('', { pageDown: true }, longList)).toEqual({ kind: 'page', delta: 1 });
+    expect(reducePopupKey('', { pageUp: true }, line)).toEqual({ kind: 'page', delta: -1 });
+  });
+
+  it('R20: PgUp on a list moves the highlight up a page', () => {
+    const frame = openFrame(spec([longList]), 1);
+    const down = stateOf(foldPopupAction(frame, { kind: 'jump', to: 'last' }, 5));
+    const up = stateOf(foldPopupAction(down, { kind: 'page', delta: -1 }, 5));
+    expect(currentStep(up).state.selected).toBe(14);
+  });
+
+  it('R38: ↑ and PgUp at the first line of a report change nothing (the offset is never below zero)', () => {
+    const frame = openFrame(spec([report(12)]), 1);
+    expect(foldPopupAction(frame, { kind: 'move', delta: -1 }, 5)).toEqual({ kind: 'unchanged' });
+    expect(foldPopupAction(frame, { kind: 'page', delta: -1 }, 5)).toEqual({ kind: 'unchanged' });
+  });
+
+  it('R43: PgDn on a list moves the highlight by the page', () => {
+    const fold = foldPopupAction(openFrame(spec([longList]), 1), { kind: 'page', delta: 1 }, 5);
+    expect(currentStep(stateOf(fold)).state.selected).toBe(5);
+  });
+
+  it('R37: Backspace takes a whole astral character off the filter, never half of it', () => {
+    const typed = stateOf(
+      foldPopupAction(openFrame(spec([longList]), 1), { kind: 'append', text: 'a😀' }, 5),
+    );
+    const back = stateOf(foldPopupAction(typed, { kind: 'backspace' }, 5));
+    expect(currentStep(back).state.filter).toBe('a');
+  });
+
+  it('R59/R60: a result that lands keeps the highlighted row where it still can act, and scrolls a report back to its first line', () => {
+    const list = openFrame(spec([step({ content: { kind: 'list', rows: rows(8) } })]), 1);
+    const second = stateOf(foldPopupAction(list, { kind: 'move', delta: 1 }, 5));
+    const third = stateOf(foldPopupAction(second, { kind: 'move', delta: 1 }, 5));
+    expect(currentStep(withContent(third, 0, { kind: 'list', rows: rows(8) })).state.selected).toBe(
+      2,
+    );
+    const scrolled = stateOf(
+      foldPopupAction(openFrame(spec([report(12)]), 1), { kind: 'move', delta: 1 }, 5),
+    );
+    expect(currentStep(scrolled).state.offset).toBe(1);
+    expect(
+      currentStep(withContent(scrolled, 0, { kind: 'report', lines: ['a', 'b'] })).state.offset,
+    ).toBe(0);
+  });
+
+  it('R64: the filter finds a row by its detail too', () => {
+    const detailed = step({
+      content: { kind: 'list', rows: rows(8, (index) => (index === 3 ? 'needle' : undefined)) },
+      filter: true,
+    });
+    const typed = stateOf(
+      foldPopupAction(openFrame(spec([detailed]), 1), { kind: 'append', text: 'needle' }, 5),
+    );
+    expect(visibleRows(currentStep(typed).state).map((found) => found.id)).toEqual(['r3']);
+  });
+
+  it('R05: an initial step past the last opens on the first', () => {
+    expect(openFrame({ ...spec([longList, report(3)]), initialStep: 2 }, 1).stepIndex).toBe(0);
+    expect(openFrame({ ...spec([longList, report(3)]), initialStep: 1 }, 1).stepIndex).toBe(1);
+  });
+
+  it('R06: a step whose `back` names itself goes back to the step before it', () => {
+    expect(backOf(spec([longList, { ...report(3), back: 1 }]), 1)).toBe(0);
+  });
+
+  it('R12: Ctrl+Esc on a line is a key typed over it, not its way back', () => {
+    expect(reducePopupKey('', { escape: true, ctrl: true }, line)).toEqual({
+      kind: 'disarm',
+      cause: 'typed',
+    });
+    expect(reducePopupKey('', { escape: true }, line)).toEqual({ kind: 'leave' });
+  });
+
+  it('R18: Alt and a letter is not that letter’s control, nor typing', () => {
+    const controlled = step({ controls: [{ key: 'd', verb: 'deep' }], filter: true });
+    expect(reducePopupKey('d', { meta: true }, controlled)).toEqual({ kind: 'none' });
+    expect(reducePopupKey('d', {}, controlled)).toEqual({ kind: 'control', key: 'd' });
   });
 });

@@ -92,7 +92,10 @@ describe('a Ctrl+Y held through the step that arms the line answers nothing (H1)
       r.press('y', CTRL);
       r.clock.advance(50);
       r.press('r');
+      // The line is offered once the reading `[r]` takes has landed, as the doctor's is: its repeats must meet a line that can be answered.
+      await settleWork();
       expect(r.step()).toBe(COST_STEP.release);
+      expect(r.content().kind).toBe('report');
       r.show();
       for (let repeat = 0; repeat < 8; repeat += 1) {
         r.clock.advance(repeat === 0 ? every - 50 : every);

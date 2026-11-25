@@ -287,8 +287,9 @@ const dataModuleImportEntry = /** @type {const} */ ([
   },
 ]);
 // The named list. A module joins it when it is written as data; the fixture proves the fence fires.
-// `tools/lint-fixtures/assert-fence.mjs` holds its own copy of this list (EXPECTED_DATA_MODULES) and fails when a module of it is gone, renamed
-// or no longer carries the rule, so dropping an entry here is a failure and not a silent exemption.
+// `tools/lint-fixtures/assert-fence.mjs` holds its own copy of this list (EXPECTED_DATA_MODULES): it fails when a module of it is gone, renamed
+// or no longer carries the rule, and when the two lists are not the same list, so dropping an entry here, dropping one there, or adding one on
+// one side alone is a failure and not a silent exemption.
 const CLI_DATA_MODULES = [
   'apps/cli/src/commands/repl-commands.ts',
   'apps/cli/src/render/tui/legend.ts',

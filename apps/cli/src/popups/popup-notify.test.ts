@@ -97,7 +97,6 @@ function rig() {
   });
   host.bindVisibility(() => true);
   host.bindOpenGate(() => undefined);
-  host.bindPageRows(() => 18);
   const handlers: PopupHandlers = {
     control: (context, key) => {
       if (key === 'd') context.goToStep(1);
@@ -110,6 +109,9 @@ function rig() {
   const open = (initialStep = 0): PopupContext => {
     const opened = host.openForUser(spec(initialStep), handlers);
     if (!opened.opened) throw new Error('open');
+    // The page of a standard popup at 80×24, bound after the open as the slot binds it when the popup's first frame renders.
+    host.bindPageRows(() => 18);
+    host.bindInnerWidth(() => 66);
     return opened.context;
   };
   return {

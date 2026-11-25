@@ -232,7 +232,7 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     expect(anthropic.requests).toHaveLength(0);
     expect(r.step()).toBe(DOCTOR_STEP.checks);
     expect(r.notifications.getSnapshot().current?.text).toContain(
-      'Nothing was sent: pressed too soon.',
+      'Nothing was sent: too soon, wait 2 s.',
     );
   });
 
@@ -246,7 +246,7 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     // A refused chord disarms the line and says so.
     expect(r.step()).toBe(DOCTOR_STEP.checks);
     expect(r.notifications.getSnapshot().current?.text).toContain(
-      'Nothing was sent: pressed too soon.',
+      'Nothing was sent: too soon, wait 2 s.',
     );
   });
 
@@ -1162,8 +1162,8 @@ describe('what the person is told is short enough for the popup and in these wor
   const inner = POPUP_NOTICE_MAX_COLUMNS;
 
   it.each([
-    ['unseen', 'Nothing was sent: pressed too soon. [d] asks again.'],
-    ['early', 'Nothing was sent: pressed too soon. [d] asks again.'],
+    ['unseen', 'Nothing was sent: too soon, wait 2 s. [d] asks again.'],
+    ['early', 'Nothing was sent: too soon, wait 2 s. [d] asks again.'],
     ['expired', 'Nothing was sent: time ran out. [d] asks again.'],
     ['typed', 'Nothing was sent: a key was typed. [d] asks again.'],
     ['cut', 'Nothing was sent: the line was cut. [d] asks again.'],
@@ -1730,8 +1730,8 @@ describe('the line is offered only if the page that draws it can show it whole (
     expect(r.step()).toBe(DOCTOR_STEP.line);
     expect(r.content()).toEqual({
       kind: 'empty',
-      what: 'These destinations are too long to confirm, so nothing is sent.',
-      next: 'Shorten the custom addresses, or use the full-screen view, which has the rows to show them whole. Esc goes back.',
+      what: 'These destinations are too long to confirm here, so nothing is sent.',
+      next: 'Shorten the custom addresses, or confirm them in full-screen mode, which has the rows to show them whole. Esc goes back.',
     });
     r.clock.advance(300);
     r.show();

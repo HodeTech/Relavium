@@ -61,9 +61,11 @@ const EXPECT_DATA_MODULE_SYNTAX = 9;
 const EXPECT_DATA_MODULE_GLOBALS = 2;
 
 /**
- * The modules that must carry the data-module fence, written out HERE and not read from `eslint.config.mjs`: the list in the config is what
- * is being checked, so a check that read it would pass when an entry was dropped. Each must exist (a rename or a deletion fails here, not
- * silently) and each must carry the rule with its full set of names. A module joins this list in the same commit that joins the config's.
+ * The modules that must carry the data-module fence, written out HERE and not only read from `eslint.config.mjs`: the list in the config is
+ * what is being checked, so a check that read it alone would pass when an entry was dropped. Each must exist (a rename or a deletion fails here,
+ * not silently) and each must carry the rule with its full set of names (check 5). The two lists must also be EQUAL (check 6): an entry dropped
+ * from this one is not a silent exemption either, and one added to the config without joining this list is not unchecked. A module joins this
+ * list in the same commit that joins the config's.
  */
 const EXPECTED_DATA_MODULES = [
   'apps/cli/src/commands/repl-commands.ts',
@@ -259,6 +261,30 @@ for (const file of EXPECTED_DATA_MODULES) {
   }
 }
 
+// 6. The two lists are one list. Check 5 holds every module HERE to the fence in the config; this holds every module of the config's list to this one,
+// so a name taken off this list (which check 5 would then never look at) or put on the config's alone is a failure, whichever side moved.
+const { default: flatConfig } = await import('../../eslint.config.mjs');
+const dataEntries = flatConfig.filter(
+  (entry) =>
+    entry?.linterOptions?.noInlineConfig === true &&
+    Array.isArray(entry.files) &&
+    entry.files.includes(DATA_MODULE),
+);
+if (dataEntries.length !== 1) {
+  fail(
+    `eslint.config.mjs has ${String(dataEntries.length)} data-module entries (a config object with noInlineConfig that lists ${DATA_MODULE}); there must be exactly one (ADR-0145 §10).`,
+  );
+}
+const configured = dataEntries[0].files;
+const notChecked = configured.filter((file) => !EXPECTED_DATA_MODULES.includes(file));
+const notConfigured = EXPECTED_DATA_MODULES.filter((file) => !configured.includes(file));
+if (notChecked.length > 0 || notConfigured.length > 0) {
+  fail(
+    `The data-module lists differ: on eslint.config.mjs's CLI_DATA_MODULES and not on EXPECTED_DATA_MODULES here [${notChecked.join(', ')}]; ` +
+      `on EXPECTED_DATA_MODULES and not on CLI_DATA_MODULES [${notConfigured.join(', ')}]. A module joins both lists in the same commit (ADR-0145 §10).`,
+  );
+}
+
 console.log(
   `✓ Seam fence airtight: ${STATIC_RULE} ${staticHits}/${EXPECT_STATIC}, ` +
     `${SYNTAX_RULE} ${syntaxHits}/${EXPECT_SYNTAX} on the fixture; ` +
@@ -271,5 +297,5 @@ console.log(
 console.log(
   `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} static ink, ink-*, react, react-dom, chalk, node: and vendor-SDK imports, ` +
     `${dataModuleSyntaxHits}/${EXPECT_DATA_MODULE_SYNTAX} dynamic, import-type and require forms, ${dataModuleGlobalHits}/${EXPECT_DATA_MODULE_GLOBALS} process and Buffer reads policed ` +
-    `(an eslint-disable comment lifts none); ${EXPECTED_DATA_MODULES.length} named data modules exist and carry it.`,
+    `(an eslint-disable comment lifts none); ${EXPECTED_DATA_MODULES.length} named data modules exist and carry it, and they are exactly the config's list.`,
 );

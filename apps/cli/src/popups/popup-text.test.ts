@@ -121,6 +121,81 @@ describe('no wrap leaves a line that starts with a lone slash', () => {
 
   it('leaves a slash that cannot move: a line of one word has no earlier word to break before', () => {
     expect(wrapPopupText('aaaaaaaaaa / bb', 10)).toEqual(['aaaaaaaaaa', '/ bb']);
+    // The same where the one word has the space of the break in front of it (`wrapWords` keeps it): a break "before the word" would be at the
+    // space, and leave an empty row. The slash stays, and no row is empty.
+    expect(wrapPopupText('ccc a ccc / b', 5)).toEqual(['ccc a', 'ccc', '/ b']);
+  });
+
+  it('a lone slash that ENDS the text is moved too: the row `/` alone is a row that starts with one', () => {
+    expect(wrapPopupText('aaa bbbb /', 8)).toEqual(['aaa', 'bbbb /']);
+  });
+
+  it('holds for every width from 20 to 69 over generated texts: the words keep their order and their single spaces, no row is empty or wider than the width, and a row starts with a lone slash only where the row before it is one word', () => {
+    // A seeded generator: the same texts on every run.
+    let seed = 20_251_124;
+    const next = (): number => {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      return seed / 4_294_967_296;
+    };
+    const words = [
+      '/',
+      '/',
+      'off',
+      'low',
+      'medium',
+      'high',
+      'max',
+      'a',
+      'bb',
+      'ccc',
+      'dddd',
+      'eeeee',
+      '/x',
+    ];
+    let slashEnded = 0;
+    let moved = 0;
+    for (let columns = 20; columns <= 69; columns += 1) {
+      for (let sample = 0; sample < 300; sample += 1) {
+        const count = 2 + Math.floor(next() * 30);
+        // No two lone slashes side by side: a slash whose word in front is itself a slash has no word to move down (`a / / b`), and that is a form
+        // the wrap leaves (pinned as a limit below).
+        const picked: string[] = [];
+        while (picked.length < count) {
+          const word = words[Math.floor(next() * words.length)] ?? 'a';
+          if (word === '/' && picked.at(-1) === '/') continue;
+          picked.push(word);
+        }
+        const text = picked.join(' ');
+        const rows = wrapPopupText(text, columns);
+        const label = `${String(columns)} columns, ${JSON.stringify(text)} -> ${JSON.stringify(rows)}`;
+        // Nothing lost, nothing added: the same words in the same order, and every space single (a row joined to the next one with one).
+        expect(rows.join(' '), label).toBe(text);
+        for (const row of rows) {
+          expect(row, label).not.toBe('');
+          expect(displayWidth(row), label).toBeLessThanOrEqual(columns);
+          expect(row, label).not.toContain('  ');
+        }
+        // A row after the first starts with a lone slash only where the row before it is a single word: nothing earlier to break before.
+        for (let at = 1; at < rows.length; at += 1) {
+          if (!/^\/(?:\s|$)/u.test(rows[at] ?? '')) continue;
+          expect((rows[at - 1] ?? '').trim().includes(' '), label).toBe(false);
+        }
+        if (picked.at(-1) === '/') slashEnded += 1;
+        if (rows.some((row, at) => at > 0 && /\s\/$/u.test(row))) moved += 1;
+      }
+    }
+    // The generator reached what it is for: texts that end with a lone slash, and slashes that had to be moved down.
+    expect(slashEnded).toBeGreaterThan(200);
+    expect(moved).toBeGreaterThan(200);
+  });
+});
+
+describe('the one form the lone-slash rule leaves', () => {
+  it('two lone slashes side by side: the slash in front is itself the word that would move down, so a row can still start with one (a limit, pinned)', () => {
+    expect(wrapPopupText('medium max /x high / / /x off ccc low', 20)).toEqual([
+      'medium max /x high',
+      '/ / /x off ccc low',
+    ]);
   });
 });
 

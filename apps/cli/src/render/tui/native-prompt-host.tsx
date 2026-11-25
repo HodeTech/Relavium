@@ -2,6 +2,7 @@ import { useApp, useInput, usePaste, useStdout } from 'ink';
 import type { SuspendPort } from '../suspend.js';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
+import { pressesOnly } from './chord-guard.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import type { NativePromptUi } from './native-prompt-channel.js';
 import { NativePromptView } from './native-prompt-view.js';
@@ -76,26 +77,31 @@ export function NativePromptHost({
     suspendPort.attach((callback) => app.suspendTerminal(callback));
     return () => suspendPort.attach(undefined);
   }, [app, suspendPort, ownsSuspendAttachment]);
-  useInput((input, key) => {
-    if (inputEnabled?.() === false) return;
-    if (input === '\x1a' || (key.ctrl && !key.meta && input.toLowerCase() === 'z')) {
-      onSuspend?.();
-      return;
-    }
-    if (!acknowledgement.inputVisible(input, key)) {
-      if (
-        key.escape ||
-        key.meta ||
-        (key.ctrl && input.toLowerCase() === 'c') ||
-        input.includes('\x1b') ||
-        input.includes('\x03')
-      )
-        ui.input('\x1b', key);
-      else ui.unseenInput(); // not delivered (the card is not visible), but still typing for the chord guard
-      return;
-    }
-    ui.input(input, key);
-  });
+  // This host's one reader never hears a key's release (`pressesOnly`, as the chat's and the Home's): a terminal left in the kitty protocol's
+  // event-type mode reports a release after every press, and the release of the Enter that answered one card would answer the next with its
+  // preset (a select's cursor, a confirmation's default), or type a letter twice.
+  useInput(
+    pressesOnly((input, key) => {
+      if (inputEnabled?.() === false) return;
+      if (input === '\x1a' || (key.ctrl && !key.meta && input.toLowerCase() === 'z')) {
+        onSuspend?.();
+        return;
+      }
+      if (!acknowledgement.inputVisible(input, key)) {
+        if (
+          key.escape ||
+          key.meta ||
+          (key.ctrl && input.toLowerCase() === 'c') ||
+          input.includes('\x1b') ||
+          input.includes('\x03')
+        )
+          ui.input('\x1b', key);
+        else ui.unseenInput(); // not delivered (the card is not visible), but still typing for the chord guard
+        return;
+      }
+      ui.input(input, key);
+    }),
+  );
   usePaste((text) => {
     if (inputEnabled?.() === false) return;
     if (acknowledgement.pasteVisible()) ui.paste(text);

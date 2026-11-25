@@ -58,11 +58,15 @@
  * `expired`, so a line never offers an answer it can no longer take. Nothing but the command's own `chord` handler hears an answer.
  *
  * **The whole line, or no answer** (§8: the line names what leaves and to whom). The rule is the host's, for every line (`/doctor`'s and
- * `/cost`'s alike), whatever the command measured: a line offers its answer only while its report is WHOLLY on the page its frame is drawn on
- * (`lineFitsPage`, read against the rows the slot binds from the one geometry). A line cut short (`▼ N more`, e.g. inline, where a page is ten
- * rows) offers none: its legend names no `Ctrl+Y`, a `Ctrl+Y` on it is a refused affirmative that leaves it as it is (the command says why in
- * its own words), and the channel is not held for it. A line that offered its answer on its last acknowledged frame and is cut on a new one (a
- * resize that made the page smaller) is disarmed at once and told as `cut`.
+ * `/cost`'s alike), whatever the command measured: a line offers its answer only while its report is WHOLLY on the page its frame is drawn on,
+ * every line of it on the page and none of them wider, as drawn, than the page's row (`lineFitsPage`, read against the rows and the inner width
+ * the slot binds from the one geometry). A line cut short (`▼ N more`, e.g. inline, where a page is ten rows) or with a row cut by the ellipsis
+ * offers none: its legend names no `Ctrl+Y`, a `Ctrl+Y` on it is a refused affirmative that leaves it as it is (the command says why in its own
+ * words), and the channel is not held for it. A line that offered its answer on its last acknowledged frame and is cut on a new one (a resize
+ * that made the page shorter or narrower) is disarmed at once and told as `cut`.
+ *
+ * **A line with no step to go back to** closes its popup when it is disarmed. The command is still told why, and what it says about it in that
+ * call is raised on the host's own channel (drawn on the hint row once the popup is gone), not as the closed popup's, which would end with it.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
@@ -259,9 +263,14 @@ export interface PopupHost {
   readonly bindVisibility: (check: ((snapshot: PopupHostSnapshot) => boolean) | undefined) => void;
   /**
    * The rows of the page the current step's body is drawn in (a list's window, a report's page), from the slot's geometry: a page moves by it,
-   * and a confirmation line offers its answer only while its report fits it whole.
+   * and a confirmation line offers its answer only while its report fits it whole. Unbound ⇒ no bound (no frame is drawn).
    */
   readonly bindPageRows: (rows: (() => number) | undefined) => void;
+  /**
+   * The columns a row of the current step's body may use (the inner width), from the same geometry, bound next to the page's rows: a
+   * confirmation line offers its answer only while none of its lines is wider, as drawn, than this. Unbound ⇒ no bound (no frame is drawn).
+   */
+  readonly bindInnerWidth: (columns: (() => number) | undefined) => void;
   /** This exact snapshot was just measured and flushed as a NEW frame: the top popup has appeared (its opening guard starts here). */
   readonly shown: (snapshot: PopupHostSnapshot) => void;
   /** The loading clock of the top popup: its elapsed text, quantised to the second, or `undefined`. Not a snapshot field. */
@@ -398,6 +407,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   let gate: (() => PopupRefusal | undefined) | undefined;
   let visibility: ((snapshot: PopupHostSnapshot) => boolean) | undefined;
   let pageRows: (() => number) | undefined;
+  let innerWidth: (() => number) | undefined;
   let runSeq = 0;
   let disposed = false;
   let clockText: string | undefined;
@@ -419,6 +429,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
    * with no lockout to meet: now its first repeat, and any key at all within the lockout of the last one, is refused as `early`, as on the
    * line `[d]` arms after a refused `Ctrl+Y`. A child opened by a popup's own key is armed against what came before THAT key, as a line its
    * key moves to is.
+   *
+   * Today this is `previousKeyAt`: every writer of the shared history (the chord guard's `resolved` and `decide`, the chat store's review,
+   * question and checkpoint cards) records a resolution at the time of a key it stamped first, so no resolution is later than the last key.
+   * That is a property of those writers, not of this module, and the history is a mutable record they share: the larger of the two is taken so
+   * that a writer that ever records a resolution with no key, or on a clock ahead of the keys', still locks the line. It is never weaker than
+   * either time.
    */
   const openingEvidence = (): ArmingEvidence =>
     keyStamp ?? { lastResolvedAt: Math.max(history.lastResolvedAt, history.previousKeyAt) };
@@ -429,11 +445,14 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
    */
   const pageNow = (): number => pageRows?.() ?? Number.POSITIVE_INFINITY;
 
+  /** The columns a row of that page may use (the slot binds its geometry's inner width next to the rows), or no bound with no frame drawn. */
+  const widthNow = (): number => innerWidth?.() ?? Number.POSITIVE_INFINITY;
+
   /** What the record's confirmation line offers now, read against the page its frame is drawn on (the host's rule: `lineFitsPage`). */
   const lineOffer = (record: FrameRecord): LineOffer => {
     const content = currentStep(record.frame).state.content;
     if (content.kind === 'loading') return 'preparing';
-    return lineFitsPage(content, pageNow()) ? 'answer' : 'nothing';
+    return lineFitsPage(content, pageNow(), widthNow()) ? 'answer' : 'nothing';
   };
 
   /** Whether the record's line is a report (what a line that offers nothing then is: one its page does not hold whole), not an empty or failed state. */
@@ -602,12 +621,32 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     }
   };
 
-  /** Tell the command why its line went away unanswered (never an answer). */
+  /**
+   * Tell the command why its line went away unanswered (never an answer). A line with no step to go back to closed its popup as it was
+   * disarmed: the closed popup's context says nothing more (its words would be discarded with it), so what the command says in THIS call is
+   * raised on the host's own channel, drawn on the hint row once the popup is gone, and nothing it says later through that context is.
+   */
   const tellRefused = (record: FrameRecord, reason: ChordRefusal): void => {
     const refused = record.handlers.chordRefused;
     if (refused === undefined) return;
     const { runId } = record.frame;
-    guarded(() => refused(contextOf(runId), reason));
+    const context = contextOf(runId);
+    if (recordOf(runId) !== undefined) {
+      guarded(() => refused(context, reason));
+      return;
+    }
+    let telling = true;
+    const closing: PopupContext = {
+      ...context,
+      notify: (text) => {
+        if (telling) notify(text);
+      },
+    };
+    try {
+      guarded(() => refused(closing, reason));
+    } finally {
+      telling = false;
+    }
   };
 
   /** The window of the record's line runs from ITS acknowledged frame: when it runs out the host disarms the line and says so. */
@@ -1007,6 +1046,9 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     },
     bindPageRows: (rows) => {
       pageRows = rows;
+    },
+    bindInnerWidth: (columns) => {
+      innerWidth = columns;
     },
     shown: (frame) => {
       if (frame !== snapshot || !snapshot.open) return;

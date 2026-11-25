@@ -98,8 +98,6 @@ function rig(options: { readonly line?: Partial<PopupStep>; readonly dropTimers?
   let painted = true;
   host.bindVisibility(() => painted);
   host.bindOpenGate(() => undefined); // an unbound gate opens nothing: this host lets every open through
-  // A standard popup's page at 80×24: the line's three rows are on it whole (a line cut short offers no answer: `popup-host.ts`).
-  host.bindPageRows(() => 18);
   const chord = vi.fn();
   const refusals: ChordRefusal[] = [];
   const stepChanged = vi.fn();
@@ -112,6 +110,10 @@ function rig(options: { readonly line?: Partial<PopupStep>; readonly dropTimers?
     },
   });
   if (!opened.opened) throw new Error('open');
+  // A standard popup's page at 80×24, bound after the open as the slot binds it: the line's three rows are on it whole (a line cut short offers
+  // no answer: `popup-host.ts`).
+  host.bindPageRows(() => 18);
+  host.bindInnerWidth(() => 66);
   const context = opened.context;
   const show = (): void => host.shown(host.getSnapshot());
   show();

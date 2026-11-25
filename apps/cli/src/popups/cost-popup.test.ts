@@ -25,6 +25,7 @@ import {
   releaseRefusedText,
   TURN_IN_FLIGHT,
   TURN_IN_FLIGHT_NOTICE,
+  HELD_CHANGED_NOTICE,
   turnInFlightContent,
 } from './cost-popup.js';
 import { costReadFailedContent } from './cost-session.js';
@@ -307,6 +308,9 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
 
   it('every notification fits the legend row, and says that nothing was released and why', () => {
     expect(displayWidth(TURN_IN_FLIGHT_NOTICE)).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+    // The answer found another amount held than the line named: nothing released, what is held now is in the report, `[r]` asks about it. Pinned by literal.
+    expect(HELD_CHANGED_NOTICE).toBe('Nothing released: the amount changed. [r] asks again.');
+    expect(displayWidth(HELD_CHANGED_NOTICE)).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
     for (const reason of Object.keys(REASONS) as ChordRefusal[]) {
       const text = releaseRefusedText(reason);
       expect(displayWidth(text), reason).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
@@ -315,8 +319,8 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
   });
 
   it.each([
-    ['unseen', 'Nothing released: pressed too soon. [r] asks again.'],
-    ['early', 'Nothing released: pressed too soon. [r] asks again.'],
+    ['unseen', 'Nothing released: too soon, wait 2 s. [r] asks again.'],
+    ['early', 'Nothing released: too soon, wait 2 s. [r] asks again.'],
     ['expired', 'Nothing released: time ran out. [r] asks again.'],
     ['typed', 'Nothing released: a key was typed. [r] asks again.'],
     ['cut', 'Nothing released: the line was cut. [r] asks again.'],

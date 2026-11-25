@@ -14,7 +14,10 @@ import '../render/tui/force-color.js';
  * - **A Home that starts below the floor** tells its popup host so on mount: a popup opened there is drawn as the notice, which has no legend
  *   row, so the notification channel is held for it.
  * - **`Ctrl+Z` and back** (`fg`): the renderer redraws its last output on resume but commits nothing, so the popup's frame is committed once
- *   more and acknowledged anew; a live key acts after it.
+ *   more and acknowledged anew; a live key acts after it, and a confirmation line's dwell counts from THAT acknowledgement (round 3, HA04).
+ * - **One dimension at a time** (round 3, S06/S07): a resize that changes only the rows, or only the columns, reaches the popup host too.
+ * - **A narrower popup** (round 3, security L2): a line whose rows were whole at the old width and one of which the new width cuts is
+ *   disarmed at the frame drawn at the new size, as `cut`.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -317,4 +320,148 @@ describe('Ctrl+Z, then back: the popup is acknowledged anew and takes a live key
       m.unmount();
     }
   });
+});
+
+describe('a resize of one dimension only reaches the popup host (round 3, mutants S06 and S07)', () => {
+  describe.each(RENDERERS)('%s', (renderer) => {
+    it.each([
+      ['rows only', 80, 20],
+      ['columns only', 70, 24],
+    ] as const)(
+      '%s: 80×24 → %i×%i with the line armed closes it unanswered',
+      async (_what, cols, rows) => {
+        const variant: Variant = { renderer, color: false, size: { cols: 80, rows: 24 } };
+        const { m, resize } = await mountOn('home', variant);
+        try {
+          await m.settle();
+          const chord = await open(m, 'home');
+          m.key('d');
+          await m.until(() => m.frame().join('\n').includes('https://a.example'));
+          await m.settle();
+          resize(cols, rows);
+          await m.until(() => !m.popups.getSnapshot().open);
+          expect(m.popups.getSnapshot().open).toBe(false);
+          expect(chord).not.toHaveBeenCalled();
+        } finally {
+          m.unmount();
+        }
+      },
+    );
+  });
+});
+
+describe('a resize that makes the popup narrower than a row of its line disarms the line, as cut (round 3, security L2)', () => {
+  describe.each(['standalone-chat', 'home'] as const)('%s', (host) => {
+    it.each(RENDERERS)(
+      '%s: a row of 70 columns, whole at 88×24 (74), is cut at 80×24 (66): the line goes back, told as cut, and nothing is answered',
+      async (renderer) => {
+        const variant: Variant = { renderer, color: false, size: { cols: 88, rows: 24 } };
+        const { m, resize } = await mountOn(host, variant);
+        try {
+          await m.settle();
+          const origin = host === 'home' ? 'home' : 'chat';
+          const wide = `  https://${'a'.repeat(52)}.example`;
+          expect(wide).toHaveLength(70);
+          const spec = listAndLine(origin);
+          const refusals: string[] = [];
+          const chord = vi.fn();
+          const opened = m.popups.openForUser(
+            {
+              ...spec,
+              steps: spec.steps.map((step, index) =>
+                index === 1
+                  ? { ...step, content: { kind: 'report', lines: ['Sends one request to:', wide] } }
+                  : step,
+              ),
+            },
+            {
+              chord,
+              chordRefused: (_context, reason) => refusals.push(reason),
+              control: (context, key) => {
+                if (key === 'd') context.goToStep(1);
+              },
+            },
+          );
+          expect(opened.opened).toBe(true);
+          await m.until(() => m.frame().join('\n').includes('alpha row'));
+          await m.settle();
+          m.skip(600);
+          m.key('d');
+          await m.until(() => m.frame().join('\n').includes('.example'));
+          await m.settle();
+          expect(m.frame().join('\n')).toContain('[Ctrl+Y] send');
+          resize(80, 24);
+          await m.until(() => refusals.length === 1);
+          expect(refusals).toEqual(['cut']);
+          expect(m.popups.getSnapshot().frame?.stepIndex).toBe(0);
+          m.skip(2600);
+          m.key(KEYS.ctrlY);
+          await m.settle();
+          expect(chord).not.toHaveBeenCalled();
+        } finally {
+          m.unmount();
+        }
+      },
+    );
+  });
+});
+
+describe('Ctrl+Z, then back: a confirmation line counts its dwell from the frame acknowledged on return (round 3, HA04)', () => {
+  const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
+
+  /** How many answers a `Ctrl+Y` pressed `wait` ms after the return gives, on a line that was on screen long before the suspension. */
+  async function answersAfterReturn(host: 'home' | 'standalone-chat', wait: number) {
+    const port = createSuspendPort();
+    let resume: () => void = () => undefined;
+    let suspended: Promise<void> | undefined;
+    const onSuspend = (): void => {
+      const suspend = port.current();
+      if (suspend === undefined) return;
+      suspended = suspend(
+        () =>
+          new Promise<void>((resolve) => {
+            resume = resolve;
+          }),
+      );
+    };
+    const m: Mount =
+      host === 'home'
+        ? mountHome(variant, { props: { suspendPort: port, onSuspend } })
+        : mountStandaloneChat(variant, { standalone: { suspendPort: port, onSuspend } });
+    try {
+      await m.settle();
+      const chord = await open(m, host === 'home' ? 'home' : 'chat');
+      m.key('d');
+      await m.until(() => m.frame().join('\n').includes('https://a.example'));
+      await m.settle();
+      // Long past the line's dwell, its quiet gap and any lockout before the suspension.
+      m.skip(3000);
+      m.key('\u001a');
+      await m.until(() => port.isSuspended());
+      expect(port.isSuspended()).toBe(true);
+      resume();
+      await suspended;
+      await m.settle();
+      await m.settle();
+      m.skip(wait);
+      m.key(KEYS.ctrlY);
+      await m.settle();
+      await m.settle();
+      return chord.mock.calls.length;
+    } finally {
+      m.unmount();
+    }
+  }
+
+  it.each([
+    ['home', 1300, 1],
+    ['home', 500, 0],
+    ['standalone-chat', 1300, 1],
+    ['standalone-chat', 500, 0],
+  ] as const)(
+    '%s: a Ctrl+Y %i ms after the return gives %i answer(s)',
+    async (host, wait, answers) => {
+      expect(await answersAfterReturn(host, wait)).toBe(answers);
+    },
+  );
 });

@@ -132,7 +132,7 @@ describe('startPopupWork', () => {
 });
 
 describe('the report popups read in work entered on the owner', () => {
-  it('/cost: the first read, and the read that follows a release, are each entered once', async () => {
+  it('/cost: the first read, the read each `[r]` takes for its line and the read that follows a release are each entered once', async () => {
     const r = reportRig();
     const { owner, entered } = countingOwner();
     r.open(
@@ -143,15 +143,18 @@ describe('the report popups read in work entered on the owner', () => {
     await settleWork();
     expect(entered).toHaveLength(1);
     expect(r.step()).toBe(COST_STEP.cost);
-    // The answer: a release, then the total read again, entered the same way.
+    // `[r]` reads again for its line, entered the same way.
     r.clock.advance(600);
     r.press('r');
+    await settleWork();
+    expect(entered).toHaveLength(2);
+    // The answer: a release, then the total read again, entered the same way.
     r.show();
     r.clock.advance(900);
     r.press('y', { ctrl: true });
     await settleWork();
     expect(r.step()).toBe(COST_STEP.done);
-    expect(entered).toHaveLength(2);
+    expect(entered).toHaveLength(3);
   });
 
   it('/workflows: the scan is entered once', async () => {

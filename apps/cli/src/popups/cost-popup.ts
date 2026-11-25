@@ -53,6 +53,13 @@ export const TURN_IN_FLIGHT = {
 /** The notification that says the same, for a person who is looking at the step. */
 export const TURN_IN_FLIGHT_NOTICE = 'Nothing released: a turn is running.';
 
+/**
+ * What the person is told when the answer found the held amount different from the figure the line named: nothing was released (the amount is
+ * what they confirmed), the report behind the line shows what is held now, and `[r]` asks about THAT figure. Short, because the popup draws it
+ * in its legend row beside the way back (`POPUP_NOTICE_MAX_COLUMNS`).
+ */
+export const HELD_CHANGED_NOTICE = `Nothing released: the amount changed. ${keyToken('r')} asks again.`;
+
 /** What the result step says when the release could not be carried out. */
 export const RELEASE_FAILED = {
   what: 'The release could not be completed.',

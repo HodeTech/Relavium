@@ -330,6 +330,7 @@ describe('[c] is offered only where there is a report to copy', () => {
     expect(r.controls()).toEqual(['r', 'c']);
     // The release line lists no control; a `c` there is a key that is not the chord, so it disarms the line and copies nothing.
     r.press('r');
+    await settleWork();
     r.show();
     expect(r.step()).toBe(COST_STEP.release);
     expect(r.controls()).toEqual([]);
@@ -344,6 +345,7 @@ describe('[c] is offered only where there is a report to copy', () => {
     // The result: released, and no control; `c` there does nothing. (The lockout of the refused key passes first.)
     r.clock.advance(2100);
     r.press('r');
+    await settleWork();
     r.show();
     r.clock.advance(900);
     r.press('y', CTRL);

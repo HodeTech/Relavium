@@ -160,9 +160,15 @@ export interface PopupBodyState {
   readonly filter?: string | undefined;
 }
 
-/** `text` as rows of at most `width` columns, nothing cut (a long word is broken where it must be); never an empty list. */
+/**
+ * `text` as rows of at most `width` columns, nothing cut (a long word is broken where it must be); never an empty list. A row after the first
+ * starts at its first word: the word wrap breaks AFTER a row that fills the width exactly and so leaves the space of that break at the start of
+ * the next row, which would be drawn one cell to the right of the rows around it.
+ */
 function wrapRows(text: string, width: number): readonly string[] {
-  const rows = wrapWords(text, Math.max(1, width)).map((row) => row.trimEnd());
+  const rows = wrapWords(text, Math.max(1, width)).map((row, index) =>
+    (index === 0 ? row : row.trimStart()).trimEnd(),
+  );
   return rows.length === 0 ? [''] : rows;
 }
 
@@ -277,6 +283,34 @@ function listLines(
   return out;
 }
 
+/**
+ * Whether a page of `height` rows draws its marker rows (`▲ N more` at the top while lines are hidden above, `▼ N more` at the bottom while
+ * lines are hidden below), each in place of the line under it: from three rows on, so that a page always keeps at least one line of the report.
+ */
+function reportDrawsMarkers(height: number): boolean {
+  return height >= 3;
+}
+
+/**
+ * How far `PgUp` and `PgDn` move a report drawn in a page of `height` rows (at least one line): so far that the first line the next page draws
+ * under its `▲` row is the line after the last one this page drew above its `▼` row, and nothing is skipped. Each marker row covers the line
+ * under it, so a page that draws them moves by the rows between them, its content rows (`height` less its two marker rows), and moving by the
+ * whole page would leave the two lines under the markers of each page boundary never on screen. Moving down from the first page (one marker)
+ * is the same move: the next page's `▲` row covers the first page's last line.
+ */
+export function reportPageStep(height: number): number {
+  const rows = Math.max(1, Math.trunc(height));
+  return reportDrawsMarkers(rows) ? rows - 2 : rows;
+}
+
+/**
+ * Whether every line of a report is drawn whole in a row of `innerWidth` columns: the line AS DRAWN ({@link popupText}: sanitised, host glyphs
+ * blanked, separators folded) is no wider than the row, so `reportLines` cuts none of them with the ellipsis.
+ */
+export function reportLinesFit(lines: readonly string[], innerWidth: number): boolean {
+  return lines.every((line) => displayWidth(popupText(line)) <= innerWidth);
+}
+
 /** A report's lines from `offset`, `height` of them, with a marker row where lines are hidden (the line under it counted, as a list counts). */
 function reportLines(
   lines: readonly string[],
@@ -289,11 +323,12 @@ function reportLines(
   if (total <= height) return lines.map((line) => bodyLine('row', popupText(line), width));
   const start = Math.max(0, Math.min(offset, total - height));
   const end = start + height;
+  const markers = reportDrawsMarkers(height);
   const out: SheetLine[] = [];
   for (let index = start; index < end; index += 1) {
-    if (height >= 3 && index === start && start > 0)
+    if (markers && index === start && start > 0)
       out.push(bodyLine('marker', `  ${glyph('moreAbove')} ${String(start + 1)} more`, width));
-    else if (height >= 3 && index === end - 1 && end < total)
+    else if (markers && index === end - 1 && end < total)
       out.push(
         bodyLine('marker', `  ${glyph('moreBelow')} ${String(total - end + 1)} more`, width),
       );

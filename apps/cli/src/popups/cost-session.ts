@@ -9,15 +9,21 @@
  * for a popup that is closed or replaced lands nowhere. When it lands the report offers `[r]` only if something is held.
  *
  * **Releasing is a confirmed step, and the answer re-checks what it was asked for.** `[r]` (or a typed `/cost --release`, which opens ON the
- * step) shows a confirmation line answered only by `Ctrl+Y` through the popup host's chord guard (the same one the doctor's deep check answers
- * through: nothing here adds a guard or removes one, and the words of a refusal are `chord-refusal.ts`'s). At the answer, and only then, this module:
+ * step) READS AGAIN and offers the confirmation line only from that reading (a line built from the reading the popup opened with would name a
+ * figure the answer no longer releases): the step says `loading` until it lands, and the figure it names is kept. The line is answered only by
+ * `Ctrl+Y` through the popup host's chord guard (the same one the doctor's deep check answers through: nothing here adds a guard or removes one,
+ * and the words of a refusal are `chord-refusal.ts`'s). At the answer, and only then, this module:
  *
  * 1. asks the host AGAIN whether a turn, a submit, a `!` command or a native action is in flight (`turnInFlight`, the facts the host's open
  *    gate reads). The popup owns the keyboard, so none can start behind it, but a line that was drawn before the answer is not evidence for
  *    it: if one is running the answer releases NOTHING and says so;
- * 2. otherwise calls the port's release ONCE, in ONE synchronous section with that check: the durable record, then the live governor
+ * 2. reads the held amount AGAIN and compares it with the figure the line named: the amount is what the person confirmed, and a release clears
+ *    whatever is held when it runs. If it is not the same figure the answer releases NOTHING, says so, and goes back to the report, read
+ *    again, where `[r]` asks about the figure that is held now (a new reading, a line armed afresh, a new dwell). A read that fails, or that is
+ *    not synchronous (it cannot be compared inside the one section below), is a failed read: nothing is released;
+ * 3. otherwise calls the port's release ONCE, in ONE synchronous section with the two checks above: the durable record, then the live governor
  *    (`releaseHeldEstimates`, exactly the two calls and the order `/cost --release` has always had);
- * 3. goes to a persistent result step (`Released ~$X back to the cap.` and the total read again) that `Enter` and `Esc` close.
+ * 4. goes to a persistent result step (`Released ~$X back to the cap.` and the total read again) that `Enter` and `Esc` close.
  *
  * Nothing is written into the transcript or any notice. **Why this release is safe against a turn that started before the popup opened**
  * (the finding of MVP-11 step 4b): the popup cannot open over one (the host's
@@ -29,11 +35,15 @@
 
 import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.js';
 import {
+  COST_LOADING_CONTENT,
   COST_STEP,
   costControls,
   costReportContent,
   costReportLines,
   costSpec,
+  HELD_CHANGED_NOTICE,
+  heldMicrocents,
+  releasable,
   releaseContent,
   releaseDoneContent,
   releaseFailedContent,
@@ -43,7 +53,7 @@ import {
 } from './cost-popup.js';
 import { copyReport } from './popup-copy.js';
 import { faultCode, macrotask, startPopupWork } from './popup-work.js';
-import { type CostPort, type CostReading, type ReportOpenRequest } from './report-port.js';
+import type { CostPort, CostReading, ReportOpenRequest } from './report-port.js';
 
 /** What the report says when the session's cost cannot be read: the fault's CODE, never its message. */
 export function costReadFailedContent(cause: unknown) {
@@ -60,17 +70,21 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
   const pause = request.yieldToLoop ?? macrotask;
   const onRelease = request.line.release === true;
   let reading: CostReading | undefined;
+  /** The figure the release step's confirmation line names, in micro-cents: absent while there is no line (loading, nothing held, a failed read). */
+  let named: number | undefined;
   let released = false;
   let generation = 0;
 
   /** The report and the release step from a reading that has landed; `[r]` is offered only if something is held. */
   const land = (context: PopupContext, landed: CostReading): void => {
     reading = landed;
+    named = releasable(landed) ? heldMicrocents(landed) : undefined;
     context.setContent(COST_STEP.cost, costReportContent(landed), costControls(landed));
     context.setContent(COST_STEP.release, releaseContent(landed));
   };
 
   const failedRead = (context: PopupContext, cause: unknown): void => {
+    named = undefined;
     context.setContent(COST_STEP.cost, costReadFailedContent(cause), []);
     context.setContent(COST_STEP.release, costReadFailedContent(cause));
   };
@@ -114,16 +128,32 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
     );
   };
 
+  /**
+   * The held amount, read now and synchronously, for the answer's comparison with {@link named}. A port whose read is not synchronous cannot be
+   * compared inside the section the release is in, so it is a failed read (and its promise is not left to reject unhandled).
+   */
+  const heldAtTheAnswer = (): number => {
+    const fresh = cost.read();
+    if (fresh instanceof Promise) {
+      void fresh.catch(() => undefined);
+      throw new TypeError('the cost read did not answer synchronously');
+    }
+    return heldMicrocents(fresh);
+  };
+
   const handlers: PopupHandlers = {
     control: (context, key) => {
       if (context.stepIndex() !== COST_STEP.cost || reading === undefined) return;
       // Each control is listed only when it applies (`[r]` when something is held, `[c]` when a reading has landed), and the report lists no
       // control while it loads or says the read failed: a key the step does not list never gets here.
-      // The line is built again from the reading each time it is asked for: an earlier answer that found a turn running left the step on its
-      // empty state, and that state must not outlive the turn.
+      // The line is made from a reading taken NOW, never from the one the popup opened with: what is held moves while the popup is open (a turn
+      // that finished since commits its estimates), and `Ctrl+Y` releases what is held at its answer. An earlier answer that found a turn
+      // running left the step on its empty state, and that state must not outlive the turn: the step is `loading` until the new line lands.
       if (key === 'r') {
-        context.setContent(COST_STEP.release, releaseContent(reading));
+        named = undefined;
+        context.setContent(COST_STEP.release, COST_LOADING_CONTENT);
         context.goToStep(COST_STEP.release);
+        load(context);
       }
       // The report as it is at this moment: the lines of the reading the step shows, which is what is drawn.
       else if (key === 'c') copyReport(context, port, 'Cost', costReportLines(reading));
@@ -136,10 +166,30 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
         context.notify(TURN_IN_FLIGHT_NOTICE);
         return;
       }
+      // The amount is what the person confirmed: the held amount read now must be the figure the line named, or nothing is released.
+      let heldNow: number;
+      try {
+        heldNow = heldAtTheAnswer();
+      } catch (cause) {
+        port.workOwner?.failure(cause);
+        failedRead(context, cause);
+        return;
+      }
+      if (heldNow !== named) {
+        // The line is gone and the report behind it is read again: `[r]` then asks about the figure that is held now, on a line armed afresh
+        // (a line the host has answered once cannot be answered again, whatever it says: the answer was evidence against it).
+        named = undefined;
+        context.setContent(COST_STEP.release, COST_LOADING_CONTENT);
+        context.setContent(COST_STEP.cost, COST_LOADING_CONTENT, []);
+        context.goToStep(COST_STEP.cost);
+        context.notify(HELD_CHANGED_NOTICE);
+        load(context);
+        return;
+      }
       released = true;
       let outcome: ReturnType<CostPort['release']>;
       try {
-        // The durable record, then the live governor: one call of the port, one synchronous section with the check above.
+        // The durable record, then the live governor: one call of the port, one synchronous section with the checks above.
         outcome = cost.release();
       } catch (cause) {
         port.workOwner?.failure(cause);

@@ -15,8 +15,10 @@ import { exitKey, type LegendExit, type LegendItem } from '../render/tui/legend.
 import { POPUP_FLOOR, popupGeometry, popupInnerWidth, type PopupKind } from './geometry.js';
 import {
   naturalBodyRows,
+  reportLinesFit,
   reportMaxOffset,
   reportPageRows,
+  reportPageStep,
   type PopupContent,
   type PopupListRow,
   type PopupOrigin,
@@ -217,13 +219,19 @@ export function visitStep(frame: PopupFrame): PopupFrame {
 }
 
 /**
- * Whether a confirmation line's content is WHOLLY on a page of `pageRows` rows ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §8: the line names what leaves and to whom, so it can be answered only when every one of its lines is on screen at once): a report of at
- * least one line and of no more lines than the page draws. A line cut short (`▼ N more`), one that says there is nothing to show, and any
- * other content offer no answer. The host's rule and the legend's are this one function.
+ * Whether a confirmation line's content is WHOLLY on a page of `pageRows` rows of `innerWidth` columns ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §8: the line names what leaves and to whom, so it can be answered only when every one of its lines is on screen at once, and whole): a
+ * report of at least one line, of no more lines than the page draws, and none of them wider, as drawn, than the row (`reportLinesFit`). A line
+ * cut short (`▼ N more`), one whose row is cut with the ellipsis, one that says there is nothing to show, and any other content offer no
+ * answer. The host's rule and the legend's are this one function.
  */
-export function lineFitsPage(content: PopupContent, pageRows: number): boolean {
-  return content.kind === 'report' && content.lines.length > 0 && content.lines.length <= pageRows;
+export function lineFitsPage(content: PopupContent, pageRows: number, innerWidth: number): boolean {
+  return (
+    content.kind === 'report' &&
+    content.lines.length > 0 &&
+    content.lines.length <= pageRows &&
+    reportLinesFit(content.lines, innerWidth)
+  );
 }
 
 /** The step before `index` along `back`, else the one before it, or `-1` from the first: the chain the rail counts. */
@@ -432,10 +440,13 @@ function pageEnabled(
   return nextEnabled(rows, target, opposite);
 }
 
-/** How far a report scrolls for one `move` or `page` (a line, a page). */
+/**
+ * How far a report scrolls for one `move` or `page`: a line, or a page's step (`reportPageStep`: the rows between its marker rows, so that the
+ * line under a marker of one page is drawn on the next and paging alone shows every line).
+ */
 function scrollDelta(action: NavigationAction, pageRows: number): number {
   if (action.kind === 'move') return action.delta;
-  if (action.kind === 'page') return action.delta * Math.max(1, pageRows);
+  if (action.kind === 'page') return action.delta * reportPageStep(pageRows);
   return 0;
 }
 
@@ -525,8 +536,9 @@ function foldEnter(spec: PopupStep, state: PopupStepState): PopupFold {
 }
 
 /**
- * Fold one action into the top popup. `pageRows` is the rows a page moves (the window the frame draws the step's body in, from the one geometry
- * function). A host that has judged a `Ctrl+Y` itself folds every other action, and gets no `chord` back (the first signature).
+ * Fold one action into the top popup. `pageRows` is the rows of the page the frame draws the step's body in (from the one geometry function):
+ * a list's page moves the highlight by it, and a report's by its step between the marker rows (`reportPageStep`). A host that has judged a
+ * `Ctrl+Y` itself folds every other action, and gets no `chord` back (the first signature).
  */
 export function foldPopupAction(
   frame: PopupFrame,
@@ -612,6 +624,11 @@ function floorReportRows(frame: PopupFrame): number {
   return geometry.fits ? reportPageRows(geometry, filter !== undefined) : 1;
 }
 
+/** The columns a row of `frame`'s body may use on a popup of its kind at the floor (80×24): the row {@link popupLegend} judges a line's width on when its caller has no geometry of its own. */
+function floorInnerWidth(frame: PopupFrame): number {
+  return popupInnerWidth(POPUP_FLOOR.columns, frame.spec.kind ?? 'standard');
+}
+
 /**
  * The legend of the top popup's step, built by the one legend builder ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
  * §3): its keys in the order a person reaches for them, then the way back, which is always last and always written. The way back says what
@@ -619,16 +636,22 @@ function floorReportRows(frame: PopupFrame): number {
  * it on a step that is not a confirmation line; it closes on the first step (the `close` class, in the step's own word); with a filter typed it
  * clears the filter first (a step too); and it says `cancel` only where it stops work in flight: a first step that is loading (closing aborts
  * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page, and a confirmation line names its answer only when it
- * does fit: `reportRows`, the rows the frame draws it in (the slot passes its geometry's); absent ⇒ the page of a standard popup at the floor.
+ * does fit, every line of it whole: `reportRows`, the rows the frame draws it in, and `innerWidth`, the columns of each of its rows (the slot
+ * passes its geometry's); absent ⇒ the page and the row of a popup of the frame's kind at the floor.
  */
-export function popupLegend(frame: PopupFrame, reportRows?: number): PopupLegend {
+export function popupLegend(
+  frame: PopupFrame,
+  reportRows?: number,
+  innerWidth?: number,
+): PopupLegend {
   const { spec, state } = currentStep(frame);
   // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
   if (spec.final === true)
     return { items: [], exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
   const back = backOf(frame.spec, frame.stepIndex) >= 0;
   const page = (): number => reportRows ?? floorReportRows(frame);
-  if (spec.chord !== undefined) return chordLegend(spec, state, back, page);
+  if (spec.chord !== undefined)
+    return chordLegend(spec, state, back, page, () => innerWidth ?? floorInnerWidth(frame));
   const items = stepItems(spec, state, page);
   const keep = spec.legendKeep;
   const finish = (exit: LegendExit): PopupLegend =>
@@ -659,16 +682,18 @@ function closingVerb(spec: PopupStep, state: PopupStepState): string {
 /**
  * A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. It names its answer only
  * when the line is wholly on its page ({@link lineFitsPage}): while it is being prepared, when there is nothing to confirm and when it is cut
- * short it names none (the host takes none then). Its `Esc` steps back to the step it came from (it disarms), and on a first step it closes.
+ * short or a row of it is cut it names none (the host takes none then). Its `Esc` steps back to the step it came from (it disarms), and on a
+ * first step it closes.
  */
 function chordLegend(
   spec: PopupStep,
   state: PopupStepState,
   back: boolean,
   page: () => number,
+  innerWidth: () => number,
 ): PopupLegend {
   const items: LegendItem[] = [];
-  if (spec.chord !== undefined && lineFitsPage(state.content, page()))
+  if (spec.chord !== undefined && lineFitsPage(state.content, page(), innerWidth()))
     items.push({ keys: POPUP_KEYS.chord, verb: spec.chord.verb });
   const exit = back
     ? exitKey.step(POPUP_KEYS.leave, 'back')

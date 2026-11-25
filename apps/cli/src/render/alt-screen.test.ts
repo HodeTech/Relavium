@@ -314,29 +314,28 @@ describe('createAltScreenController — reversible job-control release', () => {
  */
 describe('homeAfterInkEnter', () => {
   const INK_ENTER = '\x1b[?1049h';
-  const fakeStream = (): {
-    readonly stream: {
-      write: (chunk: unknown, ...rest: unknown[]) => boolean;
-      columns: number;
-      isTTY: boolean;
-      mark: () => string;
-    };
-    readonly written: unknown[][];
-  } => {
-    const written: unknown[][] = [];
-    const stream = {
-      columns: 97,
-      isTTY: true,
-      write(chunk: unknown, ...rest: unknown[]): boolean {
-        written.push([chunk, ...rest]);
-        return true;
-      },
-      // A method that needs its own `this`: the wrapper must bind it to the stream, not to the proxy.
-      mark(this: { columns: number }): string {
-        return `cols=${String(this.columns)}`;
-      },
-    };
-    return { stream, written };
+  /** A stream with a field that only it can read (`#cols`) and a method that gives back its own `this`: a method run on the wrapper instead of the stream is seen at once. */
+  class FakeStream {
+    readonly written: unknown[][] = [];
+    readonly columns = 97;
+    readonly isTTY = true;
+    readonly #cols = 97;
+    write(chunk: unknown, ...rest: unknown[]): boolean {
+      this.written.push([chunk, ...rest]);
+      return true;
+    }
+    /** A method that needs its own `this`: the wrapper must bind it to the stream, not to the proxy. */
+    self(): unknown {
+      return this;
+    }
+    /** Reads a `#private` field, which only the stream itself has (a proxy as `this` throws). */
+    privateColumns(): number {
+      return this.#cols;
+    }
+  }
+  const fakeStream = (): { readonly stream: FakeStream; readonly written: unknown[][] } => {
+    const stream = new FakeStream();
+    return { stream, written: stream.written };
   };
 
   it("writes ink's enter as the full enter (the cursor home and the clear follow it)", () => {
@@ -367,7 +366,52 @@ describe('homeAfterInkEnter', () => {
     const wrapped = homeAfterInkEnter(stream);
     expect(wrapped.columns).toBe(97);
     expect(wrapped.isTTY).toBe(true);
-    expect(wrapped.mark()).toBe('cols=97');
+    // The method runs on the stream itself: it sees its own `this` (not the proxy) and its own `#private` field.
+    expect(wrapped.self()).toBe(stream);
+    expect(wrapped.privateColumns()).toBe(97);
+  });
+
+  it('is one wrapper per stream: the same stream gives the same wrapper, another stream another one', () => {
+    const { stream } = fakeStream();
+    const other = fakeStream().stream;
+    const first = homeAfterInkEnter(stream);
+    expect(homeAfterInkEnter(stream)).toBe(first);
+    expect(homeAfterInkEnter(other)).not.toBe(first);
+    // The wrapper that is given back again still writes the full enter.
+    homeAfterInkEnter(stream).write(INK_ENTER);
+    expect(stream.written).toEqual([[ENTER_ALT_SCREEN]]);
+  });
+
+  it("keeps ink's one renderer per stdout: two mounts over the same stream share the first, so the enter is written once", async () => {
+    const { render, Text } = await import('ink');
+    const { createElement } = await import('react');
+    const chunks: string[] = [];
+    const stdout = Object.assign(new (await import('node:events')).EventEmitter(), {
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      write(chunk: unknown): boolean {
+        chunks.push(String(chunk));
+        return true;
+      },
+    });
+    const options = {
+      alternateScreen: true,
+      interactive: true,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    };
+    const first = render(createElement(Text, null, 'one'), {
+      stdout: homeAfterInkEnter(stdout) as unknown as NodeJS.WriteStream,
+      ...options,
+    });
+    const second = render(createElement(Text, null, 'two'), {
+      stdout: homeAfterInkEnter(stdout) as unknown as NodeJS.WriteStream,
+      ...options,
+    });
+    first.unmount();
+    second.unmount();
+    expect(chunks.filter((chunk) => chunk === ENTER_ALT_SCREEN)).toHaveLength(1);
   });
 
   it("takes ink's real enter: a mounted ink with the alternate screen writes the home and the clear right after it", async () => {

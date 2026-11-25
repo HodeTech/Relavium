@@ -16,6 +16,8 @@ import {
   popupFrameLines,
   popupNoticeLegend,
   popupNoticeLines,
+  reportLinesFit,
+  reportPageStep,
   type PopupContent,
   type PopupFrameParts,
   type PopupListRow,
@@ -28,6 +30,7 @@ import {
   popupInnerWidth,
   type PopupBoxGeometry,
 } from './geometry.js';
+import { NOTHING_HELD } from './cost-popup.js';
 
 function geometryFor(
   columns: number,
@@ -685,5 +688,69 @@ describe('what the body draws, row for row (MVP-11 step 4, review round 2, mutat
     expect(drawn).toContain('sec');
     expect(drawn).toContain('why');
     expect(drawn).toContain('wa');
+  });
+});
+
+describe('a wrapped row of an empty or error state starts at its word (round 3, observation #3)', () => {
+  it('the real `/cost --release` nothing-held sentence at 80×24: its second row starts with `release.`, at the column of the first', () => {
+    const content: PopupContent = { kind: 'empty', ...NOTHING_HELD };
+    const { geometry, text } = frame(content, { columns: 80, rows: 24 });
+    const body = text.slice(1, 1 + geometry.bodyRows);
+    const at = body.findIndex((row) => row.includes('release.'));
+    expect(at).toBeGreaterThan(0);
+    // The margin, then the word: never the space the wrap broke at.
+    expect(body[at]?.startsWith(' release.')).toBe(true);
+    expect(body[at]?.startsWith('  ')).toBe(false);
+    for (const row of text) expect(displayWidth(row)).toBe(geometry.width);
+  });
+
+  it('a sentence whose first row fills the width exactly: no row after it starts with a space, in both states', () => {
+    // 66 columns, then a space and the rest: the wrap breaks after the 66th column and leaves the space at the next row's start.
+    const what = `${'a'.repeat(30)} ${'b'.repeat(35)} rest of it`;
+    const next = `${'c'.repeat(66)} then this`;
+    for (const kind of ['empty', 'error'] as const) {
+      const content: PopupContent = kind === 'empty' ? { kind, what, next } : { kind, what, next };
+      const body = withGlyphForm(false, () =>
+        popupBody(content, { selected: 0, offset: 0 }, geometryFor(80, 24, 6)),
+      );
+      const texts = body.lines.map((line) => line.text);
+      expect(texts).toContain(kind === 'empty' ? 'rest of it' : `${'b'.repeat(35)} rest of it`);
+      expect(texts).toContain('then this');
+      for (const row of texts.slice(1)) expect(row.startsWith(' ')).toBe(false);
+    }
+  });
+});
+
+describe('the frame model’s edges (round 3 mutation sweep)', () => {
+  it('FM08/FM12/FM13: the rows a body asks for: a loading step with a filter line two, an empty report one, an empty list one', () => {
+    expect(
+      naturalBodyRows({ kind: 'loading', what: 'x' }, { selected: 0, offset: 0, filter: '' }),
+    ).toBe(2);
+    expect(naturalBodyRows({ kind: 'loading', what: 'x' }, { selected: 0, offset: 0 })).toBe(1);
+    expect(naturalBodyRows({ kind: 'report', lines: [] }, { selected: 0, offset: 0 })).toBe(1);
+    expect(naturalBodyRows({ kind: 'list', rows: [] }, { selected: 0, offset: 0 })).toBe(1);
+  });
+
+  it('FM15: a row that cannot act and names no reason says `unavailable`', () => {
+    const { text } = frame({
+      kind: 'list',
+      rows: [
+        { id: 'a', label: 'alpha' },
+        { id: 'b', label: 'bravo', enabled: false },
+      ],
+    });
+    expect(text[2]?.trim()).toBe('bravo  unavailable');
+  });
+
+  it('a page moves by the rows between its marker rows, at least one line; a page too short for markers moves whole', () => {
+    expect([18, 17, 10, 4, 3, 2, 1, 0].map(reportPageStep)).toEqual([16, 15, 8, 2, 1, 2, 1, 1]);
+  });
+
+  it('a report fits its row only when every line, as drawn, is no wider than it', () => {
+    expect(reportLinesFit(['a'.repeat(66), 'b'], 66)).toBe(true);
+    expect(reportLinesFit(['b', 'a'.repeat(67)], 66)).toBe(false);
+    expect(reportLinesFit([], 1)).toBe(true);
+    // A host glyph is blanked to a space of the same width; a line separator is folded to one.
+    expect(reportLinesFit([`${'a'.repeat(64)}●${String.fromCharCode(0x2028)}`], 66)).toBe(true);
   });
 });
