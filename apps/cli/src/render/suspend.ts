@@ -299,6 +299,14 @@ export function createSuspendPort(): SuspendPort {
 }
 
 /**
+ * How long after `suspendSelf()` has returned a suspension waits for SIGCONT before it continues on its own. Under a job-control shell the self-stop
+ * returns only once the process runs again, and the SIGCONT event follows within a loop turn. When the process group is ORPHANED (no job-control
+ * shell: `ssh -t host relavium`, a tmux window command, `exec relavium`, a container's PID 1) POSIX has the kernel DISCARD the default stop, so
+ * `suspendSelf()` returns at once and SIGCONT never comes: without this the held loop handle keeps a released, suspended renderer alive for ever.
+ */
+export const ORPHANED_STOP_GRACE_MS = 400;
+
+/**
  * The named, POSIX-only job-control signal seam. `SIGTSTP`/`SIGCONT` are deliberately NOT folded into the normal
  * termination callbacks: stopping a foreground job is reversible, whereas SIGINT/TERM/HUP/QUIT tear the command
  * down, close its database, and exit. Keeping the names here also avoids treating platform-specific signal numbers
@@ -452,6 +460,13 @@ export function wireJobControl(opts: {
   // The ONE handle that keeps the event loop open while a stop is pending (see `JobControlLifecycle.keepAlive`): taken before the process stops,
   // let go when the suspension has settled (the renderer redrawn and its own input handle back) or the binding is disposed. Never more than one.
   let releaseLoop: (() => void) | undefined;
+  // The fallback for a stop the kernel DISCARDED (see {@link ORPHANED_STOP_GRACE_MS}): armed when `suspendSelf()` has returned, cleared by any continuation.
+  let orphanGuard: ReturnType<typeof setTimeout> | undefined;
+  const clearOrphanGuard = (): void => {
+    if (orphanGuard === undefined) return;
+    clearTimeout(orphanGuard);
+    orphanGuard = undefined;
+  };
   const holdLoop = (): void => {
     if (releaseLoop !== undefined) return;
     try {
@@ -506,6 +521,7 @@ export function wireJobControl(opts: {
     if (disposed) return;
     const resolve = resolveContinue;
     if (resolve === undefined) return; // a stray SIGCONT must not perturb an active surface
+    clearOrphanGuard();
     // Re-arm BEFORE Ink resumes input/redraws. A fast second Ctrl-Z is then captured by our handler rather than
     // falling through to a default stop while the terminal is still being reclaimed.
     installSuspendListener();
@@ -527,8 +543,9 @@ export function wireJobControl(opts: {
       // the finally below restores our SIGTSTP listener too.
       continueSuspension();
     } finally {
-      // `suspendSelf()` returns only after SIGCONT. This is the re-arm for the no-Ink and hatch-owned paths; the
-      // Ink-owned path already re-arms in `continueSuspension` before it resolves the deferred, so this is a no-op.
+      // `suspendSelf()` returns once the process runs again: after SIGCONT under a job-control shell, and AT ONCE when the kernel discarded the
+      // stop (an orphaned process group: see {@link ORPHANED_STOP_GRACE_MS}). This is the re-arm for the no-Ink and hatch-owned paths, which
+      // continue by returning; the Ink-owned path already re-arms in `continueSuspension` before it resolves the deferred, so this is a no-op.
       installSuspendListener();
     }
   };
@@ -536,6 +553,7 @@ export function wireJobControl(opts: {
   const settle = (): void => {
     resolveContinue = undefined;
     suspending = false;
+    clearOrphanGuard();
     letLoopGo();
     // The renderer has the terminal back and has redrawn at the size it last knew: bring that size up to date (a resize during the stop was
     // delivered to the shell, not to us), so it redraws again if the size changed.
@@ -619,6 +637,17 @@ export function wireJobControl(opts: {
         // Before the process stops: after SIGCONT the continuation is delivered by the loop, which must have something to wait for.
         holdLoop();
         forwardSuspend();
+        // `suspendSelf()` has returned. Under a job-control shell the process was stopped and has been continued, and SIGCONT is the continuation
+        // (it reaches the loop next tick and clears this guard). When the process group is ORPHANED (`ssh -t host relavium`, a tmux window
+        // command, `exec relavium`, a container's PID 1) the kernel discards the default stop: no SIGCONT will ever come, and the held loop handle
+        // would keep a released, suspended renderer alive for ever (the terminal erased and in cooked mode). The guard continues after a grace.
+        if (!disposed && resolveContinue !== undefined) {
+          clearOrphanGuard();
+          orphanGuard = setTimeout(() => {
+            orphanGuard = undefined;
+            continueSuspension();
+          }, ORPHANED_STOP_GRACE_MS);
+        }
       });
     // Signals cannot await a promise. Absorb a terminal-write/Ink failure here: `suspendFullScreen` has already
     // performed its own partial-state reclaim, and an unhandled rejection from a signal handler is strictly worse.
@@ -658,6 +687,7 @@ export function wireJobControl(opts: {
   const dispose = (): void => {
     disposed = true;
     pendingSuspend = false;
+    clearOrphanGuard();
     letLoopGo();
     // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
     // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a

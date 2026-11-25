@@ -11,6 +11,7 @@ import {
 import {
   createSuspendPort,
   defaultJobControlLifecycle,
+  ORPHANED_STOP_GRACE_MS,
   suspendFullScreen,
   wireJobControl,
   type JobControlLifecycle,
@@ -1082,6 +1083,89 @@ describe('wireJobControl (G0)', () => {
       expect(failures).toHaveLength(1);
       expect(h.holds()).toEqual({ now: 0, most: 1, taken: 1 });
       binding.dispose();
+    });
+
+    describe('a stop the kernel discarded (an orphaned process group: no job-control shell, so no SIGCONT will ever come)', () => {
+      const attached = (h: Harness): ReturnType<typeof bind> => {
+        h.port.attach(async (callback) => {
+          h.trace.push('ink:begin');
+          try {
+            await callback();
+          } finally {
+            h.trace.push('ink:redraw');
+          }
+        });
+        return bind(h);
+      };
+
+      it('continues on its own after the grace: the renderer is reclaimed and the loop handle is let go (it used to be held for ever)', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend(); // `suspendSelf()` returns at once and nothing ever fires SIGCONT
+          await vi.advanceTimersByTimeAsync(0);
+          expect(h.suspendSelf).toHaveBeenCalledOnce();
+          expect(h.port.isSuspended()).toBe(true);
+          expect(h.holds().now).toBe(1);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS - 1);
+          expect(h.port.isSuspended(), 'one millisecond before the grace it still waits').toBe(
+            true,
+          );
+          expect(h.holds().now).toBe(1);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(h.port.isSuspended()).toBe(false);
+          expect(h.holds().now).toBe(0);
+          expect(h.trace.at(-1)).toBe('ink:redraw');
+          expect(h.refreshSize).toHaveBeenCalledOnce();
+          expect(vi.getTimerCount()).toBe(0);
+          binding.dispose();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('the grace is the same as the pinned constant (400 ms: past a loop turn, short enough to be a flicker and not a hang)', () => {
+        expect(ORPHANED_STOP_GRACE_MS).toBe(400);
+      });
+
+      it('a SIGCONT that arrives first is the continuation, once: the guard is cleared and nothing fires later', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend();
+          await vi.advanceTimersByTimeAsync(0);
+          h.fireContinue();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(h.port.isSuspended()).toBe(false);
+          expect(h.trace.filter((entry) => entry === 'ink:redraw')).toHaveLength(1);
+          expect(vi.getTimerCount(), 'no guard is left behind a continuation').toBe(0);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS * 3);
+          expect(h.trace.filter((entry) => entry === 'ink:redraw')).toHaveLength(1);
+          expect(h.refreshSize).toHaveBeenCalledOnce();
+          binding.dispose();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('a binding disposed while waiting leaves no guard behind, and a late grace cannot reclaim behind the teardown', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend();
+          await vi.advanceTimersByTimeAsync(0);
+          binding.dispose();
+          expect(vi.getTimerCount()).toBe(0);
+          expect(h.holds().now).toBe(0);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS * 3);
+          expect(h.refreshSize).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     it('holds nothing where the process stops with no Ink to wait for (the signal is handled in the same tick)', () => {
