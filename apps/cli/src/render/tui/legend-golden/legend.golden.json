@@ -1681,6 +1681,28 @@
     "kind=busy escape=back colour=off [1]": " Esc back · [Ctrl+C] cancels it",
     "kind=busy escape=back colour=on [1]": " ⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold,yellow: [Ctrl+C]⟧⟦dim:  cancels it⟧"
   },
+  "popup-native-framed": {
+    "kind=select list=whole exit=skip for now colour=off [1]": " ↑/↓ select · Enter choose · Esc skip for now",
+    "kind=select list=whole exit=skip for now colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  choose · ⟧⟦bold: Esc⟧⟦dim:  skip for now⟧",
+    "kind=select list=window colour=off [1]": " ↑/↓ select · PgUp/PgDn page · Enter choose · Esc close",
+    "kind=select list=window colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: PgUp/PgDn⟧⟦dim:  page · ⟧⟦bold: Enter⟧⟦dim:  choose · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=password after=resize colour=off [1]": " Enter continue · Esc close",
+    "kind=password after=resize colour=on [1]": " ⟦bold: Enter⟧⟦dim:  continue · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=busy colour=off [1]": " Esc cancels it",
+    "kind=busy colour=on [1]": " ⟦bold,yellow: Esc⟧⟦dim:  cancels it⟧",
+    "kind=chord escape=cancel colour=off [1]": " [Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies",
+    "kind=chord escape=cancel colour=on [1]": " ⟦bold,green: [Ctrl+Y]⟧⟦dim:  Write the file · ⟧⟦bold,red: [Ctrl+N]⟧⟦dim:  Write nothing · ⟧⟦bold,yellow: Esc⟧⟦dim:  denies⟧",
+    "kind=chord escape=back colour=off [1]": " [Ctrl+Y] Write the file · Esc back · [Ctrl+C] denies",
+    "kind=chord escape=back colour=on [1]": " ⟦bold,green: [Ctrl+Y]⟧⟦dim:  Write the file · ⟧⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold,yellow: [Ctrl+C]⟧⟦dim:  denies⟧",
+    "kind=picker state=list colour=off [1]": " ↑/↓ select · Enter resume · Tab all directories · Esc close",
+    "kind=picker state=list colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  resume · ⟧⟦bold: Tab⟧⟦dim:  all directories · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=picker state=failed retry=yes colour=off [1]": " Enter retry · Esc close",
+    "kind=picker state=failed retry=yes colour=on [1]": " ⟦bold: Enter⟧⟦dim:  retry · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=picker state=failed retry=no colour=off [1]": " Edit filter · Esc close",
+    "kind=picker state=failed retry=no colour=on [1]": " ⟦dim: Edit filter · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=done colour=off [1]": " Enter / Esc close",
+    "kind=done colour=on [1]": " ⟦bold: Enter / Esc⟧⟦dim:  close⟧"
+  },
   "popup-notice": {
     "step=first-step reason=below-floor colour=off [1]": " Esc close",
     "step=first-step reason=below-floor colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧",

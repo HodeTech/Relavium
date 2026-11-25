@@ -154,6 +154,17 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
     'home.popup-selected-row',
     'a popup over the populated landing with a strip row selected (an inverse row; the backdrop-dim body, ADR-0148 §4)',
   ),
+  // A prompt of the native prompt channel drawn in the popup frame (MVP-11 unit 6, 6.1): the frame every flow of the Home wears.
+  row('home.native-popup-select', 'a native choice drawn in the popup frame (a hint that wraps)'),
+  row('home.native-popup-text', 'a native text field drawn in the popup frame'),
+  row(
+    'home.native-popup-password',
+    'a native masked field drawn in the popup frame, after a resize cleared it',
+  ),
+  row('home.native-popup-busy', 'a native wait drawn in the popup frame'),
+  row('home.native-popup-chord', 'a native chord step drawn in the popup frame (facts that wrap)'),
+  row('home.native-popup-picker', 'the native session picker drawn in the popup frame'),
+  row('home.native-popup-done', 'a flow’s persistent Done step drawn in the popup frame'),
   // The chat, in both of its hosts.
   ...(['chat', 'standalone-chat'] as const).flatMap((host) =>
     CHAT_ROWS.map(([name, title]) =>

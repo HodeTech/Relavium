@@ -1,9 +1,10 @@
 /**
  * The native prompt's snapshot identity ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §2): the measured-frame proof compares today's fields (`note` and `picker` included) PLUS the popup descriptor's (`title`, `origin`,
- * `stepIndex`, `stepCount`, `exitLabel`, `placement`, the stack depth). Every key of the snapshot is enumerated against the comparison and the
- * explicit exclusion list, so a field added to the snapshot without a decision fails here; and the descriptor reaches the snapshot through the
- * flow's one setter, sanitised.
+ * §2): the measured-frame proof compares today's fields (`note` and `picker` included, and `final`, the mark of a flow's persistent last step)
+ * PLUS the popup descriptor's (`title`, `origin`, `stepIndex`, `stepCount`, the rail's `stepNames`, `exitLabel`, the stack depth). Every key of
+ * the snapshot is enumerated against the comparison and the explicit exclusion list, so a field added to the snapshot without a decision fails
+ * here; and the descriptor reaches the snapshot through the flow's one setter, sanitised. The descriptor has no placement: the renderer's
+ * placement decides where a popup is drawn, and a field nobody reads is no proof.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -39,18 +40,27 @@ const FULL: Required<NativePromptSnapshot> = {
   escape: 'back',
   details: ['row'],
   popup: {
-    placement: 'overlay',
     title: '/providers',
     origin: 'home',
     stepIndex: 1,
     stepCount: 3,
+    stepNames: ['Provider', 'Key', 'Done'],
     exitLabel: 'close',
     depth: 1,
   },
+  final: true,
 };
 
 /** Every field of the descriptor: a field added without a value here does not compile. */
-const DESCRIPTOR: Required<NativePopupDescriptor> = FULL.popup;
+const DESCRIPTOR: Required<NativePopupDescriptor> = {
+  title: '/providers',
+  origin: 'home',
+  stepIndex: 1,
+  stepCount: 3,
+  stepNames: ['Provider', 'Key', 'Done'],
+  exitLabel: 'close',
+  depth: 1,
+};
 
 /** A value of `key` that differs from FULL's, of the same type (a new object for a list, so a reference comparison sees it). */
 function changed(key: keyof NativePromptSnapshot): NativePromptSnapshot {
@@ -69,6 +79,7 @@ function changed(key: keyof NativePromptSnapshot): NativePromptSnapshot {
     escape: 'cancel',
     details: [...FULL.details],
     popup: { ...DESCRIPTOR },
+    final: undefined,
   };
   return { ...FULL, [key]: variants[key] };
 }
@@ -77,11 +88,11 @@ function changedDescriptor(key: keyof NativePopupDescriptor): NativePromptSnapsh
   const variants: {
     readonly [K in keyof Required<NativePopupDescriptor>]: NativePopupDescriptor[K];
   } = {
-    placement: 'replace',
     title: '/init',
     origin: 'chat',
     stepIndex: 2,
     stepCount: 4,
+    stepNames: ['Provider', 'Key', 'Finish'],
     exitLabel: 'back',
     depth: 2,
   };
@@ -129,6 +140,29 @@ describe('the popup descriptor is identity, field by field', () => {
     expect(sameNativePromptFrame(card, FULL)).toBe(false);
     expect(sameNativePromptFrame(FULL, { ...FULL, popup: { ...DESCRIPTOR } })).toBe(true);
   });
+
+  it('the rail’s names are compared name by name: an equal list in a new array is the same card; one more, one less, one renamed, or none, is not', () => {
+    const named = (stepNames: readonly string[] | undefined): NativePromptSnapshot => {
+      const { stepNames: dropped, ...rest } = DESCRIPTOR;
+      void dropped;
+      return { ...FULL, popup: stepNames === undefined ? rest : { ...rest, stepNames } };
+    };
+    expect(sameNativePromptFrame(FULL, named([...DESCRIPTOR.stepNames]))).toBe(true);
+    expect(sameNativePromptFrame(FULL, named(['Provider', 'Key']))).toBe(false);
+    expect(sameNativePromptFrame(FULL, named(['Provider', 'Key', 'Done', 'More']))).toBe(false);
+    expect(sameNativePromptFrame(FULL, named(['Provider', 'Kee', 'Done']))).toBe(false);
+    expect(sameNativePromptFrame(FULL, named(undefined))).toBe(false);
+    expect(sameNativePromptFrame(named(undefined), named(undefined))).toBe(true);
+  });
+
+  it('the descriptor has no placement field (the renderer decides where a popup is drawn)', () => {
+    expect(Object.keys(DESCRIPTOR)).not.toContain('placement');
+    const channel = createNativePromptChannel({ now: () => 0 });
+    channel.flow.begin();
+    channel.flow.popup?.(DESCRIPTOR);
+    expect(Object.keys(channel.ui.getSnapshot().popup ?? {})).not.toContain('placement');
+    channel.ui.dispose();
+  });
 });
 
 describe('the flow’s one setter plumbs the descriptor into the snapshot', () => {
@@ -146,12 +180,14 @@ describe('the flow’s one setter plumbs the descriptor into the snapshot', () =
       ...DESCRIPTOR,
       title: '/prov\u001b[31miders',
       exitLabel: 'cl\u0007ose',
+      stepNames: ['Pro\u001b]8;;x\u0007vider', 'Key\u200f', 'Done'],
       stepIndex: 1.7,
     });
     expect(channel.ui.getSnapshot().popup).toEqual({
       ...DESCRIPTOR,
       title: '/providers',
       exitLabel: 'close',
+      stepNames: ['Provider', 'Key', 'Done'],
       stepIndex: 1,
     });
     const set = channel.ui.getSnapshot();

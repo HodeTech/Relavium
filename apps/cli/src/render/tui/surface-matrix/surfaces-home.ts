@@ -47,11 +47,18 @@ import {
 } from './doctor-fixture.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
 import {
+  NATIVE_POPUP_KINDS,
+  NATIVE_POPUP_LANDMARK,
+  NATIVE_POPUP_LEGEND_ROW,
+  NATIVE_POPUP_SELECTED_ROW,
+  nativePopupBox,
+  openNativePopup,
   recordBaseline,
   TEST_POPUP_LEGEND_ROW,
   TEST_POPUP_TITLE,
   testPopupBox,
   testReportPopup,
+  type NativePopupKind,
 } from './popup-fixture.js';
 import type { HomeSurface } from './surface-types.js';
 
@@ -218,6 +225,33 @@ const SUBJECT: ConsentSubject = {
   index: 1,
   previouslyApprovedIn: undefined,
 };
+
+/**
+ * A prompt of the native prompt channel drawn in the popup frame over the empty, keyed landing (MVP-11 unit 6, 6.1): one surface per prompt
+ * kind, opened through `framedFlow` as a flow of the product opens it, and checked as every popup is (its box, the overlay layer, the dimmed
+ * backdrop, its legend row).
+ */
+function homeNativePopupSurface(kind: NativePopupKind): HomeSurface {
+  const selected = NATIVE_POPUP_SELECTED_ROW[kind];
+  return {
+    host: 'home',
+    id: `home.native-popup-${kind}`,
+    title: `A native ${kind} prompt drawn in the popup frame`,
+    exitKey: 'Esc',
+    landmark: NATIVE_POPUP_LANDMARK[kind],
+    ...(selected === undefined ? {} : { selectedRow: selected }),
+    legendRow: NATIVE_POPUP_LEGEND_ROW[kind],
+    belowFloor: /too small for this popup/iu,
+    popup: nativePopupBox(kind, 'home'),
+    setup: NATIVE,
+    notes:
+      'the body behind the popup: the empty, keyed landing; the prompt is opened on the Home’s channel through framedFlow',
+    open: async (m) => {
+      recordBaseline(m);
+      await openNativePopup(m, kind, 'home');
+    },
+  };
+}
 
 export const HOME_SURFACES: readonly HomeSurface[] = [
   {
@@ -751,4 +785,5 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       await m.until(() => /refused|rejected|did not work|failed/iu.test(m.text()));
     },
   },
+  ...NATIVE_POPUP_KINDS.map(homeNativePopupSurface),
 ];

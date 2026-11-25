@@ -293,7 +293,6 @@ const CARD: NativePromptSnapshot = {
 const PROMPT: NativePromptSnapshot = {
   ...CARD,
   popup: {
-    placement: 'overlay',
     title: '/providers',
     origin: 'home',
     stepIndex: 1,
@@ -303,7 +302,7 @@ const PROMPT: NativePromptSnapshot = {
   },
 };
 const IDLE: NativePromptSnapshot = { ...PROMPT, active: false };
-/** A picker keeps its card even when a descriptor is set: only a choice, a field and a wait are drawn in the popup frame. */
+/** A picker a flow framed is drawn in the popup frame too (unit 6: every prompt kind is framed when the descriptor is set). */
 const PICKER: NativePromptSnapshot = { ...PROMPT, kind: 'picker' };
 
 const WIRED: Pick<PopupSlotProps, 'host' | 'acknowledgement'> = {
@@ -359,10 +358,11 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
     expect(dims({ ...WIRED, ...nativeOf(PROMPT), placement: 'overlay' }, closed)).toBe(true);
   });
 
-  it('a native prompt drawn inline, as a card, as a picker or not open, dims nothing', () => {
+  it('a native prompt drawn inline, as a card or not open, dims nothing; a framed picker in the overlay dims as any framed prompt does', () => {
     expect(dims({ ...UNWIRED, ...nativeOf(PROMPT), placement: 'replace' }, closed)).toBe(false);
-    for (const snapshot of [CARD, PICKER, IDLE])
+    for (const snapshot of [CARD, IDLE])
       expect(dims({ ...UNWIRED, ...nativeOf(snapshot), placement: 'overlay' }, closed)).toBe(false);
+    expect(dims({ ...UNWIRED, ...nativeOf(PICKER), placement: 'overlay' }, closed)).toBe(true);
   });
 
   it('says which of the two the slot draws, and the native prompt wins when both are there', () => {
@@ -392,14 +392,16 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
 
 // The test layer's report popups: their box is known before they are mounted. A product popup (`/doctor`, the four reports `/agent`, `/cost`,
 // `/workflows` and `/help`, the settings `/effort`, `/mode`, `/models` and `/permissions`, and the test layer's form and effect list) draws the frame its host has open, and the
-// matrix's own backdrop property checks every cell of it (`checkBackdropDim`, run in every alternate-screen colour cell).
+// matrix's own backdrop property checks every cell of it (`checkBackdropDim`, run in every alternate-screen colour cell). So does each framed
+// native prompt of the matrix (`.native-popup-*`: a field, a wait or a chord step has no selected row for the check below to find).
 const POPUP_SURFACES = ALL_SURFACES.filter(
   (surface) =>
     surface.popup !== undefined &&
     !surface.id.includes('.doctor-') &&
     !surface.id.includes('.report-') &&
     !surface.id.includes('.settings-') &&
-    !surface.id.includes('.permissions-'),
+    !surface.id.includes('.permissions-') &&
+    !surface.id.includes('.native-popup-'),
 );
 
 /** Where the popup of `entry` is drawn in `ALT`, and the cells inside it. */

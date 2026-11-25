@@ -56,8 +56,9 @@ import {
 import {
   nativeFramed,
   nativeNaturalRows,
-  nativePopupBody,
+  nativePopupLayout,
   nativePopupLegend,
+  type NativeBodyLayout,
 } from './native-popup-body.js';
 import {
   popupFrameMatches,
@@ -309,6 +310,53 @@ function HostPopup(
   );
 }
 
+/**
+ * The geometry and the body of a framed native prompt in a terminal of `size`: the one geometry function asked for the body's wrapped rows at
+ * the popup's inner width, then the body laid out on the page it gives (whether it is wholly on it, and how far a windowed select pages). Both
+ * in the glyph form colour asks for. Exported so the matrix and the golden draw the frame exactly as the slot does.
+ */
+export function nativePopupGeometry(
+  snapshot: NativePromptSnapshot,
+  placement: PopupPlacement,
+  size: Size,
+  color: boolean,
+): { readonly geometry: PopupGeometry; readonly layout: NativeBodyLayout | undefined } {
+  return withGlyphForm(!color, () => {
+    const geometry = popupGeometry({
+      columns: size.cols,
+      rows: size.rows,
+      kind: 'standard',
+      placement,
+      rail: (snapshot.popup?.stepCount ?? 1) > 1,
+      bodyRows: nativeNaturalRows(snapshot, popupInnerWidth(size.cols, 'standard')),
+    });
+    return { geometry, layout: geometry.fits ? nativePopupLayout(snapshot, geometry) : undefined };
+  });
+}
+
+/**
+ * The frame's rows of a framed native prompt on `geometry` (its top edge, its rail with the step names, its body and its legend), in the glyph
+ * form colour asks for: what the slot draws and what the matrix and the golden check.
+ */
+export function nativePopupFrameLines(
+  snapshot: NativePromptSnapshot,
+  geometry: PopupBoxGeometry,
+  layout: NativeBodyLayout,
+  color: boolean,
+): readonly SheetLine[] {
+  const descriptor = snapshot.popup;
+  const count = descriptor?.stepCount ?? 1;
+  const parts: PopupFrameParts = {
+    title: descriptor?.title ?? '',
+    origin: descriptor?.origin ?? 'home',
+    // The rail's nodes carry the step names the flow gave (a node with none is drawn bare); the top edge says `step 2 of 3` either way.
+    steps: Array.from({ length: count }, (_, index) => descriptor?.stepNames?.[index] ?? ''),
+    stepIndex: descriptor?.stepIndex ?? 0,
+    legend: withGlyphForm(!color, () => nativePopupLegend(snapshot, layout.page !== undefined)),
+  };
+  return withGlyphForm(!color, () => popupFrameLines(parts, { lines: layout.lines }, geometry));
+}
+
 /** A native prompt a flow drew as a popup: the channel's snapshot in the popup frame, acknowledged by the channel's own acknowledgement. */
 function NativePopup(
   props: Readonly<{
@@ -323,17 +371,20 @@ function NativePopup(
   const { snapshot, acknowledgement, size, color, placement } = props;
   const node = useRef<DOMElement | null>(null);
   const descriptor = snapshot.popup;
-  const geometry = popupGeometry({
-    columns: size.cols,
-    rows: size.rows,
-    kind: 'standard',
-    placement,
-    rail: (descriptor?.stepCount ?? 1) > 1,
-    bodyRows: nativeNaturalRows(snapshot),
-  });
+  const { geometry, layout } = nativePopupGeometry(snapshot, placement, size, color);
+  // The page a windowed select's `PgUp`/`PgDn` move by is the window THIS frame draws: read through a ref, so the channel reads the last one.
+  const pageRef = useRef<number | undefined>(undefined);
+  pageRef.current = layout?.page;
+  useLayoutEffect(() => {
+    acknowledgement.bindFramedPage(() => pageRef.current);
+    return () => acknowledgement.bindFramedPage(undefined);
+  }, [acknowledgement]);
+  // Not wholly on its page (ADR-0148 §3): a prompt whose body does not fit is the notice, and nothing on it is acknowledged, so nothing answers.
+  const onPage = geometry.fits && layout?.fits === true;
   useLayoutEffect(() => {
     const element = node.current;
     if (
+      !onPage ||
       !geometry.fits ||
       element === null ||
       !popupFrameMatches(element, expectedFrame(geometry), size)
@@ -344,28 +395,17 @@ function NativePopup(
     acknowledgement.commit(snapshot, element, props.flush);
   });
   if (descriptor === undefined) return null;
-  const legendParts = nativePopupLegend(snapshot);
-  if (!geometry.fits)
+  if (!geometry.fits || layout === undefined || !layout.fits)
     return (
       <PopupNotice
-        reason={geometry.reason}
+        reason={geometry.fits ? 'no-room' : geometry.reason}
         color={color}
         placement={placement}
         columns={size.cols}
-        legend={legendParts}
+        legend={withGlyphForm(!color, () => nativePopupLegend(snapshot))}
       />
     );
-  const parts: PopupFrameParts = {
-    title: descriptor.title,
-    origin: descriptor.origin,
-    // The descriptor carries the count and the position, not the names: the rail draws the nodes, and the top edge says `step 2 of 3`.
-    steps: Array.from({ length: descriptor.stepCount }, () => ''),
-    stepIndex: descriptor.stepIndex,
-    legend: legendParts,
-  };
-  const lines = withGlyphForm(!color, () =>
-    popupFrameLines(parts, { lines: nativePopupBody(snapshot, geometry) }, geometry),
-  );
+  const lines = nativePopupFrameLines(snapshot, geometry, layout, color);
   return (
     <PopupFrameView
       lines={lines}

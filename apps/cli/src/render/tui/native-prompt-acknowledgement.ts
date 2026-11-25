@@ -1,4 +1,5 @@
 import type { DOMElement } from 'ink';
+import { nativeFramed } from '../../popups/native-popup-body.js';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { reduceEditorMotion, type ChatKey } from './chat-input.js';
 import { selectPageRows } from './native-select-window.js';
@@ -26,8 +27,8 @@ export const NATIVE_PROMPT_IDENTITY_EXCLUDED: Readonly<
 
 /**
  * Whether two snapshots are the same card as far as the measured-frame proof goes: every field but the ones of
- * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps, exit label, placement and depth). The
- * lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
+ * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps and their names, exit label and
+ * depth). The lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
  */
 export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSnapshot): boolean {
   return (
@@ -41,8 +42,15 @@ export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSn
     a.error === b.error &&
     a.escape === b.escape &&
     a.details === b.details &&
+    a.final === b.final &&
     samePopupDescriptor(a.popup, b.popup)
   );
+}
+
+/** Two lists of step names, name by name (the setter builds a new list each time, so a reference would always differ). */
+function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((name, index) => name === b[index]);
 }
 
 function samePopupDescriptor(
@@ -51,14 +59,19 @@ function samePopupDescriptor(
 ): boolean {
   if (a === undefined || b === undefined) return a === b;
   return (
-    a.placement === b.placement &&
     a.title === b.title &&
     a.origin === b.origin &&
     a.stepIndex === b.stepIndex &&
     a.stepCount === b.stepCount &&
+    sameNames(a.stepNames, b.stepNames) &&
     a.exitLabel === b.exitLabel &&
     a.depth === b.depth
   );
+}
+
+/** Two sizes are one when every number is the same number (a size that is not a number is the same as itself: no resize is seen in it). */
+function sameNotedSize(a: Size, b: Size): boolean {
+  return Object.is(a.cols, b.cols) && Object.is(a.rows, b.rows);
 }
 
 /** Evidence is bound to one exact card, geometry and committed/actually flushed Ink frame. */
@@ -68,6 +81,13 @@ export function createNativePromptAcknowledgement(
   hasCustody: () => boolean = () => true,
 ) {
   let epoch = 0;
+  /**
+   * The size the terminal had the last time this acknowledgement looked ({@link noteSize}): a different one is a RESIZE, which the channel is
+   * told at once, so a masked field is emptied before any frame is drawn at the new size (ADR-0148 §4).
+   */
+  let notedSize = getSize();
+  /** The page a framed select's `PgUp`/`PgDn` move by, bound by the popup slot that draws it (its window); `undefined` while none is. */
+  let framedPage: (() => number | undefined) | undefined;
   let observed:
     | {
         readonly snapshot: NativePromptSnapshot;
@@ -97,7 +117,21 @@ export function createNativePromptAcknowledgement(
     if (!preservePickerEditor) pickerEditor = undefined;
     notify();
   };
-  const invalidate = (): void => invalidateCard(false);
+  /**
+   * Look at the terminal's size: one this acknowledgement has not seen is a resize, and the channel clears a masked field for it. Every host
+   * invalidates the acknowledgement from its resize listener, before it re-renders at the new size (the Home's root, the native prompt host),
+   * so this runs there; the commit of a frame is the backstop for a host that would not.
+   */
+  const noteSize = (): void => {
+    const size = getSize();
+    if (sameNotedSize(size, notedSize)) return;
+    notedSize = size;
+    if (!disposed) ui.resized();
+  };
+  const invalidate = (): void => {
+    noteSize();
+    invalidateCard(false);
+  };
   const sameCard = sameNativePromptFrame;
   const samePickerPrompt = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
     a.active &&
@@ -169,10 +203,21 @@ export function createNativePromptAcknowledgement(
     );
   };
   ui.bindVisibility(visible);
-  ui.bindPageRows(() => selectPageRows(ui.getSnapshot(), getSize()));
+  // A card pages by the window it draws itself; a prompt drawn in the popup frame by the window the slot draws it in.
+  ui.bindPageRows(() => {
+    const snapshot = ui.getSnapshot();
+    return nativeFramed(snapshot) ? framedPage?.() : selectPageRows(snapshot, getSize());
+  });
   return {
     invalidate,
     visible,
+    /**
+     * Installed by the popup slot that draws the channel's prompt in the popup frame: how far `PgUp`/`PgDn` move the cursor of a select drawn
+     * in a window there (`undefined` when it is drawn whole). Unbound (`undefined`) when the slot is gone.
+     */
+    bindFramedPage: (page: (() => number | undefined) | undefined): void => {
+      framedPage = page;
+    },
     current: () => ui.getSnapshot(),
     inputVisible: (input?: string, key?: ChatKey): boolean =>
       (editsPicker(input, key) && pickerEditorVisible()) || inputCardVisible(),
@@ -182,6 +227,7 @@ export function createNativePromptAcknowledgement(
       node: DOMElement | null,
       flush: () => Promise<void>,
     ): boolean => {
+      noteSize();
       const currentEpoch = epoch;
       const size = getSize();
       if (!snapshot.active || node === null || !nativePromptFits(size) || !fitsBounds(node, size))

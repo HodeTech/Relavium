@@ -33,6 +33,7 @@ import {
   type PopupBoxGeometry,
 } from './geometry.js';
 import { createPopupHost, type PopupHost } from './popup-host.js';
+import { POPUP_SELECT_SETTLE_MS } from './opening-guard.js';
 import { currentStep, openFrame, popupLegend, type PopupSpec } from './popup-reducer.js';
 
 type Host = 'home' | 'standalone-chat' | 'chat';
@@ -41,6 +42,8 @@ type Mounted = HomeMount | ChatMount;
 const HOSTS: readonly Host[] = ['home', 'standalone-chat', 'chat'];
 const RENDERERS = ['alt', 'inline'] as const;
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** What a framed flow's `Enter` waits past its opening guard's settle in real time (the host's clock is the real one here). */
+const OPENING_SETTLE_MARGIN_MS = 60;
 
 async function mountIn(
   host: Host,
@@ -326,7 +329,6 @@ describe('a native prompt a flow drew as a popup (the channel’s descriptor, AD
         if (channel === undefined) throw new Error('no channel');
         channel.flow.begin();
         channel.flow.popup?.({
-          placement: 'overlay',
           title: '/flow',
           origin: originOf(host),
           stepIndex: 0,
@@ -366,7 +368,8 @@ describe('a native prompt a flow drew as a popup (the channel’s descriptor, AD
         await pause(40); // the frame is flushed and acknowledged
         m.key(KEYS.down);
         await m.until(() => /> Second/u.test(m.frame().join('\n')));
-        await pause(40);
+        // The opening guard of a framed flow (ADR-0148 §3): nothing answers for half a second after the flow's first frame appeared.
+        await pause(POPUP_SELECT_SETTLE_MS + OPENING_SETTLE_MARGIN_MS);
         m.key(KEYS.enter);
         await expect(answer).resolves.toBe('b');
         await channel.flow.end();

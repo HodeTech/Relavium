@@ -2,14 +2,14 @@ import { Box, useApp, type DOMElement } from 'ink';
 import { Text } from './text.js';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { withGlyphForm } from './glyphs.js';
-import { keyToken, legend, type LegendItem, type LegendKey } from './legend.js';
+import { keyToken, legend } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
   type NativePromptAcknowledgement,
 } from './native-prompt-acknowledgement.js';
 import { dimProps } from './projection.js';
-import { nativeFramed } from '../../popups/native-popup-body.js';
+import { nativeFramed, pickerLegendParts } from '../../popups/native-popup-body.js';
 import { PromptEditor } from './prompt-view.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
@@ -37,38 +37,15 @@ function leaveEffect(snapshot: NativePromptSnapshot): string | undefined {
   return snapshot.kind === 'busy' ? 'cancels it' : undefined;
 }
 
-/** `Tab` flips the picker between this directory and all of them, and the legend says which one it goes to. */
-function scopeKey(snapshot: NativePromptSnapshot): LegendKey {
-  return {
-    keys: 'Tab',
-    verb: snapshot.picker?.allDirectories === true ? 'this directory' : 'all directories',
-  };
-}
-
 /**
  * The legend under a picker: what its keys do, or, after a failed read, how to try again or change the filter. Its leaving keys are the
  * card's own ({@link nativeLeave}), read from the same `escape` the channel reads, so a picker opened to step back says `Esc back` and
- * names `Ctrl+C` as the key that closes it. `Tab` flips between this directory and all of them, and says which one it goes to.
+ * names `Ctrl+C` as the key that closes it. `Tab` flips between this directory and all of them, and says which one it goes to. The parts are
+ * the popup frame's too (`pickerLegendParts`), so the card and the framed picker cannot drift.
  */
 export function pickerLegend(snapshot: NativePromptSnapshot): string {
-  const { before, exit } = nativeLeave(snapshot.escape === 'back');
-  if (snapshot.error === '') {
-    return legend(
-      [
-        { keys: '↑/↓', verb: 'select' },
-        { keys: 'Enter', verb: 'resume' },
-        scopeKey(snapshot),
-        { keys: 'PgUp/PgDn', verb: 'page' },
-        ...before,
-      ],
-      exit,
-    );
-  }
-  const next: LegendItem =
-    snapshot.picker?.retryable === true
-      ? { keys: 'Enter', verb: 'retry' }
-      : { text: 'Edit filter' };
-  return legend([next, ...before], exit);
+  const { items, exit } = pickerLegendParts(snapshot);
+  return legend(items, exit);
 }
 
 /** What a picker with no row says, with the card's own leaving keys. */
@@ -85,6 +62,28 @@ function promptLegend(snapshot: NativePromptSnapshot, windowed: boolean): string
   const { before, exit } = nativeLeave(back, leaveEffect(snapshot));
   if (snapshot.kind === 'busy' || snapshot.kind === 'chord') return legend(before, exit);
   return legend([{ keys: 'Enter', verb: 'continue' }, ...before], exit);
+}
+
+/**
+ * A card's body rows (a chord card's facts; a select's lines, which only a flow's last step has), each wrapped and every row behind the host's
+ * gutter, so text the card's author did not write never starts at column 0.
+ */
+function DetailRows({
+  details,
+  cols,
+}: Readonly<{ details: readonly string[]; cols: number }>): ReactElement {
+  return (
+    <>
+      {details.flatMap((line, index) =>
+        hardWrap(line, Math.max(1, cols - GUTTER.length - 2)).map((row, part) => (
+          <Text key={`${String(index)}:${String(part)}`} wrap="truncate-end">
+            {GUTTER}
+            {row}
+          </Text>
+        )),
+      )}
+    </>
+  );
 }
 
 /** A sentence in place of a card the terminal cannot show: the reason, then what the keys that leave do (ADR-0145 §3). */
@@ -178,16 +177,10 @@ export function NativePromptView({
           ))}
         </>
       )}
+      {snapshot.kind === 'select' && <DetailRows details={snapshot.details} cols={size.cols} />}
       {snapshot.kind === 'chord' && (
         <>
-          {snapshot.details.flatMap((line, index) =>
-            hardWrap(line, Math.max(1, size.cols - GUTTER.length - 2)).map((row, part) => (
-              <Text key={`${String(index)}:${String(part)}`} wrap="truncate-end">
-                {GUTTER}
-                {row}
-              </Text>
-            )),
-          )}
+          <DetailRows details={snapshot.details} cols={size.cols} />
           {snapshot.options.map((option) => (
             <Text key={option.value} wrap="truncate-end">
               {CHORD_KEYS[option.value] ?? ''}

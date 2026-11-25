@@ -1,14 +1,27 @@
 import type { Key } from 'ink';
+import {
+  createOpeningGuard,
+  type OpeningGuard,
+  type OpeningKey,
+} from '../../popups/opening-guard.js';
 import { sanitizeInline } from '../sanitize.js';
 import {
+  chordOf,
   createChordGuard,
+  createChordHistory,
   reduceChordKey,
   type ChordAnswer,
   type ChordHistory,
   type ChordStamp,
 } from './chord-guard.js';
 import { exitKey, legend, type LegendExit, type LegendItem } from './legend.js';
-import type { ApprovalGuard } from './tool-review-model.js';
+import {
+  APPROVAL_CONFIRM_MIN_MS,
+  APPROVAL_LOCKOUT_MS,
+  APPROVAL_QUIET_MS,
+  APPROVAL_TYPEAHEAD_MS,
+  type ApprovalGuard,
+} from './tool-review-model.js';
 import {
   createNativePicker,
   type NativePickerController,
@@ -48,6 +61,23 @@ export function nativeLeave(
 }
 
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
+/**
+ * What a masked field says after a terminal resize cleared what was typed into it ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §4): a fixed product text in the prompt's error row, so the person pastes again. Nothing of the old buffer survives the resize.
+ */
+export const NATIVE_PROMPT_RESIZED = 'Resized · key cleared, paste it again';
+/**
+ * The approval card's layers behind the `Enter` on a GUARDED option ({@link NativePromptOption.guarded}; ADR-0148 §3): the dwell is the
+ * confirmation constant (800 ms) counted from the select's acknowledged frame, then the quiet gap, the typing window (keys typed at the prompt,
+ * a paste, and the keys the host dropped before the prompt's frame was on screen: `unseenInput`) and the lockout after the previous answer,
+ * which an `Enter` inside it RESTARTS (`createChordGuard`'s strict rule). The one guard, with the confirmation dwell; not a second guard.
+ */
+export const GUARDED_SELECT_GUARD: ApprovalGuard = Object.freeze({
+  settleMs: APPROVAL_CONFIRM_MIN_MS,
+  quietMs: APPROVAL_QUIET_MS,
+  typeaheadMs: APPROVAL_TYPEAHEAD_MS,
+  lockoutMs: APPROVAL_LOCKOUT_MS,
+});
 export class NativePromptVisibilityRefusedError extends Error {
   constructor() {
     super('The native prompt is not visibly available.');
@@ -58,22 +88,31 @@ export interface NativePromptOption {
   readonly value: string;
   readonly label: string;
   readonly hint?: string;
+  /**
+   * The AFFIRMATIVE of a consent answered by `Enter` (the first-run environment key's `Use it`; ADR-0148 §3): `Enter` on it counts only when
+   * the approval card's input layers pass ({@link GUARDED_SELECT_GUARD}) on the frame the person was shown; a refused `Enter` is dropped with
+   * no word (and restarts the lockout when it came inside it). Every other option of the select answers on `Enter` as before.
+   */
+  readonly guarded?: true;
 }
 /**
  * A flow that is a POPUP rather than a card ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §2): the channel is one of the popup frame's two body drivers, and this optional descriptor is all it gains (it is NOT grown into the popup
  * host). It carries what the frame draws around the channel's prompt: the command's name and origin on the top edge, `step 2 of 3` and the
- * rail, and what `Esc` says. A flow that sets none keeps the card it always was (the `replace` placement). Used by the flows of unit 6; this
- * part only plumbs it, draws it and pins it in the measured-frame identity.
+ * rail with its step names, and what `Esc` says. A flow that sets none keeps the card it always was. Flows set it through `framedFlow`
+ * (`home/framed-flow.ts`), never by hand.
+ *
+ * It carries no placement: where a popup is drawn is the RENDERER's (the alternate screen overlays it, the inline renderer draws it as a block in
+ * place of the body, ADR-0148 §4), and a flow, which runs the same in both, cannot know which. The field it had was stored and never read.
  */
 export interface NativePopupDescriptor {
-  /** Where the flow asks to be drawn. The host draws `replace` inline whatever was asked (the inline renderer cannot overlay). */
-  readonly placement: 'overlay' | 'replace';
   readonly title: string;
   readonly origin: 'home' | 'chat';
   readonly stepIndex: number;
   readonly stepCount: number;
-  /** What the way back says on the legend (`close`, `back`). */
+  /** The rail's step names, in order (ADR-0148 §1: `✓ Provider ╌╌ ◉ Key ╌╌ ○ Done`); absent ⇒ the nodes are drawn without names. */
+  readonly stepNames?: readonly string[];
+  /** What the way back says on the legend where `Esc` (or `Ctrl+C`) closes the popup (`close`, `skip for now`). */
   readonly exitLabel: string;
   /** The popup stack's depth this flow is at (one: the channel holds one flow; the reducer driver owns stacking, ADR-0148 §5). */
   readonly depth: 1 | 2;
@@ -93,10 +132,18 @@ export interface NativePromptSnapshot {
   readonly error: string;
   /** What `Esc` does at the open prompt; `cancel` whenever none is open. */
   readonly escape: NativePromptEscape;
-  /** A chord card's body, one row per entry (each sanitized and drawn behind the host's gutter); empty for every other prompt. */
+  /**
+   * The body of a chord card or of a select, one row per entry (each sanitized; a card draws them behind the host's gutter, a popup wraps
+   * them in its body): a chord card's facts, a Done step's lines. Empty for every other prompt.
+   */
   readonly details: readonly string[];
   /** The flow is a popup ({@link NativePopupDescriptor}); absent ⇒ a card. */
   readonly popup?: NativePopupDescriptor;
+  /**
+   * The open select is the persistent LAST step of a flow (`framedFlow(…).done`, ADR-0148 §6): its one option closes it, `Enter` and `Esc`
+   * both resolve it, and its legend says `Enter / Esc close`. Absent on every other prompt.
+   */
+  readonly final?: true;
 }
 export interface NativePromptUi {
   readonly subscribe: (listener: () => void) => () => void;
@@ -127,8 +174,18 @@ export interface NativePromptUi {
    * see), but it IS typing, and a chord card's quiet-gap and typeahead layers must see it: otherwise a person typing into the Home's
    * composer as a card appears is invisible to the guard that exists for exactly that. A no-op when no flow is open: a key typed
    * before any card opened belongs to the composer, is an edit and not typeahead, and the dwell from the painted frame covers it.
+   *
+   * On a select that carries a GUARDED option, a dropped key that may be an `Enter` (it is one, or the host did not say which key it was) also
+   * restarts the lockout when it came inside it, as a refused `Enter` does: a key held at a slow repeat rate, one repeat of which lands while
+   * the frame is not on screen, must not let the lockout run out under it.
    */
-  readonly unseenInput: () => void;
+  readonly unseenInput: (input?: string, key?: Key) => void;
+  /**
+   * The terminal changed size (the acknowledgement tells it, the moment it learns of a size it has not seen; ADR-0148 §4). A masked field
+   * that held anything is emptied, its rejection latch dropped, and its error row says {@link NATIVE_PROMPT_RESIZED}: nothing typed into it
+   * survives a resize, framed or not. Every other prompt is left as it is.
+   */
+  readonly resized: () => void;
   readonly dispose: () => void;
 }
 export interface NativePromptFlow {
@@ -150,6 +207,10 @@ export interface NativePromptFlow {
     options: readonly NativePromptOption[];
     initialValue?: string;
     escape?: NativePromptEscape;
+    /** Rows of body above the options (a Done step's lines); each sanitized. Absent ⇒ none. */
+    details?: readonly string[];
+    /** The select is a flow's persistent last step ({@link NativePromptSnapshot.final}). */
+    final?: boolean;
   }) => Promise<string | symbol>;
   readonly confirm: (
     message: string,
@@ -206,12 +267,20 @@ const initial: NativePromptSnapshot = {
 
 /** The numbers and the clock behind a chord card; tests inject both, production passes neither. */
 export interface NativePromptChannelOptions {
-  /** A MONOTONIC millisecond clock (default `performance.now`). */
+  /** A MONOTONIC millisecond clock (default `performance.now`): the chord guards' and a framed flow's opening guard's one clock. */
   readonly now?: () => number;
-  /** The approval guard's numbers (default the product's own); `0` switches a layer off. */
+  /**
+   * The approval guard's numbers (default the product's own); `0` switches a layer off. They are a chord card's, and a guarded option's
+   * too where given (default {@link GUARDED_SELECT_GUARD}).
+   */
   readonly guard?: ApprovalGuard;
   /** The Home's shared chord history (`createChordHistory`): what the other cards stamped locks this one too. Default: its own. */
   readonly history?: ChordHistory;
+  /**
+   * The opening guard's settle time of a framed flow (`popups/opening-guard.ts`, default 500 ms); `0` switches that rule off for a test that
+   * isolates another one. Production passes none.
+   */
+  readonly settleMs?: number;
 }
 
 /** The snapshot drawn as a card again: every field but the popup descriptor. */
@@ -219,6 +288,38 @@ function withoutPopup(snapshot: NativePromptSnapshot): NativePromptSnapshot {
   const { popup, ...card } = snapshot;
   void popup;
   return card;
+}
+
+/** The snapshot as the next prompt starts from it: every field but the last step's mark, which belongs to the select that set it. */
+function withoutFinal(snapshot: NativePromptSnapshot): NativePromptSnapshot {
+  const { final, ...rest } = snapshot;
+  void final;
+  return rest;
+}
+
+/** Whether the snapshot is a select one of whose options is guarded ({@link NativePromptOption.guarded}). */
+function guardedSelect(snapshot: NativePromptSnapshot): boolean {
+  return snapshot.kind === 'select' && snapshot.options.some((option) => option.guarded === true);
+}
+
+/** Whether a key moves the highlight or pages: what a list does with no answer in it. */
+function navigates(key: Key): boolean {
+  return key.upArrow || key.downArrow || key.pageUp || key.pageDown;
+}
+
+/** The step's descriptor as the snapshot keeps it: every text sanitized, the numbers whole, the names copied. */
+function sanitizedDescriptor(descriptor: NativePopupDescriptor): NativePopupDescriptor {
+  return {
+    title: sanitizeInline(descriptor.title),
+    origin: descriptor.origin,
+    stepIndex: Math.max(0, Math.trunc(descriptor.stepIndex)),
+    stepCount: Math.max(1, Math.trunc(descriptor.stepCount)),
+    ...(descriptor.stepNames === undefined
+      ? {}
+      : { stepNames: descriptor.stepNames.map((name) => sanitizeInline(name)) }),
+    exitLabel: sanitizeInline(descriptor.exitLabel),
+    depth: descriptor.depth,
+  };
 }
 
 /** Index of the first byte that ends or cancels an edit (a return, a newline, an escape or an ETX); `-1` when there is none. */
@@ -241,11 +342,17 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   readonly ui: NativePromptUi;
   readonly flow: NativePromptFlow & NativeChordPort;
 } {
-  const chord = createChordGuard({
-    now: options?.now ?? (() => performance.now()),
-    guard: options?.guard,
-    history: options?.history,
-  });
+  const now = options?.now ?? (() => performance.now());
+  // ONE history for every guard of the channel (and the Home's other cards, when it shares it): a key that answered one locks the next.
+  const history = options?.history ?? createChordHistory();
+  const chord = createChordGuard({ now, guard: options?.guard, history });
+  /** The `Enter` of a guarded option: the same guard with the confirmation dwell, on the same history (its own dwell origin, as every card's). */
+  const confirm = createChordGuard({ now, guard: options?.guard ?? GUARDED_SELECT_GUARD, history });
+  /**
+   * The opening guard of the flow (ADR-0148 §3), while it is drawn as a popup: reset by `begin`, started by the flow's FIRST framed frame
+   * that was measured and flushed, and asked about every key before it is routed. Per flow, not per step.
+   */
+  let opening: OpeningGuard = createOpeningGuard({ now, settleMs: options?.settleMs });
   let snapshot = initial;
   let secret = '';
   let invalid = false;
@@ -290,7 +397,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     const held = heldNote;
     heldNote = undefined;
     publish({
-      ...snapshot,
+      ...withoutFinal(snapshot),
       ...(held === undefined ? {} : { note: held }),
       kind: 'busy',
       message: '',
@@ -309,7 +416,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     else {
       clear();
       publish({
-        ...snapshot,
+        ...withoutFinal(snapshot),
         kind: 'busy',
         display: '',
         error: '',
@@ -339,7 +446,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     options: readonly NativePromptOption[] = [],
     initialValue?: string,
     check?: (value: string) => string | undefined,
-    extras?: { readonly escape?: NativePromptEscape; readonly details?: readonly string[] },
+    extras?: {
+      readonly escape?: NativePromptEscape;
+      readonly details?: readonly string[];
+      readonly final?: boolean;
+    },
   ): Promise<string | symbol> => {
     if (!snapshot.active || abort?.signal.aborted || disposed)
       return Promise.resolve(NATIVE_PROMPT_CANCEL);
@@ -347,13 +458,14 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     clear();
     heldNote = undefined;
     chord.begin();
+    confirm.begin();
     validate = check;
     const selected = Math.max(
       0,
       options.findIndex((option) => option.value === initialValue),
     );
     publish({
-      ...snapshot,
+      ...withoutFinal(snapshot),
       // A chord card is a decision about what the text on it says, and nothing the flow stored earlier may sit above it: a note (the
       // skipped workflow files a launch lists, say) carries text the card's author did not write and the person cannot tell from the card.
       ...(kind === 'chord' ? { note: '' } : {}),
@@ -363,12 +475,14 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
         value: option.value,
         label: sanitizeInline(option.label),
         ...(option.hint === undefined ? {} : { hint: sanitizeInline(option.hint) }),
+        ...(option.guarded === true ? { guarded: true as const } : {}),
       })),
       selected,
       display: '',
       error: '',
       escape: extras?.escape ?? 'cancel',
       details: extras?.details === undefined ? NO_DETAILS : extras.details.map(sanitizeInline),
+      ...(extras?.final === true ? { final: true as const } : {}),
     });
     return new Promise((resolve) => {
       settle = resolve;
@@ -432,11 +546,19 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     const decided = chord.decide(stamp, answer, visibility?.(snapshot) === true);
     if (decided !== undefined) finish(decided);
   };
-  /** The arrows wrap. */
+  /**
+   * On a card the arrows wrap. In a popup they stop at the ends (ADR-0148 §3): a list drawn in a window with `▲/▼ N more` reads as one that
+   * ends, and an arrow past its end does nothing.
+   */
   const moveCursor = (up: boolean): void => {
     const count = snapshot.options.length;
-    if (count)
+    if (!count) return;
+    if (snapshot.popup === undefined) {
       publish({ ...snapshot, selected: (snapshot.selected + (up ? count - 1 : 1)) % count });
+      return;
+    }
+    const to = Math.max(0, Math.min(count - 1, snapshot.selected + (up ? -1 : 1)));
+    if (to !== snapshot.selected) publish({ ...snapshot, selected: to });
   };
   /**
    * A page moves the cursor by the rows of the window the card draws and stops at the ends (the arrows wrap, a page never does). A card
@@ -449,16 +571,44 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     const to = Math.max(0, Math.min(last, snapshot.selected + (up ? -step : step)));
     if (to !== snapshot.selected) publish({ ...snapshot, selected: to });
   };
-  /** `Enter` answers the option under the cursor. */
-  const answerSelected = (): void => {
+  /**
+   * `Enter` answers the option under the cursor. A GUARDED option answers only when the approval card's layers pass on the frame that is on
+   * screen now (a held key's repeat never does); a refused `Enter` is dropped with no word, and one that came inside the lockout restarts it.
+   */
+  const answerSelected = (key: Key, stamp: ChordStamp): void => {
     const option = snapshot.options[snapshot.selected];
-    if (option) finish(option.value);
+    if (!option) return;
+    if (option.guarded === true) {
+      const painted = visibility?.(snapshot) === true && key.eventType !== 'repeat';
+      if (confirm.decide(stamp, 'allow', painted) === undefined) return;
+    }
+    finish(option.value);
   };
-  const routeSelect = (key: Key, submitted: boolean): void => {
+  const routeSelect = (key: Key, submitted: boolean, stamp: ChordStamp): void => {
     if (key.upArrow || key.downArrow) moveCursor(key.upArrow);
     else if (key.pageUp || key.pageDown) pageCursor(key.pageUp);
-    else if (submitted) answerSelected();
+    else if (submitted) answerSelected(key, stamp);
   };
+  /** Whether the open prompt is a select whose highlighted option is guarded: what an `Enter` would try to answer there. */
+  const onGuardedOption = (): boolean =>
+    snapshot.kind === 'select' &&
+    settle !== undefined &&
+    snapshot.options[snapshot.selected]?.guarded === true;
+  /**
+   * A key that would answer a guarded option and is refused before it reaches it (the opening guard, a frame nobody has seen): the strict
+   * rule of the approval card, an affirmative refused inside the lockout restarts it, so a held key never outlasts it.
+   */
+  const refuseGuarded = (stamp: ChordStamp): void => {
+    confirm.decide(stamp, 'allow', false);
+  };
+  /**
+   * In a popup, an arrow past the end of the picker's list does nothing (ADR-0148 §3); the picker itself wraps, as a card does, so the key
+   * is not given to it.
+   */
+  const pickerStops = (key: Key): boolean =>
+    snapshot.popup !== undefined &&
+    ((key.upArrow && snapshot.selected <= 0) ||
+      (key.downArrow && snapshot.selected >= snapshot.options.length - 1));
   /** A submit of a text or password prompt: the caller's validator decides, and a rejection stays visible until the person edits. */
   const submitEditor = (): void => {
     if (invalid) return;
@@ -489,12 +639,26 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     if (!key.ctrl && !key.meta) append(input);
   };
   /** A key for the picker, a select, or a text or password editor: whichever prompt is open takes it. */
-  const routeOpenPrompt = (input: string, key: Key, boundary: number, submitted: boolean): void => {
-    if (snapshot.kind === 'picker')
+  const routeOpenPrompt = (
+    input: string,
+    key: Key,
+    boundary: number,
+    submitted: boolean,
+    stamp: ChordStamp,
+  ): void => {
+    if (snapshot.kind === 'picker') {
+      if (pickerStops(key)) return;
       picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
-    else if (snapshot.kind === 'select') routeSelect(key, submitted);
+    } else if (snapshot.kind === 'select') routeSelect(key, submitted, stamp);
     else routeEditor(input, key, submitted);
   };
+  /**
+   * Whether a key on the open prompt is typing as the guards count it. Every key is, as it always was, but on a select that carries a guarded
+   * option the keys the select acts on (the arrows, the pages, `Enter`) are the person using it, as on the approval card, and only the others
+   * (a letter, a paste) are typing at it.
+   */
+  const typingAt = (key: Key, submitted: boolean): boolean =>
+    !(guardedSelect(snapshot) && (navigates(key) || submitted));
   /** Route one key the prompt's host delivered; `stamp` is the guard's evidence from just before it. */
   const route = (input: string, key: Key, stamp: ChordStamp): boolean => {
     const boundary = firstBoundary(input);
@@ -513,9 +677,42 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       routeChord(input, key, stamp, boundary);
       return true;
     }
-    chord.foreign(stamp);
-    routeOpenPrompt(input, key, boundary, submitted);
+    if (typingAt(key, submitted)) chord.foreign(stamp);
+    routeOpenPrompt(input, key, boundary, submitted, stamp);
     return true;
+  };
+  /**
+   * What a key would do as the opening guard of a framed flow counts it ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §3, `popups/opening-guard.ts`): leave (`Esc`, `Ctrl+C`, a meta chord, and a chord card's `Ctrl+N`, which refuses as `Esc` does and is never
+   * delayed), answer (`Enter`, a submitting byte, a chord card's `Ctrl+Y`), navigate (the arrows, the pages, the picker's `Tab`), or type.
+   */
+  const openingKeyOf = (input: string, key: Key): OpeningKey => {
+    const boundary = firstBoundary(input);
+    const marker = boundary >= 0 ? input[boundary] : undefined;
+    if (marker === '\x1b' || marker === '\x03' || cancelsPrompt(input, key)) return 'leave';
+    if (snapshot.kind === 'chord') {
+      const answer = boundary >= 0 ? undefined : chordOf(input, key);
+      if (answer === 'deny') return 'leave';
+      return answer === 'allow' ? 'answer' : 'type';
+    }
+    if (snapshot.kind === 'busy' || settle === undefined) return 'type';
+    if (key.return || boundary >= 0) return 'answer';
+    if (navigates(key) || (snapshot.kind === 'picker' && key.tab)) return 'navigate';
+    return 'type';
+  };
+  /**
+   * The opening guard's admission of one key of a framed flow: `true` when it may be routed. A key it refuses answers nothing and is counted
+   * as typing; one that would have answered a chord card's `Ctrl+Y` or a guarded option's `Enter` is a refused affirmative instead (the
+   * lockout restarts when it came inside it), as the card's own guard treats one.
+   */
+  const admitOpening = (input: string, key: Key, stamp: ChordStamp): boolean => {
+    if (snapshot.popup === undefined) return true;
+    const kind = openingKeyOf(input, key);
+    if (opening.admits(kind, stamp.now)) return true;
+    if (kind === 'answer' && snapshot.kind === 'chord') chord.decide(stamp, 'allow', false);
+    else if (kind === 'answer' && onGuardedOption()) refuseGuarded(stamp);
+    else chord.foreign(stamp);
+    return false;
   };
   const ui: NativePromptUi = {
     subscribe: (listener) => {
@@ -534,7 +731,13 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       pageRows = rows;
     },
     shown: (frame) => {
-      if (frame === snapshot && snapshot.kind === 'chord' && settle !== undefined) chord.shown();
+      if (frame !== snapshot || !snapshot.active) return;
+      // The flow's first framed frame on screen: its opening guard starts here (only the first call counts).
+      if (snapshot.popup !== undefined) opening.shown();
+      if (settle === undefined) return;
+      if (snapshot.kind === 'chord') chord.shown();
+      // A guarded option's dwell counts from each NEW acknowledged frame of its select (a moved highlight is one).
+      if (guardedSelect(snapshot)) confirm.shown();
     },
     input: (input, key) => {
       if (!snapshot.active) return false;
@@ -542,19 +745,34 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       // prompt this key settles starts the lockout that holds a repeating key off the card that follows it.
       const stamp = chord.stamp();
       const open = settle !== undefined;
+      if (!admitOpening(input, key, stamp)) return true;
       const handled = route(input, key, stamp);
       if (open && settle === undefined) chord.resolved(stamp);
       return handled;
     },
     paste: (text) => {
       if (!snapshot.active) return false;
-      chord.foreign(chord.stamp());
+      const stamp = chord.stamp();
+      chord.foreign(stamp);
+      // A paste is typing: in a framed flow it waits, as a key does, for the flow's first frame to be on screen.
+      if (snapshot.popup !== undefined && !opening.admits('type', stamp.now)) return true;
       append(text);
       return true;
     },
-    unseenInput: () => {
+    unseenInput: (input, key) => {
       if (!snapshot.active) return;
-      chord.foreign(chord.stamp());
+      const stamp = chord.stamp();
+      chord.foreign(stamp);
+      // A dropped key that may be an `Enter` on a guarded option is a refused affirmative too (see the port's comment).
+      const mayAnswer = key === undefined || key.return || firstBoundary(input ?? '') >= 0;
+      if (onGuardedOption() && mayAnswer) refuseGuarded(stamp);
+    },
+    resized: () => {
+      if (snapshot.kind !== 'password' || settle === undefined) return;
+      if (secret.length === 0 && !invalid) return;
+      secret = '';
+      invalid = false;
+      publish({ ...snapshot, display: '', error: NATIVE_PROMPT_RESIZED });
     },
     dispose: () => {
       if (disposed) return;
@@ -570,6 +788,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     begin: () => {
       if (disposed || snapshot.active) throw new Error('Native prompt is unavailable.');
       abort = new AbortController();
+      // A new flow is a new popup: its opening guard starts again at its own first frame.
+      opening = createOpeningGuard({ now, settleMs: options?.settleMs });
       publish({ ...initial, active: true, kind: 'busy' });
       return abort.signal;
     },
@@ -590,18 +810,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
         publish(withoutPopup(snapshot));
         return;
       }
-      publish({
-        ...snapshot,
-        popup: {
-          placement: descriptor.placement,
-          title: sanitizeInline(descriptor.title),
-          origin: descriptor.origin,
-          stepIndex: Math.max(0, Math.trunc(descriptor.stepIndex)),
-          stepCount: Math.max(1, Math.trunc(descriptor.stepCount)),
-          exitLabel: sanitizeInline(descriptor.exitLabel),
-          depth: descriptor.depth,
-        },
-      });
+      publish({ ...snapshot, popup: sanitizedDescriptor(descriptor) });
     },
     note: (message, title) => {
       if (!snapshot.active || abort?.signal.aborted) return;
@@ -618,7 +827,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     busy: (message) => {
       if (snapshot.active && !abort?.signal.aborted)
         publish({
-          ...snapshot,
+          ...withoutFinal(snapshot),
           kind: 'busy',
           message: sanitizeInline(message),
           options: [],
@@ -648,7 +857,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
           },
           onChange: (state) => {
             publish({
-              ...snapshot,
+              ...withoutFinal(snapshot),
               kind: 'picker',
               message: sanitizeInline(options.message),
               note: '',
@@ -674,6 +883,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     select: (options) =>
       prompt('select', options.message, options.options, options.initialValue, undefined, {
         escape: options.escape ?? 'cancel',
+        ...(options.details === undefined ? {} : { details: options.details }),
+        ...(options.final === true ? { final: true } : {}),
       }),
     confirm: async (message, initialValue = true, escape = 'cancel') => {
       const value = await prompt(

@@ -1,0 +1,767 @@
+/**
+ * The native prompt channel as a popup body, its rules on a manual clock ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §3, §4; MVP-11 unit 6, sub-step 6.1):
+ *
+ * - **The opening guard of a framed flow**: a key before the flow's first framed frame answers nothing and is typing; nothing answers for
+ *   `POPUP_SELECT_SETTLE_MS` after that frame appeared; an answer needs a key that arrived after it; the arrows, `Esc` and `Ctrl+C` act at once;
+ *   per flow, reset by `begin`, and only while a descriptor is set.
+ * - **The guarded option**: its `Enter` counts only when the approval card's layers pass (`GUARDED_SELECT_GUARD`: dwell 800 ms from the
+ *   acknowledged frame, quiet 300 ms, the typing window 1.5 s, the lockout 2 s that an early `Enter` restarts); a held key at any repeat rate
+ *   never answers it, and one patient press after the lockout does.
+ * - **Arrows stop at the ends** of a framed select and a framed picker; a card wraps, as it always did.
+ * - **Any resize clears a secret**: a masked field that held anything is emptied and says `NATIVE_PROMPT_RESIZED`; nothing of it survives.
+ *
+ * The acknowledgement is played by hand here (`ui.bindVisibility`, `ui.shown`): what it does for real is pinned in its own suites and in the
+ * mounted tests (`native-prompt-framed-hosts.test.tsx`).
+ */
+import type { Key } from 'ink';
+import { describe, expect, it } from 'vitest';
+
+import { POPUP_SELECT_SETTLE_MS } from '../../popups/opening-guard.js';
+import { createChordHistory, type ChordHistory } from './chord-guard.js';
+import {
+  createNativePromptAcknowledgement,
+  type NativePromptAcknowledgement,
+} from './native-prompt-acknowledgement.js';
+import {
+  createNativePromptChannel,
+  GUARDED_SELECT_GUARD,
+  NATIVE_PROMPT_CANCEL,
+  NATIVE_PROMPT_RESIZED,
+  type NativePopupDescriptor,
+  type NativePromptOption,
+  type NativePromptSnapshot,
+} from './native-prompt-channel.js';
+import {
+  APPROVAL_CONFIRM_MIN_MS,
+  APPROVAL_LOCKOUT_MS,
+  APPROVAL_QUIET_MS,
+  APPROVAL_TYPEAHEAD_MS,
+} from './tool-review-model.js';
+
+const none: Key = {
+  upArrow: false,
+  downArrow: false,
+  leftArrow: false,
+  rightArrow: false,
+  pageDown: false,
+  pageUp: false,
+  home: false,
+  end: false,
+  return: false,
+  escape: false,
+  ctrl: false,
+  shift: false,
+  tab: false,
+  backspace: false,
+  delete: false,
+  meta: false,
+  super: false,
+  hyper: false,
+  capsLock: false,
+  numLock: false,
+};
+const ENTER: Key = { ...none, return: true };
+const DOWN: Key = { ...none, downArrow: true };
+const UP: Key = { ...none, upArrow: true };
+const ESC: Key = { ...none, escape: true };
+const CTRL: Key = { ...none, ctrl: true };
+const REPEAT_ENTER: Key = { ...ENTER, eventType: 'repeat' };
+
+const DESCRIPTOR: NativePopupDescriptor = {
+  title: '/flow',
+  origin: 'home',
+  stepIndex: 0,
+  stepCount: 2,
+  stepNames: ['One', 'Two'],
+  exitLabel: 'close',
+  depth: 1,
+};
+
+const PLAIN: readonly NativePromptOption[] = [
+  { value: 'a', label: 'Alpha' },
+  { value: 'b', label: 'Bravo' },
+  { value: 'c', label: 'Charlie' },
+];
+const CONSENT: readonly NativePromptOption[] = [
+  { value: 'use', label: 'Use it', guarded: true },
+  { value: 'later', label: 'Not now' },
+];
+
+/** A settled promise's value, or `PENDING`: what a prompt has answered so far, read after the microtasks ran. */
+const PENDING = Symbol('pending');
+async function settled<T>(promise: Promise<T>): Promise<T | typeof PENDING> {
+  return Promise.race([
+    promise,
+    new Promise<typeof PENDING>((resolve) => setImmediate(() => resolve(PENDING))),
+  ]);
+}
+
+/** The channel on a manual clock, its acknowledgement played by hand: `show()` is "this exact snapshot was just measured and flushed". */
+function rig(options: { framed?: boolean; settleMs?: number; history?: ChordHistory } = {}) {
+  let clock = 10_000;
+  const history = options.history ?? createChordHistory();
+  const channel = createNativePromptChannel({
+    now: () => clock,
+    history,
+    ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
+  });
+  let visible = true;
+  channel.ui.bindVisibility(() => visible);
+  channel.flow.begin();
+  if (options.framed !== false) channel.flow.popup?.(DESCRIPTOR);
+  return {
+    channel,
+    history,
+    now: (): number => clock,
+    at: (ms: number): void => {
+      clock = ms;
+    },
+    advance: (ms: number): void => {
+      clock += ms;
+    },
+    setVisible: (value: boolean): void => {
+      visible = value;
+    },
+    show: (): void => channel.ui.shown(channel.ui.getSnapshot()),
+    key: (input: string, key: Key): boolean => channel.ui.input(input, key),
+    snapshot: (): NativePromptSnapshot => channel.ui.getSnapshot(),
+  };
+}
+
+describe('the opening guard of a framed flow (ADR-0148 §3)', () => {
+  it('an Enter inside the settle answers nothing and is typing; the same key after it answers', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    const appeared = r.now();
+    r.at(appeared + POPUP_SELECT_SETTLE_MS - 1);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    expect(r.history.lastForeignKeyAt).toBe(appeared + POPUP_SELECT_SETTLE_MS - 1);
+    r.at(appeared + POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('a');
+  });
+
+  it('the arrows move at once, and Esc and Ctrl+C leave at once', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', DOWN);
+    expect(r.snapshot().selected).toBe(1);
+    r.advance(1);
+    r.key('', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+
+    const again = rig();
+    const second = again.channel.flow.text({ message: 'Name' });
+    again.show();
+    again.advance(1);
+    again.key('c', CTRL);
+    expect(await second).toBe(NATIVE_PROMPT_CANCEL);
+  });
+
+  it('before the flow’s first framed frame nothing acts, a navigation key included; at the very moment it appeared an answer is refused (rule 3)', async () => {
+    const r = rig({ settleMs: 0 });
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.key('', DOWN);
+    expect(r.snapshot().selected).toBe(0);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    r.show();
+    r.key('', ENTER); // the same millisecond the frame appeared: a key already on its way
+    expect(await settled(answer)).toBe(PENDING);
+    r.advance(1);
+    r.key('', ENTER);
+    expect(await answer).toBe('a');
+  });
+
+  it('runs per FLOW: a later prompt of the same flow is not settled again, and `begin` starts a new guard', async () => {
+    const r = rig();
+    const first = r.channel.flow.select({ message: 'First', options: PLAIN });
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await first).toBe('a');
+    const second = r.channel.flow.select({ message: 'Second', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', ENTER);
+    expect(await second).toBe('a');
+    await r.channel.flow.end();
+    r.channel.flow.begin();
+    r.channel.flow.popup?.(DESCRIPTOR);
+    const third = r.channel.flow.select({ message: 'Third', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', ENTER);
+    expect(await settled(third)).toBe(PENDING);
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await third).toBe('a');
+  });
+
+  it('runs only while a descriptor is set: a card answers at once, as it always did', async () => {
+    const r = rig({ framed: false });
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', ENTER);
+    expect(await answer).toBe('a');
+  });
+
+  it('the first framed frame starts it even when it is a wait, and a frame shown before the descriptor was set does not', async () => {
+    const r = rig({ framed: false });
+    r.channel.flow.busy('Loading');
+    r.show(); // a card's frame: no descriptor yet
+    r.advance(1000);
+    r.channel.flow.popup?.(DESCRIPTOR);
+    r.show(); // the busy frame, now framed: the flow appeared here
+    const appeared = r.now();
+    const answer = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.at(appeared + POPUP_SELECT_SETTLE_MS - 1);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    r.at(appeared + POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('a');
+  });
+
+  it('a field takes typing at once after it appeared, and its Enter waits out the settle', async () => {
+    const r = rig();
+    const answer = r.channel.flow.text({ message: 'Name' });
+    r.key('x', none); // before the frame: nothing
+    r.show();
+    const appeared = r.now();
+    r.advance(1);
+    r.key('a', none);
+    r.key('b', none);
+    expect(r.snapshot().display).toBe('ab');
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    r.at(appeared + POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('ab');
+  });
+
+  it('a paste before the flow’s first frame types nothing; one after it does', async () => {
+    const r = rig();
+    const answer = r.channel.flow.password({ message: 'Key' });
+    r.channel.ui.paste('early-paste');
+    expect(r.snapshot().display).toBe('');
+    r.show();
+    r.advance(1);
+    r.channel.ui.paste('late');
+    expect(r.snapshot().display).toBe('••••');
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('late');
+  });
+
+  it('a framed chord card: a Ctrl+Y inside the settle is a refused affirmative that restarts a running lockout; its Ctrl+N is never delayed', async () => {
+    const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+    const first = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await first).toBe('a');
+    const resolvedAt = r.now();
+    const chord = r.channel.flow.chord({ message: 'Write?', allow: 'Write', deny: 'Skip' });
+    r.show();
+    // A new flow would have a new opening guard; within this one, a chord step right after is guarded by the card's own layers.
+    r.advance(100);
+    r.key('y', CTRL);
+    expect(await settled(chord)).toBe(PENDING);
+    expect(r.history.lastResolvedAt).toBe(resolvedAt + 100);
+    r.key('n', CTRL);
+    expect(await chord).toBe('deny');
+
+    const fresh = rig();
+    const card = fresh.channel.flow.chord({ message: 'Write?', allow: 'Write', deny: 'Skip' });
+    fresh.show();
+    fresh.advance(1);
+    fresh.key('n', CTRL);
+    expect(await card).toBe('deny');
+  });
+
+  it('framed, a new flow’s opening guard drops an early Ctrl+Y on a chord step as a refused affirmative (the lockout restarts inside it), never as typing', async () => {
+    const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+    const first = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await first).toBe('a');
+    await r.channel.flow.end();
+    r.channel.flow.begin();
+    r.channel.flow.popup?.(DESCRIPTOR);
+    const card = r.channel.flow.chord({ message: 'Write?', allow: 'Write', deny: 'Skip' });
+    r.show();
+    const foreignBefore = r.history.lastForeignKeyAt;
+    r.advance(100);
+    r.key('y', CTRL);
+    expect(await settled(card)).toBe(PENDING);
+    expect(r.history.lastResolvedAt).toBe(r.now());
+    expect(r.history.lastForeignKeyAt).toBe(foreignBefore);
+    r.channel.flow.cancel();
+    expect(await card).toBe(NATIVE_PROMPT_CANCEL);
+  });
+
+  it('a framed chord card’s Ctrl+Y inside the opening settle answers nothing even when every card layer would pass', async () => {
+    const r = rig({ settleMs: 5000 });
+    const card = r.channel.flow.chord({ message: 'Write?', allow: 'Write', deny: 'Skip' });
+    r.show();
+    r.advance(3000);
+    r.key('y', CTRL);
+    expect(await settled(card)).toBe(PENDING);
+    r.advance(2000);
+    r.advance(APPROVAL_LOCKOUT_MS);
+    r.key('y', CTRL);
+    expect(await card).toBe('allow');
+  });
+});
+
+describe('a guarded option (the consent’s affirmative, ADR-0148 §3)', () => {
+  /** A select of the consent's two options, opened on `Use it`, its frame shown at a known moment, with no key in its history. */
+  function consent(options: { framed?: boolean; initial?: string } = {}) {
+    const r = rig({ framed: options.framed ?? false, settleMs: 0 });
+    const answer = r.channel.flow.select({
+      message: 'OPENAI_API_KEY is available for OpenAI. Allow this source?',
+      options: CONSENT,
+      initialValue: options.initial ?? 'use',
+    });
+    r.show();
+    return { ...r, answer, shownAt: r.now() };
+  }
+
+  it('the numbers are the approval card’s, with the confirmation dwell', () => {
+    expect(GUARDED_SELECT_GUARD).toEqual({
+      settleMs: APPROVAL_CONFIRM_MIN_MS,
+      quietMs: APPROVAL_QUIET_MS,
+      typeaheadMs: APPROVAL_TYPEAHEAD_MS,
+      lockoutMs: APPROVAL_LOCKOUT_MS,
+    });
+    expect([
+      APPROVAL_CONFIRM_MIN_MS,
+      APPROVAL_QUIET_MS,
+      APPROVAL_TYPEAHEAD_MS,
+      APPROVAL_LOCKOUT_MS,
+    ]).toEqual([800, 300, 1500, 2000]);
+  });
+
+  it('the dwell: an Enter before 800 ms of the acknowledged frame is dropped, one at 800 ms answers', async () => {
+    const c = consent();
+    c.at(c.shownAt + APPROVAL_CONFIRM_MIN_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.at(c.shownAt + APPROVAL_CONFIRM_MIN_MS + APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('a frame never acknowledged has no dwell at all: nothing answers', async () => {
+    const r = rig({ framed: false });
+    const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+    r.advance(60_000);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+  });
+
+  it('the quiet gap: a key of any kind 299 ms before refuses it; 300 ms after the last key is enough', async () => {
+    const c = consent({ framed: true });
+    c.advance(5000);
+    c.key('', UP); // already on the first option: a key, which moves nothing (and is not typing on a guarded select)
+    const keyAt = c.now();
+    c.at(keyAt + APPROVAL_QUIET_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    // the refused Enter is a key too: the gap is counted from it
+    c.advance(APPROVAL_QUIET_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.advance(APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('the typing window: a letter typed at the prompt 1.5 s before refuses it; after 1.5 s it answers', async () => {
+    const c = consent();
+    c.advance(5000);
+    c.key('x', none);
+    const typedAt = c.now();
+    c.at(typedAt + APPROVAL_TYPEAHEAD_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.at(typedAt + APPROVAL_TYPEAHEAD_MS + APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('the typing window counts the keys the host dropped before the frame was on screen (`unseenInput`)', async () => {
+    const c = consent();
+    c.advance(5000);
+    c.channel.ui.unseenInput('h', none);
+    const typedAt = c.now();
+    c.at(typedAt + APPROVAL_TYPEAHEAD_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.at(typedAt + APPROVAL_TYPEAHEAD_MS + APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('on a guarded select the arrows are the person using it, not typing: ↓ ↑ then a patient Enter answers', async () => {
+    const c = consent({ initial: 'later' });
+    c.advance(5000);
+    c.key('', UP);
+    c.show();
+    const shown = c.now();
+    c.at(shown + APPROVAL_CONFIRM_MIN_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+    expect(c.history.lastForeignKeyAt).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it('the lockout: an Enter 2 s after the answer before it is refused and RESTARTS it; a patient one after the restart answers', async () => {
+    const r = rig({ framed: false });
+    const first = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', ENTER);
+    expect(await first).toBe('a');
+    const resolvedAt = r.now();
+    const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+    r.show();
+    r.at(resolvedAt + APPROVAL_LOCKOUT_MS - 1);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    expect(r.history.lastResolvedAt).toBe(resolvedAt + APPROVAL_LOCKOUT_MS - 1);
+    r.at(resolvedAt + APPROVAL_LOCKOUT_MS + 500); // past the first lockout, inside the restarted one
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    const restarted = r.now();
+    r.at(restarted + APPROVAL_LOCKOUT_MS);
+    r.key('', ENTER);
+    expect(await answer).toBe('use');
+  });
+
+  it('a refused Enter outside the lockout does not start one (only a refusal inside it restarts it)', async () => {
+    const c = consent();
+    c.advance(APPROVAL_CONFIRM_MIN_MS - 100); // inside the dwell, with no answer before
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    expect(c.history.lastResolvedAt).toBe(Number.NEGATIVE_INFINITY);
+    c.advance(100 + APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('the frame must be on screen now, and a kitty repeat is never an answer', async () => {
+    const c = consent();
+    c.advance(5000);
+    c.setVisible(false);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.setVisible(true);
+    c.advance(APPROVAL_QUIET_MS);
+    c.key('', REPEAT_ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.advance(APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('a new frame (the highlight moved onto it) restarts the dwell', async () => {
+    const c = consent({ initial: 'later' });
+    c.advance(5000);
+    c.key('', UP);
+    c.show();
+    const moved = c.now();
+    c.at(moved + APPROVAL_CONFIRM_MIN_MS - 1);
+    c.key('', ENTER);
+    expect(await settled(c.answer)).toBe(PENDING);
+    c.at(moved + APPROVAL_CONFIRM_MIN_MS + APPROVAL_QUIET_MS);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('use');
+  });
+
+  it('every other option answers on Enter as before', async () => {
+    const c = consent({ initial: 'later' });
+    c.advance(1);
+    c.key('', ENTER);
+    expect(await c.answer).toBe('later');
+  });
+
+  it('a dropped Enter (or an unnamed dropped key) inside the lockout restarts it; a dropped letter does not', () => {
+    const r = rig({ framed: false });
+    void r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(1);
+    r.key('', ENTER);
+    void r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+    r.show();
+    r.advance(500);
+    r.channel.ui.unseenInput('q', none);
+    const afterLetter = r.history.lastResolvedAt;
+    r.advance(500);
+    r.channel.ui.unseenInput('\r', ENTER);
+    expect(r.history.lastResolvedAt).toBe(r.now());
+    expect(r.history.lastResolvedAt).toBeGreaterThan(afterLetter);
+    r.advance(500);
+    r.channel.ui.unseenInput();
+    expect(r.history.lastResolvedAt).toBe(r.now());
+  });
+
+  it('framed, the opening guard drops an early Enter on it as a refused affirmative (the lockout restarts inside it)', async () => {
+    const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+    const first = r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER);
+    expect(await first).toBe('a');
+    await r.channel.flow.end();
+    // A new flow: its own opening guard, the lockout of the answer above still running.
+    r.channel.flow.begin();
+    r.channel.flow.popup?.(DESCRIPTOR);
+    const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+    r.show();
+    const foreignBefore = r.history.lastForeignKeyAt;
+    r.advance(100);
+    r.key('', ENTER);
+    expect(await settled(answer)).toBe(PENDING);
+    expect(r.history.lastResolvedAt).toBe(r.now());
+    // a refused affirmative, not typing
+    expect(r.history.lastForeignKeyAt).toBe(foreignBefore);
+  });
+
+  describe('a held key never answers it; one patient press after it was let go does', () => {
+    const DELAYS = [250, 400, 516, 660, 1000, 1400, 1800] as const;
+    const RATES = [30, 60, 100, 300, 450, 700, 1000, 1100, 1400, 1800] as const;
+    const HELD_FOR_MS = 8000;
+    const cases = DELAYS.flatMap((delay) =>
+      RATES.flatMap((rate) =>
+        (['plain', 'kitty', 'unseen'] as const).map((mode) => [delay, rate, mode] as const),
+      ),
+    );
+
+    it.each(cases)('initial delay %i ms, rate %i ms, %s repeats', async (delay, rate, mode) => {
+      const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+      // The press that answered the step before, at t0.
+      const before = r.channel.flow.select({ message: 'Provider', options: PLAIN });
+      r.show();
+      r.advance(POPUP_SELECT_SETTLE_MS);
+      r.key('', ENTER);
+      expect(await before).toBe('a');
+      const t0 = r.now();
+      const answer = r.channel.flow.select({ message: 'Allow?', options: CONSENT });
+      r.advance(16);
+      r.show();
+      let last = t0;
+      let index = 0;
+      for (let at = t0 + delay; at <= t0 + HELD_FOR_MS; at += rate, index += 1) {
+        r.at(at);
+        last = at;
+        // A realistic host drops one repeat in four as unseen (a notice landing, a resize, a re-render) in the `unseen` mode.
+        if (mode === 'unseen' && index % 4 === 1) {
+          r.setVisible(false);
+          r.channel.ui.unseenInput('\r', ENTER);
+          r.setVisible(true);
+        } else r.key('', mode === 'kitty' ? REPEAT_ENTER : ENTER);
+      }
+      expect(await settled(answer)).toBe(PENDING);
+      // Let go, wait out the lockout from the last repeat, press once.
+      r.at(last + APPROVAL_LOCKOUT_MS);
+      r.key('', ENTER);
+      expect(await answer).toBe('use');
+    });
+  });
+});
+
+describe('arrows stop at the ends of a framed list; a card wraps (ADR-0148 §3)', () => {
+  it('a framed select: ↑ on the first and ↓ on the last stay, and publish nothing', async () => {
+    const r = rig();
+    void r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.advance(1);
+    const first = r.snapshot();
+    r.key('', UP);
+    expect(r.snapshot()).toBe(first);
+    r.key('', DOWN);
+    r.key('', DOWN);
+    expect(r.snapshot().selected).toBe(2);
+    const last = r.snapshot();
+    r.key('', DOWN);
+    expect(r.snapshot()).toBe(last);
+    r.key('', UP);
+    expect(r.snapshot().selected).toBe(1);
+    await r.channel.flow.end();
+  });
+
+  it('a card select wraps, as it always did', async () => {
+    const r = rig({ framed: false });
+    void r.channel.flow.select({ message: 'Pick', options: PLAIN });
+    r.show();
+    r.key('', UP);
+    expect(r.snapshot().selected).toBe(2);
+    r.key('', DOWN);
+    expect(r.snapshot().selected).toBe(0);
+    await r.channel.flow.end();
+  });
+
+  it.each([true, false])(
+    'the picker, framed=%s: stops at its ends only when framed',
+    async (framed) => {
+      const r = rig({ framed });
+      void r.channel.flow.pick({
+        message: 'Resume a session',
+        load: () =>
+          Promise.resolve({
+            options: [
+              { value: 's1', label: 'one' },
+              { value: 's2', label: 'two' },
+            ],
+          }),
+      });
+      for (let tries = 0; tries < 20 && r.snapshot().options.length === 0; tries += 1)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(r.snapshot().kind).toBe('picker');
+      r.show();
+      r.advance(1);
+      r.key('', UP);
+      expect(r.snapshot().selected).toBe(framed ? 0 : 1);
+      r.key('', DOWN);
+      expect(r.snapshot().selected).toBe(framed ? 1 : 0);
+      r.key('', DOWN);
+      expect(r.snapshot().selected).toBe(framed ? 1 : 1);
+      await r.channel.flow.end();
+    },
+  );
+});
+
+describe('any resize clears a secret (ADR-0148 §4)', () => {
+  it.each([true, false])(
+    'framed=%s: a masked field that held something is emptied, says so, and only what is typed after it is answered',
+    async (framed) => {
+      const r = rig({ framed, settleMs: 0 });
+      const answer = r.channel.flow.password({
+        message: 'Paste your key',
+        validate: (value) => (value === '' ? 'required' : undefined),
+      });
+      r.show();
+      r.advance(1);
+      r.channel.ui.paste('sk-old-secret-4829');
+      expect(r.snapshot().display).not.toBe('');
+      const seen: NativePromptSnapshot[] = [];
+      const stop = r.channel.ui.subscribe(() => seen.push(r.snapshot()));
+      r.channel.ui.resized();
+      expect(r.snapshot().display).toBe('');
+      expect(r.snapshot().error).toBe(NATIVE_PROMPT_RESIZED);
+      r.key('', ENTER); // nothing typed since: a valid value is required, the old one is gone
+      expect(await settled(answer)).toBe(PENDING);
+      r.channel.ui.paste('sk-new');
+      expect(r.snapshot().error).toBe('');
+      r.key('', ENTER);
+      expect(await answer).toBe('sk-new');
+      stop();
+      for (const snapshot of seen) expect(JSON.stringify(snapshot)).not.toContain('4829');
+      expect(seen[0]?.display).toBe('');
+    },
+  );
+
+  it('an empty field, a text field and a closed prompt are left as they are', async () => {
+    const r = rig({ settleMs: 0 });
+    const secret = r.channel.flow.password({ message: 'Key' });
+    r.show();
+    const empty = r.snapshot();
+    r.channel.ui.resized();
+    expect(r.snapshot()).toBe(empty);
+    r.channel.flow.cancel();
+    expect(await secret).toBe(NATIVE_PROMPT_CANCEL);
+    const t = rig({ settleMs: 0 });
+    void t.channel.flow.text({ message: 'Name' });
+    t.show();
+    t.advance(1);
+    t.key('a', none);
+    const typed = t.snapshot();
+    t.channel.ui.resized();
+    expect(t.snapshot()).toBe(typed);
+  });
+
+  it('a rejected paste is cleared too (the latch drops), so the field takes a paste again', async () => {
+    const r = rig({ settleMs: 0, framed: false });
+    const answer = r.channel.flow.password({ message: 'Key' });
+    r.show();
+    r.channel.ui.paste('bad\u0007key');
+    expect(r.snapshot().error).not.toBe('');
+    r.channel.ui.resized();
+    expect(r.snapshot().error).toBe(NATIVE_PROMPT_RESIZED);
+    r.channel.ui.paste('good');
+    r.key('', ENTER);
+    expect(await answer).toBe('good');
+  });
+
+  describe('the acknowledgement tells the channel of a size it has not seen', () => {
+    function acked() {
+      let size = { cols: 80, rows: 24 };
+      const r = rig({ settleMs: 0, framed: false });
+      const ack: NativePromptAcknowledgement = createNativePromptAcknowledgement(
+        r.channel.ui,
+        () => size,
+      );
+      return {
+        r,
+        ack,
+        resize: (next: { cols: number; rows: number }): void => {
+          size = next;
+        },
+      };
+    }
+
+    it('on the invalidation a host’s resize listener makes: a new size clears, the same size does not', async () => {
+      const { r, ack, resize } = acked();
+      const answer = r.channel.flow.password({ message: 'Key' });
+      r.channel.ui.paste('secret-one');
+      ack.invalidate();
+      expect(r.snapshot().display).not.toBe('');
+      resize({ cols: 100, rows: 30 });
+      ack.invalidate();
+      expect(r.snapshot().display).toBe('');
+      expect(r.snapshot().error).toBe(NATIVE_PROMPT_RESIZED);
+      r.channel.ui.paste('secret-two');
+      ack.invalidate();
+      expect(r.snapshot().display).not.toBe('');
+      r.channel.flow.cancel();
+      expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+      ack.dispose();
+    });
+
+    it('at any size, larger or smaller, above the floor or below it', () => {
+      for (const next of [
+        { cols: 81, rows: 24 },
+        { cols: 80, rows: 25 },
+        { cols: 60, rows: 20 },
+        { cols: 200, rows: 60 },
+      ]) {
+        const { r, ack, resize } = acked();
+        void r.channel.flow.password({ message: 'Key' });
+        r.channel.ui.paste('secret');
+        resize(next);
+        ack.invalidate();
+        expect(r.snapshot().display, JSON.stringify(next)).toBe('');
+        ack.dispose();
+      }
+    });
+
+    it('a commit at a new size clears it too (the backstop for a host that would not invalidate)', () => {
+      const { r, ack, resize } = acked();
+      void r.channel.flow.password({ message: 'Key' });
+      r.channel.ui.paste('secret');
+      resize({ cols: 90, rows: 30 });
+      ack.commit(r.snapshot(), null, () => Promise.resolve());
+      expect(r.snapshot().display).toBe('');
+      ack.dispose();
+    });
+  });
+});

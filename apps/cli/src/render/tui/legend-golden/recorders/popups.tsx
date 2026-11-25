@@ -2,7 +2,7 @@ import { legendStates } from '../frames.js';
 import { label, type Producer, type Recorder, type StateRows } from '../golden.js';
 
 import { withGlyphForm } from '../../glyphs.js';
-import type { NativePromptSnapshot } from '../../native-prompt-channel.js';
+import type { NativePopupDescriptor, NativePromptSnapshot } from '../../native-prompt-channel.js';
 import {
   bodyPageRows,
   naturalBodyRows,
@@ -26,7 +26,12 @@ import {
   type PopupSpec,
   type PopupStep,
 } from '../../../../popups/popup-reducer.js';
-import { PopupFrameView } from '../../../../popups/popup-slot.js';
+import {
+  nativePopupFrameLines,
+  nativePopupGeometry,
+  PopupFrameView,
+} from '../../../../popups/popup-slot.js';
+import { NATIVE_PROMPT_RESIZED } from '../../native-prompt-channel.js';
 import type { DoctorCheck } from '../../../../chat/doctor.js';
 import {
   checksContent,
@@ -111,6 +116,12 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     id: 'popup-native-legend',
     file: 'popups/native-popup-body.ts',
     describe: 'the legend row of a native prompt a flow drew as a popup (the channel driver)',
+  },
+  {
+    id: 'popup-native-framed',
+    file: 'popups/native-popup-body.ts',
+    describe:
+      'every prompt kind of the native channel framed as a popup (MVP-11 unit 6): a select drawn whole and in a window (`PgUp/PgDn page`), a masked field after a resize, a wait, a chord step (`[Ctrl+Y]` and `[Ctrl+N]` on the legend row) by its `escape`, the session picker listed and failed, and a flow’s persistent Done step (`Enter / Esc close`), each with the descriptor’s words for the way back',
   },
   {
     id: 'popup-notice',
@@ -317,7 +328,6 @@ const NATIVE_BASE: NativePromptSnapshot = {
   escape: 'cancel',
   details: [],
   popup: {
-    placement: 'overlay',
     title: '/flow',
     origin: 'home',
     stepIndex: 0,
@@ -352,6 +362,142 @@ const recordNativeLegend: Recorder = (): StateRows => {
         ),
       );
     }
+  return states;
+};
+
+/** The frame of a native prompt the slot draws at 80×24 (the overlay), through the slot's own geometry and frame lines. */
+function nativeFrameRows(snapshot: NativePromptSnapshot, color: boolean) {
+  const { geometry, layout } = nativePopupGeometry(
+    snapshot,
+    'overlay',
+    { cols: 80, rows: 24 },
+    color,
+  );
+  if (!geometry.fits || layout === undefined || !layout.fits) throw new Error('refused');
+  return nativePopupFrameLines(snapshot, geometry, layout, color);
+}
+
+/** Every framed kind's legend row (MVP-11 unit 6, 6.1), drawn by the real frame view through the slot's frame lines. */
+const recordNativeFramed: Recorder = (): StateRows => {
+  const named = (exitLabel: string): NativePopupDescriptor => ({
+    title: '/flow',
+    origin: 'home',
+    stepIndex: 1,
+    stepCount: 3,
+    stepNames: ['Choose', 'Fill', 'Finish'],
+    exitLabel,
+    depth: 1,
+  });
+  const chord: NativePromptSnapshot = {
+    ...NATIVE_BASE,
+    kind: 'chord',
+    message: "Import workflow 'deploy' into this project?",
+    options: [
+      { value: 'allow', label: 'Write the file' },
+      { value: 'deny', label: 'Write nothing' },
+    ],
+    details: ['to          .relavium/workflows/deploy.relavium.yaml'],
+  };
+  const picker: NativePromptSnapshot = {
+    ...NATIVE_BASE,
+    kind: 'picker',
+    message: 'Resume a session',
+    options: [{ value: 's1', label: 'Fix the flaky test', hint: '2 days ago' }],
+    picker: {
+      allDirectories: false,
+      page: 1,
+      cursor: 0,
+      loading: false,
+      hasNext: false,
+      hasPrevious: false,
+      retryable: false,
+    },
+  };
+  const cases: readonly (readonly [string, NativePromptSnapshot])[] = [
+    [
+      label({ kind: 'select', list: 'whole', exit: 'skip for now' }),
+      { ...NATIVE_BASE, popup: named('skip for now') },
+    ],
+    [
+      label({ kind: 'select', list: 'window' }),
+      {
+        ...NATIVE_BASE,
+        options: Array.from({ length: 40 }, (_, index) => ({
+          value: `v${String(index)}`,
+          label: `Option ${String(index)}`,
+        })),
+        selected: 20,
+        popup: named('close'),
+      },
+    ],
+    [
+      label({ kind: 'password', after: 'resize' }),
+      {
+        ...NATIVE_BASE,
+        kind: 'password',
+        options: [],
+        message: 'Paste your key',
+        error: NATIVE_PROMPT_RESIZED,
+        popup: named('close'),
+      },
+    ],
+    [
+      label({ kind: 'busy' }),
+      {
+        ...NATIVE_BASE,
+        kind: 'busy',
+        options: [],
+        message: 'Checking your key',
+        popup: named('close'),
+      },
+    ],
+    [label({ kind: 'chord', escape: 'cancel' }), { ...chord, popup: named('close') }],
+    [label({ kind: 'chord', escape: 'back' }), { ...chord, escape: 'back', popup: named('close') }],
+    [label({ kind: 'picker', state: 'list' }), { ...picker, popup: named('close') }],
+    [
+      label({ kind: 'picker', state: 'failed', retry: 'yes' }),
+      {
+        ...picker,
+        options: [],
+        error: 'Session history could not be read',
+        picker: { ...picker.picker!, retryable: true },
+        popup: named('close'),
+      },
+    ],
+    [
+      label({ kind: 'picker', state: 'failed', retry: 'no' }),
+      { ...picker, options: [], error: 'Filter must be one line', popup: named('close') },
+    ],
+    [
+      label({ kind: 'done' }),
+      {
+        ...NATIVE_BASE,
+        message: 'Created the project directories.',
+        options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
+        final: true,
+        popup: { ...named('skip for now'), stepIndex: 2 },
+      },
+    ],
+  ];
+  const states: Record<string, readonly string[]> = {};
+  for (const [state, snapshot] of cases)
+    Object.assign(
+      states,
+      legendStates(
+        state,
+        (color) => (
+          <PopupFrameView
+            lines={nativeFrameRows(snapshot, color)}
+            color={color}
+            placement="replace"
+            left={0}
+            top={0}
+            contentRef={() => undefined}
+          />
+        ),
+        { columns: 80 },
+      ),
+    );
   return states;
 };
 
@@ -878,6 +1024,7 @@ const recordMode: Recorder = (): StateRows => {
 export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'popup-frame-legend': recordFrameLegend,
   'popup-native-legend': recordNativeLegend,
+  'popup-native-framed': recordNativeFramed,
   'popup-notice': recordNotice,
   'doctor-popup': recordDoctor,
   'agent-popup': recordAgent,

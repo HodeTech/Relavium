@@ -462,9 +462,10 @@ function formLayoutFor(form: PopupForm, width: number, rows: number): FormLayout
 /**
  * `text` as rows of at most `width` columns, nothing cut (a long word is broken where it must be); never an empty list. A row after the first
  * starts at its first word: the word wrap breaks AFTER a row that fills the width exactly and so leaves the space of that break at the start of
- * the next row, which would be drawn one cell to the right of the rows around it.
+ * the next row, which would be drawn one cell to the right of the rows around it. The one wrap of a popup's body rows: the reducer driver's
+ * states and effects, and the native prompt's notes, messages, hints and details (`native-popup-body.ts`).
  */
-function wrapRows(text: string, width: number): readonly string[] {
+export function wrapRows(text: string, width: number): readonly string[] {
   const rows = wrapWords(text, Math.max(1, width)).map((row, index) =>
     (index === 0 ? row : row.trimStart()).trimEnd(),
   );
@@ -952,29 +953,40 @@ function noticeRow(notice: string, exit: LegendExit, geometry: PopupBoxGeometry)
 }
 
 /**
- * The legend, fitted to the inner width: the way back is always kept and the other items go from the end first. While a notification is live
- * the row draws it in place of the other items ({@link noticeRow}).
+ * The items a legend keeps in a row of `innerWidth` columns (the ONE fit of a popup's legend row): a text item made inert, the keys that leave
+ * kept to the last (they are how out), and the others dropped from the lowest `priority` (default: from the end) first. What the legend row
+ * draws, and what a native chord step asks to know whether its answer is on the row (`native-popup-body.ts`).
  */
-function legendRow(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
-  if (parts.notice !== undefined) return noticeRow(parts.notice, parts.legend.exit, geometry);
-  const items = parts.legend.items.map((item) =>
+export function fittedLegendItems(
+  parts: PopupFrameParts['legend'],
+  innerWidth: number,
+): readonly LegendItem[] {
+  const items = parts.items.map((item) =>
     'text' in item ? { text: inertLegendText(sanitizeInline(item.text)) } : item,
   );
-  // The keys that leave are kept to the last (they are how out); the others go from the end first.
   const leaves = (item: LegendItem): boolean =>
     'keys' in item && (item.keys === 'Ctrl+C' || item.keys === 'Esc');
-  const kept = fitLegend(
+  return fitLegend(
     [],
     items.map((item, index) => ({
       item,
       priority: leaves(item)
         ? Number.MAX_SAFE_INTEGER
-        : (parts.legend.priority?.[index] ?? items.length - index),
+        : (parts.priority?.[index] ?? items.length - index),
     })),
-    parts.legend.exit,
-    geometry.innerWidth,
+    parts.exit,
+    innerWidth,
     displayWidth,
   );
+}
+
+/**
+ * The legend, fitted to the inner width: the way back is always kept and the other items go from the end first. While a notification is live
+ * the row draws it in place of the other items ({@link noticeRow}).
+ */
+function legendRow(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
+  if (parts.notice !== undefined) return noticeRow(parts.notice, parts.legend.exit, geometry);
+  const kept = fittedLegendItems(parts.legend, geometry.innerWidth);
   return framedRow(
     {
       kind: 'legend',

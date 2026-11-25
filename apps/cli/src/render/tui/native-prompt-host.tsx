@@ -62,6 +62,8 @@ export function NativePromptHost({
   );
   const owned = given === undefined;
   useEffect(() => {
+    // The acknowledgement looks at the new size as it is invalidated: a masked field is emptied before the frame at that size is drawn
+    // (ADR-0148 §4: any resize clears a key typed so far).
     const resized = (): void => {
       acknowledgement.invalidate();
       setSize(getSize());
@@ -96,7 +98,7 @@ export function NativePromptHost({
           input.includes('\x03')
         )
           ui.input('\x1b', key);
-        else ui.unseenInput(); // not delivered (the card is not visible), but still typing for the chord guard
+        else ui.unseenInput(input, key); // not delivered (the card is not visible), but still typing for the chord guard
         return;
       }
       ui.input(input, key);
