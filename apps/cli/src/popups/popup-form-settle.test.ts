@@ -6,12 +6,17 @@
  * frame was acknowledged whole: a too-early `Enter` is dropped without a word and is no resolution; the first step's `Enter`, the navigation
  * keys and `Esc` act as before; a new frame of the form starts the settle again, and a re-acknowledgement of the same frame does not. Every
  * case runs at the real opening-guard timings (no `settleMs` override), and through the host, so it holds for `/mode` and `/models` alike.
+ *
+ * A form's `Enter` has a second clock: the approval's lockout after the answer that reached it (`APPROVAL_LOCKOUT_MS`, 2 s), which is what stops a
+ * held `Enter`'s FIRST repeat (it comes after the terminal's initial repeat delay, longer than the settle and the quiet gap) from applying what
+ * the press before it only opened. Where a case is about the settle, the slot is slow or the person has read the form for the lockout first, so
+ * the settle alone decides; `F2` holds the lockout itself, across the initial delays real keyboards have.
  */
 import type { ChatMode } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { createChordHistory } from '../render/tui/chord-guard.js';
-import { APPROVAL_QUIET_MS } from '../render/tui/tool-review-model.js';
+import { APPROVAL_LOCKOUT_MS, APPROVAL_QUIET_MS } from '../render/tui/tool-review-model.js';
 import { manualClock } from './doctor.test-support.js';
 import { SCOPE_STEP } from './mode-popup.js';
 import { fakeModels, modelsRig } from './models.test-support.js';
@@ -121,7 +126,7 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
   });
 
   // One press after step 2's frame was seen, at an offset from that acknowledgement. The slot is slow here on purpose (it acknowledges the
-  // frame a quiet gap after the last key), so the press is a quiet gap from the key before it and the form's settle alone decides.
+  // frame the lockout after the last answer), so the press is clear of the quiet gap and the lockout and the form's settle alone decides.
   it.each([
     [0, false],
     [POPUP_SELECT_SETTLE_MS - 1, false],
@@ -136,7 +141,7 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
       r.press(ENTER);
       r.press(ENTER); // the chain's second `Enter`, before step 2 was seen
       const resolvedByStep1 = r.history.lastResolvedAt;
-      r.clock.advance(APPROVAL_QUIET_MS);
+      r.clock.advance(APPROVAL_LOCKOUT_MS);
       r.ack();
       r.clock.advance(offset);
       r.press(ENTER);
@@ -151,7 +156,7 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
     const { r, mode } = settledMode();
     r.clock.advance(10_000);
     r.press(ENTER); // the mode in force, on to step 2
-    r.clock.advance(APPROVAL_QUIET_MS); // a slow frame: the press below meets the quiet gap, the settle alone decides
+    r.clock.advance(APPROVAL_LOCKOUT_MS); // a slow frame: the press below is clear of the lockout, the settle alone decides
     r.ack();
     r.clock.advance(1);
     r.press(ENTER);
@@ -164,7 +169,7 @@ describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
 
 describe('presses a quiet gap or more apart through step 1 into step 2', () => {
   // Slower than the quiet gap, a key's repeat is a press like any other (F5 holds the faster ones): none applies before the settle of step 2's
-  // acknowledged frame, and the first after it does, once.
+  // acknowledged frame or before the lockout after step 1's `Enter` (whichever is later), and the first after both does, once.
   it.each([300, 400, 500, 750, 1000, 2500])(
     'pressed every %i ms: nothing before step 2’s frame has settled, then the first press after it applies',
     (interval) => {
@@ -186,8 +191,12 @@ describe('presses a quiet gap or more apart through step 1 into step 2', () => {
         r.press(ENTER);
         if (mode.applied.length > 0 && appliedAt === undefined) appliedAt = at;
       }
-      if (appliedAt !== undefined) expect(appliedAt - shownAt).toBeGreaterThanOrEqual(500);
-      const firstAfter = Math.ceil((shownAt + 500 - pressedAt) / interval) * interval + pressedAt;
+      if (appliedAt !== undefined) {
+        expect(appliedAt - shownAt).toBeGreaterThanOrEqual(POPUP_SELECT_SETTLE_MS);
+        expect(appliedAt - pressedAt).toBeGreaterThanOrEqual(APPROVAL_LOCKOUT_MS);
+      }
+      const ready = Math.max(shownAt + POPUP_SELECT_SETTLE_MS, pressedAt + APPROVAL_LOCKOUT_MS);
+      const firstAfter = Math.ceil((ready - pressedAt) / interval) * interval + pressedAt;
       expect(appliedAt).toBe(firstAfter);
       expect(mode.applied).toEqual(['ask']);
     },
@@ -248,7 +257,7 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    r.clock.advance(APPROVAL_LOCKOUT_MS); // the form read, as a person reads it, before the arrow
     r.press(DOWN); // the first press of a held `↓`: new chats, a new frame of the form
     r.ack();
     for (let held = 0; held < 900; held += 30) {
@@ -273,7 +282,7 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
       const { r, mode } = settledMode();
       r.press(ENTER);
       r.ack();
-      r.clock.advance(POPUP_SELECT_SETTLE_MS); // settled; the key before the `Enter` below decides
+      r.clock.advance(APPROVAL_LOCKOUT_MS); // settled and past the lockout; the key before the `Enter` below decides
       r.host.input('x', {}); // a key of any kind: a letter a form has no use for
       r.clock.advance(gap);
       r.press(ENTER);
@@ -285,11 +294,116 @@ describe('F5: a held key never applies a form (the quiet gap)', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    r.clock.advance(APPROVAL_LOCKOUT_MS);
     // A key some other surface of the host stamped on the shared history (a card's, the composer's) just before.
     r.history.previousKeyAt = r.clock.now() - 10;
     r.press(ENTER);
     expect(mode.applied).toEqual([]);
+  });
+});
+
+describe('F2: a held `Enter` never applies a form, whatever the terminal’s initial repeat delay (security round 1)', () => {
+  // A held key does not repeat at once: the terminal waits its initial delay, then repeats at its rate. The delays real keyboards have: macOS
+  // 225 ms to 1.8 s on its slider, Windows 250 ms to 1 s, X11 660 ms, KDE 600 ms. The first repeat is the dangerous key: it is as late as
+  // a person's second press, so the quiet gap and the settle let it through; the lockout after the `Enter` that reached the form does not.
+  const delays = [225, 375, 500, 520, 600, 660, 750, 1000, 1500, 1800] as const;
+  const rates = [30, 40] as const;
+  // As a terminal sends the repeat: a plain press (no key events), or one labelled `repeat` (key events reported).
+  const kinds: readonly (readonly [string, PopupKey])[] = [
+    ['plain', ENTER],
+    ['repeat', { return: true, eventType: 'repeat' }],
+  ];
+
+  it.each(
+    delays.flatMap((d) =>
+      rates.flatMap((rate) => kinds.map(([kind, key]) => [d, rate, kind, key] as const)),
+    ),
+  )(
+    'initial delay %i ms, rate %i ms (%s): the press opens step 2 and the repeats, however long, apply nothing',
+    (delay, rate, _kind, repeat) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER); // the press that reached step 2, which stays down
+      expect(r.step()).toBe(SCOPE_STEP);
+      const pressedAt = r.clock.now();
+      r.clock.advance(FRAME_MS);
+      r.ack();
+      for (let at = pressedAt + delay; at <= pressedAt + delay + 4000; at += rate) {
+        r.clock.advance(at - r.clock.now());
+        r.press(repeat);
+      }
+      expect(mode.applied).toEqual([]);
+      expect(mode.saved).toEqual([]);
+      expect(r.open()).toBe(true);
+      expect(r.step()).toBe(SCOPE_STEP);
+      // Let go, and a deliberate press after the form was read applies, once.
+      r.clock.advance(APPROVAL_LOCKOUT_MS);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(['ask']);
+    },
+  );
+
+  it('the delays are not special: the first repeat after any initial delay below the lockout is dropped, and the lockout is the cause', () => {
+    // The delays that clear the settle (500 ms from the frame) and the quiet gap (300 ms) are the ones the lockout exists for.
+    for (const delay of [520, 660, 1000, 1800, APPROVAL_LOCKOUT_MS - 1]) {
+      const { r, mode } = settledMode();
+      r.press(ENTER);
+      r.clock.advance(FRAME_MS);
+      r.ack();
+      r.clock.advance(delay - FRAME_MS);
+      r.press(ENTER); // the first repeat
+      expect(mode.applied, `${delay} ms`).toEqual([]);
+      expect(r.history.lastResolvedAt, `${delay} ms: nothing resolved`).toBeLessThan(
+        r.clock.now() - delay + 1,
+      );
+    }
+    // At the lockout itself, with nothing held between, it is a deliberate press and applies.
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.clock.advance(APPROVAL_LOCKOUT_MS - FRAME_MS);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+
+  it.each([
+    ['Shift+Enter', { return: true, shift: true }],
+    ['Meta+Enter (`Esc` then `Enter` in one read)', { return: true, meta: true }],
+    ['Ctrl+Enter', { return: true, ctrl: true }],
+  ] as const)(
+    '%s, long after the form was read, applies nothing; the plain `Enter` then does',
+    (_name, key) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER);
+      r.clock.advance(FRAME_MS);
+      r.ack();
+      r.clock.advance(APPROVAL_LOCKOUT_MS * 2);
+      r.press(key);
+      expect(mode.applied).toEqual([]);
+      expect(r.open()).toBe(true);
+      r.clock.advance(APPROVAL_QUIET_MS);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(['ask']);
+    },
+  );
+
+  it('`/models` step 2 holds the same way: the first repeat after a 660 ms initial delay switches nothing', () => {
+    const fake = fakeModels();
+    const m = modelsRig(fake.member);
+    m.open();
+    m.settle();
+    m.press('', ENTER); // the model in force, on to its form (a press that stays down)
+    m.clock.advance(FRAME_MS);
+    m.host.shown(m.host.getSnapshot());
+    m.clock.advance(660 - FRAME_MS);
+    for (let held = 0; held < 4000; held += 30) {
+      m.press('', ENTER);
+      m.clock.advance(30);
+    }
+    expect(m.host.getSnapshot().open).toBe(true);
+    expect(m.announced).toEqual([]);
+    expect(fake.switched).toEqual([]);
+    expect(fake.tiers).toEqual([]);
   });
 });
 
@@ -328,10 +442,10 @@ describe('what starts the settle again, and what does not', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(400);
+    r.clock.advance(APPROVAL_LOCKOUT_MS); // the form read first
     r.press(DOWN); // new chats: a new frame of the form
     r.ack();
-    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1); // 899 ms after the first frame, 499 after this one (and after the `↓`)
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1); // 499 ms after this frame (the `↓`'s), long after the first
     r.press(ENTER);
     expect(r.open()).toBe(true);
     r.clock.advance(APPROVAL_QUIET_MS); // a second press a quiet gap after the first (one inside it is a held key's repeat)
@@ -344,10 +458,10 @@ describe('what starts the settle again, and what does not', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(300);
+    r.clock.advance(APPROVAL_LOCKOUT_MS - 200);
     r.host.resized(100, 30);
     r.ack();
-    r.clock.advance(POPUP_SELECT_SETTLE_MS - 300);
+    r.clock.advance(300); // inside the settle of the re-acknowledged frame, past the lockout and the settle of the first
     r.press(ENTER);
     expect(mode.applied).toEqual(['ask']);
   });
@@ -356,7 +470,7 @@ describe('what starts the settle again, and what does not', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(600);
+    r.clock.advance(APPROVAL_LOCKOUT_MS);
     r.host.resized(60, 20); // below the floor: a notice in place of the frame
     r.host.resized(80, 24);
     r.ack();
@@ -372,7 +486,7 @@ describe('what starts the settle again, and what does not', () => {
     const { r, mode } = settledMode();
     r.press(ENTER);
     r.ack();
-    r.clock.advance(600);
+    r.clock.advance(APPROVAL_LOCKOUT_MS);
     r.setPage(3);
     r.ack(); // the same frame, acknowledged cut
     r.setPage(17);
@@ -429,6 +543,7 @@ describe('what starts the settle again, and what does not', () => {
     r.ack();
     r.clock.advance(600);
     r.press(ESC); // back to the form: its frame is drawn again
+    r.clock.advance(APPROVAL_LOCKOUT_MS); // a slow slot: the `Esc` that left the child (an answer) is clear of the lockout
     r.ack();
     r.clock.advance(1);
     r.press(ENTER);
@@ -447,7 +562,7 @@ describe('every form, through the host', () => {
     m.settle();
     m.press('', ENTER); // the model in force, on to its form
     expect(m.host.getSnapshot().frame?.stepIndex).toBe(1);
-    m.clock.advance(APPROVAL_QUIET_MS); // a slow frame: the presses below meet the quiet gap, the settle decides
+    m.clock.advance(APPROVAL_LOCKOUT_MS); // a slow frame: the presses below are clear of the lockout, the settle decides
     m.host.shown(m.host.getSnapshot());
     m.press('', ENTER); // +0
     m.clock.advance(POPUP_SELECT_SETTLE_MS - 1);

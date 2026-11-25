@@ -245,6 +245,9 @@ describe.each(HOSTS)('/models in the %s host', (host) => {
         expect(m.submitted).toEqual([]);
         expect(m.text()).toContain('current');
         await toOpenAiForm(m);
+        // Another provider: the scope opens on "New chats" (ADR-0148 §3), so this chat is chosen.
+        m.key(KEYS.up);
+        await m.settle();
         // The data-leaves line is on the page before Enter (and the inline page holds the form whole, so Enter is offered there too).
         expect(m.text()).toContain('This chat moves from Anthropic to OpenAI.');
         expect(m.text()).toContain('Enter apply');
@@ -323,6 +326,8 @@ describe('the chat the Home hosts: its own switch and the Home’s writer', () =
       const before = residue(m);
       await openModels(m, () => m.typeLine('/models'));
       await toOpenAiForm(m);
+      m.key(KEYS.up); // another provider: "New chats" is the opening scope (ADR-0148 §3), so this chat is chosen
+      await m.settle();
       await pressUntil(m, KEYS.enter, () => !m.popups.getSnapshot().open);
       await vi.waitFor(() =>
         expect(m.notifications.getSnapshot().current?.text).toBe(MODEL_SWITCH_FAILED),

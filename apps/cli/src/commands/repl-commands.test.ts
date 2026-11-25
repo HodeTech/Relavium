@@ -215,7 +215,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
    */
   const STAND_ALONE_HELP = `${[
     'Commands:',
-    '  /models  Switch model (opens the catalog picker).',
+    '  /models  Choose the model and effort for this chat or new chats.',
     '  /mode  Choose the mode; Shift+Tab changes this chat only.',
     '  /effort  Set the reasoning-effort tier: off / low / medium / high / max.',
     '  /thinking  Show or hide the reasoning ("thinking") panel (or [Ctrl+T] to toggle).',

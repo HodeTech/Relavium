@@ -88,6 +88,10 @@ import {
 import { shouldOpenHome } from './should-open-home.js';
 import { RunHost, type RunHostSnapshot } from './run-host.js';
 
+// A `/models` answer waits out the form's lockout (`models-popup.test-support.ts`: a held key's first repeat never applies a form), which is
+// real time here: the tests that answer one need more than the default five seconds.
+vi.setConfig({ testTimeout: 30_000 });
+
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
 const WAIT_MS = 5000;
 /** The slack a real-clock dwell is waited past its constant, so a key pressed at the edge lands inside the window it needs. */

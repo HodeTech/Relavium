@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import type { PopupContent, PopupForm } from './frame-model.js';
 import { createNotificationChannel, type Schedule } from './notifications.js';
 import { createPopupHost } from './popup-host.js';
@@ -346,8 +347,12 @@ describe('the host answers a form', () => {
     r.host.input('', ENTER);
     expect(r.applied).toEqual([]);
     r.setPage(6);
-    // A second press a quiet gap after the first (one inside it is a held key's repeat, and never applies a form).
+    // The first press resolved (it tried to answer), so a second one needs the lockout after it, not only the quiet gap: inside it, it is
+    // taken for a held key's repeat and never applies a form.
     r.time.advance(300);
+    r.host.input('', ENTER);
+    expect(r.applied).toEqual([]);
+    r.time.advance(APPROVAL_LOCKOUT_MS);
     r.host.input('', ENTER);
     expect(r.applied).toEqual([{ tab: 'medium', radio: 'new' }]);
   });
@@ -362,7 +367,7 @@ describe('the host answers a form', () => {
     r.host.input('', ENTER);
     expect(r.applied).toEqual([]);
     expect(history.lastResolvedAt).toBeGreaterThan(before);
-    r.time.advance(300); // a second press a quiet gap later (one inside it is a held key's repeat)
+    r.time.advance(APPROVAL_LOCKOUT_MS); // a second press the lockout later (one inside it is taken for a held key's repeat)
     r.setPage(20);
     r.host.input('', ENTER);
     expect(r.applied).toHaveLength(1);

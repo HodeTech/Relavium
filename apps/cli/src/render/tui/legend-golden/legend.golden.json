@@ -143,7 +143,7 @@
     "status=usable text=message surface=home": "An API key is available from OS keychain."
   },
   "effort-unavailable-note": {
-    "surface=tui": "some-new-model is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Open /models and press [Ctrl+R] to refresh the catalog if the model is newer than it.",
+    "surface=tui": "some-new-model is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Open /models and choose \"Refresh the list\" if the model is newer than the catalog.",
     "surface=shell": "some-new-model is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Run `relavium models refresh` if the model is newer than the catalog."
   },
   "starting-mode-hint": {

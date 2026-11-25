@@ -216,6 +216,11 @@ export interface HomeChatSession {
   /** The session's durable id (ADR-0062 §7) — named in the `/clear` notice as the prior (still-resumable)
    *  conversation, so it is discoverable after the swap. */
   readonly sessionId: string;
+  /**
+   * The provider the chat's bound agent runs on: where its messages go, what the `/models` popup's data-leaves line is judged against (the
+   * catalog's row of the model in force can name another provider when two list the same id). Absent ⇒ the popup reads the catalog's.
+   */
+  readonly provider?: string;
   /** Set the reasoning-effort tier (ADR-0066 §5) — the in-Home `/models` effort sub-step calls it on a SAME-model
    *  pick (a per-turn session override, NO reseat) + the `/effort` command. Absent ⇒ the effort sub-step is not
    *  offered. The current tier is read live from `store` (`ChatStoreSnapshot.reasoningEffort`), not tracked here. */
@@ -521,7 +526,7 @@ export interface HomeModelsPort {
   };
   /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
   refreshIfStale: () => Promise<RefreshReport | undefined>;
-  /** User-initiated refresh (Ctrl+R), regardless of TTL. Provider faults are isolated; owned stop can reject. */
+  /** User-initiated refresh (the popup's `Refresh the list` row), regardless of TTL. Provider faults are isolated; owned stop can reject. */
   refresh: () => Promise<RefreshReport>;
   /** The current `[preferences].default_model` (the picker's `✓` marker), or `undefined` when none is set. */
   currentDefault: () => string | undefined;
@@ -2924,7 +2929,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         scope: 'chat',
         ...catalogOf(port),
         current: () => active.store.getSnapshot().state.model,
-        currentProvider: () => undefined,
+        currentProvider: () => active.provider,
         currentEffort: () => active.store.getSnapshot().reasoningEffort,
         setEffort: active.onSetEffort,
         switchModel: (choice) => {
@@ -3608,6 +3613,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         applySubmitAction(active, action.line);
         return;
       case 'cycle-mode':
+        // A swap (a model reseat or `/clear`) is building the chat that will replace this one: a mode change now would write its record
+        // into the session the swap already read to seed the new chat's sequence, and the new chat's first turn would collide with it
+        // (the UNIQUE index) and latch. The chat in front is about to be replaced, so the key waits for the chat that stays (MVP-11 step 5,
+        // security round 1). `submitBusy` is not the gate: it also covers a running turn, whose refusal is the mode control's own notice.
+        if (buildInFlight !== undefined) return;
         // Shift+Tab: advance the chat mode on the SAME session (ADR-0057; no reseat) — parity with `relavium chat`.
         active.onModeChange?.(nextMode(active.store.getSnapshot().mode));
         return;

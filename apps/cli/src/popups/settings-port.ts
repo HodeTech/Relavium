@@ -30,6 +30,7 @@ import type { RefreshReport } from '../engine/model-refresh.js';
 import type { PermissionsPort } from '../permissions/chat-permissions.js';
 import type { Surface } from '../render/surface.js';
 import type { PopupOrigin } from './frame-model.js';
+import type { Announce } from './notifications.js';
 import type { PopupHost } from './popup-host.js';
 import type { PopupWorkOwner } from './popup-work.js';
 
@@ -187,7 +188,7 @@ export interface SettingsPort {
    * says, drawn once its popup has closed. Never the transcript, never a Home notice. The chat's line handler supplies it (the same function its
    * typed settings and its mode control announce through), and the host binds it to its channel (`ChatLineHandler.setAnnouncer`).
    */
-  readonly announce: (text: string) => void;
+  readonly announce: Announce;
   readonly mode?: ModeSettingsPort | undefined;
   readonly effort?: EffortSettingsPort | undefined;
   readonly models?: ModelsSettingsPort | undefined;

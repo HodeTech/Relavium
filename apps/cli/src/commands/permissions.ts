@@ -157,7 +157,7 @@ function revokeAll(deps: PermissionsDeps): ExitCode {
     write(
       deps,
       removed.removed
-        ? 'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions sheet.\n'
+        ? 'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions popup.\n'
         : 'There were no remembered commands to remove.\n',
     );
   }
@@ -196,7 +196,7 @@ function revokeOne(args: PermissionsRevokeArgs, deps: PermissionsDeps): ExitCode
   } else {
     write(
       deps,
-      `Revoked remembered command ${args.index}: ${sanitizeInline(revoked.program)}, ${revoked.args} ${revoked.args === 1 ? 'argument' : 'arguments'}. It asks again the next time it is needed; a chat that is already open keeps a session approval of it until you withdraw that row in its /permissions sheet. The numbers have changed: \`relavium permissions list\` shows them.\n`,
+      `Revoked remembered command ${args.index}: ${sanitizeInline(revoked.program)}, ${revoked.args} ${revoked.args === 1 ? 'argument' : 'arguments'}. It asks again the next time it is needed; a chat that is already open keeps a session approval of it until you withdraw that row in its /permissions popup. The numbers have changed: \`relavium permissions list\` shows them.\n`,
     );
   }
   return EXIT_CODES.success;

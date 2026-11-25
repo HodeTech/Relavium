@@ -20,6 +20,7 @@ import {
   type StartupDefaultSaveResult,
 } from '../chat/mode-settings.js';
 import { publishModePreference } from '../chat/mode-preference-publication.js';
+import { createNativeFlushPort, NativeHostUnavailableError } from '../chat/native-flush-port.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import {
   createNativePromptChannel,
@@ -66,6 +67,7 @@ import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import type { DoctorPort } from '../popups/doctor-port.js';
+import type { Announce } from '../popups/notifications.js';
 import type { ReportMembers, ReportsPort, WorkflowsReading } from '../popups/report-port.js';
 import {
   effortAnnouncement,
@@ -350,7 +352,7 @@ function chatModelsSettings(
 function withDefaultModelWriter<W extends Pick<ReplWiring, 'modelCatalog' | 'startingModes'>>(
   wiring: W,
   native: { readonly flow: NativePromptFlow; readonly ui: NativePromptUi } | undefined,
-  flushVisible: () => NoticeFlush | undefined,
+  mounted: (signal: AbortSignal) => Promise<NoticeFlush>,
   assertAdmitting: () => void,
 ): W {
   const picker = wiring.modelCatalog;
@@ -364,7 +366,7 @@ function withDefaultModelWriter<W extends Pick<ReplWiring, 'modelCatalog' | 'sta
         runtime,
         flow: native.flow,
         ui: native.ui,
-        flushVisible,
+        mounted,
         assertAdmitting,
       }),
     },
@@ -523,7 +525,7 @@ export interface ChatDriveContext {
    * Bind the session's announcements to the driver's notification channel (`ChatLineHandler.setAnnouncer`): an interactive driver binds its
    * chat's channel while the chat is mounted and unbinds it when it unmounts. Absent on a plain or `--json` driver, which keeps its text.
    */
-  readonly setAnnouncer?: ((announce: ((text: string) => void) | undefined) => void) | undefined;
+  readonly setAnnouncer?: ((announce: Announce | undefined) => void) | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -1872,7 +1874,7 @@ export function createChatModeControl(
      * The host's own transient notification (ADR-0148 §2 and §6): what a change into `accept-edits` or `auto` says, and why a change that
      * could not be recorded did not happen. Never the transcript. Absent ⇒ nothing is announced.
      */
-    readonly announce?: (text: string) => void;
+    readonly announce?: Announce;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1966,7 +1968,7 @@ export function createChatModeControl(
       if (changes && opts.recordModeChange !== undefined) {
         const recorded = opts.recordModeChange(from, effective);
         if (!recorded && widensAuthority(from, effective)) {
-          opts.announce?.(MODE_NOT_RECORDED_NOTICE);
+          opts.announce?.(MODE_NOT_RECORDED_NOTICE, 'mode');
           return false;
         }
       }
@@ -1974,7 +1976,8 @@ export function createChatModeControl(
       applyChatMode(modeEnv, effective);
       // Whatever started it (the popup, `Shift+Tab`, a typed `/mode auto`), a change into a mode that approves without a card says what it
       // does; the status line already shows the mode's name.
-      if (changes && announcesEffect(effective)) opts.announce?.(modeChangedNotice(effective));
+      if (changes && announcesEffect(effective))
+        opts.announce?.(modeChangedNotice(effective), 'mode');
       return true;
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
@@ -2032,7 +2035,7 @@ export interface ChatLineHandler extends ChatModeControl {
    * and a refusal instead of the transcript. Until a host binds it, those announcements are dropped (the status line still shows the
    * mode). A plain, `--json` or one-shot chat never binds it and keeps its text output.
    */
-  readonly setAnnouncer: (announce: ((text: string) => void) | undefined) => void;
+  readonly setAnnouncer: (announce: Announce | undefined) => void;
 }
 
 /**
@@ -2217,10 +2220,10 @@ export function createChatLineHandler(
   const commandGrants = openCommandGrants(interactive, built, deps, store);
   // The host's own notification channel (ADR-0148 §2), bound by the host through `setAnnouncer`; nothing is announced until it is, and
   // nothing after this invocation stopped publishing output.
-  let announcer: ((text: string) => void) | undefined;
-  const announce = (text: string): void => {
+  let announcer: Announce | undefined;
+  const announce: Announce = (text, topic) => {
     if (noticesStopped()) return;
-    announcer?.(text);
+    announcer?.(text, topic);
   };
   const modeControl = createChatModeControl(built, store, {
     interactive,
@@ -2497,7 +2500,8 @@ export function createChatLineHandler(
       // ADR-0148 §6: a typed setting applies directly and writes nothing into the transcript; it is confirmed by the status line and the
       // host's notification. The mode control has announced a change into `accept-edits` or `auto` and said why a refused change did not
       // happen; a narrowing, or a mode already in force, is confirmed here.
-      if (applied && (from === mode || !announcesEffect(mode))) announce(modeChangedNotice(mode));
+      if (applied && (from === mode || !announcesEffect(mode)))
+        announce(modeChangedNotice(mode), 'mode');
     },
     // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
     // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
@@ -3497,7 +3501,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   const interactive = chatIsInteractive(deps.io, deps.global);
   const runtime = wiring.startingModes;
   const native = interactive && runtime !== undefined ? createNativePromptChannel() : undefined;
-  let nativeFlush: NoticeFlush | undefined;
+  // The flush of the host mounted for the card active now (a host exists only while a card does): see `native-flush-port.ts`.
+  const nativeFlush = native === undefined ? undefined : createNativeFlushPort(native.ui);
   let modeSettingsActive = true;
   const assertModeAdmitting = (): void => {
     built.workOwner?.assertAdmitting();
@@ -3525,7 +3530,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
                     prepared,
                     flow: native.flow,
                     ui: native.ui,
-                    flushVisible: () => nativeFlush,
+                    flushVisible: () => nativeFlush?.current(),
                     assertAdmitting,
                   }),
               },
@@ -3549,7 +3554,15 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     setAnnouncer,
   } = createChatLineHandler(
     // The `/models` popup's "New chats" (ADR-0148 §3, §6): the default's writer, on this chat's native card as the startup default's is.
-    withDefaultModelWriter(wiring, native, () => nativeFlush, assertModeAdmitting),
+    withDefaultModelWriter(
+      wiring,
+      native,
+      (signal) =>
+        nativeFlush === undefined
+          ? Promise.reject(new NativeHostUnavailableError())
+          : nativeFlush.mounted(signal),
+      assertModeAdmitting,
+    ),
     modeDeps,
   );
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store and the
@@ -3617,7 +3630,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
             modePrompt: {
               ui: native.ui,
               ready: (flush: NoticeFlush) => {
-                nativeFlush = flush;
+                nativeFlush?.ready(flush);
               },
             },
           }),
@@ -3733,6 +3746,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     throw cause;
   } finally {
     modeSettingsActive = false;
+    nativeFlush?.dispose();
     native?.ui.dispose();
     liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store

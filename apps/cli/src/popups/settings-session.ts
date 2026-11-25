@@ -15,6 +15,7 @@
 import type { ChatMode } from '@relavium/shared';
 
 import { effortRowLabel } from '../chat/effort-notice.js';
+import { announcesEffect, modeChangedNotice } from '../chat/mode-effects.js';
 import { effortContent, effortInitialRow, effortSpec } from './effort-popup.js';
 import { openModels } from './models-session.js';
 import {
@@ -100,7 +101,11 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
       // Closed first: what the setter then says is drawn on the hint row at once, and the startup flow's first card has the screen to itself.
       context.close();
       if (scope === 'this-chat') {
-        mode.apply(picked);
+        const was = mode.current();
+        // A change into a mode that approves something is said by the setter (it knows what it recorded); what the setter does not say, a typed
+        // `/mode <name>` says and so does this: a narrowing, and the mode already in force.
+        if (mode.apply(picked) && (was === picked || !announcesEffect(picked)))
+          port.announce(modeChangedNotice(picked), 'mode');
         return;
       }
       startPopupWork(

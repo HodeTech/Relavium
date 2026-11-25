@@ -285,7 +285,7 @@ describe('relavium permissions revoke', () => {
     const run = deps();
     expect(permissionsRevokeCommand({ all: false, index: 1 }, run.deps)).toBe(EXIT_CODES.success);
     expect(run.out()).toBe(
-      'Revoked remembered command 1: npm, 1 argument. It asks again the next time it is needed; a chat that is already open keeps a session approval of it until you withdraw that row in its /permissions sheet. The numbers have changed: `relavium permissions list` shows them.\n',
+      'Revoked remembered command 1: npm, 1 argument. It asks again the next time it is needed; a chat that is already open keeps a session approval of it until you withdraw that row in its /permissions popup. The numbers have changed: `relavium permissions list` shows them.\n',
     );
     const fresh = storeFor(project);
     expect(fresh.matches(['npm', 'test'])).toBe(false);
@@ -318,7 +318,7 @@ describe('relavium permissions revoke', () => {
     const first = deps();
     expect(permissionsRevokeCommand({ all: true }, first.deps)).toBe(EXIT_CODES.success);
     expect(first.out()).toBe(
-      'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions sheet.\n',
+      'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions popup.\n',
     );
     expect(existsSync(file())).toBe(false);
     expect(storeFor(other).matches(['git', 'push'])).toBe(false);

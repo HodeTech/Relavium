@@ -12,9 +12,15 @@ import { expect, vi } from 'vitest';
 
 import type { PopupHost } from '../popups/popup-host.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 
 /** The opening guard's settle (500 ms) and a margin: before it, an answer is dropped (real time: the host's clock is `performance.now`). */
 const SETTLE_MS = 600;
+/**
+ * A form's `Enter` waits out the approval's lockout after the answer that reached it (`popup-host.ts`: a held key's first repeat never
+ * applies a form) and a margin: before it, the `Enter` is dropped. It also covers the form's own settle.
+ */
+const FORM_READY_MS = APPROVAL_LOCKOUT_MS + 200;
 
 export interface ModelsPopupOptions {
   /** A real Home root is mounted: its popup slot acknowledges the frames, and the test binds nothing over it. */
@@ -59,7 +65,7 @@ export async function settleModelsForm(
 ): Promise<void> {
   if (options.live !== true) popups.shown(popups.getSnapshot());
   await new Promise<void>((resolve) => {
-    setTimeout(resolve, SETTLE_MS);
+    setTimeout(resolve, FORM_READY_MS);
   });
 }
 

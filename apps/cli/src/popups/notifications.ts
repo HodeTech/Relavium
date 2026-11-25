@@ -41,10 +41,22 @@ export const NOTIFICATION_MS = 3000;
 /** Who raised a notification, when it was a popup: what {@link NotificationChannel.discard} is given when that popup closes. */
 export type NotificationSource = object;
 
+/**
+ * What a notification is about, when a newer one of the same subject makes the older one wrong: a mode change (`Shift+Tab` three times in a row
+ * must show the effect of the mode the chat is in, not of the one it passed through). Only a subject whose latest word is the only true one
+ * has a topic; everything else queues in order.
+ */
+export type NotificationTopic = 'mode';
+
+/** What a session announces on its host's channel: the text, and (for a subject whose latest word replaces the earlier) its topic. */
+export type Announce = (text: string, topic?: NotificationTopic) => void;
+
 export interface Notification {
   readonly text: string;
   /** The popup that raised it; absent ⇒ the host (it outlives every popup). */
   readonly from?: NotificationSource | undefined;
+  /** What it is about ({@link NotificationTopic}): a newer notification of the same topic replaces it, shown or waiting. */
+  readonly topic?: NotificationTopic | undefined;
 }
 
 export interface NotificationSnapshot {
@@ -62,9 +74,10 @@ export interface NotificationSnapshot {
 export interface NotificationChannel {
   /**
    * Report one line, raised by the host or (`from`) by a popup. Through {@link notificationText}; an empty text is ignored; a text shown or
-   * waiting is not queued again.
+   * waiting is not queued again. One with a `topic` replaces every earlier one of that topic, the one showing included (it takes its place at
+   * once, for its own three seconds): the latest word on a subject is the only true one.
    */
-  readonly notify: (text: string, from?: NotificationSource) => void;
+  readonly notify: (text: string, from?: NotificationSource, topic?: NotificationTopic) => void;
   /**
    * The notification showing now, whose text is `text`, was drawn in a frame the host measured and flushed (the popup host tells it of a popup
    * frame it acknowledged): a hold that begins after this drops it instead of showing it again.
@@ -165,12 +178,28 @@ export function createNotificationChannel(options?: {
   };
 
   return {
-    notify: (text, from) => {
+    notify: (text, from, topic) => {
       if (disposed) return;
       const clean = notificationText(text);
       if (clean.length === 0) return;
       if (current?.text === clean || queue.some((waiting) => waiting.text === clean)) return;
-      queue.push(from === undefined ? { text: clean } : { text: clean, from });
+      const next: Notification = {
+        text: clean,
+        ...(from === undefined ? {} : { from }),
+        ...(topic === undefined ? {} : { topic }),
+      };
+      if (topic === undefined) {
+        queue.push(next);
+      } else {
+        for (let index = queue.length - 1; index >= 0; index -= 1)
+          if (queue[index]?.topic === topic) queue.splice(index, 1);
+        if (current?.topic === topic) {
+          // The one showing is about the same subject and is no longer true: the newer takes its place at once.
+          stopTimer();
+          current = undefined;
+          queue.unshift(next);
+        } else queue.push(next);
+      }
       pump();
       publish();
     },

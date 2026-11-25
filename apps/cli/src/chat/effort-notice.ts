@@ -18,7 +18,6 @@ import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pri
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { formatUsdExact } from '../render/notation.js';
 import { sanitizeInline } from '../render/sanitize.js';
-import { keyToken } from '../render/tui/legend.js';
 
 /**
  * Deterministic, locale-independent alphabetical order for a modality list.
@@ -88,7 +87,7 @@ export type { NoticeSurface };
  * never have one, however often we refresh. "No reasoning control" for both — which is all the old id heuristic
  * could say — tells the user nothing they can act on.
  *
- * The refresh is `relavium models refresh` in the shell and the `/models` picker's `Ctrl+R` in the interactive chat, which has
+ * The refresh is `relavium models refresh` in the shell and the `/models` popup's `Refresh the list` row in the interactive chat, which has
  * `/models` on both of its surfaces.
  */
 export function effortUnavailableNote(model: string, surface: NoticeSurface = 'shell'): string {
@@ -96,7 +95,7 @@ export function effortUnavailableNote(model: string, surface: NoticeSurface = 's
     return `${safeModel(model)} publishes no controllable reasoning tier — a tier would be ignored.`;
   const refresh =
     surface === 'tui'
-      ? `Open /models and press ${keyToken('Ctrl+R')} to refresh the catalog if the model is newer than it.`
+      ? 'Open /models and choose "Refresh the list" if the model is newer than the catalog.'
       : 'Run `relavium models refresh` if the model is newer than the catalog.';
   return `${safeModel(model)} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. ${refresh}`;
 }

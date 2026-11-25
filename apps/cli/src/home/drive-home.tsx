@@ -1,6 +1,7 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { runHomeProjectInit } from './project-init.js';
 import { runSessionPicker } from './session-picker.js';
+import { isDefaultModelCancelled, withDefaultModelCard } from '../chat/default-model-save.js';
 import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
 import { resumeHint } from '../chat/resume-hint.js';
 import { fsPolicyWorkspace } from '../engine/tool-host/fs-policy.js';
@@ -1005,7 +1006,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
       writeDefault: async (modelId, provider, reasoningEffort) => {
         ownership?.surface.work.assertAdmitting();
-        let signal: AbortSignal | undefined;
         try {
           const prepared = prepareGlobalPreferences(
             {
@@ -1017,26 +1017,27 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             deps.global.configPath === undefined ? undefined : globalConfigPath,
             configReadObserver,
           );
-          // A plain Home picker write needs the same real disclosure evidence
-          // as setup, without adding another confirmation or terminal owner.
-          if (prepared.rewriteNeeded) {
-            signal = promptFlow.begin();
-            promptFlow.busy('Saving default model…');
-          }
-          const saved = await publishPreference(prepared, () => {
+          // A plain Home picker write needs the same real disclosure evidence as setup, without adding another confirmation or terminal
+          // owner: a rewrite is published behind the card the stand-alone chat's writer uses (`withDefaultModelCard`), a new file with none.
+          const assertPublishing = (signal?: AbortSignal): void => {
             ownership?.surface.work.assertAdmitting();
             if (homeInputSealed) throw new CliError('invalid_invocation', 'Home is closing.');
             signal?.throwIfAborted();
-          });
+          };
+          const saved = prepared.rewriteNeeded
+            ? await withDefaultModelCard(promptFlow, (signal) =>
+                publishPreference(prepared, () => {
+                  assertPublishing(signal);
+                }),
+              )
+            : await publishPreference(prepared, () => {
+                assertPublishing();
+              });
           invocationDefault = undefined;
           return saved;
         } catch (cause) {
-          if (signal?.aborted && cause === signal.reason)
-            throw new CliError('invalid_invocation', 'Default model change cancelled.');
-          ownership?.surface.work.failure(cause);
+          if (!isDefaultModelCancelled(cause)) ownership?.surface.work.failure(cause);
           throw cause;
-        } finally {
-          if (signal !== undefined) await promptFlow.end();
         }
       },
     };
@@ -1198,8 +1199,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The session's announcements (its typed settings, its mode control and its settings popups) are the Home's own notifications
         // (ADR-0148 §2, §6): raised with no popup as their source, so a setting's word outlives the popup that applied it, and never written
         // into the transcript or the Home's notice. Unbound when this chat is torn down.
-        setAnnouncer((text) => {
-          notifications.notify(text);
+        setAnnouncer((text, topic) => {
+          notifications.notify(text, undefined, topic);
         });
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
@@ -1283,6 +1284,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
+          provider: built.agent.provider,
           teardown,
           onActivated: (isActive: () => boolean) => {
             if (isActive() && persister?.hasSavedTurns === true)

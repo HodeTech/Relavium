@@ -120,13 +120,15 @@ function applyToThisChat(
   chosen: Chosen,
   choice: ModelChoice,
   same: boolean,
+  standIn: boolean,
 ): void {
   if (!chosen.sameModel) {
     models.switchModel?.(choice);
     return;
   }
   const tier = choice.reasoningEffort;
-  if (tier === undefined) {
+  // No tier to say, or the one the form showed was only a stand-in for the provider's default and was left alone: nothing about a tier is true.
+  if (tier === undefined || (same && standIn)) {
     port.announce(alreadyOnAnnouncement(choice.modelId));
     return;
   }
@@ -251,11 +253,17 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
         const picked = chosen;
         if (picked === undefined) return;
         const choice = choiceOf(picked.entry, values);
+        // With no tier in force (the provider's own default) the form opens on a stand-in tier; for ANOTHER model the tier the form shows is
+        // the one that applies (ADR-0066 §6), but for the model in force a stand-in left alone changes nothing, and must not be said as a tier.
+        const standIn =
+          inForce?.effort === undefined &&
+          picked.form.tabs !== undefined &&
+          values.tab === picked.form.tabs.initial;
         const same = unchanged(picked, values);
         // Closed first: a reseat, a tier or a writer's card then has the screen, and the word on the hint row is drawn at once.
         context.close();
         if (scopeOfValues(models.scope, values) === 'this-chat') {
-          applyToThisChat(port, models, picked, choice, same);
+          applyToThisChat(port, models, picked, choice, same, standIn);
           return;
         }
         if (models.scope === 'home' && same) {

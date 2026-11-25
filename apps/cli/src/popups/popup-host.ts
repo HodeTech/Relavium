@@ -98,6 +98,13 @@
  * only when the key before it, of any kind, arrived at least `APPROVAL_QUIET_MS` (300 ms) before it (the stamp's `previousKeyAt`, on the host's
  * one key history). Every repeat of a held key is a key, so a held `Enter`, or a held `↓` and then `Enter`, never applies; a fresh press after
  * reading, or a slow second press, does. An `Enter` refused for this says nothing and is no resolution either.
+ *
+ * **The `Enter` that reached a form is not its answer, however long it is held.** The quiet gap cannot tell a held key's FIRST repeat from a
+ * slow second press: the terminal's initial repeat delay (225 ms to 1.8 s on macOS, 250 ms to 1 s on Windows, 660 ms on X11) is longer than the
+ * gap and, on a form reached by an `Enter`, longer than the settle too. A terminal that reports key events labels the repeat and the reducer
+ * drops it (`popup-reducer.ts`, `plainEnter`); one that does not cannot, so a form's `Enter` also waits out the approval's own lockout
+ * (`APPROVAL_LOCKOUT_MS`, 2 s: longer than the slowest initial delay an operating system offers) after the last answer, the `Enter` that
+ * reached the form. The time a person spends reading the form counts towards it, so it costs a slow reader nothing.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
@@ -137,6 +144,7 @@ import {
   answersALine,
   backOf,
   currentStep,
+  enterStep,
   foldPopupAction,
   hasEnterLine,
   highlightedRow,
@@ -543,12 +551,16 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     formShownAt !== undefined && arrivedAt - formShownAt >= formSettleMs;
 
   /**
-   * Whether a form's `Enter` came after a quiet gap: no key of any kind (its stamp's `previousKeyAt`, on the host's one history) in the
-   * approval's quiet gap (`APPROVAL_QUIET_MS`, the chord step's own layer) before it. A held `Enter` repeats far faster than that, every repeat
-   * is a key, so a held key never leaves the gap and never applies a form however long it is held; a deliberate press after reading does.
+   * Whether a form's `Enter` came after a quiet gap AND after the lockout of the answer before it: no key of any kind (its stamp's
+   * `previousKeyAt`, on the host's one history) in the approval's quiet gap (`APPROVAL_QUIET_MS`, the chord step's own layer) before it, and
+   * the last answer (the `Enter` that reached the form: its stamp's `lastResolvedAt`) at least `APPROVAL_LOCKOUT_MS` ago. A held `Enter`
+   * repeats far faster than the gap and every repeat is a key, so once the first repeat is dropped no later one is let through however long it
+   * is held; the first repeat itself comes only after the terminal's initial delay, and the lockout is longer than any such delay. A
+   * deliberate press after reading does neither.
    */
   const formQuiet = (stamp: ChordStamp): boolean =>
-    stamp.now - stamp.previousKeyAt >= APPROVAL_QUIET_MS;
+    stamp.now - stamp.previousKeyAt >= APPROVAL_QUIET_MS &&
+    stamp.now - stamp.lastResolvedAt >= APPROVAL_LOCKOUT_MS;
 
   /** Whether the record's line is a report (what a line that offers nothing then is: one its page does not hold whole), not an empty or failed state. */
   const isReport = (record: FrameRecord): boolean =>
@@ -890,7 +902,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         const live = recordOf(runId);
         if (live === undefined || stepIndex < 0 || stepIndex >= live.frame.steps.length)
           return false;
-        moveTo(live, { ...live.frame, stepIndex });
+        moveTo(live, enterStep(live.frame, stepIndex));
         return true;
       },
       close: () => {
@@ -960,6 +972,37 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     }
   };
 
+  /**
+   * A form's `Enter` that was folded into `values`: dropped, as the opening guard drops a key, while it is too soon after THIS frame of the
+   * form was seen whole or too soon after the key before it or the answer before that (a held key's repeat); else it resolves, and applies
+   * if the form is wholly on the page it is drawn on.
+   */
+  const applyForm = (record: FrameRecord, stamp: ChordStamp, values: PopupFormValues): void => {
+    // Too soon: dropped as the opening guard drops a key (no word, no resolution stamp).
+    if (!formSettled(stamp.now) || !formQuiet(stamp)) return;
+    // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
+    chord.resolved(stamp);
+    // A form is never windowed: one that is not wholly on the page its frame is drawn on applies nothing (its legend names no `Enter`).
+    if (!formFits(currentStep(record.frame).state.content, pageNow(), widthNow())) return;
+    const apply = record.handlers.apply;
+    const { runId } = record.frame;
+    if (apply !== undefined) guarded(() => apply(contextOf(runId), values));
+  };
+
+  /** A control letter the fold read on the highlighted row: the step's command is told, unless the step is a line answered by `Enter`. */
+  const runControl = (record: FrameRecord, key: string): void => {
+    // In a popup whose line is answered by `Enter`, a control letter after typing arms nothing: its command is told why instead.
+    if (record.typing && hasEnterLine(record.frame.spec)) {
+      tellRefused(record, 'typed');
+      return;
+    }
+    // A control letter resolves nothing (it runs a check, arms a line, copies): it is not stamped, so it locks no line it arms.
+    const control = record.handlers.control;
+    const row = highlightedRow(record.frame);
+    const { runId } = record.frame;
+    if (control !== undefined) guarded(() => control(contextOf(runId), key, row));
+  };
+
   /** Apply one admitted key's action to the record on top (its stamp is the key's own, `typedBefore` the typing that came before it). */
   const applyKey = (
     record: FrameRecord,
@@ -991,30 +1034,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         if (enter !== undefined) guarded(() => enter(contextOf(runId), fold.row));
         return;
       }
-      case 'apply': {
-        // Too soon after THIS frame of the form was seen whole, or too soon after the key before it (a held key's repeat): dropped as the
-        // opening guard drops a key (no word, no resolution stamp).
-        if (!formSettled(stamp.now) || !formQuiet(stamp)) return;
-        // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
-        chord.resolved(stamp);
-        // A form is never windowed: one that is not wholly on the page its frame is drawn on applies nothing (its legend names no `Enter`).
-        if (!formFits(currentStep(record.frame).state.content, pageNow(), widthNow())) return;
-        const apply = record.handlers.apply;
-        if (apply !== undefined) guarded(() => apply(contextOf(runId), fold.values));
+      case 'apply':
+        applyForm(record, stamp, fold.values);
         return;
-      }
-      case 'control': {
-        // In a popup whose line is answered by `Enter`, a control letter after typing arms nothing: its command is told why instead.
-        if (record.typing && hasEnterLine(record.frame.spec)) {
-          tellRefused(record, 'typed');
-          return;
-        }
-        // A control letter resolves nothing (it runs a check, arms a line, copies): it is not stamped, so it locks no line it arms.
-        const control = record.handlers.control;
-        const row = highlightedRow(record.frame);
-        if (control !== undefined) guarded(() => control(contextOf(runId), fold.key, row));
+      case 'control':
+        runControl(record, fold.key);
         return;
-      }
       case 'unchanged':
         return;
     }

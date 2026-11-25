@@ -28,6 +28,7 @@ import type { DefaultModelSaveResult, ModelChoice } from '../popups/settings-por
 import { CliError } from '../process/errors.js';
 import type { NativePromptFlow, NativePromptUi } from '../render/tui/native-prompt-channel.js';
 import { publishModePreference } from './mode-preference-publication.js';
+import { NativeHostUnavailableError } from './native-flush-port.js';
 import { startingModeConfigObserver, type StartingModeRuntime } from './starting-mode.js';
 
 /** What a writer of the default model publishes (`HomeModelsPort.writeDefault`, `ChatModelsPort.writeDefault`): the write's durability. */
@@ -66,7 +67,8 @@ export async function saveDefaultModel(
     written = await options.write(choice.modelId, choice.provider, choice.reasoningEffort);
   } catch (cause) {
     if (options.closing()) return { kind: 'refused', reason: 'closing' };
-    options.failure?.(cause);
+    // A card that could not be shown published nothing: the save is refused, and the session goes on (it is no fault of the terminal).
+    if (!(cause instanceof NativeHostUnavailableError)) options.failure?.(cause);
     return { kind: 'refused', reason: refusalOf(cause) };
   }
   if (options.closing()) return { kind: 'refused', reason: 'closing' };
@@ -86,13 +88,50 @@ export async function saveDefaultModel(
   };
 }
 
+/** What a writer throws when the person cancelled the card it saves behind (`invalid_invocation`, so a save says it was cancelled, not failed). */
+export const DEFAULT_MODEL_CANCELLED = 'Default model change cancelled.';
+
+/** Whether `cause` is the cancel of the default model's card ({@link DEFAULT_MODEL_CANCELLED}): no fault of the host, so no owner hears of it. */
+export function isDefaultModelCancelled(cause: unknown): boolean {
+  return (
+    cause instanceof CliError &&
+    cause.code === 'invalid_invocation' &&
+    cause.message === DEFAULT_MODEL_CANCELLED
+  );
+}
+
+/**
+ * The card a rewrite of the config is published behind, as BOTH hosts' writers run it (the Home's and a stand-alone chat's): the flow begins
+ * and says what it is doing, `run` publishes behind it (given the flow's own signal, which a cancel aborts), the person's cancel is the one
+ * cancel ({@link DEFAULT_MODEL_CANCELLED}), and the flow is ended whatever came of it. One skeleton, so the two cannot drift on the consent.
+ */
+export async function withDefaultModelCard<T>(
+  flow: NativePromptFlow,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const signal = flow.begin();
+  try {
+    flow.busy('Saving default model…');
+    return await run(signal);
+  } catch (cause) {
+    if (signal.aborted && cause === signal.reason)
+      throw new CliError('invalid_invocation', DEFAULT_MODEL_CANCELLED);
+    throw cause;
+  } finally {
+    await flow.end();
+  }
+}
+
 /** What a stand-alone chat's writer needs: the invocation's starting-mode runtime (its config file) and this chat's native prompt. */
 export interface ChatDefaultModelWriterOptions {
   readonly runtime: StartingModeRuntime;
   readonly flow: NativePromptFlow;
   readonly ui: NativePromptUi;
-  /** The renderer's flush, once the chat's card surface is ready; `undefined` before. */
-  readonly flushVisible: () => NoticeFlush | undefined;
+  /**
+   * The renderer's flush of the host that is mounted for the card this write has begun, waiting for it (`NativeFlushPort.mounted`): a card's host
+   * mounts on a render pass after the card begins, so the flush is not there in the tick the card begins in. Rejects when it never mounts.
+   */
+  readonly mounted: (signal: AbortSignal) => Promise<NoticeFlush>;
   /** Throws once the chat no longer admits work (it is closing). */
   readonly assertAdmitting: () => void;
 }
@@ -121,25 +160,19 @@ export function createChatDefaultModelWriter(
     );
     // A config that does not exist yet loses nothing: it is written with no card, as the Home writes it.
     if (!prepared.rewriteNeeded) return prepared.publish(options.assertAdmitting);
-    const signal = flow.begin();
-    try {
-      flow.busy('Saving default model…');
-      return await publishModePreference({
+    return withDefaultModelCard(flow, async (signal) => {
+      // The card is on its way to the screen, not on it: publish only through the flush of the host that draws it.
+      const flush = await options.mounted(signal);
+      return publishModePreference({
         prepared,
         flow,
         ui: options.ui,
-        flushVisible: options.flushVisible,
+        flushVisible: () => flush,
         assertAdmitting: () => {
           options.assertAdmitting();
           signal.throwIfAborted();
         },
       });
-    } catch (cause) {
-      if (signal.aborted && cause === signal.reason)
-        throw new CliError('invalid_invocation', 'Default model change cancelled.');
-      throw cause;
-    } finally {
-      await flow.end();
-    }
+    });
   };
 }

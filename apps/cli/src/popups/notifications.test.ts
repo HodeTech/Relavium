@@ -79,6 +79,76 @@ describe('never twice', () => {
   });
 });
 
+describe('the latest word on a subject replaces the earlier (MVP-11 step 5, correctness round 1)', () => {
+  it('a notification with a topic replaces the one of that topic that is showing, at once and for its own few seconds', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('accept-edits mode', undefined, 'mode');
+    time.advance(NOTIFICATION_MS - 100);
+    channel.notify('auto mode', undefined, 'mode');
+    expect(text(channel)).toBe('auto mode'); // not after the three seconds of the first
+    expect(channel.getSnapshot().queued).toBe(0);
+    time.advance(NOTIFICATION_MS - 1);
+    expect(text(channel)).toBe('auto mode'); // its own three seconds
+    time.advance(1);
+    expect(text(channel)).toBeUndefined();
+    expect(time.pending()).toBe(0);
+  });
+
+  it('replaces the ones of that topic that are waiting, and takes the front over one of another subject that was waiting', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('first');
+    channel.notify('mode one', undefined, 'mode');
+    channel.notify('other');
+    channel.notify('mode two', undefined, 'mode');
+    expect(channel.getSnapshot().queued).toBe(2); // 'other', 'mode two'
+    expect(text(channel)).toBe('first');
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBe('other'); // a waiting one of another subject keeps its place
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBe('mode two');
+  });
+
+  it('one with no topic, or another subject, is never replaced, and a text already shown is not queued twice', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('plain');
+    channel.notify('mode', undefined, 'mode');
+    channel.notify('plain again');
+    expect(text(channel)).toBe('plain');
+    channel.notify('mode', undefined, 'mode'); // the same text, waiting: nothing changes
+    expect(channel.getSnapshot().queued).toBe(2);
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBe('mode');
+    channel.notify('mode', undefined, 'mode'); // the same text, showing: its time is not restarted
+    time.advance(NOTIFICATION_MS - 1);
+    expect(text(channel)).toBe('mode');
+  });
+
+  it('keeps who raised it: a replacement raised by a popup goes with that popup', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    const popup = {};
+    channel.notify('host mode', undefined, 'mode');
+    channel.notify('popup mode', popup, 'mode');
+    expect(channel.getSnapshot().current?.from).toBe(popup);
+    channel.discard(popup);
+    expect(text(channel)).toBeUndefined();
+  });
+
+  it('a replacement while the channel is held waits for the hold, and still replaces what waited', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.hold(true);
+    channel.notify('accept-edits mode', undefined, 'mode');
+    channel.notify('auto mode', undefined, 'mode');
+    expect(channel.getSnapshot().queued).toBe(1);
+    channel.hold(false);
+    expect(text(channel)).toBe('auto mode');
+  });
+});
+
 describe('held while a chord or secret surface is shown', () => {
   it('queues what arrives, and shows nothing until the hold ends', () => {
     const time = clock();

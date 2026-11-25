@@ -97,6 +97,7 @@ import type { PopupPlacement } from '../../popups/geometry.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import {
   createNotificationChannel,
+  type Announce,
   type NotificationChannel,
   type NotificationSnapshot,
 } from '../../popups/notifications.js';
@@ -310,7 +311,7 @@ interface ChatAppProps {
    * it is mounted, and unbind them when it unmounts (`ChatLineHandler.setAnnouncer`): a notification with no popup as its source, so it
    * outlives the popup that applied a setting. Absent ⇒ nothing is bound (a driver or a test without a session handler).
    */
-  readonly setAnnouncer?: ((announce: ((text: string) => void) | undefined) => void) | undefined;
+  readonly setAnnouncer?: ((announce: Announce | undefined) => void) | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -939,8 +940,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const setAnnouncer = props.setAnnouncer;
   useLayoutEffect(() => {
     if (setAnnouncer === undefined || notifications === undefined) return;
-    setAnnouncer((text) => {
-      notifications.notify(text);
+    setAnnouncer((text, topic) => {
+      notifications.notify(text, undefined, topic);
     });
     return () => {
       setAnnouncer(undefined);

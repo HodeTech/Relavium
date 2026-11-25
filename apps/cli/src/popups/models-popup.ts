@@ -171,11 +171,15 @@ export function modelRows(
     id: entry.modelId,
     label: scrubPopupText(entry.modelId),
     detail: rowFacts(entry, entry.modelId === marked, providerName).join(' · '),
+    // A model is also found by the name its provider gives it (`Sonnet 4.6`), which the row does not draw.
+    match: scrubPopupText(entry.displayName),
   }));
+  // Pinned: the row that refreshes the list stays reachable while a filter is typed (it was `Ctrl+R` on the picker this popup replaced).
   rows.push({
     id: MODELS_REFRESH_ROW,
     label: 'Refresh the list',
     detail: 'ask every connected provider again',
+    pinned: true,
   });
   if (unusable.length > 0)
     rows.push({
@@ -191,6 +195,7 @@ export function modelRows(
       label: scrubPopupText(entry.modelId),
       // The facts stay on the row for the filter (a provider's name finds its models), and the reason is what is drawn.
       detail: rowFacts(entry, isCurrent, providerName).join(' · '),
+      match: scrubPopupText(entry.displayName),
       enabled: false,
       reason: `${isCurrent ? 'current · ' : ''}${unavailableReason(entry, providerName)}`,
     });
@@ -354,8 +359,8 @@ function thisChatDetail(facts: ScopeFacts, hasTiers: boolean): string {
 
 /**
  * The second step's form (`popup-models-step2-80x24.png`): the summary line, the tiers when the model takes any, and in a chat the radio
- * (`This chat`, opened on, and `New chats` when the chat can save a default), with the data-leaves line on `This chat` when the provider
- * changes; on the Home no radio, and the line about new chats as the form's own warning.
+ * (`This chat`, opened on when the provider is the one in force and `New chats` when it is not, which the chat offers when it can save a
+ * default), with the data-leaves line on `This chat` when the provider changes; on the Home no radio, and the line about new chats as the form's own warning.
  */
 export function scopeForm(facts: ScopeFacts): PopupForm {
   const tabs = tiersField(facts);
@@ -390,6 +395,13 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
     id: SCOPE_NEW_CHATS,
     label: 'New chats',
     detail: 'saves it as your default; this chat stays',
+    // The chats to come start on the other provider: said as the Home says it (it is the scope a provider change opens on).
+    warning: dataLeavesWarning(
+      'new-chats',
+      facts.currentProvider,
+      facts.entry.provider,
+      facts.providerName,
+    ),
   };
   return {
     kind: 'form',
@@ -401,7 +413,10 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
           // Not the frame's `apply to` (`/mode`'s verb): with it this step's legend in a chat is 67 columns, one more than a popup at the floor
           // holds, and `[Ctrl+C] close` would be dropped there; with `scope` every key of it is named (`models-popup.test.ts` pins the width).
           verb: 'scope',
-          initial: SCOPE_THIS_CHAT,
+          // ADR-0148 §3: when the provider changes the scope is NOT pre-selected to "this chat" (the conversation would go to another provider on
+          // an `Enter`): the default for new chats is, which sends no conversation anywhere. Within one provider the default is the chat.
+          initial:
+            facts.currentProvider === facts.entry.provider ? SCOPE_THIS_CHAT : SCOPE_NEW_CHATS,
           options: [thisChat, newChats],
         }
       : undefined,

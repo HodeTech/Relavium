@@ -31,8 +31,7 @@ export const MODE_INTRO = 'Choose how the agent treats an effect.';
 /** The id of the intro's row (a heading: it is never highlighted and never answers). */
 const INTRO_ROW = 'intro';
 
-/** The step that lists the modes, and the step that asks where the chosen one applies. */
-export const MODE_STEP = 0;
+/** The step that asks where the chosen mode applies (the first step lists the modes). */
 export const SCOPE_STEP = 1;
 
 /** Where a chosen mode applies: this chat (the session's mode, now), or new chats (the global startup default). */

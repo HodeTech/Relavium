@@ -32,6 +32,7 @@ import {
   type SheetMessage,
 } from './permissions-sheet.js';
 import { SHEET_MAX_COLUMNS } from './sheet-frame.js';
+import { APPROVAL_CONFIRM_MIN_MS } from './tool-review-model.js';
 import { MAX_ROW_TEXT } from '../../permissions/chat-permissions.js';
 
 /** The `/permissions` sheet's pure half (ADR-0137 §2): the key ladder, its clock, and the lines. No terminal, no React. */
@@ -1194,5 +1195,11 @@ describe('a row says what is true of it alone (the review of the cleanup)', () =
     );
     expect(selected?.text).toBe('› npm, 1 argument');
     expect(selected?.spans).toEqual([]);
+  });
+});
+
+describe('one dwell, two copies (MVP-11 step 5, architecture round 1)', () => {
+  it('the sheet’s confirmation dwell is the approval card’s, which the popup host and the `/permissions` popup read: a change to one is a change to both', () => {
+    expect(SHEET_CONFIRM_DWELL_MS).toBe(APPROVAL_CONFIRM_MIN_MS);
   });
 });

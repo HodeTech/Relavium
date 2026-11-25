@@ -99,7 +99,7 @@ describe('the withheld-tier note a session host composes', () => {
 
   it('names the picker’s own refresh when the host is the interactive chat or the Home', async () => {
     const note = await withheldNote('tui');
-    expect(note).toContain('Open /models and press [Ctrl+R]');
+    expect(note).toContain('Open /models and choose "Refresh the list"');
     expect(note).not.toContain('relavium');
   });
 });

@@ -8,6 +8,7 @@
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { manualClock } from './doctor.test-support.js';
 import { createNotificationChannel } from './notifications.js';
 import { createPopupHost, type PopupOpenResult } from './popup-host.js';
@@ -83,7 +84,9 @@ export function settingsRig() {
     /** The popup has appeared and its settle time has passed: an `Enter` may answer. */
     settle: (): void => {
       host.shown(host.getSnapshot());
-      clock.advance(600);
+      // Past the opening guard's settle AND the form's lockout after the answer that reached it (`popup-host.ts`: a form's `Enter` waits out
+      // `APPROVAL_LOCKOUT_MS` so a held key's first repeat cannot apply it), so the `Enter` pressed next is a deliberate one.
+      clock.advance(APPROVAL_LOCKOUT_MS + 100);
     },
     press: (input: string, key: PopupKey = {}): boolean => host.input(input, key),
     /** The rows of the step on screen, as `label detail`, and the one highlighted. */

@@ -269,7 +269,8 @@ describe('the second step in a chat (popup-models-step2-80x24.png)', () => {
       initial: 'medium',
     });
     expect(form.tabs?.options.map((option) => option.id)).toEqual(['low', 'medium', 'high']);
-    expect(form.radio).toMatchObject({ label: 'Apply to', verb: 'scope', initial: 'chat' });
+    // ADR-0148 §3: another provider, so the scope is not pre-selected to "This chat" (the conversation would go to it on an `Enter`).
+    expect(form.radio).toMatchObject({ label: 'Apply to', verb: 'scope', initial: 'new' });
     expect(form.radio?.options.map((option) => [option.id, option.label, option.detail])).toEqual([
       ['chat', 'This chat', 'switches the model now; the conversation stays'],
       ['new', 'New chats', 'saves it as your default; this chat stays'],
@@ -277,13 +278,18 @@ describe('the second step in a chat (popup-models-step2-80x24.png)', () => {
     expect(form.radio?.options[0]?.warning).toBe(
       'This chat moves from Anthropic to OpenAI. Your messages and short tool receipts are sent to OpenAI.',
     );
-    // `New chats` moves nothing of this chat: no line, and the form has none of its own.
-    expect(form.radio?.options[1]?.warning).toBeUndefined();
+    // `New chats` moves nothing of this chat, and says where the chats to come go; the form has no line of its own.
+    expect(form.radio?.options[1]?.warning).toBe(
+      'New chats move from Anthropic to OpenAI. Your messages in them are sent to OpenAI.',
+    );
     expect(form.warning).toBeUndefined();
   });
 
   it('a model of the same provider says nothing leaves; the model in force says what `This chat` does with it', () => {
-    expect(scopeForm(facts({ entry: entry(BUDGET) })).radio?.options[0]?.warning).toBeUndefined();
+    const sameProvider = scopeForm(facts({ entry: entry(BUDGET) }));
+    expect(sameProvider.radio?.options[0]?.warning).toBeUndefined();
+    expect(sameProvider.radio?.options[1]?.warning).toBeUndefined();
+    expect(sameProvider.radio?.initial).toBe('chat'); // within one provider the default is the chat
     const same = scopeForm(facts({ entry: entry(GRADED) }));
     expect(same.radio?.options[0]).toMatchObject({
       detail: 'applies the effort now; the conversation stays',

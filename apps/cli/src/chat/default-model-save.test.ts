@@ -30,6 +30,7 @@ import type { NoticeFlush } from '../engine/effect-retention.js';
 import { CliError } from '../process/errors.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { createChatDefaultModelWriter, saveDefaultModel } from './default-model-save.js';
+import { createNativeFlushPort } from './native-flush-port.js';
 import { createStartingModeRuntime } from './starting-mode.js';
 
 const roots: string[] = [];
@@ -131,7 +132,12 @@ describe('saveDefaultModel: what a write came to, never a rejection', () => {
 });
 
 /** A stand-alone chat's writer over a real home, config and runtime, and a real native prompt channel whose visibility the test decides. */
-function writerFixture(existing: string | undefined) {
+function writerFixture(
+  existing: string | undefined,
+  // Where the card's host is: mounted already (the default), mounting a moment AFTER the card begins (a render pass later, as a real
+  // host does), or never (a wiring fault).
+  host: 'mounted' | 'late' | 'never' = 'mounted',
+) {
   const root = mkdtempSync(join(tmpdir(), 'relavium-default-model-'));
   roots.push(root);
   const home = join(root, 'home');
@@ -161,12 +167,32 @@ function writerFixture(existing: string | undefined) {
     });
     await publish?.();
   };
+  // The real port over the real channel, and a host that hands its flush over once per card it is mounted for, as `NativePromptHost` does.
+  const port = createNativeFlushPort(channel.ui, {
+    timer: (fire) => {
+      const handle = setTimeout(fire, 60);
+      return () => {
+        clearTimeout(handle);
+      };
+    },
+  });
+  let mountedFor = false;
+  if (host !== 'never')
+    channel.ui.subscribe(() => {
+      const active = channel.ui.getSnapshot().active;
+      if (!active) mountedFor = false;
+      else if (!mountedFor) {
+        mountedFor = true;
+        if (host === 'mounted') port.ready(flush);
+        else setTimeout(() => port.ready(flush), 20);
+      }
+    });
   let admitting = true;
   const write = createChatDefaultModelWriter({
     runtime,
     flow: channel.flow,
     ui: channel.ui,
-    flushVisible: () => flush,
+    mounted: (signal) => port.mounted(signal),
     assertAdmitting: () => {
       if (!admitting) throw new CliError('invalid_invocation', 'The chat is closing.');
     },
@@ -183,6 +209,7 @@ function writerFixture(existing: string | undefined) {
     show: (): void => {
       visible = true;
     },
+    port,
     close: (): void => {
       admitting = false;
     },
@@ -224,6 +251,59 @@ describe('a stand-alone chat’s writer (the Home’s path and consent)', () => 
     expect(written).toMatch(/theme = "kept"/u);
     expect(written).not.toContain('# my comment');
     // The card is ended with the write.
+    expect(f.channel.ui.getSnapshot().active).toBe(false);
+  });
+
+  it('a card whose host mounts a render pass after it began is waited for: nothing is published until its flush exists, and the write lands once it is on screen', async () => {
+    const original = '# my comment\n[preferences]\ntheme = "kept"\n';
+    const f = writerFixture(original, 'late');
+    let settled = false;
+    const pending = f.write('gpt-5', 'openai').finally(() => {
+      settled = true;
+    });
+    // The card has begun and its host has not mounted: the writer is waiting, not failing (it asked for a flush in this very tick before).
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+    expect(f.begin).toHaveBeenCalledTimes(1);
+    expect(f.flushes).toHaveLength(0);
+    expect(settled).toBe(false);
+    f.show();
+    await pending;
+    expect(f.flushes.length).toBeGreaterThan(0);
+    expect(readFileSync(f.configPath, 'utf8')).toMatch(/default_model = "gpt-5"/u);
+    expect(f.channel.ui.getSnapshot().active).toBe(false);
+  });
+
+  it('a second card in the same chat waits for ITS host, not the first one’s gone flush', async () => {
+    const f = writerFixture('[preferences]\ntheme = "kept"\n', 'late');
+    f.show();
+    await f.write('gpt-5', 'openai');
+    expect(f.flushes.length).toBeGreaterThan(0);
+    const before = f.flushes.length;
+    await f.write('gpt-4o', 'openai'); // a second card: a stale flush from the first would have been used, or failed
+    expect(f.flushes.length).toBeGreaterThan(before);
+    expect(readFileSync(f.configPath, 'utf8')).toMatch(/default_model = "gpt-4o"/u);
+  });
+
+  it('a card whose host never mounts publishes nothing: the save is refused, the file is unchanged, and the session is not failed', async () => {
+    const original = '[preferences]\ntheme = "kept"\n';
+    const f = writerFixture(original, 'never');
+    f.show();
+    const failure = vi.fn();
+    await expect(
+      saveDefaultModel(
+        {
+          write: f.write,
+          readEffective: () => undefined,
+          closing: () => false,
+          failure,
+        },
+        CHOICE,
+      ),
+    ).resolves.toEqual({ kind: 'refused', reason: 'failed' });
+    expect(failure).not.toHaveBeenCalled();
+    expect(readFileSync(f.configPath, 'utf8')).toBe(original);
     expect(f.channel.ui.getSnapshot().active).toBe(false);
   });
 

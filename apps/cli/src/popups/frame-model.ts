@@ -95,6 +95,10 @@ export interface PopupListRow {
    * row with none leaves it blank), so the frame never jumps when the highlight moves. A list none of whose rows has one draws no room.
    */
   readonly effect?: string | undefined;
+  /** More words the filter searches and the row never draws (a model's display name beside its id). */
+  readonly match?: string | undefined;
+  /** The row survives every filter, where it sits (a row that acts on the list itself: `Refresh the list`). */
+  readonly pinned?: true | undefined;
 }
 
 /**
@@ -219,8 +223,9 @@ export interface PopupBodyState {
 }
 
 /**
- * The rows of a list a filter leaves: the rows whose label or detail contains it, case folded, or every row with no filter typed. The ONE
- * filter of a list: the key fold reads it (the highlighted row is an index into what it leaves) and the body draws what it leaves.
+ * The rows of a list a filter leaves: the rows whose label, detail or match words contain it, case folded, and the rows pinned to the list
+ * whatever is typed; every row with no filter typed. The ONE filter of a list: the key fold reads it (the highlighted row is an index into
+ * what it leaves) and the body draws what it leaves.
  */
 export function filterListRows(
   rows: readonly PopupListRow[],
@@ -230,8 +235,10 @@ export function filterListRows(
   if (query.length === 0) return rows;
   return rows.filter(
     (row) =>
+      row.pinned === true ||
       row.label.toLowerCase().includes(query) ||
-      (row.detail?.toLowerCase().includes(query) ?? false),
+      (row.detail?.toLowerCase().includes(query) ?? false) ||
+      (row.match?.toLowerCase().includes(query) ?? false),
   );
 }
 

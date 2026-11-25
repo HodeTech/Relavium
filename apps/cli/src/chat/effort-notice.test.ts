@@ -75,11 +75,11 @@ describe('effortUnavailableNote — the two empty lists are NOT the same sentenc
 });
 
 describe('effortUnavailableNote — the refresh it offers is the one the surface has (ADR-0146 §6, MVP-11 OD-20)', () => {
-  it('names `relavium models refresh` in the shell wording and the /models picker’s Ctrl+R in the interactive chat', () => {
+  it('names `relavium models refresh` in the shell wording and the /models popup’s `Refresh the list` row in the interactive chat', () => {
     const shell = effortUnavailableNote('some-custom-endpoint-model');
     expect(shell).toContain('`relavium models refresh`');
     const tui = effortUnavailableNote('some-custom-endpoint-model', 'tui');
-    expect(tui).toContain('Open /models and press [Ctrl+R]');
+    expect(tui).toContain('Open /models and choose "Refresh the list"');
     expect(tui).not.toMatch(/relavium models|`/u);
     // The sentence that needs no refresh is the same on both surfaces.
     expect(effortUnavailableNote('deepseek-reasoner', 'tui')).toBe(

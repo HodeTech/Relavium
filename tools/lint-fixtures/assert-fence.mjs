@@ -103,6 +103,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/effort-popup.ts',
   'apps/cli/src/popups/mode-popup.ts',
   'apps/cli/src/popups/models-popup.ts',
+  'apps/cli/src/popups/permissions-popup.ts',
   DATA_MODULE,
 ];
 

@@ -30,6 +30,7 @@ import type { PopupKey } from '../popups/popup-reducer.js';
 import { openSettingsPopup } from '../popups/settings-session.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { captureIo } from '../test-support.js';
 import {
@@ -172,7 +173,8 @@ function modePopupOver(ctx: ChatDriveContext) {
   /** The slot acknowledges the frame drawn now and its settle passes (the opening guard's, and a form's own: `popup-host.ts`). */
   const settle = (): void => {
     host.shown(host.getSnapshot());
-    clock.advance(600);
+    // Past the opening guard's settle and the form's lockout after the answer that reached it (a held key's first repeat never applies a form).
+    clock.advance(APPROVAL_LOCKOUT_MS + 100);
   };
   settle();
   return {
@@ -334,7 +336,8 @@ describe('this chat, through the popup', () => {
       announced = popup.announced;
       await Promise.resolve();
     });
-    expect(announced).toEqual([]);
+    // The mode's own line, as a typed `/mode plan` says it, and not a word of the lost row.
+    expect(announced).toEqual([modeChangedNotice('plan')]);
     expect(modeRecords()).toEqual(['ask→auto']);
   });
 });

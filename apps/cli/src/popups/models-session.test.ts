@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { PopupForm } from './frame-model.js';
+import { formOptionIndex, type PopupForm } from './frame-model.js';
 import {
   BUDGET,
   DOWN,
@@ -130,6 +130,18 @@ describe('the refresh (popup work; the list keeps its rows meanwhile)', () => {
     expect(after.rows.map((row) => row.id)).toContain('o3');
   });
 
+  it('the highlight stays on the model in force when the refreshed rows land (a new model sorts before it): a bare `Enter` chain still changes nothing', async () => {
+    const fake = fakeModels();
+    const rig = opened(fake);
+    expect(rig.step()?.highlighted).toBe(GRADED);
+    await settleWork();
+    fake.setEntries([model('aaa-new-model', 'anthropic'), ...fake.member.load().entries]);
+    fake.stale[0]?.resolve({ providers: [{ provider: 'anthropic', status: 'refreshed' }] });
+    await settleWork();
+    expect(rig.step()?.rows).toContain('aaa-new-model');
+    expect(rig.step()?.highlighted).toBe(GRADED);
+  });
+
   it('a result for a popup that has closed lands nowhere: the catalog is not read again', async () => {
     const fake = fakeModels();
     const rig = opened(fake);
@@ -206,6 +218,25 @@ describe('the steps', () => {
     expect(rig.announced).toEqual([]);
   });
 
+  it('a form entered again opens on its initial options: a scope or tier left on it for another model is not carried over', () => {
+    const fake = fakeModels();
+    const rig = opened(fake);
+    highlight(rig, OPENAI);
+    rig.press('', ENTER);
+    const before = rig.host.getSnapshot().frame?.steps[1];
+    rig.press('', RIGHT); // a tier
+    rig.press('', DOWN); // "New chats"
+    const moved = rig.host.getSnapshot().frame?.steps[1];
+    expect(moved?.selected).toBe(1);
+    expect(moved?.tab).not.toBe(before?.tab);
+    rig.press('', ESC);
+    highlight(rig, GRADED);
+    rig.press('', ENTER);
+    const again = rig.host.getSnapshot().frame?.steps[1];
+    expect(again?.selected).toBe(0); // "This chat"
+    expect(again?.tab).toBe(formOptionIndex(formOf(rig).tabs, undefined)); // the tier in force
+  });
+
   it('a model this person cannot use cannot be highlighted, so it is never chosen', () => {
     const rig = opened(fakeModels());
     for (let i = 0; i < 10; i += 1) rig.press('', DOWN);
@@ -216,7 +247,35 @@ describe('the steps', () => {
   it('the filter finds a model by its provider', () => {
     const rig = opened(fakeModels());
     for (const letter of 'openai') rig.press(letter);
-    expect(rig.step()?.rows).toEqual([OPENAI, NO_TIER]);
+    // The row that refreshes the list stays under any filter (it was `Ctrl+R` on the picker this replaced).
+    expect(rig.step()?.rows).toEqual([OPENAI, NO_TIER, MODELS_REFRESH_ROW]);
+  });
+
+  it('the filter finds a model by the name its provider gives it, which the row does not draw', () => {
+    const fake = fakeModels({
+      entries: [
+        model(GRADED, 'anthropic', { displayName: 'Claude Sonnet 4.6' }),
+        model(OPENAI, 'openai', { displayName: 'GPT-5' }),
+      ],
+    });
+    const rig = opened(fake);
+    for (const letter of 'sonnet 4.6') rig.press(letter);
+    expect(rig.step()?.rows).toEqual([GRADED, MODELS_REFRESH_ROW]);
+  });
+
+  it('a filter that matches no model leaves the refresh row, which still asks the providers again', async () => {
+    const fake = fakeModels();
+    const rig = opened(fake);
+    await settleWork();
+    fake.stale[0]?.resolve(undefined); // the refresh the popup started on opening has landed: one refresh at a time
+    await settleWork();
+    for (const letter of 'zzzz') rig.press(letter);
+    expect(rig.step()?.rows).toEqual([MODELS_REFRESH_ROW]);
+    expect(rig.step()?.highlighted).toBe(MODELS_REFRESH_ROW);
+    rig.settle();
+    rig.press('', ENTER);
+    await settleWork();
+    expect(fake.calls).toContain('refresh');
   });
 
   it('an answer before the popup was seen and settled is dropped (the opening guard)', () => {
@@ -235,6 +294,7 @@ describe('applying in a chat (the popup closes first)', () => {
     highlight(rig, OPENAI);
     rig.press('', ENTER);
     rig.press('', RIGHT);
+    rig.press('', UP); // another provider: "This chat" is chosen, not pre-selected (ADR-0148 §3)
     rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     expect(rig.host.getSnapshot().open).toBe(false);
@@ -252,9 +312,46 @@ describe('applying in a chat (the popup closes first)', () => {
     const rig = opened(fake);
     highlight(rig, NO_TIER);
     rig.press('', ENTER);
+    rig.press('', UP); // another provider: "This chat" is chosen, not pre-selected (ADR-0148 §3)
     rig.settle();
     rig.press('', ENTER);
     expect(fake.switched).toEqual([{ modelId: NO_TIER, provider: 'openai' }]);
+  });
+
+  it('with no tier in force the form opens on a stand-in: left alone, a bare chain sets nothing and says only that this is the model', async () => {
+    const fake = fakeModels({ effort: undefined });
+    const rig = opened(fake);
+    await settleWork();
+    rig.press('', ENTER);
+    rig.settle();
+    rig.press('', ENTER);
+    expect(rig.host.getSnapshot().open).toBe(false);
+    expect(fake.tiers).toEqual([]);
+    expect(rig.announced).toEqual([`Already on ${GRADED}.`]);
+  });
+
+  it('with no tier in force, another model is switched to with the tier the form showed (ADR-0066 §6), and with the one it was moved to', () => {
+    const left = fakeModels({ effort: undefined });
+    const a = opened(left);
+    highlight(a, OPENAI);
+    a.press('', ENTER);
+    a.press('', UP); // another provider: "This chat" is chosen (ADR-0148 §3)
+    a.settle();
+    a.press('', ENTER);
+    expect(left.switched).toEqual([
+      { modelId: OPENAI, provider: 'openai', reasoningEffort: 'medium' },
+    ]);
+    const moved = fakeModels({ effort: undefined });
+    const b = opened(moved);
+    highlight(b, OPENAI);
+    b.press('', ENTER);
+    b.press('', RIGHT);
+    b.press('', UP);
+    b.settle();
+    b.press('', ENTER);
+    expect(moved.switched).toEqual([
+      { modelId: OPENAI, provider: 'openai', reasoningEffort: 'high' },
+    ]);
   });
 
   it('`This chat` with the model in force and another tier is the session’s tier, said as `/effort` says it', () => {

@@ -599,23 +599,23 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'models',
     label: 'Models',
-    // `read` in the forward taxonomy: opening the picker changes nothing; the action happens only on an explicit selection — the Home writes
-    // the NEXT session's default (ADR-0063), the chat reseats the LIVE session (ADR-0059). In an interactive (ink) chat the render layer
-    // intercepts a typed `/models` to open the overlay; a plain/`--json` chat (no overlay) falls through to `openModels`, which surfaces an
-    // actionable hint.
+    // `read` in the forward taxonomy: opening the popup changes nothing; the action happens only on an explicit answer — the Home writes
+    // the NEXT session's default (ADR-0063), the chat reseats the LIVE session (ADR-0059) or writes the default. In an interactive chat the
+    // host's routing opens the popup for a typed `/models` (ADR-0148 §3); a plain/`--json` chat (no popup) falls through to `openModels`,
+    // which surfaces an actionable hint.
     effect: 'read',
     run: (ctx) => ctx.openModels(),
     placements: {
       home: {
         group: 'setup',
         rank: 20,
-        description: 'Switch model (opens the catalog picker).',
+        description: 'Choose the model new chats start with.',
         surface: 'popup',
       },
       ...inChats({
         group: 'model',
         rank: 10,
-        description: 'Switch model (opens the catalog picker).',
+        description: 'Choose the model and effort for this chat or new chats.',
         surface: 'popup',
       }),
     },

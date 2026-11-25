@@ -167,6 +167,54 @@ describe('Enter, Esc and Ctrl+C (ADR-0148 §3)', () => {
   });
 });
 
+describe('an `Enter` that is not a plain first press answers nothing, on any step (MVP-11 step 5, security round 1)', () => {
+  const FORM: PopupContent = {
+    kind: 'form',
+    radio: {
+      label: 'Apply to',
+      verb: 'apply to',
+      options: [
+        { id: 'a', label: 'A' },
+        { id: 'b', label: 'B' },
+      ],
+    },
+  };
+  const steps = [
+    ['a list that says what Enter does', step({ enter: 'apply' })],
+    ['a form', step({ enter: 'apply', content: FORM })],
+    ['a list that says nothing', step()],
+  ] as const;
+  // What a terminal sends for a key that is held (a repeat a terminal that reports key events labels), let go, or pressed with a modifier
+  // (`Esc` then `Enter` inside the escape window arrives as `Meta+Enter`).
+  const notPlain: readonly (readonly [string, PopupKey])[] = [
+    ['a repeat', { return: true, eventType: 'repeat' }],
+    ['a release', { return: true, eventType: 'release' }],
+    ['Shift+Enter', { return: true, shift: true }],
+    ['Meta+Enter', { return: true, meta: true }],
+    ['Ctrl+Enter', { return: true, ctrl: true }],
+  ];
+
+  it.each(
+    steps.flatMap(([name, one]) => notPlain.map(([kind, key]) => [name, one, kind, key] as const)),
+  )('on %s, %s answers nothing', (_name, one, _kind, key) => {
+    expect(reducePopupKey('', key, one)).toEqual({ kind: 'none' });
+    // It answers nothing: the fold leaves the frame as it was, so no handler hears of it.
+    expect(foldPopupAction(openFrame(spec([one]), 1), reducePopupKey('', key, one), 2)).toEqual({
+      kind: 'unchanged',
+    });
+  });
+
+  it.each(steps)(
+    'on %s, a plain press and a press a terminal labels as one are the answer',
+    (_name, one) => {
+      expect(reducePopupKey('', { return: true }, one)).toEqual({ kind: 'enter' });
+      expect(reducePopupKey('', { return: true, eventType: 'press' }, one)).toEqual({
+        kind: 'enter',
+      });
+    },
+  );
+});
+
 describe('typed text goes only into a text field', () => {
   it('a letter the step lists is its control; any other letter on a step with no filter is nothing', () => {
     const frame = openFrame(spec([step({ controls: [{ key: 'r', verb: 'again' }] })]), 1);
@@ -191,6 +239,42 @@ describe('a result that lands', () => {
     const next = withContent(frame, 0, { kind: 'list', rows: [row('only')] });
     expect(currentStep(next).state.selected).toBe(0);
     expect(currentStep(next).state.content.kind).toBe('list');
+  });
+
+  it('keeps the highlight on the same row by id when rows land before it (a refreshed catalog sorts a new model first)', () => {
+    const frame = stateOf(press(openFrame(spec([step()]), 1), '', { end: true })); // delta, the last row
+    expect(visibleRows(currentStep(frame).state)[currentStep(frame).state.selected]?.id).toBe(
+      'delta',
+    );
+    const landed = withContent(frame, 0, {
+      kind: 'list',
+      rows: [row('aaa-new'), row('alpha'), row('bravo', false), row('charlie'), row('delta')],
+    });
+    const state = currentStep(landed).state;
+    expect(visibleRows(state)[state.selected]?.id).toBe('delta'); // by index it would be 'charlie'
+  });
+
+  it('a highlighted row that is gone leaves the highlight at its index, or on the first row that can act', () => {
+    const frame = stateOf(press(openFrame(spec([step()]), 1), '', { end: true })); // delta
+    const gone = withContent(frame, 0, {
+      kind: 'list',
+      rows: [row('alpha'), row('bravo'), row('charlie'), row('echo')],
+    });
+    expect(currentStep(gone).state.selected).toBe(3); // the same index, a row that can act
+    const short = withContent(frame, 0, {
+      kind: 'list',
+      rows: [row('alpha'), row('bravo', false)],
+    });
+    expect(currentStep(short).state.selected).toBe(0);
+  });
+
+  it('a highlighted row that is still there but cannot act any more is left for one that can', () => {
+    const frame = stateOf(press(openFrame(spec([step()]), 1), '', { end: true })); // delta
+    const disabled = withContent(frame, 0, {
+      kind: 'list',
+      rows: [row('alpha'), row('bravo'), row('charlie'), row('delta', false)],
+    });
+    expect(currentStep(disabled).state.selected).toBe(0);
   });
 });
 

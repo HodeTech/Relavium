@@ -10,7 +10,7 @@
 import { CHAT_MODES, type ChatMode } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { MODE_EFFECT } from '../chat/mode-effects.js';
+import { MODE_EFFECT, modeChangedNotice } from '../chat/mode-effects.js';
 import type { StartupDefaultSaveResult } from '../chat/mode-settings.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import { displayWidth } from '../render/tui/viewport.js';
@@ -251,7 +251,7 @@ describe('answering the popup', () => {
   });
 
   it.each(CHAT_MODES)(
-    'this chat: `Enter` applies %s through the setter, closes, and the popup says nothing of its own',
+    'this chat: `Enter` applies %s through the setter, closes, and says what a typed `/mode` says: the setter’s word stands for a widening, the mode’s own line for a narrowing',
     (mode) => {
       const r = openMode(mode === 'ask' ? 'plan' : 'ask');
       const target = CHAT_MODES.indexOf(mode);
@@ -264,8 +264,13 @@ describe('answering the popup', () => {
       expect(r.mode.applied).toEqual([mode]);
       expect(r.mode.saved).toEqual([]);
       expect(r.host.getSnapshot().open).toBe(false);
-      expect(r.announced).toEqual([]);
-      expect(r.notifications.getSnapshot().current).toBeUndefined();
+      // The fake setter says nothing (the real one announces a widening itself, `chat-mode-popup.test.ts`); a narrowing is the popup's word.
+      expect(r.announced).toEqual(
+        mode === 'ask' || mode === 'plan' ? [modeChangedNotice(mode)] : [],
+      );
+      expect(r.notifications.getSnapshot().current?.text).toBe(
+        mode === 'ask' || mode === 'plan' ? modeChangedNotice(mode) : undefined,
+      );
     },
   );
 
@@ -276,6 +281,8 @@ describe('answering the popup', () => {
     r.press('', ENTER);
     expect(r.mode.applied).toEqual(['accept-edits']);
     expect(r.mode.mode()).toBe('accept-edits');
+    // The mode already in force is said, as a typed `/mode accept-edits` says it, rather than closing without a word.
+    expect(r.announced).toEqual([modeChangedNotice('accept-edits')]);
   });
 
   it('a setter that refuses (an unrecorded widening): the popup still closes, says nothing, and the mode stays', () => {
@@ -340,18 +347,19 @@ describe('answering the popup', () => {
     expect(r.announced).toEqual(['The startup default could not be saved']);
   });
 
-  it('the scope chosen is kept by id when step 1 is answered again, and step 2 then names the new mode and its effect', () => {
+  it('step 2 entered again names the new mode and its effect, and opens on "This chat": a scope left on it for another mode is not carried over', () => {
     const r = openMode('ask');
     r.press('', END);
     r.press('', ENTER);
-    r.press('', DOWN);
+    r.press('', DOWN); // "New chats"
+    expect(shownForm(r).chosen).toBe(1);
     r.press('', ESC);
     r.press('', UP); // auto → accept-edits
     r.press('', ENTER);
     const { form, chosen } = shownForm(r);
     expect(form.summary).toBe('Mode: accept-edits');
     expect(form.warning).toBe(MODE_EFFECT['accept-edits'].full);
-    expect(chosen).toBe(1);
+    expect(chosen).toBe(0); // an `Enter` here changes this chat; it writes no startup default
   });
 
   it('an `Enter` before the popup was seen, or inside its settle, answers nothing (the opening guard)', () => {

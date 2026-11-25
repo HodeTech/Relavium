@@ -256,6 +256,21 @@ export function initialStepState(step: PopupStep): PopupStepState {
   };
 }
 
+/**
+ * The frame moved to `stepIndex` by the command (not by `Esc`): a form step is entered on its fields' initial options (the CURRENT value, §3),
+ * never on the ones a person left on it the last time (a form for another mode or model that finds `New chats` still chosen would write a
+ * default where `This chat` was meant). `withContent` keeps a form's choices when its content is replaced under the person's hands (a result
+ * landing); entering is not that.
+ */
+export function enterStep(frame: PopupFrame, stepIndex: number): PopupFrame {
+  const steps = frame.steps.map((state, index) =>
+    index === stepIndex && index !== frame.stepIndex && state.content.kind === 'form'
+      ? { ...state, ...formChoices(state.content, undefined) }
+      : state,
+  );
+  return { ...frame, steps, stepIndex };
+}
+
 /** A popup frame as it opens: on its initial step (the first unless the spec names another), every step in its initial state. */
 export function openFrame(spec: PopupSpec, runId: number): PopupFrame {
   const initial = spec.initialStep ?? 0;
@@ -449,6 +464,18 @@ function reduceChordStepKey(input: string, key: PopupKey, answer: LineAnswerKey)
   );
 }
 
+/**
+ * Whether an `Enter` is a plain first press: no `Ctrl`, `Meta` or `Shift` held, and not a held key's repeat or its release from a terminal that
+ * reports key events. Anything else answers nothing, on any step: `Esc` then `Enter` inside a terminal's escape window arrives as `Meta+Enter`
+ * (the `Enter` of a line is refused the same way, {@link lineAnswerOf}), and a repeat is a key that is held, not pressed: the first one after
+ * the terminal's initial repeat delay would otherwise answer what the press before it only opened (a form applied by the held `Enter` that
+ * reached it; MVP-11 step 5, security round 1).
+ */
+function plainEnter(key: PopupKey): boolean {
+  if (key.ctrl === true || key.meta === true || key.shift === true) return false;
+  return key.eventType !== 'repeat' && key.eventType !== 'release';
+}
+
 /** The control a step lists for the Delete key ({@link PopupControl.deleteKey}): only on a step with no filter, and with no `Ctrl` or `Meta` held. */
 function deleteControlOf(key: PopupKey, step: PopupStep): PopupControl | undefined {
   if (step.filter === true || key.ctrl === true || key.meta === true) return undefined;
@@ -461,7 +488,7 @@ export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): P
   if (answer !== undefined) return reduceChordStepKey(input, key, answer);
   if (isInterrupt(input, key)) return { kind: 'close-all' };
   if (key.escape === true) return { kind: 'leave' };
-  if (key.return === true) return { kind: 'enter' };
+  if (key.return === true) return plainEnter(key) ? { kind: 'enter' } : { kind: 'none' };
   const navigation = navigationOf(key);
   if (navigation !== undefined) return navigation;
   if (key.leftArrow === true) return { kind: 'adjust', delta: -1 };
@@ -983,8 +1010,17 @@ export function withContent(
       const next = { ...state, content, ...(controls === undefined ? {} : { controls }) };
       // A form keeps the options the person chose, by id, when its content is replaced (a step that becomes a form opens on its initial options).
       if (content.kind === 'form') return { ...next, ...formChoices(content, state), offset: 0 };
+      // The highlight stays on the row it was on, by id: rows that land (a refreshed catalog) may sort before it, and a highlight kept by index
+      // would slide off the model in force onto another (a bare `Enter` chain would then choose it). A row that is gone leaves it at its index.
+      const heldId = visibleRows(state)[state.selected]?.id;
       const rows = visibleRows(next);
-      const selected = canAct(rows[state.selected]) ? state.selected : firstEnabled(rows);
+      const sameRow = heldId === undefined ? -1 : rows.findIndex((row) => row.id === heldId);
+      const selected =
+        sameRow >= 0 && canAct(rows[sameRow])
+          ? sameRow
+          : canAct(rows[state.selected])
+            ? state.selected
+            : firstEnabled(rows);
       return { ...next, selected, offset: 0 };
     }),
   };
