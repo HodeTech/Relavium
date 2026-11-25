@@ -83,3 +83,33 @@
 **Process note.** Twice in this unit the machine stalled because VS Code's extension host kept ~120 `rg --files` walkers in `U` state; `kill -9` of the walkers (recipe in memory) freed it each time. A fix agent corrupted a file by restoring a mutant with a reverse text replacement; the briefs now say to restore from a byte copy.
 
 Counts at `f684c457`: 787 test files, 17,334 tests passed, 14 skipped; typecheck, lint, prettier, `assert-fence`, the tools pin tests clean.
+
+## Unit 4 — the popup host, the dimmed backdrop, the reports (2026-11-25, in progress)
+
+The unit runs in sub-parts, each committed, then two review rounds over the whole unit. **4.1 the popup host** (`ea519d6b`, opus, 47 of 47 mutants killed), **4.2 the dimmed backdrop** (`415761ea`, sonnet, the lead re-read the route and the hosts), 4.3 `/doctor` and its deep-tier consent, 4.4 the other reports.
+
+### 4.1 — what was built and what it decided
+
+`apps/cli/src/popups/` holds the geometry (a data module behind the fence, 16 now), the pure frame, the reducer driver, the host store (opening rules, opening guard, one key history, run ids, late results, depth two, the loading clock outside the snapshot), the notification channel, the content-node measurement and the error boundary. `overlay-flags.ts` splits what `nativePrompt` meant into **who owns the keys** (`nativePrompt`, `popup`) and **who takes the rows** (`replacesBody`); a popup closes `revokesCustody`, and a popup that becomes the top resets the cards' acknowledgement and dwell origin synchronously. The native-prompt identity is enumerated field by field. A mutation found a real defect: an inline popup's content node stretched to the parent's width and could never be acknowledged (`alignSelf="flex-start"`).
+
+**Decisions and limits to write into the ADRs at close-out:**
+
+| # | What | Owner |
+|---|---|---|
+| 1 | The glyph table has no vertical frame or corner glyph and its plain forms must be distinct, so the alternate-screen popup is **open-sided** (top and bottom rules, like a sheet), unlike the concept drawings. Adding frame roles needs a maintainer decision | ADR-0148 §1 note; raise after the first usability run |
+| 2 | Ink's `<Static>` is itself absolutely positioned; the `overlay-layer` property excludes it and a source test pins our own code | ADR-0148 §2 note |
+| 3 | An inline inspection popup on a **shrinking** terminal: Ink clears the scrollback whenever the live region reaches the terminal's height, so the no-clear assertion holds for standard popups; both kinds stay ≤ rows−1 at every render | ADR-0148 §4 note, unit 8 |
+| 4 | The open gate treats a chat's `submitBusy` as a running turn; a command that opens its popup while its own submit is in flight would be refused. **Resolved in 4.3** by opening from the host's routing (as a sheet opens) | 4.3 |
+| 5 | The Home's chat stores now share the Home's chord history (stricter); `picker` and the popup descriptor are part of the native-prompt identity; the stand-alone native channel in `commands/chat.ts` still keeps its own history | unit 6 |
+| 6 | Framed native prompts are partial: picker and chord kinds keep their card, the rail has no step names (the descriptor carries none), the legend keeps the card's order, PgUp/PgDn page by the card's window | unit 6 |
+| 7 | Selected rows go through `SheetLinesView` (the same `SELECTED_ROW` rule), not `SelectableText`; a popup left open if the Home enters `loading` fails closed (clipped, never acknowledged); `notifications` makes ` · ` inert, so "Resized · key cleared" reads with a dash | unit 7 / close-out |
+
+### 4.2 — the dimming, and the one thing it gives up
+
+`render/tui/text.tsx` is the one `Text` (the only non-test, non-harness importer of Ink's; an AST guard pins it with eight mutations) plus the `BackdropDim` context. `popup-slot.tsx` owns the one predicate (`slotDrawing`, `dimsBackdrop`): dimmed exactly when an overlay box is drawn over a body that stays, with colour on. The hosts wrap everything but the slot, so the slot stays last and the only absolute node. The matrix emulator keeps the SGR state of every cell and the new `backdrop-dim` property asserts that every cell outside the popup that shows something is dim, on bodies that held bold, inverse and coloured cells before the popup opened (3,887 cells asserted; 702 matrix cells; 122 new tests).
+
+**A dimmed backdrop draws no bold (maintainer-visible refinement of ADR-0148 §4).** Reproduced by the lead: `renderToString(<Text dimColor>a <Text bold>B</Text> c</Text>)` gives `ESC[2ma ESC[1mB ESC[22m c ESC[22m`. SGR 22 closes bold and dim, and Ink re-encodes the frame cell by cell with `@alcalzone/ansi-tokenize`, which goes from "bold + dim" to "dim" by emitting only `ESC[22m`, so every cell after a bold span is plain whatever the string says (55 to 85 such cells on the rich chat bodies). The route avoids the state: `Text` passes `bold={false}` and `Emph` drops its bold pair under the dim; inverse, underline, italic and colour stay, and the cursor and the selected row stay inverse and dim. The backdrop keeps its words, markers, inverse rows and colours and loses only the weight of its bold. Alternatives rejected: patching `ansi-tokenize`, our own stdout encoder. ADR-0148 §4 gets a dated note.
+
+**Limits:** the matrix cannot see an `Emph` bold leak (no popup-eligible body has text after a bold `Emph` span on one row); route tests do. There is no "Home on a tab" body (the gate refuses a popup over a tab screen, correctly); the focused strip row stands in. `TERM=dumb` with the colour flag on: chalk at level 0 prints no dim but `Emph` still drops bold while a popup is open (cosmetic). The below-floor notice with colour on dims the body behind it, and the matrix's below-floor cell is colour-off, so that case is uncovered. Wide characters: one cell per UTF-16 unit; `cellsAreSound` refuses a popup-crossed row that holds one (no fixture does). Real terminals other than tmux are not run (the ADR's condition stands).
+
+Counts at `415761ea`: 804 test files, 17,759 tests passed, 14 skipped; typecheck, lint, prettier, `assert-fence`, the tools pin tests clean; the legend golden has three popup producers (71 in all).
