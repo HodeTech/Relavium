@@ -313,6 +313,20 @@ export interface JobControlLifecycle {
   readonly onContinue: (listener: () => void) => () => void;
   /** Re-deliver SIGTSTP to this process after our listener has released terminal state and removed itself. */
   readonly suspendSelf: () => void;
+  /**
+   * Hold the event loop open and return what lets it go. While a stop is pending the loop would otherwise hold NOTHING: a signal handle is
+   * unref'd, stdin is paused for the handoff, a Home's frame timer is unref'd. The process is stopped inside {@link suspendSelf}, and after
+   * SIGCONT the continuation is delivered by the loop, which finds nothing to wait for and ends the process (exit 0 for the Home, 4 for a
+   * chat that "ended") before the signal's own callback runs. Absent (a test's lifecycle): nothing is held.
+   */
+  readonly keepAlive?: () => () => void;
+  /**
+   * Bring the terminal's size up to date after a continuation. A resize while the process was stopped goes to the shell (the foreground job),
+   * never to this process, so the stream still says the old size and the layout stays at it until the next resize. Run when the suspension has
+   * settled and the renderer owns the terminal again; production raises the SIGWINCH the process missed, so the stream reads the window and says
+   * `'resize'` when the size is different. Absent: nothing is done.
+   */
+  readonly refreshSize?: () => void;
 }
 
 const noop = (): void => undefined;
@@ -332,6 +346,17 @@ export const defaultJobControlLifecycle: JobControlLifecycle = {
   },
   suspendSelf: () => {
     if (process.platform !== 'win32') process.kill(process.pid, 'SIGTSTP');
+  },
+  keepAlive: () => {
+    // A ref'd timer that never fires in practice (the largest delay Node takes, about 24 days): it is a handle and nothing else.
+    const timer = setInterval(noop, 2 ** 31 - 1);
+    return () => clearInterval(timer);
+  },
+  refreshSize: () => {
+    // `tty.WriteStream` keeps `columns` and `rows` (and `getWindowSize()`, which only returns them) from SIGWINCH alone, and `process.stdout`
+    // re-reads the window and says `'resize'` when that signal arrives. A process that was stopped missed it, so it is raised here, by the
+    // process itself: the same signal the terminal would have sent, handled by Node's own code, with ink and the hosts hearing an ordinary resize.
+    if (process.platform !== 'win32' && process.stdout.isTTY) process.kill(process.pid, 'SIGWINCH');
   },
 };
 
@@ -424,6 +449,28 @@ export function wireJobControl(opts: {
     }
   };
 
+  // The ONE handle that keeps the event loop open while a stop is pending (see `JobControlLifecycle.keepAlive`): taken before the process stops,
+  // let go when the suspension has settled (the renderer redrawn and its own input handle back) or the binding is disposed. Never more than one.
+  let releaseLoop: (() => void) | undefined;
+  const holdLoop = (): void => {
+    if (releaseLoop !== undefined) return;
+    try {
+      releaseLoop = opts.lifecycle.keepAlive?.();
+    } catch (cause) {
+      report(cause);
+    }
+  };
+  const letLoopGo = (): void => {
+    const release = releaseLoop;
+    releaseLoop = undefined;
+    if (release === undefined) return;
+    try {
+      release();
+    } catch (cause) {
+      report(cause);
+    }
+  };
+
   const removeSuspendListener = (): void => {
     const remove = removeSuspend;
     if (remove === undefined) return;
@@ -489,6 +536,16 @@ export function wireJobControl(opts: {
   const settle = (): void => {
     resolveContinue = undefined;
     suspending = false;
+    letLoopGo();
+    // The renderer has the terminal back and has redrawn at the size it last knew: bring that size up to date (a resize during the stop was
+    // delivered to the shell, not to us), so it redraws again if the size changed.
+    if (!disposed) {
+      try {
+        opts.lifecycle.refreshSize?.();
+      } catch (cause) {
+        report(cause);
+      }
+    }
     installSuspendListener();
     // `SIGCONT` deliberately re-arms before Ink starts reclaiming terminal state: an external SIGTSTP can otherwise
     // default-stop the process in the tiny interval after 1049/raw input has been restored but before the mouse/
@@ -559,6 +616,8 @@ export function wireJobControl(opts: {
           return;
         }
         resolveContinue = resolve;
+        // Before the process stops: after SIGCONT the continuation is delivered by the loop, which must have something to wait for.
+        holdLoop();
         forwardSuspend();
       });
     // Signals cannot await a promise. Absorb a terminal-write/Ink failure here: `suspendFullScreen` has already
@@ -599,6 +658,7 @@ export function wireJobControl(opts: {
   const dispose = (): void => {
     disposed = true;
     pendingSuspend = false;
+    letLoopGo();
     // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
     // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a
     // `/clear`, a `/model` reseat, the onboarding→Home handoff — added another, so one Ctrl-Z eventually ran
