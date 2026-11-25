@@ -12,8 +12,9 @@
 
 import { inertLegendText } from '../render/tui/legend.js';
 import { authorLine } from '../render/tui/run-card-model.js';
-import { wrapWords } from '../render/tui/viewport.js';
-import { POPUP_FLOOR, popupInnerWidth } from './geometry.js';
+import { clipLine } from '../render/tui/sheet-frame.js';
+import { displayWidth, wrapWords } from '../render/tui/viewport.js';
+import { POPUP_FLOOR, POPUP_NOTICE_MAX_COLUMNS, popupInnerWidth } from './geometry.js';
 
 /** The columns a popup's text has at the smallest terminal it is drawn on (80 columns): every line a popup writes fits it whole. */
 export const POPUP_TEXT_COLUMNS = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
@@ -83,4 +84,14 @@ export function wrapHanging(text: string, columns = POPUP_TEXT_COLUMNS, hang = 4
       (line) => `${indent}${line.trimEnd()}`,
     ),
   ];
+}
+
+/**
+ * The one fit of what a setting announces on the host's channel: the first of `forms` that is at most {@link POPUP_NOTICE_MAX_COLUMNS} wide
+ * (54: read whole beside a popup's way back, should one open while it is shown), else the last of them cut with the ellipsis. The settings
+ * popups' announcements (`/models`' and `/mode`'s) all go through it, longest form first, so none is cut where a person reads it.
+ */
+export function fitNotice(...forms: readonly string[]): string {
+  const fits = forms.find((text) => displayWidth(text) <= POPUP_NOTICE_MAX_COLUMNS);
+  return fits ?? clipLine(forms.at(-1) ?? '', POPUP_NOTICE_MAX_COLUMNS);
 }

@@ -68,7 +68,7 @@ export function settingsPortFor(surface: SettingsSurface): SettingsPort {
         mode = next;
         return true;
       },
-      saveStartupDefault: () => Promise.resolve(),
+      saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
     },
   };
 }

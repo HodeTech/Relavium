@@ -11,9 +11,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { withGlyphForm } from '../render/tui/glyphs.js';
+import { legend as legendText } from '../render/tui/legend.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { formFits, popupBody, type PopupContent, type PopupForm } from './frame-model.js';
-import { POPUP_NOTICE_MAX_COLUMNS, popupGeometry } from './geometry.js';
+import {
+  POPUP_FLOOR,
+  POPUP_NOTICE_MAX_COLUMNS,
+  popupGeometry,
+  popupInnerWidth,
+} from './geometry.js';
 import {
   alreadyDefaultAnnouncement,
   alreadyOnAnnouncement,
@@ -367,11 +373,20 @@ describe('the spec, its legends and its answers', () => {
     const legend = withGlyphForm(false, () => popupLegend(second));
     expect(legend.items).toEqual([
       { keys: '←/→', verb: 'effort' },
+      // Not the frame's `apply to`: with it the row is 67 columns and `[Ctrl+C] close` is dropped at the floor (see below).
       { keys: '↑/↓', verb: 'scope' },
       { keys: 'Enter', verb: 'apply' },
       { keys: 'Ctrl+C', verb: 'close' },
     ]);
     expect(legend.exit).toMatchObject({ class: 'step', keys: 'Esc', verb: 'back' });
+    // The whole row, every key of it, fits the inner width of a popup at the floor (66) in both glyph forms: nothing is dropped from it.
+    for (const plain of [false, true])
+      withGlyphForm(plain, () => {
+        const row = popupLegend(second);
+        expect(displayWidth(legendText(row.items, row.exit))).toBeLessThanOrEqual(
+          popupInnerWidth(POPUP_FLOOR.columns, 'standard'),
+        );
+      });
   });
 
   it('the choice is the model and the tier its tabs offered; where it applies is the radio’s, or the default on the Home', () => {

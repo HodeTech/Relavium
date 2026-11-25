@@ -111,11 +111,11 @@
     "surface=home command=permissions field=rejectHint": "Open /permissions and press [d] on a row to withdraw it.",
     "surface=standalone-chat command=mode field=description": "Choose the mode; Shift+Tab changes this chat only.",
     "surface=standalone-chat command=thinking field=description": "Show or hide the reasoning (\"thinking\") panel (or [Ctrl+T] to toggle).",
-    "surface=standalone-chat command=permissions field=description": "Open the permissions sheet: the commands remembered for this project and approved for this session; [d] withdraws one.",
+    "surface=standalone-chat command=permissions field=description": "See the commands remembered for this project and approved for this session; [d] withdraws one.",
     "surface=standalone-chat command=permissions field=rejectHint": "Open /permissions and press [d] on a row to withdraw it.",
     "surface=home-chat command=mode field=description": "Choose the mode; Shift+Tab changes this chat only.",
     "surface=home-chat command=thinking field=description": "Show or hide the reasoning (\"thinking\") panel (or [Ctrl+T] to toggle).",
-    "surface=home-chat command=permissions field=description": "Open the permissions sheet: the commands remembered for this project and approved for this session; [d] withdraws one.",
+    "surface=home-chat command=permissions field=description": "See the commands remembered for this project and approved for this session; [d] withdraws one.",
     "surface=home-chat command=permissions field=rejectHint": "Open /permissions and press [d] on a row to withdraw it."
   },
   "provider-key-hints": {
@@ -1764,19 +1764,19 @@
   "help-popup": {
     "surface=standalone-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=standalone-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
-    "surface=standalone-chat colour=off [3]": "                 session; [d] withdraws one.",
+    "surface=standalone-chat colour=off [3]": "                 approved for this session; [d] withdraws one.",
     "surface=standalone-chat colour=off [4]": " ↑/↓ scroll · [c] copy · Esc close",
     "surface=standalone-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=standalone-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
-    "surface=standalone-chat colour=on [3]": "                 session; [d] withdraws one.",
+    "surface=standalone-chat colour=on [3]": "                 approved for this session; [d] withdraws one.",
     "surface=standalone-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
     "surface=home-chat colour=off [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=home-chat colour=off [2]": "                 [Ctrl+T] to toggle).",
-    "surface=home-chat colour=off [3]": "                 session; [d] withdraws one.",
+    "surface=home-chat colour=off [3]": "                 approved for this session; [d] withdraws one.",
     "surface=home-chat colour=off [4]": " ↑/↓ scroll · [c] copy · Esc close",
     "surface=home-chat colour=on [1]": "   /mode         Choose the mode; Shift+Tab changes this chat only.",
     "surface=home-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
-    "surface=home-chat colour=on [3]": "                 session; [d] withdraws one.",
+    "surface=home-chat colour=on [3]": "                 approved for this session; [d] withdraws one.",
     "surface=home-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   },
   "effort-popup": {

@@ -11,10 +11,11 @@ import { CHAT_MODES, type ChatMode } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { MODE_EFFECT } from '../chat/mode-effects.js';
+import type { StartupDefaultSaveResult } from '../chat/mode-settings.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { formFits, naturalBodyRows, popupBody, popupText } from './frame-model.js';
-import { POPUP_FLOOR, popupInnerWidth } from './geometry.js';
+import { POPUP_FLOOR, POPUP_NOTICE_MAX_COLUMNS, popupInnerWidth } from './geometry.js';
 import {
   MODE_CURRENT,
   MODE_INTRO,
@@ -24,6 +25,7 @@ import {
   modeSpec,
   SCOPE_STEP,
   scopeOf,
+  startupDefaultAnnouncement,
 } from './mode-popup.js';
 import { macrotask, type PopupWorkOwner } from './popup-work.js';
 import { currentStep, openFrame, popupLegend, type PopupKey } from './popup-reducer.js';
@@ -38,8 +40,19 @@ const CONTROL = new RegExp(
 );
 const INNER = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
 
-/** A `/mode` member over fakes: the mode in force `current`, every apply and hand-off recorded; `accepts` is what the setter answers. */
-function fakeMode(current: ChatMode, accepts = true) {
+/** What the startup-default writer's flow comes to in these tests unless a case says otherwise: saved, and it applies to new chats. */
+const SAVED: StartupDefaultSaveResult = {
+  kind: 'saved',
+  durability: 'confirmed',
+  autoAfterRestart: false,
+  unfinished: false,
+};
+
+/**
+ * A `/mode` member over fakes: the mode in force `current`, every apply and hand-off recorded; `accepts` is what the setter answers, `result`
+ * what the hand-off comes to.
+ */
+function fakeMode(current: ChatMode, accepts = true, result: StartupDefaultSaveResult = SAVED) {
   let now = current;
   const applied: ChatMode[] = [];
   const saved: ChatMode[] = [];
@@ -52,7 +65,7 @@ function fakeMode(current: ChatMode, accepts = true) {
     },
     saveStartupDefault: (mode) => {
       saved.push(mode);
-      return Promise.resolve();
+      return Promise.resolve(result);
     },
   };
   return { applied, saved, member, mode: () => now };
@@ -246,6 +259,7 @@ describe('answering the popup', () => {
       if (target === 0) r.press('', UP);
       expect(r.rows().highlighted).toBe(mode);
       r.press('', ENTER);
+      r.settle(); // step 2's own frame is seen and settles
       r.press('', ENTER);
       expect(r.mode.applied).toEqual([mode]);
       expect(r.mode.saved).toEqual([]);
@@ -258,6 +272,7 @@ describe('answering the popup', () => {
   it('a bare `Enter` chain applies the mode already in force to this chat: nothing changes', () => {
     const r = openMode('accept-edits');
     r.press('', ENTER);
+    r.settle(); // step 2's own frame is seen and settles
     r.press('', ENTER);
     expect(r.mode.applied).toEqual(['accept-edits']);
     expect(r.mode.mode()).toBe('accept-edits');
@@ -267,6 +282,7 @@ describe('answering the popup', () => {
     const r = openMode('ask', false);
     r.press('', END);
     r.press('', ENTER);
+    r.settle(); // step 2's own frame is seen and settles
     r.press('', ENTER);
     expect(r.mode.applied).toEqual(['auto']);
     expect(r.mode.mode()).toBe('ask');
@@ -274,12 +290,13 @@ describe('answering the popup', () => {
     expect(r.announced).toEqual([]);
   });
 
-  it('new chats: `Enter` closes the popup, applies nothing to this chat, and hands off once the key has been handled', async () => {
+  it('new chats: `Enter` closes the popup, applies nothing to this chat, hands off once the key has been handled, and says the result on the host’s channel', async () => {
     const r = openMode('ask');
     r.press('', END);
     r.press('', ENTER);
     r.press('', DOWN);
     expect(shownForm(r).chosen).toBe(1);
+    r.settle(); // step 2's own frame, as it is now, is seen and settles
     r.press('', ENTER);
     expect(r.host.getSnapshot().open).toBe(false);
     // Not inside the key's own handling: the flow's first card is a frame of its own.
@@ -287,7 +304,10 @@ describe('answering the popup', () => {
     await macrotask();
     expect(r.mode.saved).toEqual(['auto']);
     expect(r.mode.applied).toEqual([]);
-    expect(r.announced).toEqual([]);
+    // What the flow came to, in a few words, once it has ended (F2: none of its words goes into the transcript).
+    await vi.waitFor(() =>
+      expect(r.announced).toEqual(['Startup default: auto · applies to new chats']),
+    );
   });
 
   it('the hand-off is entered on the work owner, and its fault goes to the owner, never to an unhandled rejection', async () => {
@@ -311,10 +331,13 @@ describe('answering the popup', () => {
     r.settle();
     r.press('', ENTER);
     r.press('', DOWN);
+    r.settle(); // step 2's own frame, as it is now, is seen and settles
     r.press('', ENTER);
     expect(entered).toEqual(['entered']);
     await macrotask();
     await vi.waitFor(() => expect(failures).toEqual([fault]));
+    // Nobody is left without word: nothing was saved, and the host's channel says so.
+    expect(r.announced).toEqual(['The startup default could not be saved']);
   });
 
   it('the scope chosen is kept by id when step 1 is answered again, and step 2 then names the new mode and its effect', () => {
@@ -344,6 +367,7 @@ describe('answering the popup', () => {
     r.clock.advance(500);
     r.press('', ENTER);
     expect(stepIndex(r)).toBe(SCOPE_STEP);
+    r.settle(); // step 2's own frame is seen and settles (`popup-form-settle.test.ts` holds that rule)
     r.press('', ENTER);
     expect(mode.applied).toEqual(['ask']);
   });
@@ -411,5 +435,78 @@ describe('what the popup draws', () => {
             }
         }
       });
+  });
+});
+
+describe('what "New chats" says once the startup-default flow has ended (the host’s channel, at most 54 columns)', () => {
+  /** Every result the hand-off can come to, with the words it says for `accept-edits` (the longest mode). */
+  const RESULTS: readonly (readonly [string, StartupDefaultSaveResult, string])[] = [
+    ['unchanged', { kind: 'unchanged' }, 'Startup default unchanged'],
+    ['failed', { kind: 'refused', autoRevoked: false }, 'The startup default could not be saved'],
+    [
+      'failed after a confirmed narrowing',
+      { kind: 'refused', autoRevoked: true },
+      'Startup default not saved; startup auto stays revoked',
+    ],
+    ['saved', SAVED, 'Startup default: accept-edits · applies to new chats'],
+    [
+      'saved, unconfirmed',
+      { ...SAVED, durability: 'unconfirmed' },
+      'Startup default saved; durability unconfirmed',
+    ],
+    [
+      'saved, a project overrides it',
+      { ...SAVED, overriddenBy: 'project' },
+      'Startup default saved; this project overrides it',
+    ],
+    [
+      'saved, a workspace overrides it',
+      { ...SAVED, overriddenBy: 'workspace' },
+      'Startup default saved; this workspace overrides it',
+    ],
+    [
+      'saved, stale auto refused',
+      { ...SAVED, autoAfterRestart: true },
+      'Startup default saved; auto applies after a restart',
+    ],
+    [
+      'saved, unfinished',
+      { kind: 'saved', durability: 'unknown', autoAfterRestart: false, unfinished: true },
+      'Startup default saved; mode settings could not finish',
+    ],
+  ];
+
+  it.each(RESULTS)('%s', (_name, result, words) => {
+    expect(startupDefaultAnnouncement('accept-edits', result)).toBe(words);
+  });
+
+  it('every result, for every mode, is the product’s own words, whole within 54 columns (never cut)', () => {
+    for (const mode of CHAT_MODES)
+      for (const [, result] of RESULTS) {
+        const text = startupDefaultAnnouncement(mode, result);
+        expect(displayWidth(text)).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+        expect(text.endsWith('…')).toBe(false);
+        expect(popupText(text)).toBe(text);
+        expect(CONTROL.test(text)).toBe(false);
+      }
+  });
+
+  it('the fact that matters most is said: an override before a refused auto, before an unconfirmed write', () => {
+    expect(
+      startupDefaultAnnouncement('auto', {
+        kind: 'saved',
+        durability: 'unconfirmed',
+        overriddenBy: 'project',
+        autoAfterRestart: true,
+        unfinished: false,
+      }),
+    ).toBe('Startup default saved; this project overrides it');
+    expect(
+      startupDefaultAnnouncement('auto', {
+        ...SAVED,
+        durability: 'unconfirmed',
+        autoAfterRestart: true,
+      }),
+    ).toBe('Startup default saved; auto applies after a restart');
   });
 });

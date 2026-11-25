@@ -1,10 +1,9 @@
 /**
  * The one routing of a typed line to a popup ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §2 "hosts hold no popup logic", §6, §8, §10): which popup a line opens on a host, given what the host has wired, or `undefined` when the line is
- * not one (it then goes on to the host's own dispatch, which judges its arguments). The hosts recognise the line where they open a sheet for
- * `/permissions`, BEFORE it is counted as a submit (so the popup host's open gate never sees the command's own line as a turn), and each keeps
- * only its own open adapter: the stand-alone chat (`chat-ink.tsx` `submit()`), the Home's landing and the chat the Home hosts
- * (`home-controller.ts`).
+ * not one (it then goes on to the host's own dispatch, which judges its arguments). The hosts recognise the line through this one function
+ * BEFORE it is counted as a submit (so the popup host's open gate never sees the command's own line as a turn), and each keeps only its own open
+ * adapter: the stand-alone chat (`chat-ink.tsx` `submit()`), the Home's landing and the chat the Home hosts (`home-controller.ts`).
  *
  * Built over the three parses of the eager halves (`parseDoctorLine`, `parseReportLine`, `parseSettingsLine`) and the availability of the report
  * and settings tables (`reportAvailable`, `settingsAvailable`), so the forms a popup answers are written once: `/doctor` and `/doctor --deep`;

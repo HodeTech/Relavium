@@ -219,7 +219,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     '  /mode  Choose the mode; Shift+Tab changes this chat only.',
     '  /effort  Set the reasoning-effort tier: off / low / medium / high / max.',
     '  /thinking  Show or hide the reasoning ("thinking") panel (or [Ctrl+T] to toggle).',
-    '  /permissions  Open the permissions sheet: the commands remembered for this project and approved for this session; [d] withdraws one.',
+    '  /permissions  See the commands remembered for this project and approved for this session; [d] withdraws one.',
     '  /trim  Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',
     '  /compact  Summarise the conversation so far to reclaim context (spends tokens).',
     "  /cost  Show this session's cumulative cost; --release clears held estimates.",

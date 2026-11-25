@@ -80,7 +80,11 @@ import {
   type HomeDeps,
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
-import { answerModelsPopup, openModelsPopup } from './models-popup.test-support.js';
+import {
+  answerModelsPopup,
+  openModelsPopup,
+  settleModelsForm,
+} from './models-popup.test-support.js';
 import { shouldOpenHome } from './should-open-home.js';
 import { RunHost, type RunHostSnapshot } from './run-host.js';
 
@@ -1541,6 +1545,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         // `Enter` on opus, `Enter` on its form: the popup closes and hands the default to the Home's writer.
         for (const ch of 'claude-opus-4-8') popups.input(ch, {});
         popups.input('', { return: true });
+        await settleModelsForm(popups); // the form is a frame of its own, with its own settle
         popups.input('', { return: true });
         expect(popups.getSnapshot().open).toBe(false);
         // Native preference publication now awaits visible rewrite acknowledgement.

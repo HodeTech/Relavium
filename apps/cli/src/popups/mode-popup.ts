@@ -17,8 +17,10 @@
 import { CHAT_MODES, type ChatMode } from '@relavium/shared';
 
 import { announcesEffect, MODE_EFFECT } from '../chat/mode-effects.js';
+import type { StartupDefaultSaveResult } from '../chat/mode-settings.js';
 import type { PopupContent, PopupForm, PopupListRow, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
+import { fitNotice } from './popup-text.js';
 
 /** The word beside the mode in force. */
 export const MODE_CURRENT = 'current';
@@ -119,4 +121,34 @@ export function modeSpec(origin: PopupOrigin, current: ChatMode): PopupSpec {
       },
     ],
   };
+}
+
+/**
+ * What "New chats" says on the host's channel once the startup-default writer's flow has ended (ADR-0148 §6: a setting writes nothing into the
+ * transcript; the flow's card, its confirmation and its rewrite disclosure, is not residue and stays): one fact in a few words, the one that
+ * matters most first. Every form is at most 54 columns (`fitNotice`); the mode and the overriding layer are the product's own closed words. The
+ * bare Home's `/mode`, which runs the flow without a popup, still says the flow's whole sentence.
+ */
+export function startupDefaultAnnouncement(
+  mode: ChatMode,
+  result: StartupDefaultSaveResult,
+): string {
+  if (result.kind === 'unchanged') return fitNotice('Startup default unchanged');
+  if (result.kind === 'refused')
+    return fitNotice(
+      result.autoRevoked
+        ? 'Startup default not saved; startup auto stays revoked'
+        : 'The startup default could not be saved',
+    );
+  if (result.overriddenBy !== undefined)
+    return fitNotice(`Startup default saved; this ${result.overriddenBy} overrides it`);
+  if (result.autoAfterRestart)
+    return fitNotice('Startup default saved; auto applies after a restart');
+  if (result.unfinished) return fitNotice('Startup default saved; mode settings could not finish');
+  if (result.durability === 'unconfirmed')
+    return fitNotice('Startup default saved; durability unconfirmed');
+  return fitNotice(
+    `Startup default: ${mode} · applies to new chats`,
+    `Startup default saved: ${mode}`,
+  );
 }

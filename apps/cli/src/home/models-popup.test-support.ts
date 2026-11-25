@@ -5,8 +5,8 @@
  *
  * Two kinds of test use it. Where the Home's render is injected (no Home root is mounted), nothing measures a frame of the popup host as the
  * popup slot does, so the test is the slot: it says each frame is on screen. Where a real Home root is mounted (`live`), its slot does that,
- * and nothing is bound over it. Either way a key the host drops (a frame not yet acknowledged, the opening guard's settle) is pressed again,
- * and never once it has moved the popup.
+ * and nothing is bound over it. Either way a key the host drops (a frame not yet acknowledged, the opening guard's settle, the form's own
+ * settle) is pressed again, and never once it has moved the popup.
  */
 import { expect, vi } from 'vitest';
 
@@ -49,21 +49,43 @@ export async function openModelsPopup(
   return popups;
 }
 
-/** Press `key` on the popup until `moved` holds (a key the host dropped is pressed again; none after it moved). */
+/**
+ * The popup's form (step 2) is a frame of its own: acknowledged as the slot acknowledges it (by the test, where no Home root is mounted), and
+ * its own settle waited out, so the `Enter` pressed next applies it (`popup-host.ts`, "A form settles on its own frame").
+ */
+export async function settleModelsForm(
+  popups: PopupHost,
+  options: ModelsPopupOptions = {},
+): Promise<void> {
+  if (options.live !== true) popups.shown(popups.getSnapshot());
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, SETTLE_MS);
+  });
+}
+
+/**
+ * Press `key` on the popup until `moved` holds (a key the host dropped is pressed again; none after it moved), every `interval` ms. A form's
+ * `Enter` is pressed again only a quiet gap apart (`QUIET_PRESS_MS`): a press inside the quiet gap of the key before it is a held key's repeat,
+ * which never applies a form (`popup-host.ts`, "A held key never applies a form").
+ */
 async function pressUntil(
   popups: PopupHost,
   key: Parameters<PopupHost['input']>[1],
   moved: () => boolean,
   waitMs: number,
+  interval = 50,
 ): Promise<void> {
   await vi.waitFor(
     () => {
       if (!moved()) popups.input('', key);
       expect(moved()).toBe(true);
     },
-    { timeout: waitMs, interval: 50 },
+    { timeout: waitMs, interval },
   );
 }
+
+/** How far apart a form's `Enter` is pressed again: more than the approval's quiet gap (300 ms). */
+const QUIET_PRESS_MS = 350;
 
 /**
  * `/models` answered: `filter` typed into the list, `Enter` on the first model it leaves (the second step opens on its form), and `Enter` on the
@@ -92,6 +114,16 @@ export async function answerModelsPopup(
   const step = (): number | undefined => popups.getSnapshot().frame?.stepIndex;
   await pressUntil(popups, { return: true }, () => step() === 1, waitMs);
   if (options.newChats === true) popups.input('', { downArrow: true });
-  await pressUntil(popups, { return: true }, () => !popups.getSnapshot().open, waitMs);
+  // The form is a frame of its own, which the slot (or the test, where none is mounted) acknowledges; its `Enter` counts only once that frame
+  // has settled and a quiet gap after the key before it (`popup-host.ts`): both are waited out before its first press, and a press the host
+  // still drops is repeated a quiet gap later, never sooner.
+  await settleModelsForm(popups, options);
+  await pressUntil(
+    popups,
+    { return: true },
+    () => !popups.getSnapshot().open,
+    waitMs,
+    QUIET_PRESS_MS,
+  );
   return popups;
 }

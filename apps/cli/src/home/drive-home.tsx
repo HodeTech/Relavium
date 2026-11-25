@@ -70,7 +70,7 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
-import { runModeSettings, runStartupDefaultSave } from '../chat/mode-settings.js';
+import { runModeSettings, saveStartupDefaultForPopup } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { faultForTranscript } from '../config/config-error-text.js';
@@ -1151,7 +1151,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
-          permissions,
           reports,
           settings,
           setAnnouncer,
@@ -1171,15 +1170,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             surface: 'home-chat', // `/help` and the unknown-slash hint list this chat's own commands, as its palette does
             hatchPorts,
             // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on the Home's native prompt, as the
-            // `/mode` flow ran it in this chat, while this conversation is the one in front.
-            saveStartupDefault: (mode, notice) =>
-              runStartupDefaultSave(
+            // `/mode` flow ran it in this chat, while this conversation is the one in front; what it came to is returned for the popup to
+            // say on the Home's channel, and a fault after it is this chat's work owner's.
+            saveStartupDefault: (mode) =>
+              saveStartupDefaultForPopup(
                 {
                   runtime: startingModes,
                   cwd: built.context.workingDir,
                   interactive: true,
                   flow: promptFlow,
-                  notice,
+                  failure: (cause) => built.workOwner?.failure(cause),
                   assertAdmitting: () => {
                     assertHomeAdmitting();
                     built.workOwner?.assertAdmitting();
@@ -1327,8 +1327,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
           onSetEffort,
-          // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
-          ...(permissions === undefined ? {} : { permissions }),
           // ADR-0148 §10: `/agent`, `/cost`, `/workflows` and `/help` open report popups over THIS session (a reseat or a `/clear` wires a
           // new chat, so a new port): its bound agent, its cost, its project's catalog and the keys of a chat.
           ...(reports === undefined
@@ -1343,8 +1341,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   plainGlyphs: !deps.global.color,
                 },
               }),
-          // ADR-0148 §3, §6: the settings popups (`/effort` today) open over THIS session, applying through its own setter and announcing on
-          // the Home's channel.
+          // ADR-0148 §3, §6: the settings popups (`/mode`, `/effort`, `/models`, `/permissions`: ADR-0137 §2 as a popup, over this session's
+          // own remembered commands and approvals) open over THIS session, applying through its own setters and announcing on the Home's
+          // channel.
           ...(settings === undefined
             ? {}
             : {

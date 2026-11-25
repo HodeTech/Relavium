@@ -187,12 +187,19 @@ async function fixture() {
     const frame = mounted.popups?.getSnapshot().frame;
     return frame === undefined ? undefined : `${frame.spec.id}:${String(frame.stepIndex)}`;
   };
-  /** Press `key` on the popup until it leaves `from` (a key on a frame not yet acknowledged, or inside the settle, is dropped by design). */
+  /**
+   * Press `key` on the popup until it leaves `from` (a key on a frame not yet acknowledged, or inside the settle, is dropped by design). The
+   * presses are a quiet gap apart (350 ms): a form's `Enter` inside the quiet gap of the key before it is a held key's repeat, which never
+   * applies a form (`popup-host.ts`, "A held key never applies a form").
+   */
   const pressFrom = async (from: string, key: PopupKey): Promise<void> => {
-    await vi.waitFor(() => {
-      if (popupStep() === from) mounted.popups?.input('', key);
-      expect(popupStep()).not.toBe(from);
-    }, WAIT);
+    await vi.waitFor(
+      () => {
+        if (popupStep() === from) mounted.popups?.input('', key);
+        expect(popupStep()).not.toBe(from);
+      },
+      { ...WAIT, interval: 350 },
+    );
     await instance?.waitUntilRenderFlush();
   };
   const press = (key: PopupKey): void => {
@@ -272,11 +279,12 @@ describe('/mode in the chat the Home hosts', () => {
     expect(f.error()).toBeUndefined();
   });
 
-  it('new chats: the popup closes and the startup-default writer asks on the Home’s native prompt, defaulting to No; declining writes nothing and the chat’s mode stays', async () => {
+  it('new chats: the popup closes and the startup-default writer asks on the Home’s native prompt, defaulting to No; declining writes nothing, the chat’s mode stays, and the Home’s channel says so', async () => {
     const f = await fixture();
     try {
       f.command('first message');
       await f.ready();
+      const before = f.transcriptNotices();
       f.command('/mode');
       await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
       f.press({ end: true }); // → auto
@@ -299,6 +307,9 @@ describe('/mode in the chat the Home hosts', () => {
       expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);
       expect(f.mode()).toBe('ask');
       expect(f.modeRecords()).toEqual([]);
+      // F2: what the flow came to, in a few words on the Home's channel, and nothing of it in the conversation.
+      await vi.waitFor(() => expect(f.notified).toContain('Startup default unchanged'), WAIT);
+      expect(f.transcriptNotices()).toEqual(before);
     } finally {
       await f.close();
     }

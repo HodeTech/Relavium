@@ -25,8 +25,6 @@ import type { ReasoningEffort } from '@relavium/shared';
 
 import { effortRowLabel, effortTiersFor, projectEffortToRow } from '../chat/effort-notice.js';
 import { formatPricePair, formatRefreshed } from '../render/notation.js';
-import { clipLine } from '../render/tui/sheet-frame.js';
-import { displayWidth } from '../render/tui/viewport.js';
 import type {
   PopupContent,
   PopupForm,
@@ -35,9 +33,8 @@ import type {
   PopupListRow,
   PopupOrigin,
 } from './frame-model.js';
-import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
 import type { PopupFormValues, PopupSpec } from './popup-reducer.js';
-import { scrubPopupText } from './popup-text.js';
+import { fitNotice, scrubPopupText } from './popup-text.js';
 import type { DefaultModelSaveResult, ModelChoice } from './settings-port.js';
 
 /** The two steps, by index. */
@@ -401,6 +398,8 @@ export function scopeForm(facts: ScopeFacts): PopupForm {
     radio: facts.canSaveDefault
       ? {
           label: 'Apply to',
+          // Not the frame's `apply to` (`/mode`'s verb): with it this step's legend in a chat is 67 columns, one more than a popup at the floor
+          // holds, and `[Ctrl+C] close` would be dropped there; with `scope` every key of it is named (`models-popup.test.ts` pins the width).
           verb: 'scope',
           initial: SCOPE_THIS_CHAT,
           options: [thisChat, newChats],
@@ -475,15 +474,6 @@ export function scopeOfValues(
 // ── what a choice announces (the host's channel, at most 54 columns) ────────────────────────────────────────────────────────
 
 /**
- * The first of `forms` that fits a notification beside a popup's way back (`POPUP_NOTICE_MAX_COLUMNS`), else the last cut with the ellipsis.
- * Every announcement of this popup goes through it, so none is ever cut where a person reads it.
- */
-function fitted(...forms: readonly string[]): string {
-  const fits = forms.find((text) => displayWidth(text) <= POPUP_NOTICE_MAX_COLUMNS);
-  return fits ?? clipLine(forms.at(-1) ?? '', POPUP_NOTICE_MAX_COLUMNS);
-}
-
-/**
  * What saving the default of new chats says, by its result (`undefined`: the host is closing, and nothing is said): the model and where it
  * applies, or why it does not apply here, or why it was not saved. The id is scrubbed; a long id falls back to a shorter sentence, then is cut.
  */
@@ -508,17 +498,17 @@ export function defaultModelAnnouncement(
     return 'Saved as default; a project or workspace overrides it';
   if (result.effect === 'unknown') return 'Saved as default; the config could not be read back';
   if (result.durability === 'unconfirmed') return 'Default model saved; durability unconfirmed';
-  return fitted(`Default model: ${id} · applies to new chats`, `Default for new chats: ${id}`);
+  return fitNotice(`Default model: ${id} · applies to new chats`, `Default for new chats: ${id}`);
 }
 
 /** What `Enter` says when it changed nothing in a chat: the model in force, chosen again with nothing else to set. */
 export function alreadyOnAnnouncement(modelId: string): string {
-  return fitted(`Already on ${scrubPopupText(modelId)}.`);
+  return fitNotice(`Already on ${scrubPopupText(modelId)}.`);
 }
 
 /** What `Enter` says on the Home when the model chosen, with its tier, is already the default of new chats: nothing is written. */
 export function alreadyDefaultAnnouncement(modelId: string): string {
-  return fitted(`Already the default: ${scrubPopupText(modelId)}`);
+  return fitNotice(`Already the default: ${scrubPopupText(modelId)}`);
 }
 
 /** The label of `tier` for `modelId` (`on` for a budget model's `medium`), for the tier announcement of `/effort` (`effortAnnouncement`). */

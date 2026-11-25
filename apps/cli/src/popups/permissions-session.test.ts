@@ -83,6 +83,21 @@ function opened(port: PermissionsPort, mode: () => 'ask' | 'auto' | 'plan' = () 
 }
 
 describe('opening', () => {
+  it('a `[d]` in the popup’s first half second is dropped without a word (nothing armed, nothing said); the next `[d]` after it arms', () => {
+    const { port } = fakePort();
+    const r = settingsRig();
+    expect(r.open({ permissions: { port, mode: () => 'ask' } }, 'permissions').opened).toBe(true);
+    r.host.shown(r.host.getSnapshot());
+    r.clock.advance(100);
+    r.press('d');
+    expect(r.host.getSnapshot().frame?.stepIndex).toBe(PERMISSIONS_STEP.list);
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+    expect(r.announced).toEqual([]);
+    r.clock.advance(400); // the opening guard's settle has passed
+    r.press('d');
+    expect(r.host.getSnapshot().frame?.stepIndex).toBe(PERMISSIONS_STEP.withdraw);
+  });
+
   it('opens on the lists read now, the first remembered command highlighted, `[d]` offered', () => {
     const { port, load } = fakePort();
     const p = opened(port);

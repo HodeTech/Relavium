@@ -317,6 +317,9 @@ describe('the host answers a form', () => {
     r.time.advance(600);
     r.host.input('', RIGHT);
     r.host.input('', UP);
+    // The form as it is now is a new frame: it is seen, and its own settle passes (`popup-form-settle.test.ts`).
+    r.show();
+    r.time.advance(500);
     r.host.input('', ENTER);
     expect(r.applied).toEqual([{ tab: 'high', radio: 'chat' }]);
   });
@@ -327,6 +330,7 @@ describe('the host answers a form', () => {
     r.show();
     r.time.advance(100);
     r.host.input('', RIGHT); // a navigation key acts at once
+    r.show(); // the slot acknowledges the frame the key made
     r.host.input('', ENTER); // inside the settle
     expect(r.applied).toEqual([]);
     r.time.advance(500);
@@ -342,6 +346,8 @@ describe('the host answers a form', () => {
     r.host.input('', ENTER);
     expect(r.applied).toEqual([]);
     r.setPage(6);
+    // A second press a quiet gap after the first (one inside it is a held key's repeat, and never applies a form).
+    r.time.advance(300);
     r.host.input('', ENTER);
     expect(r.applied).toEqual([{ tab: 'medium', radio: 'new' }]);
   });
@@ -356,7 +362,7 @@ describe('the host answers a form', () => {
     r.host.input('', ENTER);
     expect(r.applied).toEqual([]);
     expect(history.lastResolvedAt).toBeGreaterThan(before);
-    r.time.advance(50);
+    r.time.advance(300); // a second press a quiet gap later (one inside it is a held key's repeat)
     r.setPage(20);
     r.host.input('', ENTER);
     expect(r.applied).toHaveLength(1);

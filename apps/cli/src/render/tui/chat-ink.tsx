@@ -2460,8 +2460,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           // wired without it has no `/models` popup (the session's member is withdrawn: `bindModelSwitch`).
           onReseat: ctx.onReseat,
           reports: ctx.reports,
-          // The settings popups (`/effort` today; ADR-0148 §3, §6), and where their announcements and the typed settings' go: this chat's
-          // notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print their text.
+          // The settings popups (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6), and where their announcements and the typed
+          // settings' go: this chat's notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print
+          // their text.
           settings: ctx.settings,
           setAnnouncer: ctx.setAnnouncer,
           // `/doctor` opens its popup over this chat (ADR-0148 §8); the plain and `--json` drivers have none and print the text report.

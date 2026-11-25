@@ -592,7 +592,7 @@ export interface HomeControllerDeps {
   readonly models?: HomeModelsPort;
   /** The bare Home's permissions port (ADR-0137 §3, ADR-0140 §3): the project's remembered commands only, there being no chat, and the
    *  repository's allowlist, read again every time the Permissions tab is entered. Absent ⇒ the Home has no tab to open (a test may omit
-   *  it); a live chat's own port, for its docked sheet, is `HomeChatSession.permissions`. */
+   *  it); a live chat's `/permissions` is a popup over its own port (`HomeChatSession.settings`). */
   readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
@@ -725,7 +725,8 @@ export interface HomeControllerDeps {
     | undefined;
   /**
    * Open one of the settings popups ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
-   * §3, §6; MVP-11 step 5: `/effort` today) over the chat in front, on the Home's popup host, with the chat's {@link HomeChatSession.settings}.
+   * §3, §6; MVP-11 step 5: `/mode`, `/effort`, `/models`, `/permissions`) over the chat in front, on the Home's popup host, with the chat's
+   * {@link HomeChatSession.settings}.
    * The controller only routes (`popup-route.ts`), clears the editor and calls this, so nothing reaches the Home's notice or the transcript.
    * Absent ⇒ a chat's bare settings lines are dispatched, as before.
    */

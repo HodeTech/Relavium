@@ -12,7 +12,7 @@ import { settingsAvailable, type ModeSettingsPort, type SettingsPort } from './s
 const MODE: ModeSettingsPort = {
   current: () => 'ask',
   apply: () => true,
-  saveStartupDefault: () => Promise.resolve(),
+  saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
 };
 
 const portOn = (surface: SettingsPort['surface'], mode?: ModeSettingsPort): SettingsPort => ({

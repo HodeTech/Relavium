@@ -241,3 +241,106 @@ export function runStartupDefaultSave(
     },
   });
 }
+
+// ── The `/mode` popup's hand-off: the result, not the words (ADR-0148 §3, §6) ───────────────────────────────────────────────
+
+/**
+ * What saving the global startup default from the `/mode` popup's "New chats" came to, as {@link runStartupDefaultSave} said it, read back
+ * as a result so that the popup can say it on the host's channel in a few words (the residue rule, ADR-0148 §6: nothing of a setting goes into
+ * the transcript). The flow's own full sentence stays where the flow runs without a popup (the bare Home's `/mode`), byte for byte.
+ *
+ * - `saved`: the config was published. `durability` is the writer's (`unknown` when the flow failed after publishing and did not say it);
+ *   `overriddenBy` names the project or workspace setting that selects another mode where this chat started (new chats here keep that one);
+ *   `autoAfterRestart`: `auto` was saved but is not admitted for this run, so new chats start in it after a restart (the stale-`auto` refusal);
+ *   `unfinished`: the file is written and what follows the publication could not be finished.
+ * - `unchanged`: the person declined the confirmation (it defaults to No), the mode is not one the branch offers, or the flow was cancelled.
+ * - `refused`: nothing was saved; `autoRevoked` when a confirmed narrowing had already revoked startup `auto` for this run.
+ */
+export type StartupDefaultSaveResult =
+  | {
+      readonly kind: 'saved';
+      readonly durability: 'confirmed' | 'unconfirmed' | 'unknown';
+      readonly overriddenBy?: 'project' | 'workspace' | undefined;
+      readonly autoAfterRestart: boolean;
+      readonly unfinished: boolean;
+    }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'refused'; readonly autoRevoked: boolean };
+
+/** The words of {@link runModeSettings}' startup branch that say a result: what {@link startupDefaultResultOf} reads (it says them itself, above). */
+const SAID = {
+  saved: 'Global startup default saved: ',
+  published: 'Startup default was published',
+  unconfirmed: ' Published, but durability could not be confirmed.',
+  notReadmitted: ' Startup auto was not re-admitted for this invocation.',
+  revoked: ' Startup auto remains revoked for this invocation.',
+  cancelled: 'Mode settings cancelled. Startup default unchanged.',
+} as const;
+
+/** The setting the success sentence names as selecting another mode where the chat started (` project override selects plan; …`). */
+const OVERRIDE = /^Global startup default saved: [a-z-]+\. (project|workspace) override selects /u;
+
+/**
+ * The result {@link runStartupDefaultSave}'s one sentence says, or `unchanged` when it said none (a declined confirmation ends the branch with
+ * no word). Read from the branch's own fixed words, so a sentence it adds or rewords is pinned by `mode-settings-handoff.test.ts`, which drives
+ * every path of the real flow; an unknown sentence is read as nothing saved, never as saved.
+ */
+export function startupDefaultResultOf(said: string | undefined): StartupDefaultSaveResult {
+  if (said === undefined || said === SAID.cancelled) return { kind: 'unchanged' };
+  const overriddenBy = OVERRIDE.exec(said)?.[1];
+  if (said.startsWith(SAID.saved))
+    return {
+      kind: 'saved',
+      durability: said.includes(SAID.unconfirmed) ? 'unconfirmed' : 'confirmed',
+      ...(overriddenBy === 'project' || overriddenBy === 'workspace' ? { overriddenBy } : {}),
+      autoAfterRestart: said.endsWith(SAID.notReadmitted),
+      unfinished: false,
+    };
+  if (said.startsWith(SAID.published)) {
+    const autoAfterRestart = said.endsWith(SAID.notReadmitted);
+    return {
+      kind: 'saved',
+      durability: 'unknown',
+      autoAfterRestart,
+      unfinished: !autoAfterRestart,
+    };
+  }
+  return { kind: 'refused', autoRevoked: said.endsWith(SAID.revoked) };
+}
+
+/**
+ * What {@link saveStartupDefaultForPopup} is given: the options of {@link runStartupDefaultSave} without its `notice` (the result is returned
+ * instead), and where a fault that escapes the flow is reported first (the host's work owner).
+ */
+export type StartupDefaultHandOffOptions = Omit<StartupDefaultSaveOptions, 'notice'> & {
+  readonly failure?: ((cause: unknown) => void) | undefined;
+};
+
+/**
+ * The `/mode` popup's "New chats" (ADR-0148 §3, §6): {@link runStartupDefaultSave} exactly as it runs (its card, its confirmation, its
+ * disclosure, its publication), its one sentence kept from the transcript and returned as a {@link StartupDefaultSaveResult}, which the popup
+ * says on the host's channel. Never rejects: a fault after the flow said its result (its prompt could not be released) is the owner's, and
+ * the result stands; one before it is a refusal.
+ */
+export async function saveStartupDefaultForPopup(
+  options: StartupDefaultHandOffOptions,
+  mode: ChatMode,
+): Promise<StartupDefaultSaveResult> {
+  const { failure, ...save } = options;
+  let said: string | undefined;
+  try {
+    await runStartupDefaultSave(
+      {
+        ...save,
+        notice: (text) => {
+          said = text;
+        },
+      },
+      mode,
+    );
+  } catch (cause) {
+    failure?.(cause);
+    if (said === undefined) return { kind: 'refused', autoRevoked: false };
+  }
+  return startupDefaultResultOf(said);
+}

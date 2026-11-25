@@ -1202,8 +1202,9 @@ describe('chatCommand', () => {
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
-            const port = ctx.permissions;
-            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            const port = ctx.settings?.permissions?.port;
+            if (port === undefined)
+              throw new Error('an interactive chat opens the /permissions popup');
             expect(port.surface).toBe('chat');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
@@ -1300,8 +1301,9 @@ describe('chatCommand', () => {
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
-            const port = ctx.permissions;
-            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            const port = ctx.settings?.permissions?.port;
+            if (port === undefined)
+              throw new Error('an interactive chat opens the /permissions popup');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
             ctx.store.answerApproval({ outcome: 'approve', scope: 'remember' });

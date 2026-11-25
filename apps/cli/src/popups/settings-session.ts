@@ -17,7 +17,14 @@ import type { ChatMode } from '@relavium/shared';
 import { effortRowLabel } from '../chat/effort-notice.js';
 import { effortContent, effortInitialRow, effortSpec } from './effort-popup.js';
 import { openModels } from './models-session.js';
-import { modeOfRow, modeScopeForm, modeSpec, SCOPE_STEP, scopeOf } from './mode-popup.js';
+import {
+  modeOfRow,
+  modeScopeForm,
+  modeSpec,
+  SCOPE_STEP,
+  scopeOf,
+  startupDefaultAnnouncement,
+} from './mode-popup.js';
 import { openPermissionsPopup } from './permissions-session.js';
 import { macrotask, startPopupWork } from './popup-work.js';
 import type { PopupOpenResult } from './popup-host.js';
@@ -67,8 +74,9 @@ function openEffort(request: SettingsOpenRequest): PopupOpenResult {
  * approves something without a card, and asks where it applies. `Enter` there closes the popup and applies, whichever way it went:
  * - this chat: through the session's one mode setter, which records the change, refuses a widening whose record could not be written, and
  *   says what it did on the host's channel itself; the popup adds no word, and is done whatever the setter answered;
- * - new chats: the startup-default writer's own flow on this chat's native prompt (its confirmation, its disclosure, its publication, its
- *   result), started on the session's work owner once the popup has gone; this chat's mode does not change.
+ * - new chats: the startup-default writer's own flow on this chat's native prompt (its confirmation, its disclosure, its publication),
+ *   started on the session's work owner once the popup has gone; what it came to is said in a few words on the host's channel
+ *   (`startupDefaultAnnouncement`), never in the transcript; this chat's mode does not change.
  *
  * `Esc` steps back from the second step and closes from the first, changing nothing.
  */
@@ -100,10 +108,15 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
         async () => {
           // Once the key that applied has been handled to its end: the flow's first card is a frame of its own, which no key has reached.
           await macrotask();
-          await mode.saveStartupDefault(picked);
+          // What it came to, in a few words on the host's channel: none of the flow's words goes into the transcript (§6).
+          port.announce(startupDefaultAnnouncement(picked, await mode.saveStartupDefault(picked)));
         },
         () => {
-          // The popup is gone and the flow has said its own words: a fault of the hand-off is the work owner's (`startPopupWork` reports it).
+          // A fault of the hand-off itself (an owner that no longer admits work: the flow never ran) is the owner's (`startPopupWork` reports
+          // it), and nothing was saved: the person is told so rather than left without word.
+          port.announce(
+            startupDefaultAnnouncement(picked, { kind: 'refused', autoRevoked: false }),
+          );
         },
       );
     },

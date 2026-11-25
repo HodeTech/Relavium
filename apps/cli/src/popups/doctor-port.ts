@@ -4,9 +4,9 @@
  * the popup's code (`doctor-session.ts`, `doctor-popup.ts`) only when the person first asks for it, so the Home's first paint and a chat's start
  * never wait for it (the bundle splits on the dynamic import).
  *
- * The hosts route and open, and hold no popup logic: the Home controller and the chat hosts recognise the line ({@link parseDoctorLine}) in the
- * same place they open a sheet for `/permissions`, BEFORE the line is counted as a submit (so the popup host's open gate never sees the
- * command's own line as a turn in flight), and call {@link openDoctor}.
+ * The hosts route and open, and hold no popup logic: the Home controller and the chat hosts recognise the line ({@link parseDoctorLine}) through
+ * the one routing (`popup-route.ts`), BEFORE the line is counted as a submit (so the popup host's open gate never sees the command's own line
+ * as a turn in flight), and call {@link openDoctor}.
  */
 
 import type { ProviderId } from '@relavium/llm';

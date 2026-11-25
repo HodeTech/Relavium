@@ -234,8 +234,8 @@ describe('applying in a chat (the popup closes first)', () => {
     const rig = opened(fake);
     highlight(rig, OPENAI);
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', RIGHT);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     expect(rig.host.getSnapshot().open).toBe(false);
     expect(fake.switched).toEqual([
@@ -261,8 +261,8 @@ describe('applying in a chat (the popup closes first)', () => {
     const fake = fakeModels();
     const rig = opened(fake);
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', LEFT);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     expect(fake.tiers).toEqual(['low']);
     expect(fake.switched).toEqual([]);
@@ -296,8 +296,8 @@ describe('applying in a chat (the popup closes first)', () => {
     const rig = opened(fake);
     highlight(rig, BUDGET);
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', DOWN);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     expect(rig.host.getSnapshot().open).toBe(false);
     // Handed off: the writer runs after a macrotask, never inside the key's handler.
@@ -319,8 +319,8 @@ describe('applying in a chat (the popup closes first)', () => {
     });
     const rig = opened(refused);
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', DOWN);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     await settleWork();
     await settleWork();
@@ -329,8 +329,8 @@ describe('applying in a chat (the popup closes first)', () => {
     const thrown = fakeModels({ save: () => Promise.reject(new Error('a defect')) });
     const other = opened(thrown);
     other.press('', ENTER);
-    other.settle();
     other.press('', DOWN);
+    other.settle(); // the form as it is now is seen and settles (its own frame)
     other.press('', ENTER);
     await settleWork();
     await settleWork();
@@ -344,8 +344,8 @@ describe('applying in a chat (the popup closes first)', () => {
     await settleWork();
     const before = rig.entered.length;
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', DOWN);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     expect(rig.entered.length).toBe(before + 1);
     await settleWork();
@@ -356,8 +356,8 @@ describe('applying in a chat (the popup closes first)', () => {
     closing.open();
     closing.settle();
     closing.press('', ENTER);
-    closing.settle();
     closing.press('', DOWN);
+    closing.settle(); // the form as it is now is seen and settles (its own frame)
     closing.press('', ENTER);
     await settleWork();
     expect(refusing.saved).toEqual([]);
@@ -409,8 +409,8 @@ describe('applying on the bare Home (the default of new chats)', () => {
     const fake = fakeModels({ scope: 'home' });
     const rig = opened(fake);
     rig.press('', ENTER);
-    rig.settle();
     rig.press('', RIGHT);
+    rig.settle(); // the form as it is now is seen and settles (its own frame)
     rig.press('', ENTER);
     await settleWork();
     expect(fake.saved).toEqual([

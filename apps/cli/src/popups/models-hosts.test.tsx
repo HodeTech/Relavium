@@ -168,15 +168,22 @@ const popupStep = (m: { readonly popups: ChatMount['popups'] }): number | undefi
 const popupId = (m: { readonly popups: ChatMount['popups'] }): string | undefined =>
   m.popups.getSnapshot().frame?.spec.id;
 
-/** Press `key` until the popup host admits it (a key on a frame not yet acknowledged is dropped by design), at most once after it moved. */
+/**
+ * Press `key` until the popup host admits it (a key on a frame not yet acknowledged is dropped by design), at most once after it moved. Each
+ * press is a patient one, a moment (600 ms on the host's clock) after the key before it: a form's `Enter` within the quiet gap of the previous
+ * key is a held key's repeat and never applies (`popup-host.ts`, "A held key never applies a form").
+ */
 async function pressUntil(
-  m: { readonly key: (bytes: string) => void },
+  m: { readonly key: (bytes: string) => void; readonly skip: (ms: number) => void },
   key: string,
   moved: () => boolean,
 ): Promise<void> {
   await vi.waitFor(
     () => {
-      if (!moved()) m.key(key);
+      if (!moved()) {
+        m.skip(600);
+        m.key(key);
+      }
       expect(moved()).toBe(true);
     },
     { timeout: WAIT_MS, interval: 50 },

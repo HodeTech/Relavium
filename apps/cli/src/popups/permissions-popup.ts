@@ -7,6 +7,13 @@
  * was seen, not after 10 s, nothing typed before `[d]` or since), whose `Esc` keeps the row. The bare Home's `/permissions` is not this: it is
  * the Permissions tab of the tab host, over the same pure model (`permissions-sheet.ts`).
  *
+ * **A `[d]` in the popup's first half second says nothing** (the sheet said "Wait a moment"). The popup host's opening guard drops it, as it
+ * drops every answer that comes too soon (`Enter` on a list, a form's `Enter`, `/cost`'s `[r]`, the doctor's `[d]`), and none of those says a
+ * word: a sentence for this one key would be a second rule. It would also say the wrong thing: the guard's wait is 500 ms from the frame, but
+ * a notification stays for `NOTIFICATION_MS` (3 s) and is drawn in the legend row in place of its keys, so "Wait a moment" would hide
+ * `[d] / Del withdraw` and tell the person to wait for 2.5 s after the key already works again. The next `[d]` arms
+ * (`permissions-session.test.ts` pins both).
+ *
  * Pure builders: the rows, the line, the spec and the words. The opener that answers the keys is `permissions-session.ts`; neither is loaded
  * until the person first opens a setting (`settings-port.ts`).
  *

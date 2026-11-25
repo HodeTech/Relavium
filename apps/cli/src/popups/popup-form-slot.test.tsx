@@ -80,6 +80,8 @@ describe('a form in the real slot', () => {
         expect(await m.until(() => m.text().includes('(*) New chats'))).toBe(true);
         expect(m.text()).toContain('> high');
         await m.settle();
+        // The form as it is now was acknowledged by the slot: its own settle passes before its `Enter` counts.
+        m.skip(600);
         m.key(KEYS.enter);
         await m.settle();
         expect(applied).toEqual([{ tab: 'high', radio: 'new' }]);

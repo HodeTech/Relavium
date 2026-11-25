@@ -2,8 +2,8 @@
  * The settings port's eager half and its routing ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §3, §6): one table of the four settings; only the bare command is a settings line (a typed value applies through the dispatch, an argument a
  * command does not take is rejected there); a setting is routed only where the host's port can open it (`/effort` only on a model with a tier);
- * the one routing (`routePopupLine`) learns the settings beside the doctor and the reports; and the opener table opens `/effort` and, for the
- * settings whose popup is a later increment, opens nothing and says nothing.
+ * the one routing (`routePopupLine`) learns the settings beside the doctor and the reports; and the opener table opens `/effort` and, for a
+ * setting whose member the port does not hold, opens nothing and says nothing.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -75,7 +75,7 @@ describe('settingsAvailable: a member that can open', () => {
   });
 
   it.each(['mode', 'models', 'permissions'] as const)(
-    '`/%s`: its popup is a later increment, so no port can hold its member yet',
+    '`/%s` cannot open from a port that does not hold its member (only `/effort` is wired here)',
     (kind) => {
       expect(settingsAvailable(withEffort(['low', 'high']), kind)).toBe(false);
     },
@@ -96,7 +96,7 @@ describe('the one routing learns the settings', () => {
     });
   });
 
-  it('a typed value, a model with no tier, a host with no settings port, and the later settings are not routed', () => {
+  it('a typed value, a model with no tier, a host with no settings port, and a setting whose member the port does not hold are not routed', () => {
     expect(routePopupLine('/effort high', { doctor: false, settings })).toBeUndefined();
     expect(routePopupLine('/effort', { doctor: false, settings: withEffort([]) })).toBeUndefined();
     expect(routePopupLine('/effort', { doctor: false })).toBeUndefined();
@@ -130,7 +130,7 @@ describe('the opener table', () => {
   });
 
   it.each(['mode', 'models', 'permissions'] as const)(
-    '`/%s` (a later increment) opens nothing and says nothing, whatever the port holds',
+    '`/%s` without its member opens nothing and says nothing (a wiring mistake, never reachable from a typed line)',
     (kind) => {
       const r = settingsRig();
       const effort = fakeEffort('claude-sonnet-4-6', ['low', 'high'], 'low');

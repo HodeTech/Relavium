@@ -65,10 +65,10 @@ export interface ReplCommandContext {
   /** Open the interactive, read-only list of this instance's recent tool calls. */
   readonly openDetails: () => void | Promise<void>;
   /**
-   * `/permissions` where there is no sheet to open ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
-   * §2): a plain, `--json` or one-shot chat, which has no store and no one to ask. The interactive hosts intercept the command and open
-   * the sheet before it gets here, as they do `/models`. The command takes no argument (the typed `--revoke` forms are gone, and the
-   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens the sheet through its own controller.
+   * `/permissions` where there is no popup to open ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
+   * §2, ADR-0148 §10): a plain, `--json` or one-shot chat, which has no store and no one to ask. The interactive hosts route the command to
+   * its popup before it gets here, as they do `/models`. The command takes no argument (the typed `--revoke` forms are gone, and the
+   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens its Permissions tab through its own controller.
    */
   readonly managePermissions: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
@@ -537,12 +537,12 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'permissions',
     label: 'Permissions',
-    // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
+    // `read`: opening it changes nothing; a withdrawal is a keypress inside it (the chat's popup, the Home's tab), never a typed argument.
     effect: 'read',
     rejectHint: `Open /permissions and press ${keyToken('d')} on a row to withdraw it.`,
     run: (ctx) => ctx.managePermissions(),
     placements: {
-      // The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it.
+      // The bare Home's `/permissions` (ADR-0137 §3): the Permissions tab, with the project's remembered commands only; the controller opens it.
       home: {
         group: 'setup',
         rank: 40,
@@ -552,7 +552,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
       ...inChats({
         group: 'model',
         rank: 50,
-        description: `Open the permissions sheet: the commands remembered for this project and approved for this session; ${keyToken('d')} withdraws one.`,
+        description: `See the commands remembered for this project and approved for this session; ${keyToken('d')} withdraws one.`,
         surface: 'popup',
       }),
     },

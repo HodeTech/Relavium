@@ -55,7 +55,7 @@ function settingsWith(withMode: boolean) {
             },
             saveStartupDefault: (mode: ChatMode) => {
               saved.push(mode);
-              return Promise.resolve();
+              return Promise.resolve({ kind: 'unchanged' });
             },
           },
         }
@@ -93,7 +93,12 @@ const residue = (m: ChatMount) => ({
 async function enterFrom(m: ChatMount, from: string | undefined): Promise<void> {
   await vi.waitFor(
     () => {
-      if (popupStep(m) === from) m.key(KEYS.enter);
+      if (popupStep(m) === from) {
+        // A patient press, a moment after the key before it: a form's `Enter` inside the previous key's quiet gap is a held key's repeat and
+        // never applies (`popup-host.ts`, "A held key never applies a form").
+        m.skip(600);
+        m.key(KEYS.enter);
+      }
       expect(popupStep(m)).not.toBe(from);
     },
     { timeout: WAIT_MS, interval: 50 },

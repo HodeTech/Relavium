@@ -81,6 +81,23 @@
  * ({@link PopupHandlers.apply}), behind the opening guard like every answer, and only while it is wholly on the page its frame is drawn on
  * (`formFits`, read against the same rows and inner width the slot binds): a form is never windowed, and the warning it states is part of what
  * `Enter` applies. The chord rules do not apply to it (a form is no consent line); a step that consents keeps its chord step.
+ *
+ * **A form settles on its own frame.** The opening guard runs once per popup, so a form reached by a step (`/mode`'s "Apply to", `/models`'
+ * "Effort & scope") would otherwise take an `Enter` the moment it is drawn: `↓↓↓ Enter Enter` typed fast would apply a mode before the effect it
+ * states had been on screen at all. So the form's `Enter` counts only when it arrived at least the opening guard's settle time
+ * (`POPUP_SELECT_SETTLE_MS`, the host's `settleMs`) after the acknowledgement of THIS frame of the form drawn whole on its page. Any new frame of
+ * the form (a choice moved, its content replaced, the form drawn again after a child popup over it closed), a frame of it acknowledged cut (a
+ * page that no longer holds it) and a terminal below the floor (no frame drawn at all) start it again; an acknowledgement of the same frame
+ * again (a resize that leaves it whole, a notification in the legend row) does not, because nothing the form says has changed. An `Enter`
+ * that comes too soon is dropped as the opening guard drops a key: it applies nothing, says nothing (the legend still names `Enter apply`: a
+ * second press after the settle is the answer), and is not stamped as a resolution, since it resolved nothing. Navigation keys and `Esc` act
+ * at once, as they do on any step.
+ *
+ * **A held key never applies a form.** The settle alone would let a held `Enter` through: its repeats keep coming, and the first one after the
+ * settle would apply (`auto` for this chat, the effect line never read). So a form's `Enter` also needs the chord step's quiet gap: it counts
+ * only when the key before it, of any kind, arrived at least `APPROVAL_QUIET_MS` (300 ms) before it (the stamp's `previousKeyAt`, on the host's
+ * one key history). Every repeat of a held key is a key, so a held `Enter`, or a held `↓` and then `Enter`, never applies; a fresh press after
+ * reading, or a slow second press, does. An `Enter` refused for this says nothing and is no resolution either.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
@@ -115,7 +132,7 @@ import {
 } from './geometry.js';
 import type { NotificationChannel, Schedule } from './notifications.js';
 import { unrefTimer } from './notifications.js';
-import { createOpeningGuard, type OpeningGuard } from './opening-guard.js';
+import { createOpeningGuard, POPUP_SELECT_SETTLE_MS, type OpeningGuard } from './opening-guard.js';
 import {
   answersALine,
   backOf,
@@ -233,7 +250,9 @@ export interface PopupHandlers {
   readonly enter?: ((context: PopupContext, row: PopupListRow | undefined) => void) | undefined;
   /**
    * `Enter` on a form (a step whose content is a `form` and that has an `enter`), with the ids of the options chosen. Called only while the
-   * form is wholly on the page its frame is drawn on (`formFits`), and, as every answer, behind the opening guard.
+   * form is wholly on the page its frame is drawn on (`formFits`), and, as every answer, behind the opening guard, and only once the form's own
+   * frame has settled (the opening guard's settle time from its acknowledgement) and the key before it is a quiet gap old (a held key never
+   * applies a form): see the module header.
    */
   readonly apply?: ((context: PopupContext, values: PopupFormValues) => void) | undefined;
   /** A control letter the step lists, with the highlighted row of a list (what the control acts on). */
@@ -424,7 +443,10 @@ export interface PopupHostOptions {
   readonly placement: PopupPlacement;
   /** The loading clock's and the line expiry's timer (production: an unref'd timeout). */
   readonly schedule?: Schedule | undefined;
-  /** The opening guard's settle time (default 500 ms); a test that isolates another rule passes `0`. */
+  /**
+   * The opening guard's settle time (default 500 ms), which a form's `Enter` also waits out from its own frame; a test that isolates another rule
+   * passes `0`.
+   */
   readonly settleMs?: number | undefined;
 }
 
@@ -456,6 +478,13 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   let fitsTerminal = true;
   /** The stamp of the key being handled, while it is: a step a handler moves to during it is armed against what came before THAT key. */
   let keyStamp: ChordStamp | undefined;
+  /** The settle a form's `Enter` waits out from its own frame: the opening guard's (see the module header, "A form settles on its own frame"). */
+  const formSettleMs = options.settleMs ?? POPUP_SELECT_SETTLE_MS;
+  /**
+   * When the slot acknowledged the frame drawn now, if it is a form drawn WHOLE on its page: the origin of the form's own settle. Gone as soon as
+   * another frame is drawn, the form is acknowledged cut, or the terminal goes below the floor.
+   */
+  let formShownAt: number | undefined;
 
   const top = (): FrameRecord | undefined => stack.at(-1);
 
@@ -494,6 +523,32 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     if (content.kind === 'loading') return 'preparing';
     return lineFitsPage(content, pageNow(), widthNow()) ? 'answer' : 'nothing';
   };
+
+  /**
+   * The slot acknowledged a frame of the record (the top popup): when its step is a form drawn WHOLE on its page, the form's own settle starts
+   * here, unless this very frame was acknowledged whole already (a re-acknowledgement after a resize, or with a notification, changes nothing it
+   * says: any other frame cleared the origin when it was published); a form acknowledged cut, and any step that is not a form, has none.
+   */
+  const noteFormShown = (record: FrameRecord): void => {
+    const { content } = currentStep(record.frame).state;
+    if (content.kind === 'form' && formFits(content, pageNow(), widthNow())) formShownAt ??= now();
+    else formShownAt = undefined;
+  };
+
+  /**
+   * Whether a form's `Enter` that arrived at `arrivedAt` counts: the frame drawn now was acknowledged whole, at least the settle time before it
+   * (counted from THAT acknowledgement, never from the popup's opening: a form reached by a step has a frame of its own to be read).
+   */
+  const formSettled = (arrivedAt: number): boolean =>
+    formShownAt !== undefined && arrivedAt - formShownAt >= formSettleMs;
+
+  /**
+   * Whether a form's `Enter` came after a quiet gap: no key of any kind (its stamp's `previousKeyAt`, on the host's one history) in the
+   * approval's quiet gap (`APPROVAL_QUIET_MS`, the chord step's own layer) before it. A held `Enter` repeats far faster than that, every repeat
+   * is a key, so a held key never leaves the gap and never applies a form however long it is held; a deliberate press after reading does.
+   */
+  const formQuiet = (stamp: ChordStamp): boolean =>
+    stamp.now - stamp.previousKeyAt >= APPROVAL_QUIET_MS;
 
   /** Whether the record's line is a report (what a line that offers nothing then is: one its page does not hold whole), not an empty or failed state. */
   const isReport = (record: FrameRecord): boolean =>
@@ -615,6 +670,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     ) {
       // A new frame of a confirmation line (a notification appearing or going included) has not been seen yet.
       if (next.frame !== snapshot.frame || next.notice !== snapshot.notice) beginLine(record);
+      // Nor has a new frame of a form (a notification is not one: it changes nothing the form says).
+      if (next.frame !== snapshot.frame) formShownAt = undefined;
       snapshot = next;
     }
     syncClock();
@@ -935,6 +992,9 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         return;
       }
       case 'apply': {
+        // Too soon after THIS frame of the form was seen whole, or too soon after the key before it (a held key's repeat): dropped as the
+        // opening guard drops a key (no word, no resolution stamp).
+        if (!formSettled(stamp.now) || !formQuiet(stamp)) return;
         // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
         chord.resolved(stamp);
         // A form is never windowed: one that is not wholly on the page its frame is drawn on applies nothing (its legend names no `Enter`).
@@ -1087,6 +1147,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     },
     resized: (columns, rows) => {
       fitsTerminal = popupFits(columns, rows);
+      // Below the floor no frame is drawn (a notice is): a form drawn again afterwards is read again, so its settle starts again.
+      if (!fitsTerminal) formShownAt = undefined;
       const record = top();
       if (record === undefined) return;
       // The frame is measured again: a confirmation line's dwell restarts at the acknowledgement of the frame drawn at the new size.
@@ -1126,6 +1188,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       // The notification this frame drew in its legend row has been seen: a hold that begins now drops it instead of replaying it.
       if (snapshot.notice !== undefined) channel?.seen(snapshot.notice);
       record.guard.shown();
+      noteFormShown(record);
       const arming = record.chord;
       if (arming === undefined) return;
       // A line whose last acknowledged frame offered its answer and whose page no longer holds it whole (a resize made the page smaller) is

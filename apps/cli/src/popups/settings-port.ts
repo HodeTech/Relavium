@@ -25,6 +25,7 @@ import type { ChatMode, ReasoningEffort } from '@relavium/shared';
 
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
 
+import type { StartupDefaultSaveResult } from '../chat/mode-settings.js';
 import type { RefreshReport } from '../engine/model-refresh.js';
 import type { PermissionsPort } from '../permissions/chat-permissions.js';
 import type { Surface } from '../render/surface.js';
@@ -68,10 +69,11 @@ export interface ModeSettingsPort {
   /**
    * Save `mode` as the global startup default for new chats, on this chat's native prompt: the existing writer's flow
    * (`runStartupDefaultSave`, `chat/mode-settings.ts`) with its confirmation that defaults to No (`auto` states its effect first), the
-   * config-rewrite disclosure and its publication, and its result in its own words. Started once the popup has closed; this chat's mode does
-   * not change.
+   * config-rewrite disclosure and its publication, and what it came to as a result (`saveStartupDefaultForPopup`), which the popup says on the
+   * host's channel: none of its words goes into the transcript. Never rejects. Started once the popup has closed; this chat's mode does not
+   * change.
    */
-  readonly saveStartupDefault: (mode: ChatMode) => Promise<void>;
+  readonly saveStartupDefault: (mode: ChatMode) => Promise<StartupDefaultSaveResult>;
 }
 
 /**

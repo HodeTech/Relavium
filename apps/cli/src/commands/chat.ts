@@ -3,7 +3,6 @@ import type { KeychainStore } from '../secrets/keychain.js';
 import {
   createPermissionsPort,
   NOT_AVAILABLE as PERMISSIONS_NOT_AVAILABLE,
-  type PermissionsPort,
   type SessionCommandApprovals,
 } from '../permissions/chat-permissions.js';
 import {
@@ -16,7 +15,10 @@ import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
-import { runStartupDefaultSave } from '../chat/mode-settings.js';
+import {
+  saveStartupDefaultForPopup,
+  type StartupDefaultSaveResult,
+} from '../chat/mode-settings.js';
 import { publishModePreference } from '../chat/mode-preference-publication.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import {
@@ -412,9 +414,6 @@ export interface ChatDriveContext {
    * is unavailable — one machine stream is one session lifecycle (ADR-0049), exactly as `/clear` is gated off there.
    */
   readonly onReseat?: (target: ReseatTarget) => void;
-  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
-   *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
-  readonly permissions?: PermissionsPort;
   /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    *  §3), made afresh on every call: the same function `reports.agent` hands the `/agent` popup, kept for a driver (and its tests) that reads it
    *  directly (only tests read it: the production hosts take the view through `reports.agent`). Present on an interactive (TTY, non-`--json`)
@@ -515,9 +514,9 @@ export interface ChatDriveContext {
    */
   readonly reports?: ReportsPort | undefined;
   /**
-   * The settings popups' port (ADR-0148 §3, §6; MVP-11 step 5: `/effort` today). Present on an interactive (TTY, non-`--json`) driver only, where
-   * the ink chat opens the popup for a typed or palette-selected bare command; a plain, `--json` or one-shot driver has none, and each command
-   * prints exactly the text it printed before.
+   * The settings popups' port (ADR-0148 §3, §6; MVP-11 step 5): `/mode`, `/effort`, `/models` and `/permissions`. Present on an interactive
+   * (TTY, non-`--json`) driver only, where the ink chat opens the popup for a typed or palette-selected bare command; a plain, `--json` or
+   * one-shot driver has none, and each command prints exactly the text it printed before.
    */
   readonly settings?: SettingsPort | undefined;
   /**
@@ -646,11 +645,12 @@ interface ChatReplDeps {
   /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
   readonly keychain?: KeychainStore;
   /**
-   * Save `mode` as the global startup default on this chat's native prompt (`runStartupDefaultSave`): what the `/mode` popup's "New chats"
-   * hands off to (ADR-0148 §3, §6), its result said through `notice`. Wired by an interactive chat that has its starting-mode runtime (the
-   * stand-alone chat and the chat the Home hosts); where it is absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
+   * Save `mode` as the global startup default on this chat's native prompt (`saveStartupDefaultForPopup`): what the `/mode` popup's "New
+   * chats" hands off to (ADR-0148 §3, §6). It returns what the flow came to, which the popup says on the host's channel: none of the flow's
+   * words goes into the transcript. Wired by an interactive chat that has its starting-mode runtime (the stand-alone chat and the chat the Home
+   * hosts); where it is absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
    */
-  readonly saveStartupDefault?: (mode: ChatMode, notice: (text: string) => void) => Promise<void>;
+  readonly saveStartupDefault?: (mode: ChatMode) => Promise<StartupDefaultSaveResult>;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
   readonly effectAttention?: ReturnType<typeof createChatEffectAttention>;
@@ -2010,9 +2010,6 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly onReseat: (target: ReseatTarget) => void;
   /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
   readonly reseatTarget: () => ReseatTarget | undefined;
-  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
-   *  present on an interactive session only, where there is someone to ask and a store to read. */
-  readonly permissions: PermissionsPort | undefined;
   /** The agent this session is bound to, as the `/agent` popup and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    *  §3): read from the definition the session holds, never from a file, with the reasoning tier the session is using now; built afresh
    *  on every call. */
@@ -2023,9 +2020,10 @@ export interface ChatLineHandler extends ChatModeControl {
    */
   readonly reports: ReportMembers | undefined;
   /**
-   * What the settings popups read and apply from this session (ADR-0148 §3, §6; MVP-11 step 5): `/effort` today (the tiers of the bound model,
-   * the tier in force and the session's setter), and the announcement this handler routes to the host's channel ({@link setAnnouncer}).
-   * Present on an interactive session only; the host adds the surface and the owner.
+   * What the settings popups read and apply from this session (ADR-0148 §3, §6; MVP-11 step 5): the members of `/mode`, `/effort`, `/models`
+   * (where the catalog is wired) and `/permissions` (its one port over this session's remembered commands and approvals), and the announcement
+   * this handler routes to the host's channel ({@link setAnnouncer}). Present on an interactive session only; the host adds the surface and the
+   * owner.
    */
   readonly settings: SettingsMembers | undefined;
   /**
@@ -2132,19 +2130,18 @@ function workflowListFailureReason(shown: unknown): string {
  * The `/mode` member of a chat's settings port ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §3, §6), or none where the chat has no startup-default writer (`save`): then a bare `/mode` is dispatched and lists the modes, as it did.
  * The popup reads the mode in force from the chat's store, applies to this chat through the session's one mode setter, and hands new chats
- * to `save`, whose result is said through `notice`.
+ * to `save`, whose result the popup says on the host's channel.
  */
 function chatModeSettings(
   control: Pick<ChatModeControl, 'onModeChange'>,
   store: Pick<ChatStoreController, 'getSnapshot'>,
   save: ChatReplDeps['saveStartupDefault'],
-  notice: (text: string) => void,
 ): SettingsMembers['mode'] {
   if (save === undefined) return undefined;
   return {
     current: () => store.getSnapshot().mode,
     apply: control.onModeChange,
-    saveStartupDefault: (mode) => save(mode, notice),
+    saveStartupDefault: save,
   };
 }
 
@@ -2403,8 +2400,8 @@ export function createChatLineHandler(
       emitOutput(agentNotice(boundAgent()));
     },
     // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
-    // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
-    // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
+    // `/permissions` reaches here only where no popup opens (a plain, `--json` or one-shot chat): the interactive hosts open the popup
+    // before dispatch (ADR-0137 §2, ADR-0148 §10), so this is the sentence a surface with no one to ask gives.
     managePermissions: () => {
       emitOutput(PERMISSIONS_NOT_AVAILABLE);
     },
@@ -2760,12 +2757,6 @@ export function createChatLineHandler(
     onSetEffort: modeControl.onSetEffort,
     commandApprovals: modeControl.commandApprovals,
     boundAgent,
-    permissions: interactive
-      ? createPermissionsPort(
-          { grants: commandGrants, session: modeControl.commandApprovals },
-          'chat',
-        )
-      : undefined,
     // The report popups' members (ADR-0148 §10): interactive only, where there is a popup host to open them on.
     reports: interactive
       ? {
@@ -2820,10 +2811,11 @@ export function createChatLineHandler(
           }),
           // `/mode` (two steps, the 2026-11-25 ruling): this chat through the session's one mode setter, which records the change, refuses an
           // unrecorded widening and announces itself; new chats through the startup-default writer on this chat's native prompt, its result
-          // said where the `/mode` flow said it. Only where that writer is wired.
-          mode: chatModeSettings(modeControl, store, deps.saveStartupDefault, emitOutput),
+          // said by the popup on the host's channel (never in the transcript). Only where that writer is wired.
+          mode: chatModeSettings(modeControl, store, deps.saveStartupDefault),
           // `/permissions` (ADR-0137 §2, as a popup: ADR-0148 §10): the project's remembered commands and this session's approvals over the
           // store and the cache this chat holds, read when the popup opens and again after a withdrawal; the note above them reads the mode now.
+          // The session's ONE permissions port: nothing else of the handler builds one (the retired sheet's field is gone).
           permissions: {
             port: createPermissionsPort(
               { grants: commandGrants, session: modeControl.commandApprovals },
@@ -3517,15 +3509,16 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ? {}
       : {
           // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on this chat's native card, with the
-          // publication's visibly admitted frame, as the `/mode` flow ran it.
-          saveStartupDefault: (mode: ChatMode, notice: (text: string) => void) =>
-            runStartupDefaultSave(
+          // publication's visibly admitted frame, as the `/mode` flow ran it; what it came to is returned for the popup to say, and a fault
+          // after it is the session's work owner's.
+          saveStartupDefault: (mode: ChatMode) =>
+            saveStartupDefaultForPopup(
               {
                 runtime,
                 cwd: built.context.workingDir,
                 interactive,
                 flow: native.flow,
-                notice,
+                failure: (cause) => built.workOwner?.failure(cause),
                 assertAdmitting: assertModeAdmitting,
                 publish: (prepared, assertAdmitting) =>
                   publishModePreference({
@@ -3550,7 +3543,6 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onAbort,
     onModeChange,
     onSetEffort,
-    permissions,
     boundAgent,
     reports,
     settings,
@@ -3665,8 +3657,6 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       // The reseat trigger, interactive-only: the `/models` popup's `This chat` reaches it through the host's switch
       // (`bindModelSwitch`), which then ends this driver for the rebuild. A plain/`--json` driver gets none.
       ...(interactive ? { onReseat } : {}),
-      // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
-      ...(interactive && permissions !== undefined ? { permissions } : {}),
       // The same view `reports.agent` reads, for a driver (and its tests) that reads it directly: an interactive chat only.
       ...(interactive ? { boundAgent } : {}),
       // The report popups (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10) open only in an interactive chat; a plain, `--json` or one-shot
@@ -3685,8 +3675,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
             },
           }
         : {}),
-      // The settings popups (`/effort` today; ADR-0148 §3, §6) open only in an interactive chat, whose driver binds the session's announcements
-      // to its own channel; a plain, `--json` or one-shot driver has neither, and each command prints the text it printed before.
+      // The settings popups (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6) open only in an interactive chat, whose driver
+      // binds the session's announcements to its own channel; a plain, `--json` or one-shot driver has neither, and each command prints the
+      // text it printed before.
       ...(interactive && settings !== undefined
         ? {
             settings: {

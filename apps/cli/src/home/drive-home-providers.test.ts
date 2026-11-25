@@ -20,7 +20,7 @@ import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
-import { openModelsPopup } from './models-popup.test-support.js';
+import { openModelsPopup, settleModelsForm } from './models-popup.test-support.js';
 import { currentStep, visibleRows } from '../popups/popup-reducer.js';
 
 vi.mock('../engine/providers.js', async (original) => {
@@ -354,6 +354,7 @@ describe('driveHome native provider setup', () => {
           while ((popups.getSnapshot().frame?.steps[0]?.selected ?? index) < index)
             popups.input('', { downArrow: true });
           popups.input('', { return: true });
+          await settleModelsForm(popups); // the form is a frame of its own, with its own settle
           popups.input('', { return: true });
           expect(popups.getSnapshot().open).toBe(false);
           await vi.waitFor(() => expect(readFileSync(f.path, 'utf8')).toContain(chosen));

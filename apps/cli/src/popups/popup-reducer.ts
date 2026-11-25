@@ -11,7 +11,8 @@
  *
  * On a form (`frame-model.ts` `PopupForm`) `←/→` change its tabs and `↑/↓` (a page, a jump) its radio group's choice, each stopping at the ends;
  * there is no focus to move between them. `Enter` applies the form as a whole (`apply`, with the ids chosen); it is an answer like any other,
- * held behind the opening guard. `←/→` do nothing on any other step (and disarm a confirmation line, as every key but a navigation key does).
+ * held behind the opening guard, and the host holds it until the form's own frame has settled (`popup-host.ts`). `←/→` do nothing on any other
+ * step (and disarm a confirmation line, as every key but a navigation key does).
  */
 
 import { chordOf, reduceChordKey } from '../render/tui/chord-guard.js';

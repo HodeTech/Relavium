@@ -60,7 +60,8 @@ export interface ChatSetup {
    */
   readonly reports?: ReportsPort | undefined;
   /**
-   * The chat's settings popups' port (`/effort` today; ADR-0148 §3, §6): the stand-alone chat's prop, or the Home-hosted chat's session field
+   * The chat's settings popups' port (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6): the stand-alone chat's prop, or the
+   * Home-hosted chat's session field
    * (with the Home wired to open them).
    */
   readonly settings?: SettingsPort | undefined;

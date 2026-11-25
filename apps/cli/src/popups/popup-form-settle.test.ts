@@ -1,0 +1,479 @@
+/**
+ * A form settles on its own frame ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3;
+ * MVP-11 step 5, F1; `popup-host.ts`, "A form settles on its own frame"). The opening guard runs once per popup, so a form reached by a step
+ * would otherwise take an `Enter` the moment it is drawn: `/mode`'s `↓↓↓ Enter Enter` typed fast would widen the session to `auto` before the
+ * effect step 2 states had been on screen. The host holds a form's `Enter` until the opening guard's settle (500 ms) has passed since THAT
+ * frame was acknowledged whole: a too-early `Enter` is dropped without a word and is no resolution; the first step's `Enter`, the navigation
+ * keys and `Esc` act as before; a new frame of the form starts the settle again, and a re-acknowledgement of the same frame does not. Every
+ * case runs at the real opening-guard timings (no `settleMs` override), and through the host, so it holds for `/mode` and `/models` alike.
+ */
+import type { ChatMode } from '@relavium/shared';
+import { describe, expect, it } from 'vitest';
+
+import { createChordHistory } from '../render/tui/chord-guard.js';
+import { APPROVAL_QUIET_MS } from '../render/tui/tool-review-model.js';
+import { manualClock } from './doctor.test-support.js';
+import { SCOPE_STEP } from './mode-popup.js';
+import { fakeModels, modelsRig } from './models.test-support.js';
+import { createNotificationChannel } from './notifications.js';
+import { POPUP_SELECT_SETTLE_MS } from './opening-guard.js';
+import { createPopupHost } from './popup-host.js';
+import type { PopupFormValues, PopupKey, PopupSpec } from './popup-reducer.js';
+import type { ModeSettingsPort } from './settings-port.js';
+import { openSettingsPopup } from './settings-session.js';
+
+const ENTER: PopupKey = { return: true };
+const DOWN: PopupKey = { downArrow: true };
+const UP: PopupKey = { upArrow: true };
+const ESC: PopupKey = { escape: true };
+const RIGHT: PopupKey = { rightArrow: true };
+
+/** The frame of a host a moment after it was drawn: a slot acknowledges it about one frame (16 ms) later. */
+const FRAME_MS = 16;
+
+/**
+ * A popup host at the REAL timings (its settle is the opening guard's default), on a manual clock, with its key history exposed. The test is
+ * the slot: `ack` says the frame drawn now was measured and flushed.
+ */
+function rig() {
+  const clock = manualClock();
+  const history = createChordHistory();
+  const notifications = createNotificationChannel({ schedule: clock.schedule });
+  const host = createPopupHost({
+    now: clock.now,
+    schedule: clock.schedule,
+    notifications,
+    history,
+    placement: 'overlay',
+  });
+  let page = 17;
+  host.bindVisibility(() => true);
+  host.bindOpenGate(() => undefined);
+  host.bindPageRows(() => page);
+  host.bindInnerWidth(() => 66);
+  return {
+    host,
+    clock,
+    history,
+    notifications,
+    ack: (): void => host.shown(host.getSnapshot()),
+    press: (key: PopupKey): boolean => host.input('', key),
+    step: (): number | undefined => host.getSnapshot().frame?.stepIndex,
+    open: (): boolean => host.getSnapshot().open,
+    setPage: (rows: number): void => {
+      page = rows;
+    },
+  };
+}
+
+/** `/mode` opened over a fake member, in force `ask` (its first row): every apply and hand-off recorded. */
+function modeOver(r: ReturnType<typeof rig>) {
+  const applied: ChatMode[] = [];
+  const saved: ChatMode[] = [];
+  const member: ModeSettingsPort = {
+    current: () => 'ask',
+    apply: (mode) => {
+      applied.push(mode);
+      return true;
+    },
+    saveStartupDefault: (mode) => {
+      saved.push(mode);
+      return Promise.resolve({ kind: 'unchanged' });
+    },
+  };
+  const opened = openSettingsPopup({
+    host: r.host,
+    port: { surface: 'standalone-chat', announce: () => {}, mode: member },
+    command: 'mode',
+    origin: 'chat',
+  });
+  expect(opened.opened).toBe(true);
+  return { applied, saved };
+}
+
+/** `/mode` open and its first frame seen at t = 0, the opening guard's settle passed: step 1 answers from here. */
+function settledMode() {
+  const r = rig();
+  const mode = modeOver(r);
+  r.ack();
+  r.clock.advance(POPUP_SELECT_SETTLE_MS);
+  return { r, mode };
+}
+
+describe('`↓↓↓ Enter Enter` on `/mode` at the real timings', () => {
+  it('typed in one go: step 1’s `Enter` advances at once, and the chain never applies step 2 (its frame not yet seen, then its settle and the quiet gap)', () => {
+    const { r, mode } = settledMode();
+    r.press(DOWN);
+    r.press(DOWN);
+    r.press(DOWN); // ask → auto
+    r.press(ENTER);
+    expect(r.step()).toBe(SCOPE_STEP); // the first step's `Enter` is not held back
+    const resolvedByStep1 = r.history.lastResolvedAt;
+    r.press(ENTER); // in the same read: step 2 is drawn but not acknowledged yet
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.press(ENTER); // the chain's next `Enter`, the moment step 2 appeared
+    expect(mode.applied).toEqual([]);
+    expect(r.open()).toBe(true);
+    // Dropped as the opening guard drops a key: no word, and no resolution (only step 1's `Enter` resolved).
+    expect(r.notifications.getSnapshot().current).toBeUndefined();
+    expect(r.history.lastResolvedAt).toBe(resolvedByStep1);
+  });
+
+  // One press after step 2's frame was seen, at an offset from that acknowledgement. The slot is slow here on purpose (it acknowledges the
+  // frame a quiet gap after the last key), so the press is a quiet gap from the key before it and the form's settle alone decides.
+  it.each([
+    [0, false],
+    [POPUP_SELECT_SETTLE_MS - 1, false],
+    [POPUP_SELECT_SETTLE_MS, true],
+  ] as const)(
+    'step 2’s `Enter` at +%i ms after its frame was seen applies: %s (no word and no resolution when it does not)',
+    (offset, applies) => {
+      const { r, mode } = settledMode();
+      r.press(DOWN);
+      r.press(DOWN);
+      r.press(DOWN); // ask → auto
+      r.press(ENTER);
+      r.press(ENTER); // the chain's second `Enter`, before step 2 was seen
+      const resolvedByStep1 = r.history.lastResolvedAt;
+      r.clock.advance(APPROVAL_QUIET_MS);
+      r.ack();
+      r.clock.advance(offset);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(applies ? ['auto'] : []);
+      expect(r.open()).toBe(!applies);
+      expect(r.history.lastResolvedAt).toBe(applies ? r.clock.now() : resolvedByStep1);
+      if (!applies) expect(r.notifications.getSnapshot().current).toBeUndefined();
+    },
+  );
+
+  it('the settle counts from step 2’s own frame, not from the popup’s opening (which was long before)', () => {
+    const { r, mode } = settledMode();
+    r.clock.advance(10_000);
+    r.press(ENTER); // the mode in force, on to step 2
+    r.clock.advance(APPROVAL_QUIET_MS); // a slow frame: the press below meets the quiet gap, the settle alone decides
+    r.ack();
+    r.clock.advance(1);
+    r.press(ENTER);
+    expect(mode.applied).toEqual([]);
+    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+});
+
+describe('presses a quiet gap or more apart through step 1 into step 2', () => {
+  // Slower than the quiet gap, a key's repeat is a press like any other (F5 holds the faster ones): none applies before the settle of step 2's
+  // acknowledged frame, and the first after it does, once.
+  it.each([300, 400, 500, 750, 1000, 2500])(
+    'pressed every %i ms: nothing before step 2’s frame has settled, then the first press after it applies',
+    (interval) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER); // the press: step 1 → step 2
+      expect(r.step()).toBe(SCOPE_STEP);
+      const pressedAt = r.clock.now();
+      const shownAt = pressedAt + FRAME_MS;
+      let acked = false;
+      let appliedAt: number | undefined;
+      for (let at = pressedAt + interval; at <= pressedAt + 3000; at += interval) {
+        if (!acked && at >= shownAt) {
+          r.clock.advance(shownAt - r.clock.now());
+          r.ack();
+          acked = true;
+        }
+        r.clock.advance(at - r.clock.now());
+        if (!r.open()) break;
+        r.press(ENTER);
+        if (mode.applied.length > 0 && appliedAt === undefined) appliedAt = at;
+      }
+      if (appliedAt !== undefined) expect(appliedAt - shownAt).toBeGreaterThanOrEqual(500);
+      const firstAfter = Math.ceil((shownAt + 500 - pressedAt) / interval) * interval + pressedAt;
+      expect(appliedAt).toBe(firstAfter);
+      expect(mode.applied).toEqual(['ask']);
+    },
+  );
+});
+
+describe('F5: a held key never applies a form (the quiet gap)', () => {
+  // The key's repeat as a terminal sends it (a plain press), and as one that reports key events sends it (`eventType: 'repeat'`).
+  const repeats: readonly (readonly [string, PopupKey])[] = [
+    ['plain', ENTER],
+    ['repeat', { return: true, eventType: 'repeat' }],
+  ];
+
+  it.each([30, 100, 250].flatMap((ms) => repeats.map(([kind, key]) => [ms, kind, key] as const)))(
+    'a held `Enter` repeating every %i ms (%s) never applies step 2, even 5 s after its frame was seen',
+    (interval, _kind, repeat) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER); // the press: step 1 → step 2
+      expect(r.step()).toBe(SCOPE_STEP);
+      const resolvedByStep1 = r.history.lastResolvedAt;
+      const pressedAt = r.clock.now();
+      const shownAt = pressedAt + FRAME_MS;
+      let acked = false;
+      for (let at = pressedAt + interval; at <= shownAt + 5000; at += interval) {
+        if (!acked && at >= shownAt) {
+          r.clock.advance(shownAt - r.clock.now());
+          r.ack();
+          acked = true;
+        }
+        r.clock.advance(at - r.clock.now());
+        r.press(repeat);
+      }
+      expect(r.clock.now() - shownAt).toBeGreaterThanOrEqual(5000 - interval);
+      expect(mode.applied).toEqual([]);
+      expect(mode.saved).toEqual([]);
+      expect(r.step()).toBe(SCOPE_STEP);
+      // Said nothing, and resolved nothing: the held key's repeats were dropped as a key too soon is.
+      expect(r.notifications.getSnapshot().current).toBeUndefined();
+      expect(r.history.lastResolvedAt).toBe(resolvedByStep1);
+      // Let go, read, press again: that press applies.
+      r.clock.advance(APPROVAL_QUIET_MS);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(['ask']);
+    },
+  );
+
+  it('a patient press applies: step 1’s `Enter`, the effect read, then `Enter`', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.clock.advance(FRAME_MS);
+    r.ack();
+    r.clock.advance(2000);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+
+  it('a held `↓` and then `Enter` follows the same rule: refused within the gap of the last repeat, applied a quiet gap after it', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    r.press(DOWN); // the first press of a held `↓`: new chats, a new frame of the form
+    r.ack();
+    for (let held = 0; held < 900; held += 30) {
+      r.clock.advance(30);
+      r.press(DOWN); // its repeats (at the last option now: nothing moves, no new frame)
+    }
+    r.clock.advance(30);
+    r.press(ENTER); // 30 ms after the last repeat, the form's own frame long settled
+    expect(r.open()).toBe(true);
+    r.clock.advance(APPROVAL_QUIET_MS);
+    r.press(ENTER); // a quiet gap after the key before it
+    expect(r.open()).toBe(false); // new chats: closed and handed off
+    expect(mode.applied).toEqual([]);
+  });
+
+  it.each([
+    [APPROVAL_QUIET_MS - 1, false],
+    [APPROVAL_QUIET_MS, true],
+  ] as const)(
+    'the boundary: an `Enter` %i ms after the key before it applies: %s',
+    (gap, applies) => {
+      const { r, mode } = settledMode();
+      r.press(ENTER);
+      r.ack();
+      r.clock.advance(POPUP_SELECT_SETTLE_MS); // settled; the key before the `Enter` below decides
+      r.host.input('x', {}); // a key of any kind: a letter a form has no use for
+      r.clock.advance(gap);
+      r.press(ENTER);
+      expect(mode.applied).toEqual(applies ? ['ask'] : []);
+    },
+  );
+
+  it('a key of any kind counts: the composer’s key, on the host’s one history, inside the gap refuses the form’s `Enter`', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS);
+    // A key some other surface of the host stamped on the shared history (a card's, the composer's) just before.
+    r.history.previousKeyAt = r.clock.now() - 10;
+    r.press(ENTER);
+    expect(mode.applied).toEqual([]);
+  });
+});
+
+describe('the keys that are not a form’s answer act as before', () => {
+  it('`↑/↓` move the radio and `Esc` steps back at once, inside step 2’s settle', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(1);
+    r.press(DOWN);
+    expect(r.host.getSnapshot().frame?.steps[SCOPE_STEP]?.selected).toBe(1);
+    r.press(UP);
+    expect(r.host.getSnapshot().frame?.steps[SCOPE_STEP]?.selected).toBe(0);
+    r.press(ESC);
+    expect(r.step()).toBe(0);
+    expect(mode.applied).toEqual([]);
+  });
+
+  it('`←/→` move a form’s tabs at once, inside its settle (`/models` step 2)', () => {
+    const fake = fakeModels();
+    const m = modelsRig(fake.member);
+    m.open();
+    m.settle();
+    m.press('', ENTER); // the model in force, on to its form
+    m.host.shown(m.host.getSnapshot());
+    m.clock.advance(1);
+    m.press('', RIGHT);
+    const frame = m.host.getSnapshot().frame;
+    expect(frame?.steps[1]?.tab).toBeGreaterThan(0);
+    expect(fake.tiers).toEqual([]);
+  });
+});
+
+describe('what starts the settle again, and what does not', () => {
+  it('a new frame of the form (a radio choice moved) starts it again from that frame', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(400);
+    r.press(DOWN); // new chats: a new frame of the form
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1); // 899 ms after the first frame, 499 after this one (and after the `↓`)
+    r.press(ENTER);
+    expect(r.open()).toBe(true);
+    r.clock.advance(APPROVAL_QUIET_MS); // a second press a quiet gap after the first (one inside it is a held key's repeat)
+    r.press(ENTER);
+    expect(r.open()).toBe(false);
+    expect(mode.applied).toEqual([]); // new chats hands off; nothing applied here
+  });
+
+  it('the same frame acknowledged again (a resize that leaves the form whole) does not', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(300);
+    r.host.resized(100, 30);
+    r.ack();
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 300);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+
+  it('a terminal below the floor (no frame drawn at all) starts it again when the form is drawn again', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(600);
+    r.host.resized(60, 20); // below the floor: a notice in place of the frame
+    r.host.resized(80, 24);
+    r.ack();
+    r.clock.advance(1);
+    r.press(ENTER);
+    expect(mode.applied).toEqual([]);
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+
+  it('a form acknowledged cut (its page too short) starts it again once it is acknowledged whole', () => {
+    const { r, mode } = settledMode();
+    r.press(ENTER);
+    r.ack();
+    r.clock.advance(600);
+    r.setPage(3);
+    r.ack(); // the same frame, acknowledged cut
+    r.setPage(17);
+    r.ack(); // whole again
+    r.clock.advance(1);
+    r.press(ENTER);
+    expect(mode.applied).toEqual([]);
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
+    r.press(ENTER);
+    expect(mode.applied).toEqual(['ask']);
+  });
+
+  it('the form drawn again after a child popup over it closed starts it again', () => {
+    const r = rig();
+    const applied: PopupFormValues[] = [];
+    const form: PopupSpec = {
+      id: 'form',
+      title: '/form',
+      origin: 'chat',
+      steps: [
+        {
+          name: 'Form',
+          enter: 'apply',
+          controls: [{ key: 'x', verb: 'more' }],
+          content: {
+            kind: 'form',
+            radio: {
+              label: 'Apply to',
+              verb: 'apply to',
+              options: [
+                { id: 'a', label: 'A' },
+                { id: 'b', label: 'B' },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const child: PopupSpec = {
+      id: 'child',
+      title: '/child',
+      origin: 'chat',
+      steps: [{ name: 'More', content: { kind: 'report', lines: ['more'] } }],
+    };
+    r.host.openForUser(form, {
+      apply: (_context, values) => applied.push(values),
+      control: (context) => {
+        context.openChild(child);
+      },
+    });
+    r.ack();
+    r.clock.advance(600);
+    r.host.input('x', {}); // the child opens over the form
+    r.ack();
+    r.clock.advance(600);
+    r.press(ESC); // back to the form: its frame is drawn again
+    r.ack();
+    r.clock.advance(1);
+    r.press(ENTER);
+    expect(applied).toEqual([]);
+    r.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
+    r.press(ENTER);
+    expect(applied).toEqual([{ radio: 'a' }]);
+  });
+});
+
+describe('every form, through the host', () => {
+  it('`/models` step 2 holds its `Enter` the same way: nothing at +0 or +499 ms after its frame was seen, applied by a press after its settle', () => {
+    const fake = fakeModels();
+    const m = modelsRig(fake.member);
+    m.open();
+    m.settle();
+    m.press('', ENTER); // the model in force, on to its form
+    expect(m.host.getSnapshot().frame?.stepIndex).toBe(1);
+    m.clock.advance(APPROVAL_QUIET_MS); // a slow frame: the presses below meet the quiet gap, the settle decides
+    m.host.shown(m.host.getSnapshot());
+    m.press('', ENTER); // +0
+    m.clock.advance(POPUP_SELECT_SETTLE_MS - 1);
+    m.press('', ENTER); // +499
+    expect(m.host.getSnapshot().open).toBe(true);
+    expect(m.announced).toEqual([]);
+    m.clock.advance(APPROVAL_QUIET_MS);
+    m.press('', ENTER); // +799, a quiet gap after the press before it
+    expect(m.host.getSnapshot().open).toBe(false);
+    expect(m.announced).toEqual(['Already at reasoning effort medium.']);
+  });
+
+  it('`/models` step 2: a held `Enter` (every 30 ms) never applies it, even 5 s after its frame was seen', () => {
+    const fake = fakeModels();
+    const m = modelsRig(fake.member);
+    m.open();
+    m.settle();
+    m.press('', ENTER);
+    m.host.shown(m.host.getSnapshot());
+    for (let held = 0; held < 5000; held += 30) {
+      m.clock.advance(30);
+      m.press('', ENTER);
+    }
+    expect(m.host.getSnapshot().open).toBe(true);
+    expect(m.announced).toEqual([]);
+    expect(fake.tiers).toEqual([]);
+    expect(fake.switched).toEqual([]);
+  });
+});

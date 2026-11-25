@@ -100,6 +100,9 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/doctor-port.ts',
   'apps/cli/src/popups/report-port.ts',
   'apps/cli/src/popups/settings-port.ts',
+  'apps/cli/src/popups/effort-popup.ts',
+  'apps/cli/src/popups/mode-popup.ts',
+  'apps/cli/src/popups/models-popup.ts',
   DATA_MODULE,
 ];
 
