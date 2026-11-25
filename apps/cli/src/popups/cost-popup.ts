@@ -135,8 +135,10 @@ export function costReportContent(reading: CostReading): PopupContent {
  * report takes no chord, so there is nothing to answer).
  */
 export function releaseContent(reading: CostReading): PopupContent {
+  // The same predicate that decides whether `[r]` is offered, so the line exists exactly where a release does: a figure that is not a positive
+  // number (a NaN would pass `held <= 0` and draw a line whose answer could only ever say "the amount changed") is "nothing held".
+  if (!releasable(reading)) return { kind: 'empty', ...NOTHING_HELD };
   const held = heldMicrocents(reading);
-  if (held <= 0) return { kind: 'empty', ...NOTHING_HELD };
   return {
     kind: 'report',
     lines: [

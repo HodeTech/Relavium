@@ -159,6 +159,15 @@ describe('the confirmation line and the result', () => {
     expect(releaseContent(costReading(0, undefined, [])).kind).toBe('empty');
   });
 
+  it('a held figure that is not a positive number is nothing held: no line is drawn that its own answer could never release (the line exists exactly where `[r]` is offered)', () => {
+    for (const microcents of [Number.NaN, -1, 0]) {
+      const reading = costReading(0, { microcents, durabilityBroken: false }, []);
+      expect(releasable(reading), String(microcents)).toBe(false);
+      expect(releaseContent(reading).kind, String(microcents)).toBe('empty');
+    }
+    expect(releaseContent(costReading(450)).kind).toBe('report');
+  });
+
   it('the result says what was released and the total read again; the larger half is the amount', () => {
     expect(releasedAmount({ durable: 450, live: 450 })).toBe(450);
     expect(releasedAmount({ durable: 0, live: 700 })).toBe(700);
