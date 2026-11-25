@@ -46,29 +46,9 @@ import {
   type ChatDriveContext,
   type ChatDriveOutcome,
   type ChatDriver,
-  type ChatModelsPort,
   type ReseatTarget,
 } from '../../commands/chat.js';
 import { unavailableNotice } from '../../commands/repl-commands.js';
-import type { RefreshReport } from '../../engine/model-refresh.js';
-import { providerDisplayName } from '../../engine/providers.js';
-import { effortRowLabel } from '../../chat/effort-notice.js';
-import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
-import {
-  foldPermissionsSheetThroughPort,
-  openPermissionsSheetThroughPort,
-} from './permissions-sheet-port.js';
-import { permissionsChatSheet, permissionsSheetOf, type ChatSheetState } from './chat-sheet.js';
-import { ChatSheetView } from './chat-sheet-view.js';
-import {
-  foldModelPickerKey,
-  partialFailureBanner,
-  type ModelPickerKey,
-  type ModelPickerState,
-  type ModelPickerStep,
-} from './model-picker.js';
-import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
@@ -109,7 +89,7 @@ import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-chann
 import { openDoctor, type DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
 import { openReport, type ReportsPort } from '../../popups/report-port.js';
-import { openSettings, type SettingsPort } from '../../popups/settings-port.js';
+import { bindModelSwitch, openSettings, type SettingsPort } from '../../popups/settings-port.js';
 import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
 import { popupRefusal } from '../../popups/popup-refusal.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
@@ -302,21 +282,14 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
-  /** Set the reasoning-effort tier (ADR-0066 §5) — the `/models` effort sub-step calls it on a SAME-model pick (a
-   *  per-turn session override, NO reseat). Absent ⇒ the effort sub-step is not offered. `| undefined` for the
-   *  createElement passthrough. */
+  /** Set the reasoning-effort tier (ADR-0066 §5): a per-turn session override, NO reseat. `| undefined` for the createElement passthrough. */
   readonly onSetEffort?: ((effort: ReasoningEffort) => void) | undefined;
-  /** Request a mid-session model switch (ADR-0059) — the `/models` picker overlay calls it on accept. Absent (a
-   *  driver/test wired without it) ⇒ the overlay never opens (see `modelPicker`). `| undefined` for the passthrough. */
+  /**
+   * Request a mid-session model switch (ADR-0059): the `/models` popup's `This chat` calls it, through this chat's switch
+   * (`bindModelSwitch`), which then ends the driver so the loop rebuilds on the new model. Absent (a driver or a test wired without it) ⇒
+   * the session's `/models` member is not offered here, and a typed `/models` is dispatched. `| undefined` for the passthrough.
+   */
   readonly onReseat?: ((target: ReseatTarget) => void) | undefined;
-  /** The `/models` reseat picker catalog port (ADR-0059). When present (with `onReseat`), a typed `/models` opens a
-   *  keyboard-owning model-picker overlay whose accept triggers a live reseat. Absent ⇒ `/models` is a normal
-   *  message/slash (no overlay). `| undefined` so the createElement passthrough forwards an absent `ctx.modelPicker`. */
-  readonly modelPicker?: ChatModelsPort | undefined;
-  /** The `/permissions` sheet's port (ADR-0137 §2). When present, a typed (or palette-selected) bare `/permissions` opens the
-   *  keyboard-owning sheet instead of dispatching. Absent ⇒ the command says remembered commands are not available. `| undefined`
-   *  so the createElement passthrough forwards an absent `ctx.permissions`. */
-  readonly permissions?: PermissionsPort | undefined;
   /**
    * What this chat's report popups read ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. For each report whose member is present, a typed
@@ -371,8 +344,8 @@ interface ChatAppProps {
   readonly notifications?: NotificationChannel | undefined;
   /**
    * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
-   * §8). When present, a typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup instead of dispatching, as `/permissions`
-   * opens its sheet: before the line is counted as a submit, so the popup's open gate never takes the command's own line for a turn in flight.
+   * §8). When present, a typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup instead of dispatching, as the reports and
+   * the settings do: before the line is counted as a submit, so the popup's open gate never takes the command's own line for a turn in flight.
    * Absent ⇒ the command is dispatched and prints the text report into the transcript.
    */
   readonly doctor?: DoctorPort | undefined;
@@ -389,7 +362,7 @@ interface ChatViewProps {
   readonly state: SessionViewState;
   readonly tick: number;
   /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc stops the turn",
-   *  2.5.H). Render-only + cosmetic (no engine-purity concern — parity with `ModelPickerView`'s `nowMs`); the
+   *  2.5.H). Render-only + cosmetic (no engine-purity concern); the
    *  owner (`ChatApp` / the Home's `RootApp`) passes `Date.now()` so it advances with the frame loop. */
   readonly nowMs: number;
   readonly color: boolean;
@@ -1123,25 +1096,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mentionRef.current = next;
     setMention(next);
   };
-  // The `/models` reseat picker overlay (ADR-0059) — a keyboard-owning submode (like the palette/mention/search),
-  // React-local + ref-shadowed so a coalesced stdin chunk sees a just-applied open/close/accept. A monotonic epoch
-  // drops a stale async refresh whose picker has since closed/reopened (the Home controller's `pickerEpoch` pattern).
-  const [modelPicker, setModelPicker] = useState<ModelPickerState | undefined>(undefined);
-  const modelPickerRef = useRef<ModelPickerState | undefined>(undefined);
-  const applyModelPicker = (next: ModelPickerState | undefined): void => {
-    modelPickerRef.current = next;
-    setModelPicker(next);
-  };
-  const pickerEpochRef = useRef(0);
-  // The chat's docked sheet (ADR-0137 §2 `/permissions`) — ONE slot, a keyboard-owning submode like `/models`,
-  // ref-shadowed so a coalesced stdin chunk sees a just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can
-  // arrive while it is open, and holding one value, so two sheets cannot be open at once.
-  const [chatSheet, setChatSheet] = useState<ChatSheetState | undefined>(undefined);
-  const chatSheetRef = useRef<ChatSheetState | undefined>(undefined);
-  const applyChatSheet = (next: ChatSheetState | undefined): void => {
-    chatSheetRef.current = next;
-    setChatSheet(next);
-  };
   // What owns the keyboard (`overlay-flags.ts`), built in ONE place from the values given: the refs in a handler (a coalesced stdin chunk
   // sees what an earlier key of the same chunk just opened) and React's state at a render. A stand-alone chat has no screen, no exit-guard
   // card and no native action, so those three are written out as `false` (never defaulted: a flag added to the record must be decided here
@@ -1151,8 +1105,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       palette: unknown;
       search: unknown;
       mention: unknown;
-      modelPicker: unknown;
-      chatSheet: unknown;
     }>,
     prompt: NativePromptSnapshot,
     popup: PopupHostSnapshot,
@@ -1160,8 +1112,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     palette: open.palette !== undefined,
     search: open.search !== undefined,
     mention: open.mention !== undefined,
-    modelPicker: open.modelPicker !== undefined,
-    chatSheet: open.chatSheet !== undefined,
     screen: false,
     exitGuard: false,
     nativePrompt: prompt.active,
@@ -1179,8 +1129,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         palette: paletteRef.current,
         search: searchRef.current,
         mention: mentionRef.current,
-        modelPicker: modelPickerRef.current,
-        chatSheet: chatSheetRef.current,
       },
       props.modePrompt?.ui.getSnapshot() ?? NO_PROMPT,
       popups?.getSnapshot() ?? closedPopupsSnapshot(),
@@ -1192,7 +1140,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     submitBusy: submitBusyRef.current,
   });
   const renderedOverlays = overlayFlagsFrom(
-    { palette, search, mention, modelPicker, chatSheet },
+    { palette, search, mention },
     nativeSnapshot,
     popupSnapshot,
   );
@@ -1406,217 +1354,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
-  // ---- The `/models` reseat picker overlay (ADR-0059) — mirrors the Home controller's picker functions --------
-  // Apply a refresh result INTO the same picker generation that kicked it (drop a stale/closed/reopened one via the
-  // epoch); keep the user's filter/selection, surface the per-provider partial-failure banner. Never crash the REPL.
-  const applyPickerRefresh = (epoch: number, report: RefreshReport | undefined): void => {
-    if (!acceptsInput()) return;
-    const port = props.modelPicker;
-    const open = modelPickerRef.current;
-    if (epoch !== pickerEpochRef.current || open === undefined || port === undefined) return;
-    const failed =
-      report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
-    let view: ReturnType<ChatModelsPort['load']>;
-    try {
-      view = port.load(); // a DB read — never crash the REPL (parity with the Home)
-    } catch {
-      applyModelPicker({
-        ...open,
-        loading: false,
-        banner: partialFailureBanner(failed, providerDisplayName),
-      });
-      return;
-    }
-    applyModelPicker({
-      ...open,
-      entries: view.entries,
-      refreshedAt: view.refreshedAt,
-      loading: false,
-      banner: partialFailureBanner(failed, providerDisplayName),
-    });
-  };
-  const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
-    if (!acceptsInput()) return;
-    const epoch = pickerEpochRef.current; // capture THIS generation so a reopened picker never adopts this result
-    const open = modelPickerRef.current;
-    if (open === undefined) return;
-    applyModelPicker({ ...open, loading: true });
-    void refresh().then(
-      (report) => applyPickerRefresh(epoch, report),
-      () => {
-        // Owner refusal rejects; never publish after input admission has sealed.
-        const cur = modelPickerRef.current;
-        if (acceptsInput() && epoch === pickerEpochRef.current && cur !== undefined)
-          applyModelPicker({ ...cur, loading: false });
-      },
-    );
-  };
-  // Open the picker on a typed `/models` (interactive only — the port is present): render the cached catalog
-  // synchronously (the ✓ is the session's BOUND model — the reseat "you are here"), then kick a TTL-bounded refresh.
-  const openModelPicker = (): void => {
-    const port = props.modelPicker;
-    if (port === undefined) return;
-    let view: ReturnType<ChatModelsPort['load']>;
-    try {
-      view = port.load(); // a DB read — a fault must not crash the REPL (the "never crash the REPL" discipline)
-    } catch {
-      props.store.note('/models: could not read the model catalog.');
-      return;
-    }
-    pickerEpochRef.current += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
-    applyModelPicker({
-      entries: view.entries,
-      filter: '',
-      selected: 0,
-      loading: false,
-      currentDefault: port.boundModel,
-      refreshedAt: view.refreshedAt,
-      banner: undefined,
-      hint: undefined,
-      // ADR-0066: offer the effort sub-step when the setter is wired (interactive). `currentEffort` reads the LIVE
-      // store tier (not a stale build-time value), so after a no-reseat `/effort` change the sub-list opens on it.
-      phase: 'model',
-      effortStep: props.onSetEffort !== undefined,
-      pending: undefined,
-      effortTiers: [], // no model pending yet — populated on the model→effort transition
-      effortSelected: 0,
-      currentEffort: props.store.getSnapshot().reasoningEffort,
-    });
-    runPickerRefresh(() => port.refreshIfStale());
-  };
-  // A DIMMED (unavailable) model's actionable hint (ADR-0064 §6) — a keyless provider names the remedy, else the
-  // pre-existing "not on your key" note.
-  const blockedHint = (step: Extract<ModelPickerStep, { kind: 'blocked' }>): string =>
-    step.reason === 'no-key'
-      ? `${step.displayName}: no key for ${providerDisplayName(step.provider)} — connect it from the Home (start Relavium without arguments)`
-      : `${step.displayName} is not available on your key — pick another`;
-
-  // Act on an accepted pick. A SAME-model pick is an effort-only change (ADR-0066 §5) — a per-turn SESSION override
-  // (no reseat, no teardown/approval-wipe/MCP-reconnect/context-loss); a re-pick of the same tier (or a non-reasoning
-  // model with no tier) is a gentle no-op. A DIFFERENT-model pick is a live reseat (ADR-0059) carrying the chosen
-  // effort, then ends the driver loop so runReplLoop rebuilds on the new model.
-  const acceptModelPick = (
-    step: Extract<ModelPickerStep, { kind: 'accept' }>,
-    open: ModelPickerState,
-  ): void => {
-    if (!acceptsInput()) return;
-    if (step.modelId === open.currentDefault) {
-      if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
-        const at =
-          step.reasoningEffort === undefined
-            ? ''
-            : ` at effort ${effortRowLabel(step.modelId, step.reasoningEffort).label}`;
-        props.store.note(`Already on ${step.displayName}${at}.`);
-      } else {
-        const label = effortRowLabel(step.modelId, step.reasoningEffort).label;
-        props.onSetEffort?.(step.reasoningEffort);
-        props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-      }
-      return;
-    }
-    // DIFFERENT model: a live reseat — only when `onReseat` is actually wired. Without it (a driver/test with the
-    // picker but no reseat support), do NOT call `onExit()` — that would close the chat WITHOUT applying the switch;
-    // the pick is simply dropped (defensive — production always wires `onReseat` alongside the picker).
-    if (props.onReseat === undefined) return;
-    props.onReseat({
-      modelId: step.modelId,
-      provider: step.provider,
-      ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
-    });
-    props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
-  };
-
-  // The open picker owns every key (mirrors routeMentionKey). Route the fold's step; the accept/blocked cases
-  // delegate to the helpers above.
-  const routeModelPickerKey = (char: string, key: ModelPickerKey): void => {
-    const open = modelPickerRef.current;
-    if (open === undefined) return;
-    const step = foldModelPickerKey(char, key, open);
-    switch (step.kind) {
-      case 'close':
-        applyModelPicker(undefined);
-        return;
-      case 'accept':
-        applyModelPicker(undefined);
-        acceptModelPick(step, open);
-        return;
-      case 'blocked':
-        applyModelPicker({ ...open, hint: blockedHint(step) });
-        return;
-      case 'refresh':
-        runPickerRefresh(() => props.modelPicker?.refresh() ?? Promise.resolve(undefined));
-        return;
-      case 'state':
-        // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key.
-        applyModelPicker(step.state === open ? open : { ...step.state, hint: undefined });
-        return;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-  };
-
-  // ---- The docked sheet: `/permissions` (ADR-0137 §2) --------------------------------------------
-  /** Whether a sheet may open now: an idle prompt, with no turn running and no card pending (a card would compete for the keyboard). */
-  const sheetMayOpen = (): boolean => {
-    const snap = props.store.getSnapshot();
-    return !(
-      snap.state.status === 'running' ||
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
-    );
-  };
-  // Open on the data read NOW, in the chat's current mode. The caller (submit) gates this on a wired port and an idle prompt.
-  const openPermissionsSheet = (): void => {
-    const port = props.permissions;
-    if (port === undefined || !sheetMayOpen()) return;
-    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(
-      port,
-      props.store.getSnapshot().mode,
-      performance.now(),
-    );
-    if (opened.sheet === undefined) props.store.note(opened.note);
-    else applyChatSheet(permissionsChatSheet(opened.sheet));
-  };
-  // The open sheet owns every key. A permissions withdrawal is carried out through the port (the store is read again there) and the
-  // sheet is reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
-  const routeChatSheetKey = (char: string, key: ModelPickerKey): void => {
-    const open = chatSheetRef.current;
-    if (open === undefined) return;
-    const port = props.permissions;
-    if (port === undefined) {
-      applyChatSheet(undefined);
-      return;
-    }
-    const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
-    const result = foldPermissionsSheetThroughPort(
-      port,
-      open.sheet,
-      char,
-      key,
-      canArm,
-      performance.now(),
-    );
-    applyChatSheet(result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet));
-    if (result.note !== undefined) props.store.note(result.note);
-  };
-  // A card (or any approval) that arrives while the sheet is open wins: the sheet closes with its question dropped. The sheet opens only
-  // when nothing is pending, so this is a defence for a host that lets one arrive, not a path the product takes.
-  useEffect(() => {
-    if (chatSheetRef.current === undefined) return;
-    const snap = props.store.getSnapshot();
-    if (
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
-    )
-      applyChatSheet(undefined);
-  });
+  // ---- `/models` (ADR-0148 §3, §6; ADR-0059) -------------------------------------------------------------------------------------------
+  // The session's `/models` member with THIS chat's switch bound (the one binding, `bindModelSwitch`): `This chat` with another model asks
+  // for the reseat (`onReseat` records the target and the stop state) and ends the driver, so `runReplLoop` rebuilds on the new model with
+  // the model-switch marker as its first entry. Nothing is switched once input is sealed (the chat is closing). With no `onReseat` the
+  // member is withdrawn, and a typed `/models` is dispatched.
+  const reseatHere =
+    props.onReseat === undefined
+      ? undefined
+      : (target: ReseatTarget): void => {
+          if (!acceptsInput()) return;
+          props.onReseat?.(target);
+          props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
+        };
+  const settingsPort = bindModelSwitch(props.settings, reseatHere);
 
   // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
   // the only place it exists, and the slash dispatch that runs `/scrollback` / `/edit` lives outside React — so the
@@ -1658,10 +1409,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       if (props.doctor !== undefined)
         opening = openDoctor({ host, port: props.doctor, deep: route.deep, origin: 'chat' });
     } else if (route.kind === 'settings') {
-      if (props.settings !== undefined)
+      if (settingsPort !== undefined)
         opening = openSettings({
           host,
-          port: props.settings,
+          port: settingsPort,
           command: route.command,
           origin: 'chat',
         });
@@ -1683,20 +1434,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const submit = (message: string, display?: string): void => {
     if (!acceptsInput()) return;
     if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
-    // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
-    // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
-    if (props.modelPicker !== undefined && message.trim() === '/models') {
-      openModelPicker();
-      return;
-    }
-    // A typed (or palette-selected) bare `/permissions` opens the sheet (ADR-0137 §2) instead of dispatching, where the port is wired.
-    // `/permissions <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
-    if (props.permissions !== undefined && message.trim() === '/permissions') {
-      openPermissionsSheet();
-      return;
-    }
     // `/doctor` (and `--deep`, ADR-0148 §8), `/agent`, `/cost` (and `--release`), `/workflows` and `/help` (§10) and the bare settings (`/effort`
-    // on a model with a tier to choose, §3 and §6) open their popup here, BEFORE the submit is marked in flight: the popup host's open gate reads
+    // on a model with a tier to choose, `/models` where this chat can switch, §3 and §6) open their popup here, BEFORE the submit is marked in flight: the popup host's open gate reads
     // a submit in flight as a turn, and this line is not one. Any other form (`/doctor now`, `/cost --force`) dispatches and is rejected there,
     // and a setting with its value (`/effort high`) dispatches and applies it.
     const route =
@@ -1705,7 +1444,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         : routePopupLine(message, {
             doctor: props.doctor !== undefined,
             reports: props.reports,
-            settings: props.settings,
+            settings: settingsPort,
           });
     if (route !== undefined && popups !== undefined) {
       openPopupRoute(popups, route);
@@ -1764,11 +1503,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       submitBusy: submitBusyRef.current,
       ...pasteFlagsFrom(liveOverlays()),
     });
-    // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is
-    // withdrawn.
-    const pastedOver = permissionsSheetOf(chatSheetRef.current);
-    if (pastedOver !== undefined)
-      applyChatSheet(permissionsChatSheet(disarmPermissionsSheet(pastedOver)));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
@@ -2002,19 +1736,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
       submitBusyRef.current;
-    // The open `/models` reseat picker owns every key (ADR-0059) — checked FIRST (mutually exclusive with the other
-    // submodes; it only opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied
-    // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
-    if (modelPickerRef.current !== undefined) {
-      routeModelPickerKey(char, key);
-      return;
-    }
-    // The open docked sheet owns every key. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C`
-    // closes, neither ever withdraws. Mutually exclusive with the other submodes (a sheet opens only at an idle prompt).
-    if (chatSheetRef.current !== undefined) {
-      routeChatSheetKey(char, key);
-      return;
-    }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
     // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
     // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
@@ -2462,26 +2183,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
           )}
           {mention !== undefined && <MentionView state={mention} color={color} />}
-          {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
-          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
-          {modelPicker !== undefined && (
-            <ModelPickerView
-              state={modelPicker}
-              color={color}
-              nowMs={Date.now()}
-              providerName={providerDisplayName}
-              scope="this-chat"
-            />
-          )}
-          {/* The docked sheet — `/permissions` (ADR-0137 §2) — here with the other overlays; the transcript stays above it. */}
-          {chatSheet !== undefined && (
-            <ChatSheetView
-              state={chatSheet}
-              color={color}
-              columns={windowSize.columns}
-              rows={windowSize.rows}
-            />
-          )}
         </Box>
       </BackdropDim>
       {/* The one overlay slot (ADR-0148 §2): the last child of the root, and the only absolutely positioned node of the CLI. */}
@@ -2753,13 +2454,11 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
           onAbort: ctx.onAbort,
           onModeChange: ctx.onModeChange ?? ((): void => undefined),
-          // ADR-0066 §5 effort setter — passed AS-IS (optional); absent ⇒ the `/models` effort sub-step is not offered.
+          // ADR-0066 §5 effort setter — passed AS-IS (optional).
           onSetEffort: ctx.onSetEffort,
-          // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
-          // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
+          // `/models` reseat (ADR-0059) — the REPL loop wires it only for an interactive session; passed AS-IS (optional) so a driver
+          // wired without it has no `/models` popup (the session's member is withdrawn: `bindModelSwitch`).
           onReseat: ctx.onReseat,
-          modelPicker: ctx.modelPicker,
-          permissions: ctx.permissions,
           reports: ctx.reports,
           // The settings popups (`/effort` today; ADR-0148 §3, §6), and where their announcements and the typed settings' go: this chat's
           // notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print their text.

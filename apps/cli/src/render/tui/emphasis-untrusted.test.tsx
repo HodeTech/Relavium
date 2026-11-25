@@ -1,6 +1,5 @@
 import './force-no-color.js';
 
-import type { ModelCatalogEntry } from '@relavium/llm';
 import { cleanup, render } from 'ink-testing-library';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,8 +8,6 @@ import type { ReplCommand } from '../../commands/repl-commands.js';
 import { styleRuns } from './emphasis-test-kit.js';
 import { HomeView } from './home-view.js';
 import { MentionView } from './mention-view.js';
-import { ModelPickerView } from './model-picker-view.js';
-import type { ModelPickerState } from './model-picker.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import { PaletteView } from './palette-view.js';
 import { ReverseSearchView } from './reverse-search-view.js';
@@ -87,48 +84,6 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
     );
     expect(foreign(frame)).toEqual([]);
     expect(frame.split(CLEAN).length - 1).toBeGreaterThanOrEqual(2);
-  });
-
-  it('the model picker’s display name and filter', () => {
-    const entry: ModelCatalogEntry = {
-      modelId: 'm',
-      provider: 'anthropic',
-      displayName: HOSTILE,
-      pricingSource: 'catalog',
-      priceKnown: true,
-      available: true,
-      deprecated: false,
-    };
-    const state: ModelPickerState = {
-      entries: [entry],
-      filter: '',
-      selected: 0,
-      loading: false,
-      currentDefault: undefined,
-      refreshedAt: undefined,
-      banner: undefined,
-      hint: undefined,
-      effortTiers: [],
-      phase: 'model',
-      effortStep: false,
-      pending: undefined,
-      effortSelected: 0,
-      currentEffort: undefined,
-    };
-    const frame = frameOf(
-      <ModelPickerView state={state} color={false} nowMs={0} scope="next-chat" />,
-    );
-    expect(foreign(frame)).toEqual([]);
-    expect(frame).toContain(CLEAN);
-    const filtered = frameOf(
-      <ModelPickerView
-        state={{ ...state, filter: HOSTILE }}
-        color={false}
-        nowMs={0}
-        scope="next-chat"
-      />,
-    );
-    expect(foreign(filtered)).toEqual([]);
   });
 
   it('the reverse search’s query', () => {

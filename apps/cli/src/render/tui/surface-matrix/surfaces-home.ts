@@ -2,7 +2,14 @@ import type { ConsentSubject } from '../../../engine/mcp-consent-gate.js';
 import { askConsent } from '../../../home/consent-card.js';
 import { bracketed } from '../harness-util.js';
 import { createRunStore, type RunStore } from '../run-store.js';
-import { homeModelsPort } from './chat-host.js';
+import {
+  driveModels,
+  homeModelsPort,
+  MODELS_LANDMARKS,
+  MODELS_SELECTED_ROW,
+  modelsPopupBox,
+  type ModelsState,
+} from './models-fixture.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
 import {
   openExportCard,
@@ -85,6 +92,34 @@ async function typeKeys(m: HomeMount, line: string): Promise<void> {
   for (const letter of line) m.controller.handleKey(letter, {});
   m.controller.handleKey('', { return: true });
   await m.settle();
+}
+
+/** The legend row of each step of the bare Home's `/models`: its second step sets the default (there is no live chat, so no `Apply to`). */
+const HOME_MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string>> = {
+  list: '↑/↓ select · Enter next · Esc close',
+  form: '←/→ effort · Enter set default · [Ctrl+C] close · Esc back',
+};
+
+/** The bare Home's `/models` popup on one step: the landing behind it, `/models` typed and routed, the Home's catalog and default. */
+function homeModelsSurface(state: ModelsState, title: string): HomeSurface {
+  return {
+    host: 'home',
+    id: state === 'list' ? 'home.settings-models' : 'home.settings-models-apply',
+    title,
+    exitKey: 'Esc',
+    landmark: MODELS_LANDMARKS[state],
+    legendRow: HOME_MODELS_LEGEND_ROW[state],
+    ...(state === 'list' ? { selectedRow: MODELS_SELECTED_ROW } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: modelsPopupBox,
+    setup: { deps: { models: homeModelsPort } },
+    notes:
+      'the body behind the popup: the empty, keyed landing; the popup is opened by typing /models, through the Home’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveModels(m, (line) => typeKeys(m, line), state);
+    },
+  };
 }
 
 /** The Home's `/doctor` popup in one state: the landing behind it, the command typed and routed, the popup's own rows in its box. */
@@ -561,19 +596,11 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       await m.until(() => m.controller.getSnapshot().exitGuard === 'confirm');
     },
   },
-  {
-    host: 'home',
-    id: 'home.model-picker',
-    title: 'The /models picker (the next session’s default)',
-    exitKey: 'Esc',
-    landmark: 'Claude Sonnet 4.5',
-    selectedRow: 'Claude Sonnet 4.5 · ',
-    setup: { deps: { models: homeModelsPort } },
-    open: async (m) => {
-      await typeCommand(m, '/models');
-      await settleOn(m, 'Claude Sonnet 4.5');
-    },
-  },
+  homeModelsSurface('list', 'The /models popup on the bare Home: the catalog, the default marked'),
+  homeModelsSurface(
+    'form',
+    'The /models popup’s second step on the bare Home: the effort of the default of new chats',
+  ),
   {
     host: 'home',
     id: 'home.mode-flow',

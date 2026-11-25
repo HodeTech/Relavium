@@ -17,8 +17,7 @@ import {
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { permissionsSheetOf } from './chat-sheet.js';
-import { SHEET_SETTLE_MS } from './permissions-sheet.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -80,24 +79,22 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 /** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. The
  *  `sessionId` is parameterized so a `/models` reseat fake can hand back a DIFFERENT session object that keeps the
  *  SAME id (the reseat invariant the scroll-reset test discriminates against). */
-function makeSession(
-  store: ChatStoreController,
-  sessionId = 'sess-fake',
-  permissions?: PermissionsPort,
-): HomeChatSession {
+function makeSession(store: ChatStoreController, sessionId = 'sess-fake'): HomeChatSession {
   return {
     store,
     sessionId,
     processLine: async () => {},
     shouldStop: () => false,
     stopReason: () => 'exit',
-    ...(permissions === undefined ? {} : { permissions }),
     teardown: () => Promise.resolve(),
+    // What the `/models` popup's member of a chat the Home hosts needs of its session: a settings port and its tier setter.
+    settings: { surface: 'home-chat', announce: () => {} },
+    onSetEffort: () => {},
   };
 }
 
-/** A single-entry {@link HomeModelsPort} fake — just enough to open the in-Home `/models` picker and accept the one
- *  model (which triggers a live reseat when `reseatChat` is wired). Mirrors the fuller fake in home-controller.test.ts. */
+/** A single-entry {@link HomeModelsPort} fake — just enough for the in-Home `/models` popup's member to switch to the one model (a live
+ *  reseat when `reseatChat` is wired). */
 function makeModelsPort(
   modelId: string,
   provider: ModelCatalogEntry['provider'] = 'anthropic',
@@ -126,6 +123,11 @@ function makeModelsPort(
 
 interface MountedHome {
   readonly c: HomeController;
+  /**
+   * `/models` in the chat in front, as the popup's `This chat` applies it: the line routed to the Home's opener (`openSettings`), then the
+   * chat's member switched to `modelId` (the popup's own keys are `popups/models-*.test.ts`'s). Whether the line was routed.
+   */
+  readonly switchModel: (modelId: string) => boolean;
   readonly harness: ReturnType<typeof render>;
   /** Invoke the resize callback `RootApp` registered via `subscribeResize` (the terminal-resize signal). */
   readonly fireResize: () => void;
@@ -169,7 +171,13 @@ function mountHome(
   let onResize: () => void = () => {};
   let size = opts.size ?? { cols: 100, rows: 30 };
   const snapshot = opts.snapshot; // captured so `read: () => snapshot` narrows without an `as` cast
+  let opened: SettingsPort | undefined;
+  // Read through a function: what the controller's `openSettings` set is not seen by the narrowing of a local.
+  const openedPort = (): SettingsPort | undefined => opened;
   const c = createHomeController({
+    openSettings: ({ chat }) => {
+      opened = chat;
+    },
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
@@ -213,6 +221,16 @@ function mountHome(
   return {
     c,
     harness,
+    switchModel: (modelId) => {
+      opened = undefined;
+      c.handleKey('/', {});
+      for (const ch of 'models') c.handleKey(ch, {});
+      c.handleKey('', { return: true });
+      const models = openedPort()?.models;
+      if (models === undefined) return false;
+      models.switchModel?.({ modelId, provider: 'anthropic' });
+      return true;
+    },
     fireResize: () => onResize(),
     setSize: (next) => {
       size = next;
@@ -460,7 +478,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const sessionA = makeSession(store, 'sess-A');
     const sessionB = makeSession(store, 'sess-A'); // reseat: DIFFERENT object, SAME sessionId, SAME transcript store
     const reseatChat = vi.fn(() => Promise.resolve(sessionB));
-    const { c, harness } = mountHome(store, {
+    const { c, harness, switchModel } = mountHome(store, {
       alternateScreen: true,
       startChat: () => Promise.resolve(sessionA),
       reseatChat,
@@ -477,13 +495,8 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     await settleFrames();
     expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (follow paused)
 
-    // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → accept.
-    c.handleKey('/', {});
-    for (const ch of 'models') c.handleKey(ch, {});
-    c.handleKey('', { return: true });
-    await settleFrames();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened in-chat
-    c.handleKey('', { return: true }); // accept the only model → live reseat
+    // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → the popup's `This chat`.
+    expect(switchModel('claude-opus-4-8')).toBe(true); // the popup's member was routed in-chat
     await waitFor(() => c.getSnapshot().session === sessionB);
     await settleFrames();
 
@@ -838,11 +851,7 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
         reseatChat: () => Promise.resolve(next),
       });
       await copyOnce(m);
-      m.c.handleKey('/', {});
-      for (const char of 'models') m.c.handleKey(char, {});
-      m.c.handleKey('', { return: true });
-      await waitFor(() => m.c.getSnapshot().modelPicker !== undefined);
-      m.c.handleKey('', { return: true });
+      expect(m.switchModel('next-model')).toBe(true);
       await waitFor(() => m.c.getSnapshot().session === next);
       expect(m.c.getSnapshot().session).toBe(next);
       deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
@@ -1098,13 +1107,8 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('what is 2+2'));
 
-    // Open the reseat picker from the chat palette (`/` → filter `models` → run), then accept the one model.
-    m.c.handleKey('/', {});
-    for (const ch of 'models') m.c.handleKey(ch, {});
-    m.c.handleKey('', { return: true });
-    await settleFrames();
-    expect(m.c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
-    m.c.handleKey('', { return: true }); // accept ⇒ a LIVE reseat
+    // `/models` from the chat palette (`/` → filter `models` → run), then the popup's `This chat` on the one model ⇒ a LIVE reseat.
+    expect(m.switchModel('claude-opus-4-8')).toBe(true);
     await waitFor(
       () => m.c.getSnapshot().session?.store.getSnapshot().state.model === 'claude-opus-4-8',
     );
@@ -1147,136 +1151,6 @@ const untilTrue = (predicate: () => boolean, timeout = 3000): Promise<void> =>
     },
     { timeout, interval: 15 },
   );
-
-describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
-  const port: PermissionsPort = {
-    surface: 'chat',
-    load: () => ({
-      project: {
-        ok: true,
-        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
-      },
-      session: [],
-    }),
-    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
-  };
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-  it('is drawn docked in the chat when the command is typed, takes a paste away from the prompt, and closes on Esc', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const { c, harness } = mountHome(store, {
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(c);
-    harness.stdin.write('/permissions');
-    harness.stdin.write('\r');
-    await untilTrue(() => (harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const frame = harness.lastFrame() ?? '';
-    expect(frame).toContain('This project · remembered (1)');
-    expect(frame).toContain('> npm, 1 argument');
-    expect(frame).toContain('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
-    // A paste is not input to the sheet and not text for the prompt behind it.
-    harness.stdin.write(bracketed('pasted words'));
-    await settleFrames();
-    expect(c.getSnapshot().input.text).toBe('');
-    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
-    harness.stdin.write('\u001b');
-    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Permissions ·'));
-  });
-
-  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
-    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${String(i)}`);
-    const { c, harness } = mountHome(store, {
-      alternateScreen: true,
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(c);
-    const frame = (): string => harness.lastFrame() ?? '';
-    await untilTrue(() => frame().includes('HMSG59'));
-    harness.stdin.write('/permissions');
-    harness.stdin.write('\r');
-    await untilTrue(() => c.getSnapshot().chatSheet !== undefined);
-    await settleFrames();
-    harness.stdin.write('\x1b[5~'); // PgUp: the sheet's own page key
-    await settleFrames();
-    harness.stdin.write('\x1b[5~');
-    await settleFrames();
-    expect(c.getSnapshot().chatSheet, 'the sheet is still open').toBeDefined();
-    expect(frame(), 'the transcript did not scroll behind the sheet').toContain('HMSG59');
-  });
-
-  it('draws the sheet at the terminal’s real width and height: it fits an 80x24 terminal and says so below it', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      size: { cols: 80, rows: 24 },
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const sheetLines = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .filter((line) => line.includes('remembered') || line.includes('select · [d'));
-    for (const line of sheetLines) expect(line.length).toBeLessThanOrEqual(80);
-    m.setSize({ cols: 80, rows: 23 });
-    m.fireResize();
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
-  });
-
-  it('draws the rule as wide as the terminal allows, not at a fixed 80 columns', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      size: { cols: 100, rows: 30 },
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const rule = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .find((line) => line.includes('Permissions · ask mode'));
-    // two columns of margin on a 100-column terminal: the sheet's own cap is 100, so the rule is 98 wide
-    expect(rule?.trimEnd().length).toBe(98);
-  });
-
-  it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => m.c.getSnapshot().chatSheet !== undefined);
-    await sleep(SHEET_SETTLE_MS + 100);
-    m.setSize({ cols: 60, rows: 20 });
-    m.fireResize();
-    await settleFrames();
-    m.harness.stdin.write('d');
-    await settleFrames();
-    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
-    m.setSize({ cols: 100, rows: 30 });
-    m.fireResize();
-    await settleFrames();
-    // The `d` above was typed into a sheet that could not arm, and that counts as typing: it is refused again, and says why.
-    m.harness.stdin.write('d');
-    await untilTrue(() =>
-      (permissionsSheetOf(m.c.getSnapshot().chatSheet)?.message?.text ?? '').startsWith(
-        'Typed keys are ignored',
-      ),
-    );
-    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
-    // An arrow key says the person is choosing a row again.
-    m.harness.stdin.write('\u001b[B');
-    m.harness.stdin.write('\u001b[A');
-    await settleFrames();
-    m.harness.stdin.write('d');
-    await untilTrue(() => permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed === true);
-  });
-});
 
 describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
   const homePort: PermissionsPort = {

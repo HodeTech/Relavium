@@ -9,24 +9,11 @@ import {
 } from '../../../../home/drive-home.js';
 import { launchBusy } from '../../../../home/run-launch.js';
 import { STARTING_CHAT_LINE } from '../../home-app.js';
-import {
-  PICKER_NO_KEY_REMEDY_IN_A_CHAT,
-  PROVIDER_KEYS_AT_THE_HOME,
-  alreadyOnModelHint,
-} from '../../home-controller.js';
+import { PROVIDER_KEYS_AT_THE_HOME } from '../../home-controller.js';
 import { STDIN_PROMPT_NOTE } from '../../../../commands/agent-run.js';
 import { requireKey } from '../../../../onboarding/wizard.js';
 import { DUMP_PROMPT, dumpToScrollback } from '../../../scrollback.js';
-import {
-  cardStates,
-  modelPickerStates,
-  PICKER_BASE,
-  PICKER_ENTRIES,
-  SIZE_100,
-  SIZE_80,
-  withCard,
-} from './prompts.js';
-import { providerDisplayName } from '../../../../engine/providers.js';
+import { cardStates, SIZE_100, SIZE_80, withCard } from './prompts.js';
 
 /**
  * The sentences the Home and its flows add to the cards of `/resume`, `/run`, `/providers`, `/models`, the first-run wizard and the
@@ -143,41 +130,13 @@ const driveHomeSentences: Recorder = () => {
   return out;
 };
 
-/** The sentences the Home's controller writes: the provider-typo pointer and the two hints of the `/models` picker, which a real view draws. */
-const homeControllerSentences: Recorder = () => {
-  const alreadyOn = alreadyOnModelHint('Claude X');
-  const remedy = PICKER_NO_KEY_REMEDY_IN_A_CHAT.trim();
-  const out: Record<string, readonly string[] | string> = {
-    'provider typo, in a hosted chat (source literal)': PROVIDER_KEYS_AT_THE_HOME,
-    // The literal of the source wrote the model's name as `${…}`: the recording keeps that placeholder.
-    'picker hint: same model (source literal)': alreadyOnModelHint('${…}'),
-    'picker hint: no key, in a hosted chat (source literal)': remedy,
-  };
-  // `hint` takes the picker's status row: drawn for both scopes (the same-model hint) and for the hosted chat (the no-key remedy).
-  const noKey = `GPT X: no key for ${providerDisplayName('openai')}${PICKER_NO_KEY_REMEDY_IN_A_CHAT}`;
-  for (const columns of [80, 100]) {
-    for (const scope of ['next-chat', 'this-chat'] as const)
-      Object.assign(
-        out,
-        modelPickerStates(
-          `hint=same-model scope=${scope}`,
-          { ...PICKER_BASE, entries: PICKER_ENTRIES, hint: alreadyOn },
-          scope,
-          columns,
-        ),
-      );
-    Object.assign(
-      out,
-      modelPickerStates(
-        'hint=no-key-remedy scope=this-chat',
-        { ...PICKER_BASE, entries: PICKER_ENTRIES, hint: noKey },
-        'this-chat',
-        columns,
-      ),
-    );
-  }
-  return out;
-};
+/**
+ * The sentences the Home's controller writes: the provider-typo pointer. (The `/models` picker's two hints are retired with it: `/models` is a
+ * popup, whose rows say why a model cannot be chosen, `models-popup` in `popups.tsx`.)
+ */
+const homeControllerSentences: Recorder = () => ({
+  'provider typo, in a hosted chat (source literal)': PROVIDER_KEYS_AT_THE_HOME,
+});
 
 /** The echo line of the Home while the first chat is built: inline in the Home's app (source literal). */
 const homeAppStartingChat: Recorder = () => ({
@@ -218,7 +177,7 @@ export const HOME_HOST_PRODUCERS: readonly Producer[] = [
     id: 'home-controller-sentences',
     file: 'render/tui/home-controller.ts',
     describe:
-      'The provider-typo pointer in a hosted chat, and the /models picker’s two hints (same model, no key) drawn by the real picker.',
+      'The provider-typo pointer in a hosted chat (the /models picker’s hints are retired with it).',
   },
   {
     id: 'home-app-starting-chat',

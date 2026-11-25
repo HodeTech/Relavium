@@ -132,7 +132,7 @@ export async function suspendFullScreen(
  *
  * `suspendTerminal` exists ONLY inside a mounted ink tree (`useApp()`), but the slash-command dispatch that must call
  * it lives outside React: `relavium chat`'s `ReplCommandContext` is built before `driveInk` mounts, and the Home's
- * `createHomeController` is built before `RootApp` mounts. Every existing port (`runShellCommand`, `modelPicker`,
+ * `createHomeController` is built before `RootApp` mounts. Every existing port (`runShellCommand`, `models`,
  * `mentionReader`) flows the other way — built outside React, consumed inside. This one inverts that: the non-React
  * layer creates an empty port, hands it to both the command context and the component; the component `attach`es its
  * `suspendTerminal` on mount and detaches on unmount.

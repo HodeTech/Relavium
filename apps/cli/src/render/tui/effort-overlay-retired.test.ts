@@ -2,8 +2,8 @@
  * The `/effort` tier overlay is retired ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §3, §6; MVP-11 step 5): `/effort` is a settings popup now (`popups/effort-popup.ts`), and nothing of the overlay is left behind. What fails
  * here: a symbol of the overlay that is written again, its module, an overlay flag or a host field for it, a golden producer or a matrix surface
- * of it, and the popup's surface missing from either chat host. The tier LIST (`effort-tier-list.tsx`) stays: the `/models` effort sub-step draws
- * it, and that picker is a later increment of the step.
+ * of it, and the popup's surface missing from either chat host. The tier LIST (`effort-tier-list.tsx`) went with the `/models` picker, whose
+ * effort sub-step was its last caller (`model-picker-retired.test.ts`).
  *
  * The paste gate's field for the overlay (`effortPickerOpen` of `chat-input.ts`'s `PasteEditableFlags`) is gone too: a paste into a popup is
  * the popup host's.

@@ -15,7 +15,7 @@
  * pinned by `overlay-flags.test.ts`. Changing a cell is a behaviour change and belongs to its own increment.
  *
  * Which flag is set by whom:
- * - the five submodes (`palette` .. `chatSheet`) and the four cards (`approval` .. `checkpoint`) are set by both hosts;
+ * - the three submodes (`palette` .. `mention`) and the four cards (`approval` .. `checkpoint`) are set by both hosts;
  * - `screen`, `exitGuard` and `nativeActionBusy` exist only on the Home (the stand-alone chat holds them `false`);
  * - `nativePrompt`, `popup` and `replacesBody` are the HOST's (the native prompt channel and the popup host are what only a host sees): the Home
  *   controller holds `nativePrompt` and `replacesBody` `false` and `popup` from its `popupOpen` port, `home-app.tsx` and `chat-ink.tsx` set the
@@ -38,10 +38,6 @@ export interface OverlayFlags {
   readonly search: boolean;
   /** `@`-mention completion (a chat). */
   readonly mention: boolean;
-  /** The `/models` picker (the bare Home's next-session default, or a chat's reseat). */
-  readonly modelPicker: boolean;
-  /** The chat's docked sheet: `/permissions`. */
-  readonly chatSheet: boolean;
   /** A screen is in front of the landing: the run view, a gate card, the tab host or the help sheet (the Home only). */
   readonly screen: boolean;
   /** The exit-guard card (the Home only). */
@@ -73,8 +69,6 @@ export const NO_OVERLAYS: OverlayFlags = {
   palette: false,
   search: false,
   mention: false,
-  modelPicker: false,
-  chatSheet: false,
   screen: false,
   exitGuard: false,
   nativePrompt: false,
@@ -119,7 +113,7 @@ type Gate =
   | 'occupiesRows'
   | 'revokesCustody';
 
-/** What the five submodes share. */
+/** What the three submodes share. */
 const SUBMODE: readonly Gate[] = [
   'screenSlot',
   'scrollKeys',
@@ -129,7 +123,7 @@ const SUBMODE: readonly Gate[] = [
   'promptHidden',
 ];
 
-/** What the two submodes that can open on the bare landing add. */
+/** What the one submode that can open on the bare landing adds (the palette; `/models` is a popup now). */
 const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
 
 /**
@@ -149,15 +143,13 @@ const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
  * | 5 | `scrollKeys` | the submodes close it, the cards do not: their own host answers every key |
  * | 6 | `mouseCapture` | only a native prompt and a busy native action release it; an open submode does not (toggling reporting would be churn) |
  * | 7 | `interrupt` | the exit card and the cards are not interrupt gates (routed first) |
- * | 8 | `landingPromptHidden`, `pageNotice` | of the submodes only the palette and the model picker, the two that open on the landing |
- * | 9 | paste (`pasteFlagsFrom`) | read for the five submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
+ * | 8 | `landingPromptHidden`, `pageNotice` | of the submodes only the palette, the one that opens on the landing |
+ * | 9 | paste (`pasteFlagsFrom`) | read for the three submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
  */
 const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   palette: [...SUBMODE, ...ON_THE_LANDING],
   search: SUBMODE,
   mention: SUBMODE,
-  modelPicker: [...SUBMODE, ...ON_THE_LANDING],
-  chatSheet: SUBMODE,
   // A screen replaces the slot rather than being refused by it (`openHelp` checks it on its own), and it is never open in a chat.
   screen: ['stripPause', 'pageNotice'],
   // The slot checks the card on its own today; the table says the same thing once.
@@ -234,12 +226,7 @@ export function screenSlotBlocked(flags: OverlayFlags): boolean {
 /** The overlay half of the shared paste gate ({@link PasteEditableFlags}); the caller adds the work flags (`running`, `shellBusy`, `submitBusy`). */
 export type OverlayPasteFlags = Pick<
   PasteEditableFlags,
-  | 'paletteOpen'
-  | 'searchOpen'
-  | 'mentionOpen'
-  | 'modelPickerOpen'
-  | 'chatSheetOpen'
-  | 'approvalPending'
+  'paletteOpen' | 'searchOpen' | 'mentionOpen' | 'approvalPending'
 >;
 
 /**
@@ -252,8 +239,6 @@ export function pasteFlagsFrom(flags: OverlayFlags): OverlayPasteFlags {
     paletteOpen: flags.palette,
     searchOpen: flags.search,
     mentionOpen: flags.mention,
-    modelPickerOpen: flags.modelPicker,
-    chatSheetOpen: flags.chatSheet,
     approvalPending: flags.approval || flags.review,
   };
 }
@@ -299,12 +284,12 @@ export function promptHidden(flags: OverlayFlags): boolean {
   return closes(flags, 'promptHidden');
 }
 
-/** Whether the landing draws no prompt: the palette or the model picker, the two submodes that open on it (the exit card hides it on its own). */
+/** Whether the landing draws no prompt: the palette, the one submode that opens on it (the exit card hides it on its own). */
 export function landingPromptHidden(flags: OverlayFlags): boolean {
   return closes(flags, 'landingPromptHidden');
 }
 
-/** Whether `PgUp`/`PgDn` do not page the landing's notice: a screen, the exit card, the palette or the model picker is in front. */
+/** Whether `PgUp`/`PgDn` do not page the landing's notice: a screen, the exit card, the palette or a popup is in front. */
 export function noticePagingBlocked(flags: OverlayFlags): boolean {
   return closes(flags, 'pageNotice');
 }

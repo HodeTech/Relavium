@@ -202,3 +202,42 @@ function modeSettingsFailure(
   if (signal?.aborted === true) return 'Mode settings cancelled. Startup default unchanged.';
   return 'Mode settings could not be completed. Startup default unchanged.';
 }
+
+/** What {@link runStartupDefaultSave} is given: the options of {@link runModeSettings} without a live chat's current mode and its setter. */
+export type StartupDefaultSaveOptions = Omit<ModeSettingsOptions, 'currentMode' | 'onCurrentMode'>;
+
+/** What the answered selection returns for a mode the startup branch does not offer: no mode, so the branch ends having saved nothing. */
+const NOT_OFFERED = Symbol('mode not offered');
+
+/**
+ * Save `mode`, chosen elsewhere, as the global startup default: the startup branch of {@link runModeSettings} and nothing else (the chat's
+ * `/mode` popup hands off here for "New chats", ADR-0148 §3 and §6). It RUNS that branch rather than repeating it: the flow it is given
+ * answers the branch's one selection with `mode` without drawing it (a selection alone saves nothing, and the person chose the mode in the
+ * popup), and every other step is today's, on the same prompt: the effective-startup note, the confirmation that defaults to No (`auto`
+ * states its effect first), the revocation a confirmed narrowing makes, the config-rewrite disclosure and the visibly admitted publication,
+ * the stale-`auto` admission and the result's words. No current mode and no setter are passed, so the session's own mode never changes here.
+ * Returns what {@link runModeSettings} returns.
+ */
+export function runStartupDefaultSave(
+  options: StartupDefaultSaveOptions,
+  mode: ChatMode,
+): Promise<void> {
+  const { flow } = options;
+  return runModeSettings({
+    runtime: options.runtime,
+    cwd: options.cwd,
+    interactive: options.interactive,
+    notice: options.notice,
+    assertAdmitting: options.assertAdmitting,
+    publish: options.publish,
+    ...(options.prepare === undefined ? {} : { prepare: options.prepare }),
+    flow: {
+      ...flow,
+      // The one selection of the startup branch, answered with the mode the person chose; a mode the branch does not offer saves nothing.
+      select: (request) =>
+        Promise.resolve(
+          request.options.some((option) => option.value === mode) ? mode : NOT_OFFERED,
+        ),
+    },
+  });
+}

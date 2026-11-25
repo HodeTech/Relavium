@@ -1,20 +1,13 @@
 import './force-color.js';
 
-import type { ModelCatalogEntry } from '@relavium/llm';
 import { Box, Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ReplCommand } from '../../commands/repl-commands.js';
-import { permissionsChatSheet } from './chat-sheet.js';
-import { ChatSheetView } from './chat-sheet-view.js';
-import { EffortTierList } from './effort-tier-list.js';
 import { settleFrames } from './harness-util.js';
 import { MentionView } from './mention-view.js';
-import { ModelPickerView } from './model-picker-view.js';
-import { initialPermissionsSheetState } from './permissions-sheet.js';
-import type { ModelPickerState } from './model-picker.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import type { PaletteList } from './palette-reducer.js';
 import { PaletteView } from './palette-view.js';
@@ -44,13 +37,7 @@ import { withoutStyles } from './harness-util.js';
 afterEach(cleanup);
 
 /** The overlays that sit in the chat's box, below the conversation: the surface names the matrix gives them. */
-const OVERLAYS = [
-  'palette',
-  'model-picker',
-  'mention',
-  'reverse-search',
-  'sheet-permissions',
-] as const;
+const OVERLAYS = ['palette', 'mention', 'reverse-search'] as const;
 
 const OVERLAY_SURFACES = CHAT_SURFACES.filter((entry) =>
   OVERLAYS.some((name) => entry.id.endsWith(`.${name}`)),
@@ -196,32 +183,6 @@ const PALETTE: PaletteList = {
   layout: 'up',
 };
 
-const modelEntry = (modelId: string): ModelCatalogEntry => ({
-  modelId,
-  provider: 'anthropic',
-  displayName: modelId,
-  pricingSource: 'catalog',
-  priceKnown: true,
-  available: true,
-  deprecated: false,
-});
-const MODEL_STATE: ModelPickerState = {
-  entries: ['claude-a', 'claude-b', 'claude-c'].map(modelEntry),
-  filter: '',
-  selected: 1,
-  loading: false,
-  currentDefault: undefined,
-  refreshedAt: undefined,
-  banner: undefined,
-  hint: undefined,
-  effortTiers: [],
-  phase: 'model',
-  effortStep: false,
-  pending: undefined,
-  effortSelected: 0,
-  currentEffort: undefined,
-};
-
 const VIEWS: readonly { readonly name: string; readonly view: () => ReactElement }[] = [
   {
     name: 'the / palette',
@@ -247,50 +208,9 @@ const VIEWS: readonly { readonly name: string; readonly view: () => ReactElement
     ),
   },
   {
-    name: 'the /models picker',
-    view: () => <ModelPickerView state={MODEL_STATE} color nowMs={0} scope="this-chat" />,
-  },
-  {
-    name: 'the /effort tiers',
-    view: () => (
-      <EffortTierList
-        tiers={['low', 'medium', 'high']}
-        model="claude-sonnet-4-5"
-        selected={1}
-        current={undefined}
-        footer="↑/↓ select · Enter apply · Esc close"
-        color
-      />
-    ),
-  },
-  {
     name: 'the Ctrl+R search',
     view: () => (
       <ReverseSearchView state={{ query: 'ab', matchIndex: 1 }} entries={['abc', 'abd']} color />
-    ),
-  },
-  {
-    name: 'the docked permissions sheet',
-    view: () => (
-      <ChatSheetView
-        state={permissionsChatSheet(
-          initialPermissionsSheetState(
-            {
-              project: {
-                ok: true,
-                rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
-              },
-              session: [],
-            },
-            'chat',
-            'ask',
-            0,
-          ),
-        )}
-        color
-        columns={100}
-        rows={40}
-      />
     ),
   },
 ];

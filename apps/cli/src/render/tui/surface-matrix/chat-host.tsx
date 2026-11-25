@@ -1,8 +1,5 @@
 import type { ComponentProps } from 'react';
 
-import type { ModelCatalogEntry } from '@relavium/llm';
-
-import type { ChatModelsPort } from '../../../commands/chat.js';
 import { ChatApp } from '../chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../chat-store.js';
 import type { HomeChatSession, HomeModelsPort } from '../home-controller.js';
@@ -251,32 +248,3 @@ export async function mountHostedChat(
     },
   };
 }
-
-/** A one-entry model catalog, enough for the model picker to draw and be chosen from. */
-export const CATALOG_ENTRY: ModelCatalogEntry = {
-  modelId: 'claude-sonnet-4-5',
-  displayName: 'Claude Sonnet 4.5',
-  provider: 'anthropic',
-  pricingSource: 'catalog',
-  priceKnown: true,
-  available: true,
-  deprecated: false,
-};
-
-/** The stand-alone chat's catalog port over the one entry. */
-export const standaloneModelsPort: ChatModelsPort = {
-  boundModel: CATALOG_ENTRY.modelId,
-  load: () => ({ entries: [CATALOG_ENTRY], refreshedAt: undefined }),
-  refresh: () => Promise.resolve({ providers: [] }),
-  refreshIfStale: () => Promise.resolve(undefined),
-};
-
-/** The Home's catalog port over the one entry. */
-export const homeModelsPort: HomeModelsPort = {
-  load: () => ({ entries: [CATALOG_ENTRY], refreshedAt: undefined }),
-  refreshIfStale: () => Promise.resolve(undefined),
-  refresh: () => Promise.resolve({ providers: [] }),
-  currentDefault: () => undefined,
-  currentEffort: () => undefined,
-  writeDefault: () => {},
-};

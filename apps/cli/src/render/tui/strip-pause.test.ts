@@ -38,8 +38,6 @@ describe('each condition pauses it alone', () => {
     ['the build before a chat', { mode: 'loading' }],
     ['a screen in front (run view, card, tab host, help sheet)', { screen: true }],
     ['the command palette', { palette: true }],
-    ['the model picker', { modelPicker: true }],
-    ['a chat sheet', { chatSheet: true }],
     ['the reverse search', { search: true }],
     ['the @-mention completion', { mention: true }],
     ['the exit question', { exitGuard: true }],

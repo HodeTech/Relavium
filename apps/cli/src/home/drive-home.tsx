@@ -70,7 +70,7 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
-import { runModeSettings } from '../chat/mode-settings.js';
+import { runModeSettings, runStartupDefaultSave } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { faultForTranscript } from '../config/config-error-text.js';
@@ -1170,26 +1170,29 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...deps,
             surface: 'home-chat', // `/help` and the unknown-slash hint list this chat's own commands, as its palette does
             hatchPorts,
-            openModeSettings: (currentMode, onCurrentMode, notice) =>
-              runModeSettings({
-                runtime: startingModes,
-                cwd: built.context.workingDir,
-                interactive: true,
-                flow: promptFlow,
-                currentMode,
-                onCurrentMode,
-                notice,
-                assertAdmitting: () => {
-                  assertHomeAdmitting();
-                  built.workOwner?.assertAdmitting();
-                  if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
-                    throw new CliError(
-                      'invalid_invocation',
-                      'This conversation is no longer active.',
-                    );
+            // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on the Home's native prompt, as the
+            // `/mode` flow ran it in this chat, while this conversation is the one in front.
+            saveStartupDefault: (mode, notice) =>
+              runStartupDefaultSave(
+                {
+                  runtime: startingModes,
+                  cwd: built.context.workingDir,
+                  interactive: true,
+                  flow: promptFlow,
+                  notice,
+                  assertAdmitting: () => {
+                    assertHomeAdmitting();
+                    built.workOwner?.assertAdmitting();
+                    if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
+                      throw new CliError(
+                        'invalid_invocation',
+                        'This conversation is no longer active.',
+                      );
+                  },
+                  publish: publishPreference,
                 },
-                publish: publishPreference,
-              }),
+                mode,
+              ),
           },
         );
         // The session's announcements (its typed settings, its mode control and its settings popups) are the Home's own notifications
@@ -2165,9 +2168,21 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             openReport({ host, port: chat, line, origin: 'chat', turnInFlight }),
           );
         },
-        // The settings popups (`/effort` today; ADR-0148 §3, §6) open on the Home's host over the chat in front, with its port.
+        // The settings popups (ADR-0148 §3, §6) open on the Home's host: over the chat in front with its port, or (`/models`) over the bare
+        // Home with the Home's own, the origin said by the port's surface.
         openSettings: ({ command, chat }) => {
-          openOnHome((host) => openSettings({ host, port: chat, command, origin: 'chat' }));
+          openOnHome((host) =>
+            openSettings({
+              host,
+              port: chat,
+              command,
+              origin: chat.surface === 'home' ? 'home' : 'chat',
+            }),
+          );
+        },
+        // What a setting the bare Home applied says, and a chat's model switch that could not be built: the Home's own channel (ADR-0148 §6).
+        announce: (text) => {
+          notifications.notify(text);
         },
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,

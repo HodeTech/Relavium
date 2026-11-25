@@ -16,18 +16,13 @@ import {
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import { providerDisplayName } from '../../engine/providers.js';
-import { ConfigWriteRefusedError } from '../../config/write.js';
+import { saveDefaultModel } from '../../chat/default-model-save.js';
 import { createActivePoll, type ActivePoll } from '../../history/active-poll.js';
 import type { ActiveRead } from '../../history/active-source.js';
 import type { ChangeToken } from '../../history/change-probe.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
-import { permissionsChatSheet, permissionsSheetOf, type ChatSheetState } from './chat-sheet.js';
-import {
-  foldPermissionsSheetThroughPort,
-  openPermissionsSheetThroughPort,
-  PERMISSIONS_UNREADABLE,
-} from './permissions-sheet-port.js';
+import { sheetCanArm } from './permissions-sheet.js';
+import { PERMISSIONS_UNREADABLE } from './permissions-sheet-port.js';
 import {
   disarmTabHost,
   enterHistoryAtDetail,
@@ -51,15 +46,20 @@ import type { HistoryPort } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
 import { SESSIONS_RESUME_UNAVAILABLE, type SessionsPort } from './tab-host-sessions.js';
 import type { DefinedPort } from './tab-host-workflows.js';
-import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
-import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import type { DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
 import type { ParsedReportLine, ReportsPort } from '../../popups/report-port.js';
-import type { SettingsKind, SettingsPort } from '../../popups/settings-port.js';
+import {
+  MODEL_SWITCH_FAILED,
+  type DefaultModelSaveResult,
+  type ModelChoice,
+  type ModelsSettingsPort,
+  type SettingsKind,
+  type SettingsPort,
+} from '../../popups/settings-port.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
   agentStartNotice,
@@ -220,9 +220,6 @@ export interface HomeChatSession {
    *  pick (a per-turn session override, NO reseat) + the `/effort` command. Absent ⇒ the effort sub-step is not
    *  offered. The current tier is read live from `store` (`ChatStoreSnapshot.reasoningEffort`), not tracked here. */
   readonly onSetEffort?: (effort: ReasoningEffort) => void;
-  /** The `/permissions` sheet's port (ADR-0137 §2): a typed or palette-selected bare `/permissions` opens the sheet over this chat.
-   *  Absent ⇒ the command is dispatched and says remembered commands are not available. */
-  readonly permissions?: PermissionsPort;
   /**
    * What this chat's report popups read ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. A typed or palette-selected line for a report whose
@@ -314,16 +311,6 @@ export interface HomeControllerState {
   readonly notice: string | undefined;
   /** Distinguishes fresh reports even when their text is identical or updates are React-batched. */
   readonly noticeRevision: number;
-  /** The open `/models` picker (2.5.G S7, ADR-0064 §10) — `undefined` ⇒ closed. HOME-ONLY (a next-session config
-   *  action); a keyboard-owning overlay like the palette. Opened from the Home palette's `/models`; on selection it
-   *  writes the next session's default (ADR-0063), never rebinding the live session. Mutually exclusive with the palette. */
-  readonly modelPicker: ModelPickerState | undefined;
-  /** The open docked sheet of a live in-Home chat — `undefined` ⇒ closed. ONE slot for every sheet a chat has, a union by kind
-   *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists). A
-   *  keyboard-owning overlay like `/models`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
-   *  sheets cannot be open at once. The bare Home's `/permissions` is not this: it is the Permissions tab of the tab host, a kind of
-   *  {@link HomeControllerState.screen} (ADR-0140 §3). */
-  readonly chatSheet: ChatSheetState | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
   readonly interruptArmed: boolean;
@@ -367,8 +354,6 @@ export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
     palette: state.palette !== undefined,
     search: state.search !== undefined,
     mention: state.mention !== undefined,
-    modelPicker: state.modelPicker !== undefined,
-    chatSheet: state.chatSheet !== undefined,
     screen: state.screen !== undefined,
     exitGuard: state.exitGuard !== undefined,
     nativePrompt: false,
@@ -717,7 +702,7 @@ export interface HomeControllerDeps {
   /**
    * Open the `/doctor` popup ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §8) on the
    * Home's popup host: the Home's own (no `chat`) or the chat's in front (its {@link HomeChatSession.doctor}), on its confirmation line for a
-   * typed `/doctor --deep`. The controller only routes (`popup-route.ts`): it recognises the line where it opens a sheet for `/permissions`,
+   * typed `/doctor --deep`. The controller only routes (`popup-route.ts`): it recognises the line where it opens the other popups,
    * clears the editor and calls this, so nothing reaches the Home's notice or the transcript. Production always wires it. Absent (a test's
    * Home) ⇒ `/doctor` at the landing says the doctor is not available here, and a chat's `/doctor` is dispatched to the chat.
    */
@@ -727,7 +712,7 @@ export interface HomeControllerDeps {
   /**
    * Open one of the report popups (`/agent`, `/cost`, `/workflows`, `/help`; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §10, MVP-11 step 4b) over the chat in front, on the Home's popup host, with the chat's {@link HomeChatSession.reports}. The controller only
-   * routes (`popup-route.ts`): it recognises the line where it opens a sheet for `/permissions`, clears the editor and calls this, so nothing
+   * routes (`popup-route.ts`): it recognises the line where it opens the other popups, clears the editor and calls this, so nothing
    * reaches the Home's notice or the transcript. `turnInFlight` is the controller's own reading of the facts its open gate reads, for the release step to ask again
    * at its answer. Absent ⇒ a chat's report lines are dispatched and print their text, as before.
    */
@@ -747,6 +732,12 @@ export interface HomeControllerDeps {
   readonly openSettings?:
     | ((request: { readonly command: SettingsKind; readonly chat: SettingsPort }) => void)
     | undefined;
+  /**
+   * One transient notification on the Home's own channel (`NotificationChannel.notify`, no popup as its source; ADR-0148 §2, §6): what a
+   * setting the bare Home applied says once its popup has closed (`/models`: the default of new chats), and what a chat's model switch that
+   * could not be built says. Never the Home's notice, never a transcript. Absent ⇒ the bare Home's `/models` has no popup (a test's Home).
+   */
+  readonly announce?: ((text: string) => void) | undefined;
   /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
@@ -890,14 +881,6 @@ function failureLine(error: unknown): string {
  * exported so the legend golden records the sentence the controller shows, not a copy of it.
  */
 export const PROVIDER_KEYS_AT_THE_HOME = `Provider keys are managed from the Home: go back to it (${keyToken('Ctrl+C')} twice) and use /providers.`;
-
-/** The remedy a model the key of its provider does not cover names in a chat the Home hosts, where `/providers` itself answers with a pointer only. */
-export const PICKER_NO_KEY_REMEDY_IN_A_CHAT = ` — go back to the Home (${keyToken('Ctrl+C')} twice) and use /providers`;
-
-/** What the `/models` picker says when the model chosen is the one the chat already runs on: the picker stays open. */
-export function alreadyOnModelHint(displayName: string): string {
-  return `Already on ${displayName} — pick a different model or ${keyToken('Esc')}.`;
-}
 
 /** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
 const RUN_HISTORY_UNAVAILABLE = 'The run history is not available here.';
@@ -1045,8 +1028,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     historyEntries: [],
     notice: undefined,
     noticeRevision: 0,
-    modelPicker: undefined,
-    chatSheet: undefined,
     interruptArmed: false,
     hostedRun: undefined,
     exitGuard: undefined,
@@ -1122,10 +1103,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Enter can never splice the file into the (now-empty) buffer meant for the NEXT message (the session-identity
   // guard only catches a chat SWAP, not an in-chat submit that stays in the same session/mode).
   let submitEpoch = 0;
-  // A monotonic `/models` picker generation (2.5.G S7): bumped on every picker open. An async catalog refresh
-  // captures it and lands its result ONLY if the picker is still on the SAME generation — so a slow refresh
-  // resolving after the picker was closed AND reopened can never clobber the fresh picker.
-  let pickerEpoch = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -1871,8 +1848,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
-          chatSheet: undefined, // and the chat's docked sheet (`/permissions`): it is gone with the chat, and with a reseat or a `/clear`
-          modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
           shellCommand: undefined,
@@ -1934,8 +1909,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined,
           search: undefined,
           mention: undefined,
-          modelPicker: undefined,
-          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -1965,10 +1938,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const reseatChat = (old: HomeChatSession, target: ReseatTarget): void => {
     if (exiting) return;
     const reseat = deps.reseatChat;
-    if (reseat === undefined) return; // acceptModel only calls this when a builder IS wired (defensive)
+    if (reseat === undefined) return; // the chat's `/models` member is built only when a builder IS wired (defensive)
     if (tearingDown === old) return; // already ending this session (mirror clearChat)
     const oldId = old.sessionId;
-    set({ modelPicker: undefined, submitBusy: true }); // close the picker + re-gate input for the whole swap
+    set({ submitBusy: true }); // re-gate input for the whole swap
     // Captured HERE, before the build resolves and the old session is torn down (the teardown below only closes the
     // persister/MCP — it never clears the view store — but capturing at the call makes the ordering explicit rather
     // than incidental). This is the conversation the reseated store will open with (2.6.C / F1).
@@ -2014,8 +1987,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined,
           search: undefined,
           mention: undefined,
-          modelPicker: undefined,
-          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -2026,10 +1997,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) return;
-        // The reseat build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a fully
-        // STATIC, secret-free note (no model id interpolated) and un-gate it so the user can keep going or /exit.
+        // The reseat build FAILED — keep the OLD session live + resumable (do NOT tear it down); say so in a fully STATIC, secret-free
+        // sentence (no model id interpolated) on the Home's channel, never the transcript (ADR-0148 §6), and un-gate it so the user can keep
+        // going or /exit.
         if (state.session === old) {
-          old.store.note('/models could not switch the model — keeping this conversation.');
+          (deps.announce ?? old.settings?.announce)?.(MODEL_SWITCH_FAILED);
           set({ submitBusy: false });
         }
       },
@@ -2437,8 +2409,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         historyEntries: [],
         search: undefined,
         mention: undefined,
-        modelPicker: undefined,
-        chatSheet: undefined,
         shellBusy: false,
         shellCommand: undefined,
         submitBusy: true,
@@ -2598,7 +2568,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       });
     } else if (withArguments) {
       set({ notice: `${word} accepts no arguments here. Start a chat to use them.` });
-    } else {
+    } else if (!openLandingSetting(word)) {
       void Promise.resolve(command.run(homeReplCtx, [])).catch(() => undefined);
     }
   };
@@ -2799,8 +2769,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       palette: undefined,
       search: undefined,
       mention: undefined,
-      modelPicker: undefined,
-      chatSheet: undefined,
       historyEntries: history.entries,
     });
     awaitBuild(
@@ -2864,421 +2832,119 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
-  // The `/models` picker (2.5.G S7, ADR-0064 §10) — a keyboard-owning overlay opened from the Home palette. The db
-  // read + the merge are synchronous (`port.load()`); a refresh egresses and lands its result ONLY into the SAME
-  // picker generation that kicked it — the monotonic `pickerEpoch` (bumped on every open) drops a resolve whose
-  // picker has since closed or been REOPENED (the identity half of loadMentions' guard).
-  // Home-only: it can be open only in `mode: 'home'`, so no chat/session race applies. Two status channels are kept
-  // SEPARATE — `banner` (async refresh partial-failure) vs `hint` (transient user-action feedback) — so a completing
-  // refresh can never silently wipe a "not available"/"could not save" message the user just triggered.
-  const applyRefreshResult = (epoch: number, report: RefreshReport | undefined): void => {
-    const open = state.modelPicker;
-    if (exiting || epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
-    const failed =
-      report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
-    let view: ReturnType<HomeModelsPort['load']>;
-    try {
-      view = deps.models.load(); // a DB read — never crash the REPL (parity with acceptModel's guard)
-    } catch {
-      // Keep the last-shown entries; just drop the spinner and surface the refresh status.
-      set({
-        modelPicker: {
-          ...open,
-          loading: false,
-          banner: partialFailureBanner(failed, providerDisplayName),
-        },
-      });
-      return;
-    }
-    // Keep the user's filter/selection + any transient hint; the view clamps a selection past the (shrunk) end.
-    set({
-      modelPicker: {
-        ...open,
-        entries: view.entries,
-        refreshedAt: view.refreshedAt,
-        loading: false,
-        banner: partialFailureBanner(failed, providerDisplayName),
-      },
-    });
-  };
-  const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
-    if (exiting) return;
-    const epoch = pickerEpoch; // capture THIS picker generation so a reopened picker never adopts this result
-    const open = state.modelPicker;
-    if (open === undefined) return;
-    set({ modelPicker: { ...open, loading: true } });
-    void refresh().then(
-      (report) => applyRefreshResult(epoch, report),
-      () => {
-        // Owner refusal rejects; never publish it after exit or into a later picker generation.
-        const cur = state.modelPicker;
-        if (!exiting && epoch === pickerEpoch && cur !== undefined)
-          set({ modelPicker: { ...cur, loading: false } });
-      },
-    );
-  };
-  const openModelPicker = (): void => {
-    if (exiting) return;
-    const port = deps.models; // capture the narrowed port so the refresh closure needs no non-null assertion
-    if (port === undefined) {
-      set({ notice: '/models is unavailable here.' }); // defensive — production always wires the port
-      return;
-    }
-    let view: ReturnType<HomeModelsPort['load']>;
-    try {
-      view = port.load(); // a DB read — a fault must not crash the REPL (the "never crash the REPL" discipline)
-    } catch {
-      set({ notice: '/models: could not read the model catalog.' });
-      return;
-    }
-    pickerEpoch += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
-    // The `✓` marker: in a LIVE chat (ADR-0059 reseat) it is the session's BOUND model (the "you are here"); at the
-    // bare Home it is the effective next-session default. The accept action mirrors this (reseat vs default-write).
-    const active = state.session;
-    const activeModel = active?.store.getSnapshot().state.model;
-    // The effort sub-step (ADR-0066) is offered for a reasoning model on BOTH surfaces: a LIVE in-Home chat (the
-    // setter is wired → the pick is a per-turn session override) AND the bare Home (ADR-0066 §6 → the pick writes the
-    // NEXT session's effort default alongside the model). `currentEffort` opens the sub-list on the right tier: the
-    // LIVE store tier in a chat (so a prior no-reseat `/effort` change is reflected), else the config effort default.
-    const effortStep = active !== undefined ? active.onSetEffort !== undefined : true;
-    // The effort sub-list's opening tier: absent when the sub-step isn't offered; else the LIVE store tier in a chat
-    // (reflecting a prior no-reseat /effort change), else the config effort default in the bare Home.
-    let currentEffort: ReasoningEffort | undefined;
-    let currentDefault: string | undefined;
-    try {
-      if (effortStep)
-        currentEffort =
-          active !== undefined ? active.store.getSnapshot().reasoningEffort : port.currentEffort();
-      currentDefault = activeModel ?? port.currentDefault();
-    } catch {
-      const notice =
-        '/models: could not read chat settings. Check the configuration before retrying.';
-      set({ notice });
-      active?.store.note(notice);
-      return;
-    }
-    set({
-      notice: undefined, // opening the picker clears any stale notice behind it
-      modelPicker: {
-        entries: view.entries,
-        filter: '',
-        selected: 0,
-        loading: false,
-        currentDefault,
-        refreshedAt: view.refreshedAt,
-        banner: undefined,
-        hint: undefined,
-        phase: 'model',
-        effortStep,
-        pending: undefined,
-        effortTiers: [], // no model pending yet — populated on the model→effort transition
-        effortSelected: 0,
-        currentEffort,
-      },
-    });
-    // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
-    // the long-lived process the S5 background constraint requires. An empty/stale cache repopulates as it resolves.
-    runPickerRefresh(() => port.refreshIfStale());
-  };
-  // The bare-Home config-write notice (ADR-0063): an HONEST re-read of the EFFECTIVE default (project → workspace →
-  // global) — success only when the chosen model actually became effective; a higher-layer override says so; and a
-  // post-write `undefined` read can only be a re-read fault (the global was just written valid), reported distinctly.
-  const defaultWriteNotice = (
-    effective: string | undefined,
-    modelId: string,
-    displayName: string,
-    reasoningEffort: ReasoningEffort | undefined,
-  ): string => {
-    // The effort (ADR-0066 §6) is written to the SAME layer atomically, so it shares the model's effectiveness — the
-    // suffix just names what was set (a reasoning model went through the effort sub-step; a non-reasoning one did not).
-    // The label reads "on" for a budget model's canonical-on tier, matching the picker (ADR-0066 amendment).
-    const effort =
-      reasoningEffort === undefined
-        ? ''
-        : ` at effort ${effortRowLabel(modelId, reasoningEffort).label}`;
-    if (effective === modelId)
-      return `Default model set to ${displayName}${effort} — applies to your next chat session.`;
-    if (effective === undefined) {
-      return `Saved ${displayName}${effort} as your global default, but your config could not be re-read to confirm it.`;
-    }
-    return `Saved ${displayName}${effort} as your global default, but a project or workspace setting overrides it here.`;
-  };
+  // ---- `/models` (2.5.G S7, ADR-0064 §10; ADR-0148 §3, §6) -----------------------------------------------------------------------------
+  // The popup (`popups/models-session.ts`) reads the catalog and applies through the Home's writers, which stay here: the default of new
+  // chats ({@link saveNextSessionDefault}) and the reseat of the chat in front ({@link reseatChat}). Nothing it does writes the Home's notice or a
+  // transcript: what applied is said on the Home's channel (`deps.announce`, or the chat's own announcement, which the host binds to it).
 
-  // The BARE-Home next-session-default write (ADR-0063 · ADR-0066 §6). Persists the GLOBAL `[preferences].default_model`
-  // and — when the effort sub-step ran for a reasoning model — `[preferences].reasoning_effort` too, in ONE atomic
-  // write; a known config refusal keeps the picker open with a secret-free hint. The owned host observes
-  // unexpected writer faults before this UI recovery; an ownerless embedding retains its inline recovery.
-  const writeNextSessionDefault = (
-    modelId: string,
-    displayName: string,
-    provider: ReseatTarget['provider'],
-    reasoningEffort?: ReasoningEffort,
-  ): void => {
-    const port = deps.models;
-    if (port === undefined) return;
-    type Result = void | { readonly durability: 'confirmed' | 'unconfirmed' };
-    const success = (result: Result): void => {
-      if (exiting) return;
-      let effective: string | undefined;
-      try {
-        effective = port.currentDefault();
-      } catch {
-        // Publication already happened. A strict reread refusal must not relabel it as an unsaved choice.
-      }
-      const suffix =
-        result?.durability === 'unconfirmed' ? ' Crash persistence is unconfirmed.' : '';
-      set({
-        modelPicker: undefined,
-        submitBusy: false,
-        notice: defaultWriteNotice(effective, modelId, displayName, reasoningEffort) + suffix,
-      });
-    };
-    const failure = (err: unknown): void => {
-      if (exiting) return;
-      const hint =
-        err instanceof ConfigWriteRefusedError
-          ? 'config is a symbolic link — edit it manually or replace it with a regular file.'
-          : 'could not save the default model — check your config file.';
-      const open = state.modelPicker;
-      set({
-        submitBusy: false,
-        ...(open === undefined ? { notice: hint } : { modelPicker: { ...open, hint } }),
-      });
-    };
-    let result: Result | Promise<Result>;
-    try {
-      result = port.writeDefault(modelId, provider, reasoningEffort);
-    } catch (err) {
-      failure(err);
-      return;
-    }
-    if (!(result instanceof Promise)) {
-      success(result);
-      return;
-    }
-    set({ submitBusy: true });
-    const pending = result;
-    const finishWrite = async (): Promise<void> => {
-      let work: Promise<Result> | undefined;
-      let written: Result;
-      try {
-        // Enter before the first await so cancellation cannot overtake owner admission.
-        work = deps.workOwner === undefined ? pending : deps.workOwner.enter(() => pending);
-        written = await work;
-      } catch (err) {
-        // Admission can refuse an already-started write; its original promise still needs an observer.
-        if (work === undefined) void pending.catch(() => undefined);
-        deps.workOwner?.failure(err);
-        failure(err);
-        return;
-      }
-      success(written);
-    };
-    void finishWrite().catch(failHome);
-  };
-
-  // EFFORT-phase accept on the live session (ADR-0066 §5): a per-turn SESSION override via the setter — NOT a reseat
-  // (no teardown/approval-wipe/MCP-reconnect/context-loss). Close + note (the effort sub-list renders no hint, so a
-  // no-op must give visible store feedback).
-  const applyEffortOnlyUpdate = (
-    active: HomeChatSession,
-    displayName: string,
-    reasoningEffort: ReasoningEffort,
-  ): void => {
-    const label = effortRowLabel(
-      active.store.getSnapshot().state.model ?? '',
-      reasoningEffort,
-    ).label;
-    if (reasoningEffort !== active.store.getSnapshot().reasoningEffort) {
-      active.onSetEffort?.(reasoningEffort);
-      active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-    } else {
-      active.store.note(`Already on ${displayName} at effort ${label}.`);
-    }
-    set({ modelPicker: undefined });
-  };
-
-  // A pick on a LIVE in-Home chat: a SAME-model model-phase no-op keeps the picker OPEN with a hint (the user can
-  // pick another); a SAME-model effort pick is the per-turn setter; a DIFFERENT model is a live reseat (ADR-0059)
-  // carrying the chosen effort.
-  const applyLiveSessionPick = (
-    active: HomeChatSession,
-    modelId: string,
-    displayName: string,
-    provider: ReseatTarget['provider'],
-    reasoningEffort: ReasoningEffort | undefined,
-  ): void => {
-    if (modelId !== active.store.getSnapshot().state.model) {
-      reseatChat(active, {
-        modelId,
-        provider,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      });
-      return;
-    }
-    if (reasoningEffort === undefined) {
-      // MODEL-phase no-op (a non-reasoning same-model re-pick — no effort sub-step): keep the picker OPEN with a hint
-      // so the user can pick a different model (the model-phase view renders the hint, unchanged ADR-0059).
-      const open = state.modelPicker;
-      set(
-        open === undefined
-          ? { modelPicker: undefined }
-          : {
-              modelPicker: {
-                ...open,
-                hint: alreadyOnModelHint(displayName),
-              },
-            },
-      );
-      return;
-    }
-    applyEffortOnlyUpdate(active, displayName, reasoningEffort);
-  };
-
-  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063 · ADR-0066 §6): a LIVE
-  // in-Home chat RESEATs / updates effort (the effort setter path is only REACHED with `reseatChat` wired — the
-  // in-chat `/models` that opens the effort sub-step is gated on it — so guarding on both never diverts an effort pick
-  // to the config write); the BARE Home persists the chosen model AND (when the effort sub-step ran) its effort tier
-  // as the NEXT session's defaults.
-  const acceptModel = (
-    modelId: string,
-    displayName: string,
-    provider: ReseatTarget['provider'],
-    reasoningEffort?: ReasoningEffort,
-  ): void => {
-    const active = state.session;
-    if (active !== undefined && deps.reseatChat !== undefined) {
-      applyLiveSessionPick(active, modelId, displayName, provider, reasoningEffort);
-      return;
-    }
-    writeNextSessionDefault(modelId, displayName, provider, reasoningEffort);
-  };
-  // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
-  // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient
-  // `hint`, never a write. Any navigation/filter keystroke clears that hint (the user has moved on).
-  const routeModelPickerKey = (input: string, key: ChatKey): boolean => {
-    const open = state.modelPicker;
-    if (open === undefined) return false;
-    const step = foldModelPickerKey(input, key, open);
-    switch (step.kind) {
-      case 'close':
-        set({ modelPicker: undefined });
-        break;
-      case 'accept':
-        acceptModel(step.modelId, step.displayName, step.provider, step.reasoningEffort);
-        break;
-      case 'blocked': {
-        // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
-        // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
-        // The remedy is the Home's own: `/providers`. With no setup port wired it would answer that setup is unavailable, so no remedy is named.
-        // The same picker is the live reseat picker of a chat the Home hosts, and that chat answers `/providers` with a pointer only: there the
-        // remedy is the way back to the Home (ADR-0145 §7.4).
-        const noKeyRemedy =
-          deps.providerSetup === undefined
-            ? ''
-            : state.session === undefined
-              ? ' — open /providers to connect a key'
-              : PICKER_NO_KEY_REMEDY_IN_A_CHAT;
-        const hint =
-          step.reason === 'no-key'
-            ? `${step.displayName}: no key for ${providerDisplayName(step.provider)}${noKeyRemedy}`
-            : `${step.displayName} is not available on your key — pick another`;
-        set({ modelPicker: { ...open, hint } });
-        break;
-      }
-      case 'refresh':
-        runPickerRefresh(() => deps.models?.refresh() ?? Promise.resolve(undefined));
-        break;
-      case 'state':
-        // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key
-        // (an unhandled key / backspace on an empty filter), which must not wipe a just-shown hint.
-        set({ modelPicker: step.state === open ? open : { ...step.state, hint: undefined } });
-        break;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-    return true;
-  };
-
-  // ---- The in-Home chat's docked sheet: `/permissions` (ADR-0137 §2) ---------------------------------
   /**
-   * Whether a docked sheet may open over this chat now: only at an idle prompt with nothing pending, so a card cannot arrive while it is
-   * open (the same gate ChatApp applies). The key gates above already keep a busy chat from reaching here (a running turn, a `!` command
-   * and a submit in flight all gate typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+   * The BARE-Home next-session-default write (ADR-0063 · ADR-0066 §6), the writer of the popup's default (the bare Home's `Enter`, and a hosted
+   * chat's `New chats`): the global `[preferences].default_model` with its provider and, when the model takes a tier, `reasoning_effort`, in
+   * ONE atomic write through the Home's port (its config-rewrite disclosure on the native card). Input is gated for the whole write; what it
+   * came to is the effective default read again (project → workspace → global), so a project override is said and never reported as applied.
+   * The owned host observes a writer fault before it is told as a failed save (`saveDefaultModel`).
    */
-  const sheetMayOpen = (active: HomeChatSession): boolean => {
-    const snap = active.store.getSnapshot();
-    return !(
-      snap.state.status === 'running' ||
-      state.shellBusy ||
-      state.submitBusy ||
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
+  const saveNextSessionDefault = async (choice: ModelChoice): Promise<DefaultModelSaveResult> => {
+    const port = deps.models;
+    if (port === undefined || exiting) return { kind: 'refused', reason: 'closing' };
+    // A listener that throws while the Home draws the write's start or end is the Home's own fault: its fatal path, as every other
+    // presentation failure of the controller (the write itself is the adapter's, which never rejects).
+    const present = (patch: Partial<HomeControllerState>): boolean => {
+      try {
+        set(patch);
+        return true;
+      } catch (cause) {
+        failHome(cause);
+        return false;
+      }
+    };
+    if (!present({ submitBusy: true })) return { kind: 'refused', reason: 'closing' };
+    const result = await saveDefaultModel(
+      {
+        write: port.writeDefault,
+        readEffective: port.currentDefault,
+        closing: () => exiting,
+        failure: (cause) => deps.workOwner?.failure(cause),
+      },
+      choice,
     );
+    if (!exiting) present({ submitBusy: false });
+    return result;
   };
-  // `/permissions`: open on the data read NOW, in the chat's current mode. A chat without a port is never offered the sheet; it dispatches
-  // and says so. The bare Home has no such sheet: its `/permissions` is the Permissions tab of the tab host (ADR-0140 §3), a screen of the slot.
-  const openPermissionsSheet = (active: HomeChatSession): void => {
-    const port = active.permissions;
-    if (port === undefined || !sheetMayOpen(active)) return;
-    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(
-      port,
-      active.store.getSnapshot().mode,
-      interruptNow(),
-    );
-    if (opened.sheet !== undefined) set({ chatSheet: permissionsChatSheet(opened.sheet) });
-    else active.store.note(opened.note);
+
+  /** The catalog half of a `/models` member: the Home's one catalog port (the chats the Home hosts read the same catalog). */
+  const catalogOf = (
+    port: HomeModelsPort,
+  ): Pick<ModelsSettingsPort, 'load' | 'refreshIfStale' | 'refresh' | 'providerName'> => ({
+    load: port.load,
+    refreshIfStale: port.refreshIfStale,
+    refresh: port.refresh,
+    providerName: providerDisplayName,
+  });
+
+  /**
+   * The bare Home's settings port: `/models` sets the default of new chats (there is no live chat), opened on the effective default and its
+   * tier. `undefined` without a catalog port or a channel to say what applied on.
+   */
+  const homeSettings = (): SettingsPort | undefined => {
+    const port = deps.models;
+    const announce = deps.announce;
+    if (port === undefined || announce === undefined) return undefined;
+    return {
+      surface: 'home',
+      announce,
+      ...(deps.workOwner === undefined ? {} : { workOwner: deps.workOwner }),
+      models: {
+        scope: 'home',
+        ...catalogOf(port),
+        current: port.currentDefault,
+        // The provider of the effective default is its catalog row's (the popup reads it there).
+        currentProvider: () => undefined,
+        currentEffort: port.currentEffort,
+        saveDefault: saveNextSessionDefault,
+      },
+    };
   };
-  // The open sheet owns every key. A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on
-  // to the card's own handling (the sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the
-  // product takes). A permissions withdrawal runs
-  // through the port (the store is read again there) and the sheet reloads with the answer; a defect in the port must not leave the keyboard
-  // owned by a frozen sheet.
-  const routeChatSheetKey = (
-    active: HomeChatSession | undefined,
-    input: string,
-    key: ChatKey,
-  ): boolean => {
-    const open = state.chatSheet;
-    if (open === undefined) return false;
-    const pending = active?.store.getSnapshot();
-    if (
-      pending !== undefined &&
-      (pending.review !== undefined ||
-        pending.question !== undefined ||
-        pending.checkpoint !== undefined ||
-        pending.approval !== undefined)
-    ) {
-      set({ chatSheet: undefined });
-      return false;
-    }
-    if (active === undefined) {
-      set({ chatSheet: undefined });
-      return true;
-    }
-    const port = active.permissions;
-    if (port === undefined) {
-      set({ chatSheet: undefined });
-      return true;
-    }
-    const canArm =
-      terminal === undefined ||
-      sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
-    const result = foldPermissionsSheetThroughPort(
-      port,
-      open.sheet,
-      input,
-      key,
-      canArm,
-      interruptNow(),
-    );
-    set({ chatSheet: result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet) });
-    if (result.note !== undefined) active.store.note(result.note);
+
+  /**
+   * The chat in front's settings port with its `/models` member: the Home's catalog, the chat's own model and tier (read from its store), its
+   * tier setter, the Home's reseat of THIS chat (`This chat`) and the Home's default write (`New chats`). Without a catalog port or a reseat
+   * builder the chat has no `/models` popup (its own member, if it had one, is withdrawn: a switch it could not make is never offered).
+   */
+  const chatSettings = (active: HomeChatSession): SettingsPort | undefined => {
+    const settings = active.settings;
+    if (settings === undefined) return undefined;
+    const port = deps.models;
+    if (port === undefined || deps.reseatChat === undefined || active.onSetEffort === undefined)
+      return settings.models === undefined ? settings : { ...settings, models: undefined };
+    return {
+      ...settings,
+      models: {
+        scope: 'chat',
+        ...catalogOf(port),
+        current: () => active.store.getSnapshot().state.model,
+        currentProvider: () => undefined,
+        currentEffort: () => active.store.getSnapshot().reasoningEffort,
+        setEffort: active.onSetEffort,
+        switchModel: (choice) => {
+          reseatChat(active, choice);
+        },
+        saveDefault: saveNextSessionDefault,
+      },
+    };
+  };
+
+  /**
+   * A setting the bare Home answers with a popup (`/models`; ADR-0148 §3), routed by the one routing over the Home's own settings port: whether
+   * it opened one. A setting it has no popup for (or a Home that wires none) goes on to the word's own answer.
+   */
+  const openLandingSetting = (word: string): boolean => {
+    const port = homeSettings();
+    const open = deps.openSettings;
+    if (port === undefined || open === undefined) return false;
+    const route = routePopupLine(word, { doctor: false, settings: port });
+    if (route?.kind !== 'settings') return false;
+    open({ command: route.command, chat: port });
     return true;
   };
 
@@ -3320,9 +2986,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: clear.enabled ? undefined : unavailableNotice('clear', clear.reason) });
     },
 
-    // `/models` (2.5.G S7, ADR-0064 §10) IS a real Home capability (it is placed on the Home and in both chats): open the in-tree picker
-    // over the merged catalog. Unlike the inert chat-only noops above, this wires the live picker.
-    openModels: () => openModelPicker(),
+    // `/models` (2.5.G S7, ADR-0064 §10) IS a real Home capability (it is placed on the Home and in both chats): its popup is opened by
+    // {@link answerLandingWord} through the one routing, before this context runs. Reached only where the Home has no popup to open (a test's
+    // Home without the catalog or the popup host's opener), and says so.
+    openModels: () => {
+      set({ notice: '/models is unavailable here.' });
+    },
 
     // `/scrollback` + `/edit` (ADR-0068 §e) are chat-only (no `home` placement), so they never appear in the bare Home's palette and are
     // unreachable from it — there is no transcript to dump or edit. An
@@ -3680,9 +3349,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * argument, like the standalone chat.
    * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
    *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
-   * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
    * - `/doctor` (and `/doctor --deep`, ADR-0148 §8), `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` (§10) and the bare
-   *   settings (`/effort` on a model that has a tier to choose: §3, §6) open their popup, where the session holds its port, as the one routing
+   *   settings (`/effort` on a model that has a tier to choose: §3, §6; `/permissions`, ADR-0137 §2 as a popup) open their popup, where the
+   *   session holds its port, as the one routing
    *   says (`popup-route.ts`): the popup is opened before the line is a submit, so the open gate never takes the line for a turn in flight. These
    *   are not exact matches: white space around the words is ignored. A setting with an argument (`/effort high`) is not a popup: it goes to
    *   the chat's dispatch, which applies it.
@@ -3691,15 +3360,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     active: HomeChatSession,
     trimmed: string,
   ): (() => void) | undefined => {
-    if (trimmed === '/models' && deps.reseatChat !== undefined) return openModelPicker;
-    if (trimmed === '/permissions' && active.permissions !== undefined)
-      return () => openPermissionsSheet(active);
     // `/doctor` (and `--deep`) and the reports open their popup over this chat (ADR-0148 §8, §10) before the line is a submit, so the open gate
     // never sees it as a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
     const route = routePopupLine(trimmed, {
       doctor: deps.openDoctor !== undefined && active.doctor !== undefined,
       reports: deps.openReport === undefined ? undefined : active.reports,
-      settings: deps.openSettings === undefined ? undefined : active.settings,
+      settings: deps.openSettings === undefined ? undefined : chatSettings(active),
     });
     return route === undefined ? undefined : () => openPopupOverChat(active, route);
   };
@@ -3714,8 +3380,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     if (route.kind === 'settings') {
-      if (active.settings !== undefined)
-        deps.openSettings?.({ command: route.command, chat: active.settings });
+      const settings = chatSettings(active);
+      if (settings !== undefined) deps.openSettings?.({ command: route.command, chat: settings });
       return;
     }
     if (active.reports !== undefined)
@@ -4086,9 +3752,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * The key at an open overlay, whether one took it. Each open overlay owns EVERY key while it is open, and only one opens at a time:
    * - the `/` palette, before the mode dispatch, so it overlays Home/chat input;
    * - the `/models` picker (2.5.G S7), opened from the bare-Home palette (next-session default, ADR-0063) OR a live in-Home chat (a typed
-   *   or palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches;
-   * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
-   *   withdraws.
+   *   or palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches.
    *
    * The routes are ORDERED handlers, not a list of flags, so a new overlay needs its branch here (or in the chat's own key handler, where the
    * `@`-mention and the reverse search are routed) AND a flag in `overlay-flags.ts`: the record's tests fail until the flag decides its gates.
@@ -4098,16 +3762,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       handlePaletteKey(input, key);
       return true;
     }
-    if (state.modelPicker !== undefined) {
-      if (!state.submitBusy) routeModelPickerKey(input, key);
-      return true;
-    }
-    return state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key);
+    return false;
   };
 
   // The open-overlay + mode key router — extracted from `handleKey` so its bracketed-paste handling stays within the
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
-  // time): the `/` palette → the `/models` picker → the docked sheet → the live chat → else the bare Home.
+  // time): the `/` palette → the `/models` picker → the live chat → else the bare Home.
   const dispatchKey = (input: string, key: HomeKeyEvent): void => {
     // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
     const focusDropped = focusJustDropped;
@@ -4290,11 +3950,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
       // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
-      // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
-      // `pasteEditable` keeps a paste out of the composer while a sheet is open.
-      const pastedOver = permissionsSheetOf(state.chatSheet);
-      if (pastedOver !== undefined)
-        set({ chatSheet: permissionsChatSheet(disarmPermissionsSheet(pastedOver)) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;

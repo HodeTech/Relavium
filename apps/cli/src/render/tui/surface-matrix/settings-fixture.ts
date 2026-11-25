@@ -2,12 +2,14 @@
 // than the matrix's bounded wait for the first frame: the fixture loads it up front, so every cell sees the popup open as a warm process does.
 import '../../../popups/settings-session.js';
 
-import type { ReasoningEffort } from '@relavium/shared';
+import type { ChatMode, ReasoningEffort } from '@relavium/shared';
 
 import { effortTiersFor } from '../../../chat/effort-notice.js';
+import { MODE_EFFECT } from '../../../chat/mode-effects.js';
 import type { PopupOrigin } from '../../../popups/frame-model.js';
 import type { PopupFrame, PopupSpec } from '../../../popups/popup-reducer.js';
 import type { SettingsPort, SettingsSurface } from '../../../popups/settings-port.js';
+import { KEYS } from './home-host.js';
 import { popupBoxOf } from './popup-fixture.js';
 import type { PopupBox } from './properties.js';
 import type { Variant } from './variants.js';
@@ -29,6 +31,8 @@ export const SETTINGS_LANDMARKS = {
   effort: 'balanced reasoning · current',
   form: 'Reasoning effort',
   effect: 'Granted actions are approved',
+  mode: 'every action asks first · current',
+  'mode-apply': 'Mode: auto',
 } as const;
 
 export type SettingsState = keyof typeof SETTINGS_LANDMARKS;
@@ -38,11 +42,14 @@ export const SETTINGS_LEGEND_ROW: Readonly<Record<SettingsState, string>> = {
   effort: '↑/↓ select · Enter apply · Esc close',
   form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
   effect: '↑/↓ select · Enter apply · Esc close',
+  mode: '↑/↓ select · Enter next · Esc close',
+  'mode-apply': '↑/↓ apply to · Enter apply · [Ctrl+C] close · Esc back',
 };
 
 /** A settings port for one cell: `/effort` over the bound model's real tiers, the tier in force `medium`, and an apply that records. */
 export function settingsPortFor(surface: SettingsSurface): SettingsPort {
   let current: ReasoningEffort | undefined = 'medium';
+  let mode: ChatMode = 'ask';
   return {
     surface,
     announce: () => {},
@@ -53,6 +60,15 @@ export function settingsPortFor(surface: SettingsSurface): SettingsPort {
       apply: (effort) => {
         current = effort;
       },
+    },
+    // `/mode` (the two steps of `popup-mode-chat-80x24.png`): the mode in force `ask`; applying moves it, the hand-off does nothing here.
+    mode: {
+      current: () => mode,
+      apply: (next) => {
+        mode = next;
+        return true;
+      },
+      saveStartupDefault: () => Promise.resolve(),
     },
   };
 }
@@ -154,13 +170,45 @@ export async function driveSettings(
     readonly until: (predicate: () => boolean) => Promise<boolean>;
     readonly frame: () => string[];
     readonly popups: { readonly openForUser: (spec: PopupSpec) => unknown };
+    readonly key: (bytes: string) => void;
+    readonly skip: (ms: number) => void;
   },
   type: (line: string) => Promise<void>,
   state: SettingsState,
   origin: PopupOrigin,
 ): Promise<void> {
+  if (state === 'mode' || state === 'mode-apply') {
+    await driveMode(m, type, state);
+    return;
+  }
   if (state === 'effort') await type('/effort');
   else m.popups.openForUser(state === 'form' ? testFormPopup(origin) : testEffectPopup(origin));
   await m.until(() => m.frame().join('\n').includes(SETTINGS_LANDMARKS[state]));
+  await m.settle();
+}
+
+/**
+ * `/mode` typed and routed by the host: its first step on the mode in force (`ask`), or its second for `auto` (three `↓`, then `Enter` once
+ * the popup has settled), the step that states the effect it applies under.
+ */
+async function driveMode(
+  m: Parameters<typeof driveSettings>[0],
+  type: (line: string) => Promise<void>,
+  state: 'mode' | 'mode-apply',
+): Promise<void> {
+  const shows = (text: string) => (): boolean => m.frame().join('\n').includes(text);
+  await type('/mode');
+  await m.until(shows(SETTINGS_LANDMARKS.mode));
+  await m.settle();
+  if (state === 'mode') return;
+  m.skip(600);
+  // One key per read: keys written together reach the renderer as one read, which is one key.
+  for (let press = 0; press < 3; press += 1) {
+    m.key(KEYS.down);
+    await m.settle();
+  }
+  await m.until(shows(MODE_EFFECT.auto.full.slice(0, 40)));
+  m.key(KEYS.enter);
+  await m.until(shows(SETTINGS_LANDMARKS['mode-apply']));
   await m.settle();
 }

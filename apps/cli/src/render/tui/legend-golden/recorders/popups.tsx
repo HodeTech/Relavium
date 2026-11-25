@@ -65,6 +65,19 @@ import {
 import { CHAT_KEYS } from '../../chat-keys.js';
 import { effortTiersFor } from '../../../../chat/effort-notice.js';
 import { effortContent, effortInitialRow, effortSpec } from '../../../../popups/effort-popup.js';
+import {
+  MODELS_LOADING,
+  MODELS_READ_FAILED,
+  MODELS_SETTINGS_FAILED,
+  MODELS_STEP,
+  modelsListContent,
+  modelsSpec,
+  scopeForm,
+  type CatalogStatus,
+} from '../../../../popups/models-popup.js';
+import { providerDisplayName } from '../../../../engine/providers.js';
+import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
+import { modeScopeForm, modeSpec, SCOPE_STEP } from '../../../../popups/mode-popup.js';
 import type { PopupForm } from '../../../../popups/frame-model.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
@@ -141,6 +154,12 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
       'the /effort popup in a chat (ADR-0148 §3, §6): the tiers of a graded and of a budget model with the one in force marked, and a model with no tier',
   },
   {
+    id: 'models-popup',
+    file: 'popups/models-popup.ts',
+    describe:
+      'the /models popup (ADR-0148 §3, §6): the catalog list (the model in force, a model with no key under its heading, the line above it fresh, refreshing and failed, a typed filter), its loading, empty and two error states, and its second step in a chat (a provider change, the model in force, a chat with no default writer) and on the bare Home',
+  },
+  {
     id: 'popup-form',
     file: 'popups/frame-model.ts',
     describe:
@@ -151,6 +170,12 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     file: 'popups/frame-model.ts',
     describe:
       'a list step whose rows state their effect (ADR-0148 §3; the /mode first step): the highlighted row’s effect under the list, the room of the longest kept',
+  },
+  {
+    id: 'mode-popup',
+    file: 'popups/mode-popup.ts',
+    describe:
+      'the /mode popup in a chat (ADR-0148 §3, §6): the modes with the one in force marked and the highlighted one’s effect (`Enter next`), then where the chosen mode applies, with its effect stated for a mode that approves without a card (`↑/↓ apply to · Enter apply`)',
   },
 ];
 
@@ -639,6 +664,131 @@ const recordEffort: Recorder = (): StateRows => {
   };
 };
 
+/** A catalog row of the `/models` recording: a priced model, its window and its price per million in and out (dollars). */
+function modelRow(
+  modelId: string,
+  provider: ProviderId,
+  window: number,
+  input: number,
+  output: number,
+): ModelCatalogEntry {
+  return {
+    modelId,
+    provider,
+    displayName: modelId,
+    contextWindowTokens: window,
+    pricing: {
+      provider,
+      nativeId: modelId,
+      displayName: modelId,
+      contextWindowTokens: window,
+      maxOutputTokens: 8192,
+      inputPerMtokMicrocents: input * 100_000_000,
+      outputPerMtokMicrocents: output * 100_000_000,
+      cachedInputPerMtokMicrocents: input * 100_000_000,
+    },
+    pricingSource: 'catalog',
+    priceKnown: true,
+    available: true,
+    deprecated: false,
+  };
+}
+
+/**
+ * The `/models` popup: its list in the states that change its words (the line above the rows fresh, refreshing and failed; a typed filter),
+ * its loading, empty and error states, and the second step's form in a chat (another provider, the model in force, a chat that cannot save a
+ * default) and on the bare Home.
+ */
+const recordModels: Recorder = (): StateRows => {
+  const now = Date.UTC(2026, 10, 25, 12, 0, 0);
+  const entries: readonly ModelCatalogEntry[] = [
+    modelRow('claude-sonnet-4-6', 'anthropic', 200_000, 3, 15),
+    modelRow('gpt-4o', 'openai', 128_000, 2.5, 10),
+    {
+      ...modelRow('gemini-2.5-pro', 'gemini', 1_048_576, 1.25, 10),
+      available: false,
+      unavailableReason: 'no-key',
+    },
+  ];
+  const view = { entries, refreshedAt: now - 3 * 60_000 };
+  const current = 'claude-sonnet-4-6';
+  const list = (status: CatalogStatus): PopupContent =>
+    modelsListContent(view, current, status, now, providerDisplayName);
+  const first = (content: PopupContent, scope: 'chat' | 'home' = 'chat'): PopupFrame =>
+    openFrame(modelsSpec(scope === 'home' ? 'home' : 'chat', scope, content, current), 1);
+  const second = (
+    entry: ModelCatalogEntry,
+    scope: 'chat' | 'home',
+    canSaveDefault = true,
+  ): PopupFrame => {
+    const form = scopeForm({
+      entry,
+      scope,
+      current,
+      currentProvider: 'anthropic',
+      currentEffort: 'medium',
+      canSaveDefault,
+      providerName: providerDisplayName,
+    });
+    const opened = openFrame(
+      modelsSpec(scope === 'home' ? 'home' : 'chat', scope, list({ kind: 'idle' }), current),
+      1,
+    );
+    return { ...withContent(opened, MODELS_STEP.scope, form), stepIndex: MODELS_STEP.scope };
+  };
+  const [sonnet, gpt] = entries;
+  if (sonnet === undefined || gpt === undefined) throw new Error('the recording has no catalog');
+  return {
+    ...frameStates(label({ step: 'model', line: 'fresh' }), first(list({ kind: 'idle' }))),
+    ...frameStates(
+      label({ step: 'model', line: 'refreshing' }),
+      first(list({ kind: 'refreshing' })),
+    ),
+    ...frameStates(
+      label({ step: 'model', line: 'failed' }),
+      first(list({ kind: 'failed', providers: ['openai'] })),
+    ),
+    ...frameStates(
+      label({ step: 'model', filter: 'typed' }),
+      folded(first(list({ kind: 'idle' })), 'g'),
+    ),
+    ...frameStates(label({ step: 'model', content: 'loading' }), first(MODELS_LOADING)),
+    ...frameStates(
+      label({ step: 'model', content: 'empty' }),
+      first(
+        modelsListContent(
+          { entries: [], refreshedAt: undefined },
+          undefined,
+          { kind: 'idle' },
+          now,
+          providerDisplayName,
+        ),
+      ),
+    ),
+    ...frameStates(label({ step: 'model', content: 'read-failed' }), first(MODELS_READ_FAILED)),
+    ...frameStates(
+      label({ step: 'model', content: 'settings-failed' }),
+      first(MODELS_SETTINGS_FAILED),
+    ),
+    ...frameStates(
+      label({ step: 'scope', host: 'chat', chosen: 'another-provider' }),
+      second(gpt, 'chat'),
+    ),
+    ...frameStates(
+      label({ step: 'scope', host: 'chat', chosen: 'in-force' }),
+      second(sonnet, 'chat'),
+    ),
+    ...frameStates(
+      label({ step: 'scope', host: 'chat', writer: 'none' }),
+      second(gpt, 'chat', false),
+    ),
+    ...frameStates(
+      label({ step: 'scope', host: 'home', chosen: 'another-provider' }),
+      second(gpt, 'home'),
+    ),
+  };
+};
+
 /** The form of the `/models` second step, as a step after the first: with both fields, each alone, and as the first step (its `Esc close`). */
 const recordForm: Recorder = (): StateRows => {
   const form: PopupForm = {
@@ -710,6 +860,20 @@ const recordEffect: Recorder = (): StateRows => {
   };
 };
 
+/** The `/mode` popup: its first step on the mode in force, and its second for a mode that states its effect (`auto`) and one that does not. */
+const recordMode: Recorder = (): StateRows => {
+  const opened = openFrame(modeSpec('chat', 'ask'), 1);
+  const second = (mode: 'auto' | 'plan'): PopupFrame => ({
+    ...withContent(opened, SCOPE_STEP, modeScopeForm(mode)),
+    stepIndex: SCOPE_STEP,
+  });
+  return {
+    ...frameStates(label({ step: 'mode', current: 'ask' }), opened),
+    ...frameStates(label({ step: 'apply-to', mode: 'auto' }), second('auto')),
+    ...frameStates(label({ step: 'apply-to', mode: 'plan' }), second('plan')),
+  };
+};
+
 export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'popup-frame-legend': recordFrameLegend,
   'popup-native-legend': recordNativeLegend,
@@ -720,6 +884,8 @@ export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'workflows-popup': recordWorkflows,
   'help-popup': recordHelp,
   'effort-popup': recordEffort,
+  'models-popup': recordModels,
   'popup-form': recordForm,
   'popup-effect': recordEffect,
+  'mode-popup': recordMode,
 };

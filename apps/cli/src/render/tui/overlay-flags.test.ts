@@ -37,13 +37,10 @@ import {
   type OverlayFlags,
 } from './overlay-flags.js';
 import { INITIAL_REVERSE_SEARCH } from './input-history.js';
-import { permissionsChatSheet } from './chat-sheet.js';
 import { openPalette } from './palette-reducer.js';
-import { initialPermissionsSheetState } from './permissions-sheet.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { stripRefreshPaused } from './strip-pause.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
-import type { ModelPickerState } from './model-picker.js';
 
 /** What each gate answers for a record: `true` ⇒ the flag CLOSES the gate. `ownsKeyboard` is not a column: every flag owns it (below). */
 interface Gates {
@@ -91,7 +88,7 @@ const OPEN: Gates = {
   custodyRevoked: false,
 };
 
-/** What the five submodes share: the palette and the model picker add the landing's two gates. */
+/** What the three submodes share: the palette adds the landing's two gates (it is the one that opens on the landing). */
 const SUBMODE: Gates = {
   ...OPEN,
   screenSlot: true,
@@ -123,8 +120,6 @@ const EXPECTED = {
   palette: { ...SUBMODE, landingPromptHidden: true, noticePaging: true },
   search: SUBMODE,
   mention: SUBMODE,
-  modelPicker: { ...SUBMODE, landingPromptHidden: true, noticePaging: true },
-  chatSheet: SUBMODE,
   screen: { ...OPEN, stripPause: true, noticePaging: true },
   exitGuard: { ...OPEN, screenSlot: true, stripPause: true, activePoll: true, noticePaging: true },
   nativePrompt: {
@@ -280,19 +275,11 @@ describe('the paste half of the record feeds the shared paste gate', () => {
       paletteOpen: false,
       searchOpen: false,
       mentionOpen: false,
-      modelPickerOpen: false,
-      chatSheetOpen: false,
       approvalPending: false,
     });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, palette: true })).toMatchObject({ paletteOpen: true });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, search: true })).toMatchObject({ searchOpen: true });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, mention: true })).toMatchObject({ mentionOpen: true });
-    expect(pasteFlagsFrom({ ...NO_OVERLAYS, modelPicker: true })).toMatchObject({
-      modelPickerOpen: true,
-    });
-    expect(pasteFlagsFrom({ ...NO_OVERLAYS, chatSheet: true })).toMatchObject({
-      chatSheetOpen: true,
-    });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, approval: true })).toMatchObject({
       approvalPending: true,
     });
@@ -305,21 +292,14 @@ describe('the paste half of the record feeds the shared paste gate', () => {
     const half: Omit<PasteEditableFlags, 'running' | 'shellBusy' | 'submitBusy'> =
       pasteFlagsFrom(NO_OVERLAYS);
     expect(Object.keys(half).sort()).toEqual(
-      [
-        'approvalPending',
-        'chatSheetOpen',
-        'mentionOpen',
-        'modelPickerOpen',
-        'paletteOpen',
-        'searchOpen',
-      ].sort(),
+      ['approvalPending', 'mentionOpen', 'paletteOpen', 'searchOpen'].sort(),
     );
   });
 });
 
 describe('the interrupt context of an overlay', () => {
   it('is the overlay kind for each submode, and nothing else gives it one', () => {
-    for (const kind of ['palette', 'search', 'mention', 'modelPicker', 'chatSheet'] as const)
+    for (const kind of ['palette', 'search', 'mention'] as const)
       expect(interruptContextFrom(only(kind))).toEqual({ kind: 'overlay' });
     expect(interruptContextFrom(NO_OVERLAYS)).toBeUndefined();
   });
@@ -391,23 +371,6 @@ const EMPTY: HomeSnapshot = {
   isEmpty: true,
 };
 
-const MODEL_PICKER: ModelPickerState = {
-  entries: [],
-  filter: '',
-  selected: 0,
-  loading: false,
-  currentDefault: undefined,
-  refreshedAt: undefined,
-  banner: undefined,
-  hint: undefined,
-  phase: 'model',
-  effortStep: false,
-  pending: undefined,
-  effortTiers: [],
-  effortSelected: 0,
-  currentEffort: undefined,
-};
-
 describe("the Home's own record is built from its state in one place", () => {
   const controller = createHomeController({
     startChat: () => Promise.reject(new Error('not started in this test')),
@@ -434,20 +397,6 @@ describe("the Home's own record is built from its state in one place", () => {
     ['palette', { palette: openPalette([], 'down') }],
     ['search', { search: INITIAL_REVERSE_SEARCH }],
     ['mention', { mention: { dir: '', filter: '', candidates: [], selected: 0, loading: false } }],
-    ['modelPicker', { modelPicker: MODEL_PICKER }],
-    [
-      'chatSheet',
-      {
-        chatSheet: permissionsChatSheet(
-          initialPermissionsSheetState(
-            { project: { ok: true, rows: [] }, session: undefined },
-            'chat',
-            'ask',
-            0,
-          ),
-        ),
-      },
-    ],
     ['screen', { screen: { kind: 'help' } }],
     ['exitGuard', { exitGuard: 'confirm' }],
     ['nativeActionBusy', { nativeActionBusy: true }],

@@ -153,8 +153,6 @@ export interface PasteEditableFlags {
   readonly paletteOpen: boolean; // the `/` command palette
   readonly searchOpen: boolean; // Ctrl+R reverse-search
   readonly mentionOpen: boolean; // `@`-mention completion
-  readonly modelPickerOpen: boolean; // `/models`
-  readonly chatSheetOpen: boolean; // the docked `/permissions` sheet (ADR-0137)
   readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
 }
 
@@ -173,8 +171,6 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
     !f.paletteOpen &&
     !f.searchOpen &&
     !f.mentionOpen &&
-    !f.modelPickerOpen &&
-    !f.chatSheetOpen &&
     !f.approvalPending
   );
 }

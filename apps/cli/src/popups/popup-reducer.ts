@@ -38,7 +38,20 @@ export interface PopupControl {
   /** One lower-case letter or digit. */
   readonly key: string;
   readonly verb: string;
+  /**
+   * The Delete key is this control too (a terminal reports it as `Delete` or as `Backspace`), on a step with no filter, where it edits nothing:
+   * `/permissions`' `[d] / Del withdraw`. The legend names both keys.
+   */
+  readonly deleteKey?: true | undefined;
 }
+
+/**
+ * The key that answers a confirmation line ({@link PopupStep.chord}): `Ctrl+Y`, a chord typing cannot make (the doctor's deep check, `/cost`'s
+ * release), or `Enter` after the line was armed by a control letter (`/permissions`' withdrawal, ADR-0137 §2: `[d]`, then `Enter`). The two
+ * are ONE line, answered through the same guard of the host (`popup-host.ts`); only the key differs, and, because `Enter` is a key typing
+ * makes, a line answered by it can be armed only by a control letter that no typing came before (the host's rule).
+ */
+export type LineAnswerKey = 'ctrl-y' | 'enter';
 
 /** One step of a popup. */
 export interface PopupStep {
@@ -59,7 +72,10 @@ export interface PopupStep {
    * (with `chord`); the rule is the host's (`popup-host.ts`).
    */
   readonly holds?: 'chord' | 'secret' | undefined;
-  /** What the `Esc` of this step says it does when it is the first step (default `close`). */
+  /**
+   * What the `Esc` of this step says it does when it is the first step (default `close`); on a confirmation line that has a step to go back to,
+   * what its `Esc` says in place of `back` (`keep`: the withdrawal is not made).
+   */
   readonly exitVerb?: string | undefined;
   /**
    * The step `Esc` returns to, and the rail's node before this one. Absent ⇒ the step before it. A popup whose later steps are alternatives
@@ -73,11 +89,12 @@ export interface PopupStep {
    */
   readonly final?: true | undefined;
   /**
-   * The step is a confirmation line answered by `Ctrl+Y` and by nothing else (ADR-0148 §3 and §8); it also says `holds: 'chord'`. `Ctrl+Y`
-   * answers it only through the host's chord guard (`popup-host.ts`); `Esc`, `Ctrl+C`, a paste and every key that is not a navigation key
-   * disarm it (it steps back, answered by nothing). `verb` is the legend's (`[Ctrl+Y] send`).
+   * The step is a confirmation line answered by its answer key and by nothing else (ADR-0148 §3 and §8): `Ctrl+Y` (the default), or `Enter`
+   * (`key: 'enter'`, {@link LineAnswerKey}); it also says `holds: 'chord'`. The key answers it only through the host's chord guard
+   * (`popup-host.ts`); `Esc`, `Ctrl+C`, a paste and every key that is not a navigation key disarm it (it steps back, answered by nothing).
+   * `verb` is the legend's (`[Ctrl+Y] send`, `Enter withdraw`).
    */
-  readonly chord?: { readonly verb: string } | undefined;
+  readonly chord?: { readonly verb: string; readonly key?: LineAnswerKey | undefined } | undefined;
   /**
    * The keys the legend keeps longest when the row does not fit, most important first (a control letter, `Enter`); every other key of the
    * step goes first. The way back is always kept.
@@ -158,6 +175,8 @@ export interface PopupKey {
   readonly delete?: boolean;
   readonly ctrl?: boolean;
   readonly meta?: boolean;
+  /** `Shift`: an `Enter` with it held is not the answer of a line answered by `Enter`. */
+  readonly shift?: boolean;
   /** Which event of the key it was, from a terminal that reports key events (`chord-guard.ts` `ChordKey`); absent ⇒ a press. */
   readonly eventType?: 'press' | 'repeat' | 'release' | undefined;
 }
@@ -175,13 +194,15 @@ export type PopupKeyAction =
   | { readonly kind: 'append'; readonly text: string }
   | { readonly kind: 'backspace' }
   /**
-   * `Ctrl+Y` on a confirmation line: the host's chord guard decides whether it answers. `held` marks a key event that is not a press (a
-   * held key's repeat or its release, from a terminal that reports key events): it is a `Ctrl+Y` that reached the line, and it never answers.
+   * The line's answer key on a confirmation line (`Ctrl+Y`, or `Enter` on a line answered by it): the host's chord guard decides whether it
+   * answers. `held` marks a key event that is not a press (a held key's repeat or its release, from a terminal that reports key events): it is
+   * the answer key that reached the line, and it never answers.
    */
   | { readonly kind: 'chord'; readonly held?: true }
   /**
-   * Any key on a confirmation line that is not `Ctrl+Y`, `Esc` or a navigation key: the line is disarmed. `interrupt` is `Ctrl+C` (a cancel,
-   * as `Esc` is: the host says nothing); `typed` is every other key (a letter, `Enter`, another chord), which the host tells the command about.
+   * Any key on a confirmation line that is not its answer key, `Esc` or a navigation key: the line is disarmed. `interrupt` is `Ctrl+C` (a
+   * cancel, as `Esc` is: the host says nothing); `typed` is every other key (a letter, `Enter` on a `Ctrl+Y` line, `Ctrl+Y` on an `Enter`
+   * line, another chord), which the host tells the command about.
    */
   | { readonly kind: 'disarm'; readonly cause: 'typed' | 'interrupt' }
   | { readonly kind: 'none' };
@@ -314,9 +335,36 @@ export function railOf(frame: PopupFrame): {
   };
 }
 
-/** Whether the frame's current step is a confirmation line answered by `Ctrl+Y` (its `chord`). */
+/** Whether the frame's current step is a confirmation line (its `chord`), whichever its answer key. */
 export function onChordStep(frame: PopupFrame): boolean {
   return currentStep(frame).spec.chord !== undefined;
+}
+
+/** The key that answers `step`'s confirmation line, or `undefined` for a step that is not one. */
+export function lineAnswerKeyOf(step: PopupStep): LineAnswerKey | undefined {
+  return step.chord === undefined ? undefined : (step.chord.key ?? 'ctrl-y');
+}
+
+/** Whether a line of `spec` is answered by `Enter`: then a control letter of it arms nothing after typing (the host's rule). */
+export function hasEnterLine(spec: PopupSpec): boolean {
+  return spec.steps.some((step) => lineAnswerKeyOf(step) === 'enter');
+}
+
+/**
+ * Whether `key` is the answer key of a line of `spec` (a press, a repeat or a release): `Ctrl+Y` in every popup, and `Enter` in a popup that has
+ * a line answered by it. On a step that is not that line it answers nothing: the host stamps it as a refused affirmative.
+ */
+export function answersALine(input: string, key: PopupKey, spec: PopupSpec): boolean {
+  return (
+    lineAnswerOf(input, key, 'ctrl-y') !== undefined ||
+    (hasEnterLine(spec) && lineAnswerOf(input, key, 'enter') !== undefined)
+  );
+}
+
+/** The highlighted row of the frame's current step when it is a list (what a control letter acts on), else `undefined`. */
+export function highlightedRow(frame: PopupFrame): PopupListRow | undefined {
+  const { state } = currentStep(frame);
+  return state.content.kind === 'list' ? visibleRows(state)[state.selected] : undefined;
 }
 
 /**
@@ -365,26 +413,51 @@ function navigationOf(key: PopupKey): NavigationAction | undefined {
 }
 
 /**
- * A key on a confirmation line (a step with `chord`, ADR-0148 §3 and §8): exactly `Ctrl+Y` is the answer (the one chord the guard reads,
- * `reduceChordKey`), `Esc` steps back, the navigation keys move (they disarm nothing), and EVERY other key disarms the line: `Ctrl+C` first
- * disarms rather than closes (a cancel, `interrupt`), and a letter, `Enter`, a `Ctrl+N` or a key the reducer cannot name is not an answer
- * either (`typed`). A `Ctrl+Y` that is a held key's repeat or its release (`chordOf` without `reduceChordKey`) is still a `Ctrl+Y` that
- * reached the line, marked `held`: the host refuses it as one.
+ * Whether `key` is a line's answer key `answer`: a first press (`press`), a held key's repeat or its release (`held`), or `undefined` for any
+ * other key. `Ctrl+Y` is the one chord the guard reads (`chordOf`, a press only through `reduceChordKey`); `Enter` is a plain one, with no
+ * `Ctrl`, `Meta` or `Shift` held (`Esc` then `Enter` inside a terminal's escape window arrives as `Meta+Enter`, and is not an answer).
  */
-function reduceChordStepKey(input: string, key: PopupKey): PopupKeyAction {
-  if (chordOf(input, key) === 'allow')
-    return reduceChordKey(input, key) === 'allow'
-      ? { kind: 'chord' }
-      : { kind: 'chord', held: true };
+function lineAnswerOf(
+  input: string,
+  key: PopupKey,
+  answer: LineAnswerKey,
+): 'press' | 'held' | undefined {
+  if (answer === 'enter') {
+    if (key.return !== true || key.ctrl === true || key.meta === true || key.shift === true)
+      return undefined;
+    return key.eventType === 'repeat' || key.eventType === 'release' ? 'held' : 'press';
+  }
+  if (chordOf(input, key) !== 'allow') return undefined;
+  return reduceChordKey(input, key) === 'allow' ? 'press' : 'held';
+}
+
+/**
+ * A key on a confirmation line (a step with `chord`, ADR-0148 §3 and §8): exactly its answer key is the answer (`Ctrl+Y`, or `Enter` on a line
+ * answered by it: {@link lineAnswerOf}), `Esc` steps back, the navigation keys move (they disarm nothing), and EVERY other key disarms the line:
+ * `Ctrl+C` first disarms rather than closes (a cancel, `interrupt`), and a letter, the other line's key, a `Ctrl+N` or a key the reducer cannot
+ * name is not an answer either (`typed`). An answer key that is a held key's repeat or its release is still the answer key that reached the
+ * line, marked `held`: the host refuses it as one.
+ */
+function reduceChordStepKey(input: string, key: PopupKey, answer: LineAnswerKey): PopupKeyAction {
+  const answered = lineAnswerOf(input, key, answer);
+  if (answered !== undefined)
+    return answered === 'press' ? { kind: 'chord' } : { kind: 'chord', held: true };
   if (key.escape === true && key.ctrl !== true) return { kind: 'leave' };
   return (
     navigationOf(key) ?? { kind: 'disarm', cause: isInterrupt(input, key) ? 'interrupt' : 'typed' }
   );
 }
 
+/** The control a step lists for the Delete key ({@link PopupControl.deleteKey}): only on a step with no filter, and with no `Ctrl` or `Meta` held. */
+function deleteControlOf(key: PopupKey, step: PopupStep): PopupControl | undefined {
+  if (step.filter === true || key.ctrl === true || key.meta === true) return undefined;
+  return step.controls?.find((entry) => entry.deleteKey === true);
+}
+
 /** Map one key to what it means on `step` (see the module header). */
 export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): PopupKeyAction {
-  if (step.chord !== undefined) return reduceChordStepKey(input, key);
+  const answer = lineAnswerKeyOf(step);
+  if (answer !== undefined) return reduceChordStepKey(input, key, answer);
   if (isInterrupt(input, key)) return { kind: 'close-all' };
   if (key.escape === true) return { kind: 'leave' };
   if (key.return === true) return { kind: 'enter' };
@@ -392,7 +465,10 @@ export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): P
   if (navigation !== undefined) return navigation;
   if (key.leftArrow === true) return { kind: 'adjust', delta: -1 };
   if (key.rightArrow === true) return { kind: 'adjust', delta: 1 };
-  if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
+  if (key.backspace === true || key.delete === true) {
+    const control = deleteControlOf(key, step);
+    return control === undefined ? { kind: 'backspace' } : { kind: 'control', key: control.key };
+  }
   if (key.ctrl === true || key.meta === true || input.length === 0) return { kind: 'none' };
   const control = step.controls?.find((entry) => entry.key === input);
   if (control !== undefined) return { kind: 'control', key: control.key };
@@ -427,6 +503,34 @@ export function openingKeyOf(action: PopupKeyAction): OpeningKey {
     case 'backspace':
     case 'none':
       return 'type';
+  }
+}
+
+/**
+ * What a key says about typing, for a line answered by `Enter` (`popup-host.ts`: such a line is armed only by a control letter that no typing
+ * came before, the rule of the `/permissions` sheet it replaces, ADR-0137 §2): `true` for a key that is typing (a letter that is not a control,
+ * `Enter` where it answers nothing, `Backspace`, a key with `Ctrl`, a key typed over a line), `false` for a navigation key (a person choosing a
+ * row), and `undefined` for a key that says neither (`Esc`, `Ctrl+C`, a control letter, a line's own answer key, refused or not).
+ */
+export function typingOf(action: PopupKeyAction): boolean | undefined {
+  switch (action.kind) {
+    case 'move':
+    case 'page':
+    case 'jump':
+    case 'adjust':
+      return false;
+    case 'enter':
+    case 'append':
+    case 'backspace':
+    case 'none':
+      return true;
+    case 'disarm':
+      return action.cause === 'typed' ? true : undefined;
+    case 'leave':
+    case 'close-all':
+    case 'control':
+    case 'chord':
+      return undefined;
   }
 }
 
@@ -691,6 +795,8 @@ export const POPUP_KEYS = {
   leave: 'Esc',
   closeAll: 'Ctrl+C',
   chord: 'Ctrl+Y',
+  /** The Delete key, named beside the control letter it also is (`[d] / Del withdraw`). */
+  delete: 'Del',
   /** The keys that close the result step of a flow (`Enter / Esc close`). */
   finish: ['Enter', 'Esc'],
 } as const;
@@ -775,11 +881,17 @@ function closingVerb(spec: PopupStep, state: PopupStepState): string {
   return state.content.kind === 'loading' ? 'cancel' : (spec.exitVerb ?? 'close');
 }
 
+/** The key each kind of line is answered by, as the legend names it. */
+const LINE_KEYS: Readonly<Record<LineAnswerKey, string>> = {
+  'ctrl-y': POPUP_KEYS.chord,
+  enter: POPUP_KEYS.enter,
+};
+
 /**
- * A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. It names its answer only
- * when the line is wholly on its page ({@link lineFitsPage}): while it is being prepared, when there is nothing to confirm and when it is cut
- * short or a row of it is cut it names none (the host takes none then). Its `Esc` steps back to the step it came from (it disarms), and on a
- * first step it closes.
+ * A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. It names its answer (its
+ * key: `Ctrl+Y` or `Enter`) only when the line is wholly on its page ({@link lineFitsPage}): while it is being prepared, when there is nothing
+ * to confirm and when it is cut short or a row of it is cut it names none (the host takes none then). Its `Esc` steps back to the step it came
+ * from (it disarms; `back`, or the step's own word: `keep`), and on a first step it closes.
  */
 function chordLegend(
   spec: PopupStep,
@@ -789,10 +901,15 @@ function chordLegend(
   innerWidth: () => number,
 ): PopupLegend {
   const items: LegendItem[] = [];
-  if (spec.chord !== undefined && lineFitsPage(state.content, page(), innerWidth()))
-    items.push({ keys: POPUP_KEYS.chord, verb: spec.chord.verb });
+  const answer = lineAnswerKeyOf(spec);
+  if (
+    spec.chord !== undefined &&
+    answer !== undefined &&
+    lineFitsPage(state.content, page(), innerWidth())
+  )
+    items.push({ keys: LINE_KEYS[answer], verb: spec.chord.verb });
   const exit = back
-    ? exitKey.step(POPUP_KEYS.leave, 'back')
+    ? exitKey.step(POPUP_KEYS.leave, spec.exitVerb ?? 'back')
     : exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state));
   return { items, exit };
 }
@@ -829,7 +946,11 @@ function stepItems(
     !nothingToChoose(state.content) &&
     (state.content.kind !== 'form' || formFits(state.content, page(), width()));
   if (spec.enter !== undefined && answers) items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
-  for (const control of spec.controls ?? []) items.push({ keys: control.key, verb: control.verb });
+  for (const control of spec.controls ?? [])
+    items.push({
+      keys: control.deleteKey === true ? [control.key, POPUP_KEYS.delete] : control.key,
+      verb: control.verb,
+    });
   return items;
 }
 

@@ -223,10 +223,6 @@ describe('how the tab host is reached', () => {
     controller.handleKey('', ESC);
     open(controller);
     expect(controller.getSnapshot().palette).toBeUndefined();
-    expect(
-      controller.getSnapshot().chatSheet,
-      'the chat’s overlay is not this screen',
-    ).toBeUndefined();
   });
 
   it('is refused with a chat in front: a screen opens only from the landing', async () => {

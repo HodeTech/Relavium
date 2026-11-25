@@ -20,8 +20,17 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['idle', 'the idle chat prompt'],
   ['running-turn', 'a running turn: the streamed answer and the live line'],
   ['palette', 'the / palette, laid out upwards from the prompt'],
-  ['model-picker', 'the /models picker'],
-  ['sheet-permissions', 'the docked /permissions sheet'],
+  ['settings-models', 'the /models popup: the catalog, the bound model marked'],
+  [
+    'settings-models-apply',
+    'the /models popup’s second step: the effort, where it applies and where the conversation goes',
+  ],
+  [
+    'permissions-list',
+    'the /permissions popup: the remembered commands and the session’s approvals',
+  ],
+  ['permissions-armed', 'the /permissions popup: a withdrawal’s line, answered by Enter'],
+  ['permissions-empty', 'the /permissions popup: nothing remembered and nothing approved'],
   ['mode-prompt', 'the /mode flow’s native card (the startup default)'],
   ['approval-file-edit', 'the approval card of a file edit'],
   ['approval-command', 'the approval card of a command'],
@@ -61,6 +70,11 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   [
     'settings-effect',
     'a list popup whose highlighted row states its effect: the test layer’s (the body of the /mode first step)',
+  ],
+  ['settings-mode', 'the /mode popup: the modes, the one in force marked, its effect stated'],
+  [
+    'settings-mode-apply',
+    'the /mode popup’s second step: where the mode applies, its effect stated before Enter',
   ],
 ];
 
@@ -111,7 +125,14 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.native-env-consent', 'the provider setup’s consent to an environment key'),
   row('home.native-keychain-card', 'the provider setup’s card for an unavailable keychain'),
   row('home.native-failed-check-card', 'the provider setup’s card for a key the provider refused'),
-  row('home.model-picker', 'the /models picker'),
+  row(
+    'home.settings-models',
+    'the /models popup on the bare Home: the catalog, the default marked',
+  ),
+  row(
+    'home.settings-models-apply',
+    'the /models popup’s second step on the bare Home: the effort of the default of new chats',
+  ),
   row('home.mode-flow', 'the /mode flow'),
   row('home.pricing-card', 'the /pricing form and its card'),
   row('home.import-card', 'the /import path field and its card'),

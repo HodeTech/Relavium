@@ -182,7 +182,7 @@ describe('the commands that open a sheet or a picker of the chat itself', () => 
   // `/models`, `/effort` (a popup now) and `/permissions` are opened by the chat before it submits anything, so the chat is never "submitting"
   // behind them: whatever Esc does there (it closes the list), the screen must not also say that it stops a turn. (`/agent` is a report popup now.)
   const OWN_SURFACES = CHAT_SURFACES.filter((entry) =>
-    ['model-picker', 'settings-effort', 'sheet-permissions'].some((name) =>
+    ['model-picker', 'settings-effort', 'permissions-list'].some((name) =>
       entry.id.endsWith(`.${name}`),
     ),
   );

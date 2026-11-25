@@ -10,10 +10,11 @@ import type { ChatMode } from '../../chat/chat-mode.js';
 
 /**
  * What every host of the `/permissions` sheet does with one key and the port it holds ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
- * §2, §3): the standalone chat, the in-Home chat, the bare Home and a bare `relavium permissions` all fold the key with
- * {@link foldPermissionsSheetKey}, carry a withdrawal out through the port and reload the sheet with the answer. It is one function so
- * the four cannot drift on the two things a host must get right: a port that throws must not leave the keyboard owned by a frozen
- * sheet, and a list that cannot be read again after a withdrawal must close the sheet rather than leave it armed on a stale row.
+ * §2, §3): the bare Home's Permissions tab and a bare `relavium permissions` fold the key with {@link foldPermissionsSheetKey}, carry a
+ * withdrawal out through the port and reload the sheet with the answer (a chat's `/permissions` is a popup now, MVP-11 step 5c:
+ * `popups/permissions-session.ts`). It is one function so they cannot drift on the two things a host must get right: a port that throws must
+ * not leave the keyboard owned by a frozen sheet, and a list that cannot be read again after a withdrawal must close the sheet rather than
+ * leave it armed on a stale row.
  *
  * Pure but for the port: the clock and whether the frame can show the question are the host's to say.
  */

@@ -16,11 +16,12 @@ import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
-import { runModeSettings } from '../chat/mode-settings.js';
+import { runStartupDefaultSave } from '../chat/mode-settings.js';
 import { publishModePreference } from '../chat/mode-preference-publication.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import {
   createNativePromptChannel,
+  type NativePromptFlow,
   type NativePromptUi,
 } from '../render/tui/native-prompt-channel.js';
 import type { CliInvocation } from '../process/invocation.js';
@@ -66,6 +67,7 @@ import type { DoctorPort } from '../popups/doctor-port.js';
 import type { ReportMembers, ReportsPort, WorkflowsReading } from '../popups/report-port.js';
 import {
   effortAnnouncement,
+  type ModelsSettingsPort,
   type SettingsMembers,
   type SettingsPort,
 } from '../popups/settings-port.js';
@@ -153,9 +155,15 @@ import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import {
   createProviderResolver,
   missingKeyMessage,
+  providerDisplayName,
   providerHasKey,
   type ProviderResolver,
 } from '../engine/providers.js';
+import {
+  createChatDefaultModelWriter,
+  saveDefaultModel,
+  type DefaultModelSaveOptions,
+} from '../chat/default-model-save.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toUserFacing } from '../process/errors.js';
 import { acknowledgeWrite, type CliIo } from '../process/io.js';
@@ -258,12 +266,23 @@ export interface ReseatTarget {
 export type ChatStopReason = 'exit' | 'clear' | 'reseat';
 
 /**
- * The catalog port the ink `/models` reseat picker (ADR-0059) reads — the SHARED load/refresh trio
- * ({@link ModelCatalogPort}) plus the session's currently-bound model (the picker's `✓` "you are here" marker).
- * Built per session so `boundModel` reflects a reseat's switched model. Interactive (TTY) sessions only.
+ * The catalog port the chat's `/models` popup (ADR-0148 §3, §6; the reseat of ADR-0059) reads — the SHARED load/refresh trio
+ * ({@link ModelCatalogPort}) plus the session's currently-bound model. Built per session so `boundModel` reflects a reseat's switched
+ * model. Interactive (TTY) sessions only.
  */
 export interface ChatModelsPort extends ModelCatalogPort {
   readonly boundModel: string;
+  /**
+   * Save a model (and its tier) as the default of NEW chats, the popup's `New chats` (ADR-0063 §1, ADR-0066 §6): the same
+   * `prepareGlobalPreferences` + visible-card publication as the Home's `HomeModelsPort.writeDefault` (`createChatDefaultModelWriter`).
+   * Attached by the driver that owns the chat's native prompt (`driveOneSession`); absent ⇒ the chat has no card to disclose a rewrite on,
+   * and the popup offers no `New chats`.
+   */
+  readonly writeDefault?: (
+    modelId: string,
+    provider: ProviderId,
+    reasoningEffort?: ReasoningEffort,
+  ) => Promise<{ readonly durability: 'confirmed' | 'unconfirmed' }>;
 }
 
 /** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
@@ -287,6 +306,66 @@ function buildChatModelsPort(
       ...(workOwner === undefined ? {} : { workOwner }),
     }),
     boundModel,
+  };
+}
+
+/**
+ * The `/models` member of a chat's settings port (ADR-0148 §3, §6): the session's half, built from what the session holds (its bound model
+ * and provider, its tier, its tier setter) and its catalog port (`picker`: the catalog, its refreshes and the default's writer when the
+ * driver attached one). The switch of `This chat` is the host's (`bindModelSwitch`), never this. `undefined` without a catalog port (a
+ * plain, `--json` or one-shot chat, and the chat the Home hosts, whose member is the Home controller's).
+ */
+function chatModelsSettings(
+  picker: ChatModelsPort | undefined,
+  built: Pick<BuiltChatSession, 'agent'>,
+  store: Pick<ChatStoreController, 'getSnapshot'>,
+  setEffort: (effort: ReasoningEffort) => void,
+  save: Omit<DefaultModelSaveOptions, 'write'>,
+): ModelsSettingsPort | undefined {
+  if (picker === undefined) return undefined;
+  const write = picker.writeDefault;
+  return {
+    scope: 'chat',
+    load: picker.load,
+    refreshIfStale: picker.refreshIfStale,
+    refresh: picker.refresh,
+    current: () => built.agent.model,
+    currentProvider: () => built.agent.provider,
+    currentEffort: () => store.getSnapshot().reasoningEffort,
+    providerName: providerDisplayName,
+    setEffort,
+    ...(write === undefined
+      ? {}
+      : { saveDefault: (choice) => saveDefaultModel({ ...save, write }, choice) }),
+  };
+}
+
+/**
+ * The wiring a stand-alone chat's line handler is built over, its catalog port given the writer of the default of new chats
+ * (`createChatDefaultModelWriter`) over THIS chat's native prompt: attached here because the native channel is the driver's. A chat with
+ * no native channel (non-interactive, or no starting-mode runtime) keeps its port as it is, with no writer.
+ */
+function withDefaultModelWriter<W extends Pick<ReplWiring, 'modelCatalog' | 'startingModes'>>(
+  wiring: W,
+  native: { readonly flow: NativePromptFlow; readonly ui: NativePromptUi } | undefined,
+  flushVisible: () => NoticeFlush | undefined,
+  assertAdmitting: () => void,
+): W {
+  const picker = wiring.modelCatalog;
+  const runtime = wiring.startingModes;
+  if (picker === undefined || runtime === undefined || native === undefined) return wiring;
+  return {
+    ...wiring,
+    modelCatalog: {
+      ...picker,
+      writeDefault: createChatDefaultModelWriter({
+        runtime,
+        flow: native.flow,
+        ui: native.ui,
+        flushVisible,
+        assertAdmitting,
+      }),
+    },
   };
 }
 
@@ -327,19 +406,12 @@ export interface ChatDriveContext {
    */
   readonly stopReason: () => ChatStopReason;
   /**
-   * Switch the bound model mid-session (ADR-0059) — the ink model-picker overlay calls this on accept. It signals a
-   * host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the driver then
-   * ends and {@link runReplLoop} rebuilds. Absent on a non-interactive driver (plain/`--json`), where a live reseat
+   * Switch the bound model mid-session (ADR-0059) — the `/models` popup's `This chat` reaches it through the host's switch
+   * (`bindModelSwitch`). It signals a host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the
+   * driver then ends and {@link runReplLoop} rebuilds. Absent on a non-interactive driver (plain/`--json`), where a live reseat
    * is unavailable — one machine stream is one session lifecycle (ADR-0049), exactly as `/clear` is gated off there.
    */
   readonly onReseat?: (target: ReseatTarget) => void;
-  /**
-   * The `/models` reseat picker catalog port (ADR-0059) — the ink `ChatApp` opens the model-picker overlay off a
-   * typed `/models`, reads the merged catalog through this, and calls {@link onReseat} on accept. Present on an
-   * interactive (TTY, non-`--json`) session only; a plain/`--json` driver has no overlay, so a typed `/models`
-   * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
-   */
-  readonly modelPicker?: ChatModelsPort;
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
    *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
@@ -573,11 +645,12 @@ interface ChatReplDeps {
   readonly surface?: CommandListSurface;
   /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
   readonly keychain?: KeychainStore;
-  readonly openModeSettings?: (
-    currentMode: () => ChatMode,
-    onCurrentMode: (mode: ChatMode) => void,
-    notice: (text: string) => void,
-  ) => Promise<void>;
+  /**
+   * Save `mode` as the global startup default on this chat's native prompt (`runStartupDefaultSave`): what the `/mode` popup's "New chats"
+   * hands off to (ADR-0148 §3, §6), its result said through `notice`. Wired by an interactive chat that has its starting-mode runtime (the
+   * stand-alone chat and the chat the Home hosts); where it is absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
+   */
+  readonly saveStartupDefault?: (mode: ChatMode, notice: (text: string) => void) => Promise<void>;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
   readonly effectAttention?: ReturnType<typeof createChatEffectAttention>;
@@ -1081,7 +1154,7 @@ async function chatCommandBody(
           persister,
           doctorProbes,
           startSession: () => built.session.start(),
-          modelPicker: buildChatModelsPort(
+          modelCatalog: buildChatModelsPort(
             opened,
             providers,
             built.agent.model,
@@ -1596,7 +1669,7 @@ async function chatResumeCommandBody(
           });
         },
         intro,
-        modelPicker: buildChatModelsPort(
+        modelCatalog: buildChatModelsPort(
           opened,
           providers,
           built.agent.model,
@@ -1679,9 +1752,10 @@ interface ReplWiring {
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
   readonly chatMaxMessages?: number;
-  /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
-   *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
-  readonly modelPicker?: ChatModelsPort;
+  /** The catalog port of the `/models` popup (ADR-0148 §3; the reseat of ADR-0059) — built per session (its `boundModel` is the current
+   *  model). The line handler builds the session's `/models` member over it, for an interactive chat only (`driveOneSession` adds the
+   *  default's writer there). */
+  readonly modelCatalog?: ChatModelsPort;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
    *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
   readonly altScreen?: boolean | undefined;
@@ -2055,6 +2129,26 @@ function workflowListFailureReason(shown: unknown): string {
 }
 
 /**
+ * The `/mode` member of a chat's settings port ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §3, §6), or none where the chat has no startup-default writer (`save`): then a bare `/mode` is dispatched and lists the modes, as it did.
+ * The popup reads the mode in force from the chat's store, applies to this chat through the session's one mode setter, and hands new chats
+ * to `save`, whose result is said through `notice`.
+ */
+function chatModeSettings(
+  control: Pick<ChatModeControl, 'onModeChange'>,
+  store: Pick<ChatStoreController, 'getSnapshot'>,
+  save: ChatReplDeps['saveStartupDefault'],
+  notice: (text: string) => void,
+): SettingsMembers['mode'] {
+  if (save === undefined) return undefined;
+  return {
+    current: () => store.getSnapshot().mode,
+    apply: control.onModeChange,
+    saveStartupDefault: (mode) => save(mode, notice),
+  };
+}
+
+/**
  * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
  * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
  * between turns; an unknown slash warns; anything else is appended + persisted + sent as a turn. The cancel/stop
@@ -2071,6 +2165,7 @@ export function createChatLineHandler(
     | 'chatMaxMessages'
     | 'sendGuard'
     | 'startingModes'
+    | 'modelCatalog'
   >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
@@ -2376,19 +2471,12 @@ export function createChatLineHandler(
     // `/mode [name]` (ADR-0057): switch the chat mode, or (bare `/mode`) show the current mode + the options.
     // The dispatch already validated `modeArg` against the mode names, so a non-empty arg parses; still
     // fail-soft. Applying re-pushes the turn policy on the SAME session (no reseat), effective next turn.
-    setMode: async (modeArg) => {
+    // An interactive chat's bare `/mode` is the settings popup (ADR-0148 §3, §6), which its host opens before the line is dispatched.
+    setMode: (modeArg) => {
       const requested = modeArg.trim();
       if (requested.length === 0) {
-        if (interactive && deps.openModeSettings !== undefined) {
-          await deps.openModeSettings(
-            () => store.getSnapshot().mode,
-            modeControl.onModeChange,
-            emitOutput,
-          );
-          return;
-        }
-        // Bare `/mode`: show the current mode + EXPLAIN each one (a discovery affordance — the palette submits
-        // this bare form), listing every mode with its one-line description and marking the active one.
+        // Bare `/mode` that reached the dispatch (a plain, `--json` or one-shot chat, or a host with no `/mode` popup): show the current
+        // mode + EXPLAIN each one (a discovery affordance), listing every mode with its one-line description and marking the active one.
         const current = store.getSnapshot().mode;
         const rows = CHAT_MODES.map(
           (m) =>
@@ -2563,14 +2651,13 @@ export function createChatLineHandler(
       clearRequested = true;
       stop = true;
     },
-    // `/models` on the chat surface (ADR-0059) opens the ink reseat-picker overlay — but that is intercepted at the
-    // RENDER layer (ChatApp), BEFORE this core handler, so `openModels` runs ONLY on a non-interactive driver
-    // (plain/`--json`), where there is no overlay. There, surface an actionable hint instead of a silent no-op: a
-    // live reseat needs an interactive terminal (one machine stream stays one session lifecycle, ADR-0049); the
-    // Home's `/models` is the alternative for setting the next-session default.
+    // A bare `/models` in an interactive chat opens the settings popup (ADR-0148 §3, §6), routed by the chat's host BEFORE this core
+    // handler, so `openModels` runs ONLY on a non-interactive driver (plain/`--json`), where there is no popup. There, surface an
+    // actionable hint instead of a silent no-op: a live reseat needs an interactive terminal (one machine stream stays one session
+    // lifecycle, ADR-0049); the global `[preferences].default_model` (what the Home's `/models` writes) sets the default of new chats.
     openModels: () =>
       emitOutput(
-        '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
+        '/models needs an interactive terminal to switch the model live. From a pipe, set `[preferences].default_model` ' +
           'in your config, or run `relavium` (the Home) to change the default.',
       ),
     // The hatches (ADR-0068 §e). Unlike `/models` these need no render-layer interception: they open no overlay, so
@@ -2722,6 +2809,27 @@ export function createChatLineHandler(
             tiers: () => effortTiersFor(built.agent.model),
             current: () => store.getSnapshot().reasoningEffort,
             apply: modeControl.onSetEffort,
+          },
+          // `/models` (ADR-0148 §3, §6): this session's half (its model, provider and tier, its tier setter, the catalog and the default's
+          // writer of its `modelCatalog`); the switch is the host's (`bindModelSwitch`). Only where the catalog is wired (a stand-alone chat:
+          // the chat the Home hosts gets its member from the Home's controller).
+          models: chatModelsSettings(wiring.modelCatalog, built, store, modeControl.onSetEffort, {
+            readEffective: () => readLiveConfig().config.chat.defaultModel,
+            closing: noticesStopped,
+            failure: (cause) => workOwner?.failure(cause),
+          }),
+          // `/mode` (two steps, the 2026-11-25 ruling): this chat through the session's one mode setter, which records the change, refuses an
+          // unrecorded widening and announces itself; new chats through the startup-default writer on this chat's native prompt, its result
+          // said where the `/mode` flow said it. Only where that writer is wired.
+          mode: chatModeSettings(modeControl, store, deps.saveStartupDefault, emitOutput),
+          // `/permissions` (ADR-0137 §2, as a popup: ADR-0148 §10): the project's remembered commands and this session's approvals over the
+          // store and the cache this chat holds, read when the popup opens and again after a withdrawal; the note above them reads the mode now.
+          permissions: {
+            port: createPermissionsPort(
+              { grants: commandGrants, session: modeControl.commandApprovals },
+              'chat',
+            ),
+            mode: () => store.getSnapshot().mode,
           },
         }
       : undefined,
@@ -2910,7 +3018,7 @@ async function buildFreshChatWiring(
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
-    modelPicker: buildChatModelsPort(
+    modelCatalog: buildChatModelsPort(
       deps.opened,
       deps.providers,
       built.agent.model,
@@ -3256,7 +3364,7 @@ async function buildReseatWiring(
       }),
     intro: modelSwitchIntro,
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
-    modelPicker: buildChatModelsPort(
+    modelCatalog: buildChatModelsPort(
       deps.opened,
       deps.providers,
       resumed.agent.model,
@@ -3408,29 +3516,28 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     ...(native === undefined || runtime === undefined
       ? {}
       : {
-          openModeSettings: (
-            currentMode: () => ChatMode,
-            onCurrentMode: (mode: ChatMode) => void,
-            notice: (text: string) => void,
-          ) =>
-            runModeSettings({
-              runtime,
-              cwd: built.context.workingDir,
-              interactive,
-              flow: native.flow,
-              currentMode,
-              onCurrentMode,
-              notice,
-              assertAdmitting: assertModeAdmitting,
-              publish: (prepared, assertAdmitting) =>
-                publishModePreference({
-                  prepared,
-                  flow: native.flow,
-                  ui: native.ui,
-                  flushVisible: () => nativeFlush,
-                  assertAdmitting,
-                }),
-            }),
+          // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on this chat's native card, with the
+          // publication's visibly admitted frame, as the `/mode` flow ran it.
+          saveStartupDefault: (mode: ChatMode, notice: (text: string) => void) =>
+            runStartupDefaultSave(
+              {
+                runtime,
+                cwd: built.context.workingDir,
+                interactive,
+                flow: native.flow,
+                notice,
+                assertAdmitting: assertModeAdmitting,
+                publish: (prepared, assertAdmitting) =>
+                  publishModePreference({
+                    prepared,
+                    flow: native.flow,
+                    ui: native.ui,
+                    flushVisible: () => nativeFlush,
+                    assertAdmitting,
+                  }),
+              },
+              mode,
+            ),
         }),
   };
   const {
@@ -3448,9 +3555,13 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     reports,
     settings,
     setAnnouncer,
-  } = createChatLineHandler(wiring, modeDeps);
-  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
-  // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
+  } = createChatLineHandler(
+    // The `/models` popup's "New chats" (ADR-0148 §3, §6): the default's writer, on this chat's native card as the startup default's is.
+    withDefaultModelWriter(wiring, native, () => nativeFlush, assertModeAdmitting),
+    modeDeps,
+  );
+  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store and the
+  // popups. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
   // `stopReason()` can never yield `'reseat'` under `--json`/plain — one machine stream stays one session (ADR-0049).
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
@@ -3551,12 +3662,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       onAbort,
       onModeChange,
       onSetEffort,
-      // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
-      // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
+      // The reseat trigger, interactive-only: the `/models` popup's `This chat` reaches it through the host's switch
+      // (`bindModelSwitch`), which then ends this driver for the rebuild. A plain/`--json` driver gets none.
       ...(interactive ? { onReseat } : {}),
-      ...(interactive && wiring.modelPicker !== undefined
-        ? { modelPicker: wiring.modelPicker }
-        : {}),
       // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
       ...(interactive && permissions !== undefined ? { permissions } : {}),
       // The same view `reports.agent` reads, for a driver (and its tests) that reads it directly: an interactive chat only.

@@ -19,6 +19,7 @@ import { formatSessionFooter } from '../render/tui/chat-projection.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import type { SessionViewState } from '../render/tui/session-view-model.js';
 import { captureIo } from '../test-support.js';
+import { answerModelsPopup } from '../home/models-popup.test-support.js';
 import { buildResumedChatSession } from './session-host.js';
 import { scriptedResolver } from './test-support.js';
 
@@ -27,7 +28,6 @@ const model = 'claude-sonnet-4-6';
 type Outcome = 'positive' | 'zero' | 'unpriced' | 'incomplete';
 const outcomes: Outcome[] = ['positive', 'zero', 'unpriced', 'incomplete'];
 const cases = outcomes.flatMap((outcome) => [0, 10].map((tokens) => ({ outcome, tokens })));
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fixture() {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-resume-coverage-')));
@@ -246,6 +246,8 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         },
         render: (props) => {
           captured = props;
+          // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+          props.popups?.bindOpenGate(() => undefined);
           props.onRendererReady?.(async (publish) => {
             await publish?.();
           });
@@ -289,15 +291,8 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         if (original === undefined) throw new Error('Home did not create a session');
         expect(original.store.getSnapshot().state.cumulativeCostMicrocents).toBe(0);
         receipt = f.begin(original.sessionId);
-        props.controller.handleKey('/', {});
-        type('models');
-        props.controller.handleKey('', { return: true });
-        await flush();
-        expect(props.controller.getSnapshot().modelPicker).toBeDefined();
-        type('claude-opus-4-8');
-        props.controller.handleKey('', { return: true });
-        expect(props.controller.getSnapshot().modelPicker?.phase).toBe('effort');
-        props.controller.handleKey('', { return: true });
+        // The `/models` popup's `This chat` on opus (its form opens on the tier ADR-0066 offers): the Home's reseat.
+        await answerModelsPopup(props, 'claude-opus-4-8');
         await vi.waitFor(() => {
           expect(resumed).toBe(true);
           expect(props.controller.getSnapshot().session).not.toBe(original);

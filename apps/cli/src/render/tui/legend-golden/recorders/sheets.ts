@@ -34,6 +34,18 @@ import {
 import type { SheetGeometry, SheetLine } from '../../sheet-frame.js';
 import { isHintShaped } from '../hint-shape.js';
 import { label, type Producer, type Recorder, type StateRows } from '../golden.js';
+import {
+  permissionsContent,
+  permissionsControls,
+  permissionsSpec,
+  PERMISSIONS_STEP,
+  PERMISSIONS_UNREADABLE_CONTENT,
+  withdrawLineContent,
+  withdrawRefusedText,
+} from '../../../../popups/permissions-popup.js';
+import type { ChordRefusal } from '../../../../popups/popup-host.js';
+import { openFrame, withContent, type PopupFrame } from '../../../../popups/popup-reducer.js';
+import { frameRows } from './popups.js';
 
 /**
  * The sheets' hint producers: the permissions sheet (its legend, its row chip, the sentences under the list) and the
@@ -401,6 +413,70 @@ const homeNotice: Recorder = () => {
   return out;
 };
 
+/**
+ * The chat's `/permissions` popup (ADR-0137 §2 as a popup, MVP-11 step 5c): the legend row of its lists, of the withdrawal's line (a remembered
+ * command and a long session approval), of nothing to withdraw and of lists that could not be read, drawn by the frame model at 80×24 with
+ * colour off and on; and the sentence each refusal of the line says (`[d] asks again`, or after typing `↑/↓, then [d]`).
+ */
+const permissionsPopup: Recorder = () => {
+  const full: PermissionsSnapshot = {
+    project: {
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-20 09:12Z' },
+        { id: 'b', label: 'pnpm, 2 arguments', remembered: '2026-11-21 16:40Z' },
+      ],
+    },
+    session: [
+      {
+        argv: ['pnpm'],
+        text: `pnpm test ${'--filter @acme/billing '.repeat(12)}`,
+        alsoRemembered: false,
+      },
+    ],
+  };
+  const empty: PermissionsSnapshot = { project: { ok: true, rows: [] }, session: [] };
+  const lists = (snapshot: PermissionsSnapshot): PopupFrame =>
+    openFrame(
+      permissionsSpec('chat', permissionsContent(snapshot, 'ask'), permissionsControls(snapshot)),
+      1,
+    );
+  const armed = (entry: Parameters<typeof withdrawLineContent>[0]): PopupFrame =>
+    withContent(
+      { ...lists(full), stepIndex: PERMISSIONS_STEP.withdraw },
+      PERMISSIONS_STEP.withdraw,
+      withdrawLineContent(entry),
+    );
+  const frames: readonly (readonly [string, PopupFrame])[] = [
+    ['lists', lists(full)],
+    [
+      'armed-remembered',
+      armed({
+        kind: 'project',
+        row: { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-20 09:12Z' },
+      }),
+    ],
+    [
+      'armed-session-long',
+      armed({
+        kind: 'session',
+        row: full.session?.[0] ?? { argv: [], text: '', alsoRemembered: false },
+      }),
+    ],
+    ['empty', lists(empty)],
+    ['unreadable', openFrame(permissionsSpec('chat', PERMISSIONS_UNREADABLE_CONTENT, []), 1)],
+  ];
+  const out: Record<string, readonly string[] | string> = {};
+  for (const [state, frame] of frames)
+    for (const color of [false, true])
+      out[label({ state, colour: color ? 'on' : 'off' })] = frameRows(frame, color)
+        .map((line) => line.text.trim())
+        .filter((text) => isHintShaped(text));
+  for (const reason of ['unseen', 'early', 'expired', 'typed', 'cut'] satisfies ChordRefusal[])
+    out[label({ refusal: reason })] = withdrawRefusedText(reason);
+  return out;
+};
+
 export const SHEETS_PRODUCERS: readonly Producer[] = [
   {
     id: 'permissions-sheet',
@@ -413,6 +489,12 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
     file: 'render/tui/permissions-sheet.ts',
     describe:
       'The roles the permissions sheet gives its keys: `[d / Del]` danger and `[Enter]` warn in the legend, the chip and the hint key on the rows, idle versus armed.',
+  },
+  {
+    id: 'permissions-popup',
+    file: 'popups/permissions-popup.ts',
+    describe:
+      'The chat’s /permissions popup: the legend of its lists (`[d] / Del withdraw (then Enter)`), of a withdrawal’s line answered by Enter (`Enter withdraw · Esc keep`), of nothing to withdraw and of lists that could not be read, colour off and on; and what each refusal of the line says.',
   },
   {
     id: 'help-sheet',
@@ -431,6 +513,7 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
 export const SHEETS_RECORDERS = {
   'permissions-sheet': permissionsSheet,
   'permissions-sheet-roles': permissionsSheetRoles,
+  'permissions-popup': permissionsPopup,
   'help-sheet': helpSheet,
   'home-notice': homeNotice,
 } as const satisfies Readonly<Record<string, Recorder>>;

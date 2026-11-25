@@ -1,15 +1,9 @@
 import type { AskUserRequest, ToolApprovalRequest, ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../../chat/command-facts.js';
-import type { PermissionsPort } from '../../../permissions/chat-permissions.js';
 import { editedFilePreview } from '../fixtures/edit-diff.js';
 import type { MentionReader } from '../mention.js';
-import {
-  homeModelsPort,
-  standaloneModelsPort,
-  type ChatMount,
-  type ChatSetup,
-} from './chat-host.js';
+import type { ChatMount, ChatSetup } from './chat-host.js';
 import { openModeFlow } from './home-flows.js';
 import { KEYS } from './home-host.js';
 import {
@@ -48,6 +42,23 @@ import {
   SETTINGS_LEGEND_ROW,
   type SettingsState,
 } from './settings-fixture.js';
+import {
+  driveModels,
+  homeModelsPort,
+  MODELS_CURRENT,
+  MODELS_LANDMARKS,
+  MODELS_SELECTED_ROW,
+  modelsPopupBox,
+  modelsSettingsPortFor,
+  type ModelsState,
+} from './models-fixture.js';
+import {
+  drivePermissions,
+  PERMISSIONS_LANDMARKS,
+  PERMISSIONS_LEGEND_ROW,
+  permissionsSettingsPortFor,
+  type PermissionsState,
+} from './permissions-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
@@ -123,41 +134,21 @@ const MODEL = 'claude-sonnet-4-5';
 
 /** The session ports of one chat surface, given once and placed where each host takes them. */
 interface Ports {
-  readonly permissions?: PermissionsPort;
   readonly mentionReader?: MentionReader;
-  readonly models?: boolean;
-  readonly seedModel?: boolean;
 }
 
 function setupWith(ports: Ports): ChatSetup {
   return {
-    ...(ports.seedModel === true ? { seed: { model: MODEL, transcript: [] } } : {}),
     standalone: {
-      ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
       ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
-      ...(ports.models === true ? { modelPicker: standaloneModelsPort } : {}),
     },
     hosted: {
-      ...(ports.models === true ? { models: homeModelsPort } : {}),
       session: {
-        ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
         ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
       },
     },
   };
 }
-
-const CHAT_PERMISSIONS: PermissionsPort = {
-  surface: 'chat',
-  load: () => ({
-    project: {
-      ok: true,
-      rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
-    },
-    session: [],
-  }),
-  withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
-};
 
 const MENTION_READER: MentionReader = {
   list: () =>
@@ -308,13 +299,6 @@ const RICH_CONVERSATION: SessionViewSeed = {
   ],
 };
 
-const typeLineAndWait =
-  (command: string, landmark: string) =>
-  async (m: ChatMount): Promise<void> => {
-    await m.typeLine(command);
-    await m.until(() => m.text().includes(landmark));
-  };
-
 /** A chat's `/doctor` popup in one state: the short exchange behind it, the command typed into the chat and routed by its host. */
 function chatDoctorSurface(
   state: 'checks' | 'line' | 'done',
@@ -378,10 +362,48 @@ function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefini
   };
 }
 
+/** The legend row of each `/models` step, whole on one row of every cell. */
+const MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string>> = {
+  list: '↑/↓ select · Enter next · Esc close',
+  form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
+};
+
+/**
+ * A chat's `/models` popup on one step: the short exchange behind it (the chat bound to the model in force), `/models` typed and routed by the
+ * host. The stand-alone chat's member is the session's half with the chat's switch bound (`onReseat`); the chat the Home hosts gets its member
+ * from the controller over the Home's catalog port (a reseat builder and the session's tier setter wired, as `driveHome` wires them).
+ */
+function chatModelsSurface(state: ModelsState, title: string): ChatSurfaceDefinition {
+  return {
+    name: state === 'list' ? 'settings-models' : 'settings-models-apply',
+    title,
+    exitKey: 'Esc',
+    landmark: MODELS_LANDMARKS[state],
+    legendRow: MODELS_LEGEND_ROW[state],
+    ...(state === 'list' ? { selectedRow: MODELS_SELECTED_ROW } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: modelsPopupBox,
+    setup: () => ({
+      seed: { ...SHORT_CONVERSATION, model: MODELS_CURRENT },
+      settings: modelsSettingsPortFor(),
+      standalone: { onReseat: () => {}, onSetEffort: () => {} },
+      hosted: { models: homeModelsPort, session: { onSetEffort: () => {} } },
+    }),
+    notes:
+      'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /models, through the chat host’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveModels(m, (line) => m.typeLine(line), state);
+    },
+  };
+}
+
 /** The row each settings surface opens highlighted on (the tier in force; the effect list's `auto`); the form has no highlighted row. */
 const SETTINGS_SELECTED_ROW: Readonly<Partial<Record<SettingsState, string>>> = {
   effort: 'medium',
   effect: 'auto',
+  // `/mode`'s first step opens on the mode in force, `ask` (its row's own words: `ask` alone is also the status line's); its second is a form.
+  mode: 'every action asks first · current',
 };
 
 /**
@@ -406,10 +428,41 @@ function chatSettingsSurface(state: SettingsState, title: string): ChatSurfaceDe
     notes:
       state === 'effort'
         ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /effort, through the chat host’s routing'
-        : 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the test layer opens the popup on the host’s popup host',
+        : state === 'mode' || state === 'mode-apply'
+          ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /mode, through the chat host’s routing (its second step: auto chosen, Enter)'
+          : 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the test layer opens the popup on the host’s popup host',
     open: async (m) => {
       recordBaseline(m);
       await driveSettings(m, (line) => m.typeLine(line), state, 'chat');
+    },
+  };
+}
+
+/**
+ * The chat's `/permissions` popup in one state (ADR-0137 §2 as a popup): the short exchange behind it and `/permissions` typed and routed by
+ * the host; its lists (the first row highlighted), the withdrawal's line `[d]` armed, or nothing to withdraw.
+ */
+function chatPermissionsSurface(state: PermissionsState, title: string): ChatSurfaceDefinition {
+  return {
+    name: `permissions-${state}`,
+    title,
+    exitKey: 'Esc',
+    landmark: PERMISSIONS_LANDMARKS[state],
+    legendRow: PERMISSIONS_LEGEND_ROW[state],
+    ...(state === 'list' ? { selectedRow: 'npm, 1 argument' } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: settingsPopupBox,
+    setup: () => ({
+      seed: SHORT_CONVERSATION,
+      settings: permissionsSettingsPortFor('standalone-chat', state),
+    }),
+    notes:
+      state === 'armed'
+        ? 'the body behind the popup: one short exchange and the prompt; the popup is opened by typing /permissions through the chat host’s routing, then [d] after its settle'
+        : 'the body behind the popup: one short exchange and the prompt; the popup is opened by typing /permissions, through the chat host’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await drivePermissions(m, (line) => m.typeLine(line), state);
     },
   };
 }
@@ -453,6 +506,14 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   chatSettingsSurface(
     'effect',
     'A list popup over the chat (the test layer’s) whose highlighted row states its effect',
+  ),
+  chatSettingsSurface(
+    'mode',
+    'The /mode popup over the chat: the modes, the one in force marked, its effect stated',
+  ),
+  chatSettingsSurface(
+    'mode-apply',
+    'The /mode popup over the chat: where auto applies, its effect stated before Enter',
   ),
   {
     name: 'popup',
@@ -519,25 +580,23 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
       await m.until(() => m.text().includes('Enter run'));
     },
   },
-  {
-    name: 'model-picker',
-    title: 'The /models picker',
-    exitKey: 'Esc',
-    landmark: 'Claude Sonnet 4.5',
-    selectedRow: 'Claude Sonnet 4.5 · ',
-    belowFloor: 'renders',
-    setup: setupWith({ models: true, seedModel: true }),
-    open: typeLineAndWait('/models', 'Claude Sonnet 4.5'),
-  },
-  {
-    name: 'sheet-permissions',
-    title: 'The docked /permissions sheet',
-    exitKey: 'Esc',
-    landmark: 'Permissions · ask mode',
-    selectedRow: 'npm, 1 argument',
-    setup: setupWith({ permissions: CHAT_PERMISSIONS }),
-    open: typeLineAndWait('/permissions', 'Permissions · ask mode'),
-  },
+  chatModelsSurface('list', 'The /models popup over the chat: the catalog, the bound model marked'),
+  chatModelsSurface(
+    'form',
+    'The /models popup’s second step over the chat: the effort, where it applies, where the conversation goes',
+  ),
+  chatPermissionsSurface(
+    'list',
+    'The /permissions popup over the chat: the remembered commands and the session’s approvals',
+  ),
+  chatPermissionsSurface(
+    'armed',
+    'The /permissions popup over the chat: a withdrawal’s line, answered by Enter',
+  ),
+  chatPermissionsSurface(
+    'empty',
+    'The /permissions popup over the chat: nothing remembered and nothing approved',
+  ),
   {
     name: 'mode-prompt',
     title: 'The /mode flow’s native card (the startup default)',

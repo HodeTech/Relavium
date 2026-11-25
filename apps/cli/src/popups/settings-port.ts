@@ -21,14 +21,18 @@
  * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), and its loader is a relative dynamic import.
  */
 
-import type { ReasoningEffort } from '@relavium/shared';
+import type { ChatMode, ReasoningEffort } from '@relavium/shared';
 
+import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
+
+import type { RefreshReport } from '../engine/model-refresh.js';
+import type { PermissionsPort } from '../permissions/chat-permissions.js';
 import type { Surface } from '../render/surface.js';
 import type { PopupOrigin } from './frame-model.js';
 import type { PopupHost } from './popup-host.js';
 import type { PopupWorkOwner } from './popup-work.js';
 
-/** Where a setting is changed: a chat the Home hosts, a stand-alone `relavium chat`, or (for `/models`, a later increment) the bare Home. */
+/** Where a setting is changed: a chat the Home hosts, a stand-alone `relavium chat`, or (for `/models`) the bare Home. */
 export type SettingsSurface = Extract<Surface, 'home' | 'home-chat' | 'standalone-chat'>;
 
 /**
@@ -47,11 +51,129 @@ export interface EffortSettingsPort {
 }
 
 /**
- * A member whose popup is not built yet (MVP-11 step 5: `/mode`, `/models` and the chat's `/permissions` are later increments of this step). It
- * can only be absent, so the routing never names its command and the line goes on to what opens it today (the native `/mode` flow, the `/models`
- * picker, the docked `/permissions` sheet). The increment that builds the popup replaces this type with its own port.
+ * What the `/mode` popup of a chat reads and does (ADR-0148 §3, §6; the two steps of the 2026-11-25 ruling: the mode, then where it applies):
+ * the mode the session is in now, the session's one mode setter for THIS chat, and the hand-off to the startup-default writer for NEW chats.
+ * Each is read when the popup opens or answers, never while it is drawn. Only a chat has it: the bare Home's `/mode` sets the startup default
+ * through its own flow ({@link settingsAvailable}).
  */
-export type PendingSettingsPort = never;
+export interface ModeSettingsPort {
+  /** The mode the session is in now (the status line's). */
+  readonly current: () => ChatMode;
+  /**
+   * Apply `mode` to THIS chat through the session's one mode setter (`ChatModeControl.onModeChange`): it records the change, refuses a
+   * widening whose record could not be written, and says what it did on the host's channel itself (a change into `accept-edits` or `auto`,
+   * a refusal), so the popup adds no word. Returns whether `mode` is in force now.
+   */
+  readonly apply: (mode: ChatMode) => boolean;
+  /**
+   * Save `mode` as the global startup default for new chats, on this chat's native prompt: the existing writer's flow
+   * (`runStartupDefaultSave`, `chat/mode-settings.ts`) with its confirmation that defaults to No (`auto` states its effect first), the
+   * config-rewrite disclosure and its publication, and its result in its own words. Started once the popup has closed; this chat's mode does
+   * not change.
+   */
+  readonly saveStartupDefault: (mode: ChatMode) => Promise<void>;
+}
+
+/**
+ * What a model chosen in `/models` is ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)): the catalog row's id and
+ * provider (the provider is the row's, never inferred from the id) and, for a model that takes a reasoning tier, the tier chosen with it. The
+ * shape of a reseat's target, so a chat's switch hands it on as it is.
+ */
+export interface ModelChoice {
+  readonly modelId: string;
+  readonly provider: ProviderId;
+  readonly reasoningEffort?: ReasoningEffort;
+}
+
+/**
+ * What saving the default model of new chats came to, as its writer's adapter says it (it never rejects): `saved`, with the writer's
+ * durability and whether a chat started here now would start on it (`applies`; `overridden`: a project or workspace setting names another
+ * model; `unknown`: the configuration could not be read again), or `refused` (the config is a symbolic link, the write failed, the person
+ * cancelled the writer's card, or the host is closing and nothing is said).
+ */
+export type DefaultModelSaveResult =
+  | {
+      readonly kind: 'saved';
+      readonly durability: 'confirmed' | 'unconfirmed';
+      readonly effect: 'applies' | 'overridden' | 'unknown';
+    }
+  | { readonly kind: 'refused'; readonly reason: 'symlink' | 'failed' | 'cancelled' | 'closing' };
+
+/**
+ * What the `/models` popup reads and does ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §1, §3, §6; [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10): the merged catalog and its two refreshes, the model and the
+ * tier in force, and the writers its second step applies through. Each is read when the popup opens or answers, never while it is drawn.
+ *
+ * - `scope: 'chat'`: a live chat. Its second step asks where the choice applies: THIS chat (a different model is the host's reseat,
+ *   {@link ModelsSettingsPort.switchModel}; the same model with another tier is the session's tier, {@link ModelsSettingsPort.setEffort}) or
+ *   NEW chats (the default, {@link ModelsSettingsPort.saveDefault}).
+ * - `scope: 'home'`: the bare Home, which has no live chat: the choice is the default of new chats, and nothing is asked.
+ *
+ * The session's half comes from the chat's line handler (or the Home controller); the switch is the HOST's (a stand-alone chat ends its
+ * driver for the rebuild, the Home swaps the chat in front), bound by {@link bindModelSwitch}. A chat whose switch is not bound has no popup.
+ */
+export interface ModelsSettingsPort {
+  readonly scope: 'chat' | 'home';
+  /** The merged catalog and its newest live refresh (a synchronous read and merge): read when the popup opens and after a refresh. May throw. */
+  readonly load: () => {
+    readonly entries: readonly ModelCatalogEntry[];
+    readonly refreshedAt: number | undefined;
+  };
+  /** The refresh of empty or stale providers (ADR-0064 §5c), started as the popup's work when it opens; `undefined` when none was due. */
+  readonly refreshIfStale: () => Promise<RefreshReport | undefined>;
+  /** The refresh the person asks for: every connected provider, whatever its age. */
+  readonly refresh: () => Promise<RefreshReport>;
+  /** The model in force: the chat's bound model, or the Home's effective default (`undefined`: none set). May throw (a config read). */
+  readonly current: () => string | undefined;
+  /** The provider of the model in force, when the host knows it (`undefined`: the catalog row of {@link current} says it, else it is unknown). */
+  readonly currentProvider: () => string | undefined;
+  /** The tier in force: the chat's, or the Home's default (`undefined`: the provider's default). May throw (a config read). */
+  readonly currentEffort: () => ReasoningEffort | undefined;
+  /** What a person reads for a provider id (`OpenAI`, not `openai`; ADR-0145 §8). */
+  readonly providerName: (provider: string) => string;
+  /** The clock the catalog's age is told against (epoch milliseconds). Absent ⇒ the wall clock. */
+  readonly now?: (() => number) | undefined;
+  /** A chat's: switch THIS chat to another model, through the host's reseat. Called once the popup has closed. */
+  readonly switchModel?: ((choice: ModelChoice) => void) | undefined;
+  /** A chat's: apply a tier to THIS session, the model unchanged (`onSetEffort`: no reseat, no config write). */
+  readonly setEffort?: ((effort: ReasoningEffort) => void) | undefined;
+  /**
+   * Save the choice as the default of new chats, through the writer that already writes it and its consent (the global `[preferences]`, the
+   * config-rewrite disclosure on its visible card): started once the popup has closed (the hand-off). Absent ⇒ a chat offers no `New chats`.
+   */
+  readonly saveDefault?: ((choice: ModelChoice) => Promise<DefaultModelSaveResult>) | undefined;
+}
+
+/**
+ * The one way a chat host binds its switch into the session's `/models` member (ADR-0059: a stand-alone chat ends its driver for the
+ * rebuild, the Home swaps the chat in front): `port` with `switchModel` set when it has a chat's `/models`, else `port` itself. Both chat hosts
+ * route and open with what this returns, so the routing never offers a `/models` whose `This chat` could not switch.
+ */
+export function bindModelSwitch(
+  port: SettingsPort | undefined,
+  switchModel: ((choice: ModelChoice) => void) | undefined,
+): SettingsPort | undefined {
+  const models = port?.models;
+  if (port === undefined || models === undefined || models.scope !== 'chat') return port;
+  return switchModel === undefined
+    ? { ...port, models: undefined }
+    : { ...port, models: { ...models, switchModel } };
+}
+
+/** What a chat says on the host's channel when its model switch could not be built: the conversation stays as it was. */
+export const MODEL_SWITCH_FAILED = 'The model could not be switched; this chat stays';
+
+/**
+ * What the `/permissions` popup of a chat reads and does ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
+ * §2 in a popup, ADR-0148 §10): the project's remembered commands and this session's approvals, read when the popup opens and again after a
+ * withdrawal, and a withdrawal carried out (the chat's own `createPermissionsPort(…, 'chat')`: it never throws, and says what happened when it
+ * could not). Only a chat has it: the bare Home's `/permissions` is the Permissions tab of its tab host.
+ */
+export interface PermissionsSettingsPort {
+  readonly port: PermissionsPort;
+  /** The mode the session is in now: what the note above the lists says a grant is worth in it. */
+  readonly mode: () => ChatMode;
+}
 
 /** What a chat host hands the settings popups. Built once per chat session; nothing in it is read until a popup runs. */
 export interface SettingsPort {
@@ -64,10 +186,10 @@ export interface SettingsPort {
    * typed settings and its mode control announce through), and the host binds it to its channel (`ChatLineHandler.setAnnouncer`).
    */
   readonly announce: (text: string) => void;
-  readonly mode?: PendingSettingsPort;
+  readonly mode?: ModeSettingsPort | undefined;
   readonly effort?: EffortSettingsPort | undefined;
-  readonly models?: PendingSettingsPort;
-  readonly permissions?: PendingSettingsPort;
+  readonly models?: ModelsSettingsPort | undefined;
+  readonly permissions?: PermissionsSettingsPort | undefined;
 }
 
 /** One setting: the port member it needs, the command that names it, and what its typed argument does. */
@@ -126,8 +248,15 @@ export function settingsAvailable(port: SettingsPort, kind: SettingsKind): boole
   switch (kind) {
     case 'effort':
       return port.effort !== undefined && port.effort.tiers().length > 0;
+    // `/mode` is a popup in a chat only: the bare Home's `/mode` sets the startup default through its own flow, whatever a port holds.
     case 'mode':
+      return port.mode !== undefined && port.surface !== 'home';
+    // `/models` in a chat needs the host's switch (`bindModelSwitch`): a chat that could not switch would offer a `This chat` that does nothing.
     case 'models':
+      return (
+        port.models !== undefined &&
+        (port.models.scope === 'home' || port.models.switchModel !== undefined)
+      );
     case 'permissions':
       return port[kind] !== undefined;
   }

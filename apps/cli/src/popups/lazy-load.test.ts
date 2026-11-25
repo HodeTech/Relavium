@@ -43,6 +43,11 @@ const LAZY = [
   'chord-refusal',
   'settings-session',
   'effort-popup',
+  'models-session',
+  'models-popup',
+  'mode-popup',
+  'permissions-session',
+  'permissions-popup',
 ].map((name) => `popups/${name}.ts`);
 
 /** Every source file of the CLI (tests and their support excluded), by its path under `src`. */

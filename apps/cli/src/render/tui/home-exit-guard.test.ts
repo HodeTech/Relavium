@@ -234,7 +234,6 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
       expect(run.host.cancel, 'asking cancels nothing').not.toHaveBeenCalled();
       expect(run.host.close).not.toHaveBeenCalled();
       expect(log).toEqual([]);
-      expect(controller.getSnapshot().chatSheet, 'no sheet behind the card').toBeUndefined();
       expect(controller.getSnapshot().screen, 'no screen behind the card either').toBeUndefined();
     });
 

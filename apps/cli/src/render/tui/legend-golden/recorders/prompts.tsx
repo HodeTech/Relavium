@@ -1,16 +1,7 @@
 import { legendStates, plainRows, styledRows } from '../frames.js';
 import { label, type Producer, type Recorder } from '../golden.js';
-import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReactElement } from 'react';
 
-import { providerDisplayName } from '../../../../engine/providers.js';
-import { EffortTierList } from '../../effort-tier-list.js';
-import {
-  EFFORT_STEP_FOOTER,
-  ModelPickerView,
-  type ModelPickerScope,
-} from '../../model-picker-view.js';
-import type { ModelPickerState } from '../../model-picker.js';
 import { PICKER_READ_FAILED } from '../../native-picker.js';
 import { createNativePromptAcknowledgement } from '../../native-prompt-acknowledgement.js';
 import {
@@ -24,7 +15,7 @@ import { selectLegend } from '../../native-select-window.js';
 
 /**
  * The recorders of the native prompt cards (the picker, select, text, password, busy and chord cards of `NativePromptView`), the windowed
- * select, the two input errors of the channel, the `/models` picker and the effort tier list of its sub-step. Every card is opened on the REAL
+ * select and the two input errors of the channel (the `/models` picker is retired: `/models` is a popup, `models-popup` in `popups.tsx`). Every card is opened on the REAL
  * `createNativePromptChannel()` (so a snapshot is what a flow publishes), drawn by the real view with the real acknowledgement, and read
  * back as the legend rows of the frame. A snapshot a flow only reaches after an asynchronous read (a picker's results, its empty list,
  * its "could not be read" error) is the channel's own picker snapshot with those fields set by hand; that is said where it is done.
@@ -399,147 +390,6 @@ const nativePromptChannel: Recorder = () => {
   return out;
 };
 
-// ---------------------------------------------------------------------------------------------------------------------------------
-// The `/models` picker and the effort tier list.
-// ---------------------------------------------------------------------------------------------------------------------------------
-
-export const PICKER_BASE: ModelPickerState = {
-  entries: [],
-  filter: '',
-  selected: 0,
-  loading: false,
-  currentDefault: undefined,
-  refreshedAt: undefined,
-  banner: undefined,
-  hint: undefined,
-  effortTiers: [],
-  phase: 'model',
-  effortStep: false,
-  pending: undefined,
-  effortSelected: 0,
-  currentEffort: undefined,
-};
-
-const catalogEntry = (over: Partial<ModelCatalogEntry>): ModelCatalogEntry => ({
-  modelId: 'claude-x',
-  provider: 'anthropic',
-  displayName: 'Claude X',
-  pricingSource: 'catalog',
-  priceKnown: true,
-  available: true,
-  deprecated: false,
-  ...over,
-});
-
-export const PICKER_ENTRIES: readonly ModelCatalogEntry[] = [
-  catalogEntry({}),
-  catalogEntry({
-    modelId: 'gpt-x',
-    provider: 'openai',
-    displayName: 'GPT X',
-    available: false,
-    unavailableReason: 'no-key',
-  }),
-  catalogEntry({ modelId: 'old-x', displayName: 'Old X', deprecated: true }),
-  catalogEntry({
-    modelId: 'free-x',
-    displayName: 'Free X',
-    pricingSource: 'none',
-    priceKnown: false,
-  }),
-];
-
-const SCOPES = ['next-chat', 'this-chat'] as const satisfies readonly ModelPickerScope[];
-
-/** The legend rows of the picker in `state`, at `columns`, with both colours; the state label is the caller's. */
-export function modelPickerStates(
-  stateLabel: string,
-  state: ModelPickerState,
-  scope: ModelPickerScope,
-  columns: number,
-): Record<string, readonly string[]> {
-  return legendStates(
-    `${stateLabel} columns=${String(columns)}`,
-    (color) => (
-      <ModelPickerView
-        state={state}
-        color={color}
-        nowMs={0}
-        providerName={providerDisplayName}
-        scope={scope}
-      />
-    ),
-    { columns },
-  );
-}
-
-/** The footers and hints of the picker, by scope and by every state of its view that changes them. */
-const modelPickerView: Recorder = () => {
-  const out: Record<string, readonly string[]> = {};
-  const effort: ModelPickerState = {
-    ...PICKER_BASE,
-    entries: PICKER_ENTRIES,
-    phase: 'effort',
-    effortStep: true,
-    effortTiers: ['low', 'medium', 'high'],
-    effortSelected: 1,
-    currentEffort: 'medium',
-    pending: { modelId: 'claude-x', displayName: 'Claude X', provider: 'anthropic' },
-  };
-  for (const scope of SCOPES) {
-    const scenarios: readonly (readonly [string, ModelPickerState, readonly number[]])[] = [
-      ['list=empty', PICKER_BASE, [80, 100]],
-      ['list=loading', { ...PICKER_BASE, loading: true }, [100]],
-      ['list=rows', { ...PICKER_BASE, entries: PICKER_ENTRIES, currentDefault: 'claude-x' }, [100]],
-      [
-        'list=rows filter=none-match',
-        { ...PICKER_BASE, entries: PICKER_ENTRIES, filter: 'zzzz' },
-        [100],
-      ],
-      [
-        'list=rows refreshing',
-        { ...PICKER_BASE, entries: PICKER_ENTRIES, loading: true, refreshedAt: 0 },
-        [100],
-      ],
-      ['phase=effort', effort, [100]],
-    ];
-    for (const [state, picker, widths] of scenarios)
-      for (const columns of widths)
-        Object.assign(out, modelPickerStates(`scope=${scope} ${state}`, picker, scope, columns));
-  }
-  return out;
-};
-
-/**
- * The footer line the one host of the tier list passes it (the `/models` effort sub-step; the stand-alone `/effort` overlay is retired, `/effort`
- * is a popup: `settings-popups` in `popups.tsx`), drawn by the real list under the tiers.
- */
-const effortTierList: Recorder = () => {
-  const out: Record<string, readonly string[]> = {};
-  const callers = [['model-picker sub-step', EFFORT_STEP_FOOTER]] as const;
-  for (const [caller, footer] of callers) {
-    Object.assign(
-      out,
-      legendStates(
-        `caller=${caller}`,
-        (color) => (
-          <EffortTierList
-            tiers={['low', 'medium', 'high']}
-            model="claude-sonnet-4-6"
-            selected={0}
-            current="medium"
-            labelSuffix="claude-sonnet-4-6"
-            footer={footer}
-            color={color}
-          />
-        ),
-        { columns: 100 },
-      ),
-    );
-  }
-  return out;
-};
-
 export const PROMPTS_PRODUCERS: readonly Producer[] = [
   {
     id: 'native-prompt-view',
@@ -565,18 +415,6 @@ export const PROMPTS_PRODUCERS: readonly Producer[] = [
     describe:
       'The two input errors of a text or password card (too long, a control character), naming Backspace and Esc, by escape.',
   },
-  {
-    id: 'model-picker-view',
-    file: 'render/tui/model-picker-view.tsx',
-    describe:
-      'The /models picker’s footer by scope, its no-models-yet hint, and the effort sub-step footer, by list state, width and colour.',
-  },
-  {
-    id: 'effort-tier-list',
-    file: 'render/tui/effort-tier-list.tsx',
-    describe:
-      'The tier list draws the footer its caller passes (the model-picker sub-step) as its last row.',
-  },
 ];
 
 export const PROMPTS_RECORDERS = {
@@ -584,6 +422,4 @@ export const PROMPTS_RECORDERS = {
   'native-select-window': nativeSelectWindow,
   'native-picker': nativePicker,
   'native-prompt-channel': nativePromptChannel,
-  'model-picker-view': modelPickerView,
-  'effort-tier-list': effortTierList,
 } as const satisfies Readonly<Record<string, Recorder>>;

@@ -2,6 +2,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import { createChatStore } from './chat-store.js';
 import { createHomeController } from './home-controller.js';
@@ -132,7 +133,7 @@ describe.each([true, false])('native Home geometry alternate=%s', (alternate) =>
 
 describe.each([true, false])('bare Home model rewrite visibility alternate=%s', (alternate) => {
   it.each([true, false])(
-    'flushes a complete busy card with the picker retained, color=%s',
+    'flushes a complete busy card for the default the /models popup hands off, color=%s',
     async (color) => {
       const input = new OwnedTtyInput(),
         output = new OwnedTtyOutput(),
@@ -147,7 +148,13 @@ describe.each([true, false])('bare Home model rewrite visibility alternate=%s', 
       });
       let acknowledged = false;
       let effective: string | undefined;
+      // The `/models` popup closes, then hands its choice to the Home's writer (the popup's own keys are `popups/models-*.test.ts`'s).
+      let opened: SettingsPort | undefined;
       const controller = createHomeController({
+        openSettings: ({ chat }) => {
+          opened = chat;
+        },
+        announce: () => {},
         startChat: () => {
           throw new Error('unexpected chat');
         },
@@ -238,17 +245,18 @@ describe.each([true, false])('bare Home model rewrite visibility alternate=%s', 
       await vi.waitFor(() => expect(flush).toBeDefined());
       for (const ch of '/models') controller.handleKey(ch, {});
       controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(controller.getSnapshot().modelPicker).toBeDefined());
-      const picker = controller.getSnapshot().modelPicker;
-      controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(opened?.models).toBeDefined());
+      const saved = opened?.models?.saveDefault?.({ modelId: 'fixture-model', provider: 'openai' });
       await vi.waitFor(() => expect(acknowledged).toBe(true));
-      expect(controller.getSnapshot().modelPicker).toBe(picker);
+      // The Home takes no input while the write runs.
+      expect(controller.getSnapshot().submitBusy).toBe(true);
       expect(output.frames.join('')).toContain(
         'Saving preferences rewrites the global config and removes its comments and',
       );
       expect(output.frames.join('')).toContain('ordering.');
       release();
-      await vi.waitFor(() => expect(controller.getSnapshot().modelPicker).toBeUndefined());
+      await expect(saved).resolves.toMatchObject({ kind: 'saved', effect: 'applies' });
+      expect(controller.getSnapshot().submitBusy).toBe(false);
       expect(effective).toBe('fixture-model');
     },
   );

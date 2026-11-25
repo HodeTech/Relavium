@@ -98,8 +98,6 @@ interface RigOptions {
   readonly history?: boolean;
   /** A session resume that never finishes: the Home's native form stays open for as long as the test lasts. */
   readonly resumeHangs?: boolean;
-  /** The Home was given the model catalog, so its `/models` picker can open. */
-  readonly models?: boolean;
   /** What building the chat answers (default: never, so the Home stays in its `loading` build window). */
   readonly startChat?: () => Promise<HomeChatSession>;
   /** `onError` is called and returns (a fault ends the Home) instead of rethrowing the fault into the test. */
@@ -151,18 +149,6 @@ function rig(options: RigOptions) {
   });
   const deps: HomeControllerDeps = {
     startChat: options.startChat ?? (() => new Promise(() => {})),
-    ...(options.models === true
-      ? {
-          models: {
-            load: () => ({ entries: [], refreshedAt: undefined }),
-            refreshIfStale: () => Promise.resolve(undefined),
-            refresh: () => Promise.resolve({ providers: [] }),
-            currentDefault: () => undefined,
-            currentEffort: () => undefined,
-            writeDefault: () => undefined,
-          },
-        }
-      : {}),
     homeStore: { read },
     ...(options.history === false ? {} : { history }),
     resumeChat,
@@ -433,17 +419,7 @@ describe('the tick is paused while anything else has the screen', () => {
     expect(r.read).toHaveBeenCalledTimes(1);
   });
 
-  it('reads nothing while the model picker is open, though the token moved', async () => {
-    const r = rig({ snapshot: strip([], ['s1']), models: true });
-    r.controller.handleKey('/', {});
-    for (const letter of 'models') r.controller.handleKey(letter, {});
-    press(r.controller, ENTER);
-    expect(r.controller.getSnapshot().modelPicker).toBeDefined();
-    expect(r.controller.getSnapshot().screen).toBeUndefined();
-    r.moveToken();
-    await r.advance(STRIP_REFRESH_MS * 3);
-    expect(r.read).toHaveBeenCalledTimes(1);
-  });
+  // `/models` is a popup now: the strip's pause under an open popup is the `popup` flag's (`overlay-flags.test.ts` pins its gates).
 
   it('reads nothing while the first chat is being built, though the token moved', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });

@@ -453,9 +453,10 @@ const FILE_SURFACES: Readonly<Record<string, readonly PaletteSurface[]>> = {
   'onboarding/setup-notes.ts': ['home', 'standalone-chat'],
   'onboarding/wizard.ts': ['home', 'standalone-chat'],
   'home/run-host.ts': ['home'],
+  // The `/models` popup is opened on the bare Home and in both chats: a command it names is offered there, or the sentence points at the Home.
+  'popups/models-popup.ts': ['home', 'standalone-chat', 'home-chat'],
   'render/hatches.ts': ['standalone-chat', 'home-chat'],
   'render/tui/chat-projection.ts': ['standalone-chat', 'home-chat'],
-  'render/tui/model-picker-view.tsx': ['home', 'standalone-chat', 'home-chat'],
   'render/tui/pricing-card.ts': ['home'],
   'render/tui/tab-host-agents.ts': ['home'],
   'render/tui/tab-host-sessions.ts': ['home'],

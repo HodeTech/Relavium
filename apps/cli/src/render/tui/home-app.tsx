@@ -97,13 +97,9 @@ import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
-import type { ChatSheetState } from './chat-sheet.js';
-import { ChatSheetView } from './chat-sheet-view.js';
 import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
 import { helpSheetLines } from './help-sheet.js';
-import type { ModelPickerState } from './model-picker.js';
-import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
@@ -132,7 +128,6 @@ export type { HomeChatSession } from './home-controller.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
-import { providerDisplayName } from '../../engine/providers.js';
 
 export interface RootAppProps {
   readonly nativePrompt?: NativePromptUi;
@@ -205,8 +200,6 @@ function ChatRegion(
     palette: OpenPalette | undefined;
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
-    modelPicker: ModelPickerState | undefined;
-    chatSheet: ChatSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
@@ -339,25 +332,6 @@ function ChatRegion(
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
       )}
       {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
-      {/* The `/models` reseat picker overlay in a live in-Home chat (ADR-0059) — mounted like the palette. */}
-      {props.modelPicker !== undefined && (
-        <ModelPickerView
-          state={props.modelPicker}
-          color={color}
-          nowMs={nowMs}
-          providerName={providerDisplayName}
-          scope="this-chat"
-        />
-      )}
-      {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) — with the other overlays. */}
-      {props.chatSheet !== undefined && (
-        <ChatSheetView
-          state={props.chatSheet}
-          color={color}
-          columns={props.reviewSize.cols}
-          rows={props.reviewSize.rows}
-        />
-      )}
     </Box>
   );
 }
@@ -1112,8 +1086,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             palette={state.palette}
             search={state.search}
             mention={state.mention}
-            modelPicker={state.modelPicker}
-            chatSheet={state.chatSheet}
             now={props.nowMs}
             cols={size.cols}
             // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
@@ -1284,15 +1256,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           />
         )}
         {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
-        {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
-          <ModelPickerView
-            state={state.modelPicker}
-            color={color}
-            nowMs={props.nowMs()}
-            providerName={providerDisplayName}
-            scope="next-chat"
-          />
-        )}
       </BackdropDim>
       {slot}
     </Box>

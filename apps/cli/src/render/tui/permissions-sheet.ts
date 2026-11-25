@@ -369,8 +369,8 @@ export function sheetNote(state: PermissionsSheetState): string {
   }
 }
 
-/** What an empty project list says, by surface (`plan` has no cards, so it has nothing to point at). */
-function emptyProjectText(state: PermissionsSheetState): string {
+/** What an empty project list says, by surface (`plan` has no cards, so it has nothing to point at). The chat's `/permissions` popup says it too. */
+export function emptyProjectText(state: PermissionsSheetState): string {
   if (state.surface !== 'chat')
     return `Nothing is remembered for this project. A command is remembered from its card in a chat (${keyToken('Ctrl+O')}, then ${keyToken('Enter')}).`;
   return state.mode === 'plan'
@@ -378,10 +378,13 @@ function emptyProjectText(state: PermissionsSheetState): string {
     : `Nothing is remembered for this project. Press ${keyToken('Ctrl+O')} on a command card, then ${keyToken('Enter')}, to remember one.`;
 }
 
-const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
+export const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
 
-/** The text of a command, with every control, invisible and `<` character shown as the card shows it (`<U+202E>`, `<TAB>`). */
-function escaped(text: string): string {
+/**
+ * The text of a command, with every control, invisible and `<` character shown as the card shows it (`<U+202E>`, `<TAB>`). The chat's
+ * `/permissions` popup shows its rows through it too, before its own scrub.
+ */
+export function escaped(text: string): string {
   return [...text].map((char) => escapeReviewCharacter(char, false)).join('');
 }
 
@@ -715,8 +718,8 @@ function sheetLegend(state: PermissionsSheetState): {
 const HINT_LEAD = 'Press ';
 const HINT_KEY = keyToken('d');
 
-/** What withdrawing the entry would mean, in one sentence. */
-function withdrawHint(entry: SheetEntry): string {
+/** What withdrawing the entry would mean, in one sentence (the chat's `/permissions` popup states it as the highlighted row's effect). */
+export function withdrawHint(entry: SheetEntry): string {
   if (entry.kind === 'project')
     return `${HINT_LEAD}${HINT_KEY} to withdraw it: auto mode will ask about this command again.`;
   return entry.row.alsoRemembered

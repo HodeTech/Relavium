@@ -4,7 +4,7 @@
  * written again, a second kind in the chat's one sheet slot, an overlay list or a doc line that still names the sheet, a golden producer or a
  * matrix surface of it, and a report surface that is missing from either chat host.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -101,28 +101,9 @@ describe('nothing of the sheet is left in the source', () => {
     expect(importers).toEqual([]);
   });
 
-  it('the chat’s one sheet slot holds one kind: the permissions sheet', () => {
-    const file = ts.createSourceFile(
-      'chat-sheet.ts',
-      readFileSync(join(SRC, 'render/tui/chat-sheet.ts'), 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-    );
-    const kinds: string[] = [];
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isPropertySignature(node) &&
-        ts.isIdentifier(node.name) &&
-        node.name.text === 'kind' &&
-        node.type !== undefined &&
-        ts.isLiteralTypeNode(node.type) &&
-        ts.isStringLiteral(node.type.literal)
-      )
-        kinds.push(node.type.literal.text);
-      ts.forEachChild(node, visit);
-    };
-    visit(file);
-    expect(kinds).toEqual(['permissions']);
+  it('the chat has no sheet slot left for it to come back into: the permissions sheet went too (MVP-11 step 5c)', () => {
+    expect(existsSync(join(SRC, 'render/tui/chat-sheet.ts'))).toBe(false);
+    expect(PRODUCTION.filter(({ text }) => text.includes('ChatSheetState'))).toEqual([]);
   });
 });
 
@@ -135,15 +116,12 @@ describe('no overlay list or flag doc still names the sheet', () => {
     expect(text).not.toMatch(/\/agent/u);
   });
 
-  it('the Home controller’s doc of its sheet slot names the permissions sheet only', () => {
+  it('the Home controller has no docked sheet slot whose doc could name it', () => {
     const text =
       PRODUCTION.find((entry) => entry.file === 'render/tui/home-controller.ts')?.text ?? '';
-    const doc = text.slice(
-      text.indexOf('The open docked sheet of a live in-Home chat'),
-      text.indexOf('readonly chatSheet:'),
-    );
-    expect(doc.length).toBeGreaterThan(100);
-    expect(doc).not.toMatch(/\/agent/u);
+    expect(text.length).toBeGreaterThan(1000);
+    expect(text).not.toContain('readonly chatSheet:');
+    expect(text).not.toMatch(/\/agent sheet/u);
   });
 });
 
@@ -156,12 +134,15 @@ describe('the golden and the matrix follow', () => {
       expect(ids).toContain(id);
   });
 
-  it.each(['chat-overlay-rows.test.tsx', 'chat-native-card-busy.test.tsx'])(
+  it.each([
+    ['chat-overlay-rows.test.tsx', "'reverse-search'"],
+    ['chat-native-card-busy.test.tsx', "'permissions-list'"],
+  ])(
     '%s lists the chat’s own overlays and no longer names the sheet among them',
-    (file) => {
+    (file, listed) => {
       const text = readFileSync(join(SRC, 'render/tui', file), 'utf8');
       // The lists these tests filter the matrix surfaces by: a name of the retired sheet there filters nothing and reads as if the sheet were still drawn.
-      expect(text).toContain("'sheet-permissions'");
+      expect(text).toContain(listed);
       expect(text).not.toContain('sheet-agent');
     },
   );

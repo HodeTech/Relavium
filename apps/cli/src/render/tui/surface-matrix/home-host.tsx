@@ -101,8 +101,9 @@ export interface HomeSetup {
    */
   readonly reports?: ReportsPort | undefined;
   /**
-   * Given, the controller opens the settings popups (`/effort` today; ADR-0148 §3, §6) on the Home's popup host as `driveHome` wires it
-   * (`openSettings`) for the chat it hosts, whose session carries the port. Absent ⇒ those commands are dispatched to the chat.
+   * The settings popups' port of the chat the Home hosts (ADR-0148 §3, §6): its session carries it (`chat-host.tsx`), and the controller opens
+   * the popups over it on the Home's popup host, as `driveHome` wires it (`openSettings`, always wired here). Absent ⇒ a chat's settings
+   * commands are dispatched to the chat.
    */
   readonly settings?: SettingsPort | undefined;
 }
@@ -175,7 +176,6 @@ export function mountHome(
   });
   const doctor = setup.doctor;
   const reports = setup.reports;
-  const settings = setup.settings;
   let rendererFlush: NoticeFlush | undefined;
   const context: HomeContext = {
     channel,
@@ -238,19 +238,26 @@ export function mountHome(
             void openReport({ host: popups, port: chat, line, origin: 'chat', turnInFlight });
           },
         }),
-    ...(settings === undefined
-      ? {}
-      : {
-          openSettings: ({
-            command,
-            chat,
-          }: {
-            readonly command: SettingsKind;
-            readonly chat: SettingsPort;
-          }) => {
-            void openSettings({ host: popups, port: chat, command, origin: 'chat' });
-          },
-        }),
+    // Always, as `driveHome` wires it: a chat's settings open over it with the chat's port (when the surface gave one), and the bare Home's
+    // `/models` with the Home's own (when the surface gave the Home a catalog).
+    openSettings: ({
+      command,
+      chat,
+    }: {
+      readonly command: SettingsKind;
+      readonly chat: SettingsPort;
+    }) => {
+      void openSettings({
+        host: popups,
+        port: chat,
+        command,
+        origin: chat.surface === 'home' ? 'home' : 'chat',
+      });
+    },
+    // The bare Home's own channel, as `driveHome` wires it: what its `/models` popup applied says, after the popup has closed.
+    announce: (text: string) => {
+      notifications.notify(text);
+    },
     onExit: () => {},
     onError: (cause) => {
       throw cause;

@@ -16,6 +16,7 @@ import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import { isCliError } from '../process/cli-error.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
+import { answerModelsPopup } from './models-popup.test-support.js';
 import { captureIo } from '../test-support.js';
 import { driveHome } from './drive-home.js';
 
@@ -126,6 +127,8 @@ it.each<Scenario>([
     // Actual controller, hosts, stores and SQLite; this acknowledged renderer seam is not a real TTY.
     render: (value) => {
       props = value;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+      value.popups?.bindOpenGate(() => undefined);
       value.onRendererReady?.(async (publish) => {
         if (armed) {
           armed = false;
@@ -218,14 +221,8 @@ it.each<Scenario>([
     );
     journal.settle(identity, 'committed', PRIVATE_RESULT);
     armed = true;
-    controller.handleKey('/', {});
-    type('models');
-    controller.handleKey('', { return: true });
-    await vi.waitFor(() => expect(controller.getSnapshot().modelPicker).toBeDefined());
-    type('claude-opus-4-8');
-    controller.handleKey('', { return: true });
-    if (controller.getSnapshot().modelPicker?.phase === 'effort')
-      controller.handleKey('', { return: true });
+    // The `/models` popup's `This chat` on opus: the Home's reseat.
+    await answerModelsPopup(props, 'claude-opus-4-8');
     await vi.waitFor(() => expect(resumedOwner).toBeDefined());
     expect(originalOwner).toBeDefined();
     expect(resumedOwner).not.toBe(originalOwner);

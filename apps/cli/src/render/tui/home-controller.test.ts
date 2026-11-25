@@ -1,5 +1,3 @@
-import type { TranscriptEntry } from './session-view-model.js';
-import type { ReseatTarget } from '../../commands/chat.js';
 import {
   realModeControl,
   TURN_COMPLETED,
@@ -26,10 +24,8 @@ import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 
-import type { RefreshReport } from '../../engine/model-refresh.js';
 import type { SettingsPort } from '../../popups/settings-port.js';
 
-import { permissionsSheetOf } from './chat-sheet.js';
 import type { MentionReader } from './mention.js';
 import type {
   PermissionEntry,
@@ -39,7 +35,6 @@ import type {
 } from '../../permissions/chat-permissions.js';
 import {
   SHEET_CONFIRM_DWELL_MS,
-  SHEET_CONFIRM_WINDOW_MS,
   SHEET_SETTLE_MS,
   sheetEntries,
   type PermissionsSheetState,
@@ -80,7 +75,6 @@ function makeSession(
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
     onSetEffort?: (effort: ReasoningEffort) => void;
-    permissions?: PermissionsPort;
     clear?: () => Promise<HomeChatSession>;
   } = {},
 ): {
@@ -108,7 +102,6 @@ function makeSession(
     stopReason: opts.stopReason ?? (() => 'exit'),
     ...(opts.clear === undefined ? {} : { clear: opts.clear }),
     ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
-    ...(opts.permissions === undefined ? {} : { permissions: opts.permissions }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -2413,12 +2406,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 });
 
 /* ------------------------------------------------------------------------------------------------ *
- * The `/models` picker (2.5.G S7 / ADR-0064 §10) — HOME-ONLY, opened via the Home `/` palette.
+ * The Home's catalog port fake (2.5.G S7 / ADR-0064 §10): `/models` is a popup now (`home-models.test.ts`); the fake stays for the reseat
+ * marker case below.
  * ------------------------------------------------------------------------------------------------ */
 
-const CTRL_R = { ctrl: true } as const;
-
-/** A merged catalog entry with sensible defaults for the picker port fake. */
+/** A merged catalog entry with sensible defaults for the catalog port fake. */
 function pickerEntry(
   partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>,
 ): ModelCatalogEntry {
@@ -2500,7 +2492,7 @@ function makeModelsPort(
   };
 }
 
-describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () => {
+describe('/effort in a chat the Home hosts (the /models picker’s cases moved to `home-models.test.ts` with its retirement)', () => {
   const EMPTY_HOME: HomeSnapshot = {
     attention: { gates: [], failedRuns: [] },
     recentSessions: [],
@@ -2510,576 +2502,6 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     isEmpty: true,
   };
   const homeStore: HomeStore = { read: () => EMPTY_HOME };
-
-  /** Build a Home controller with the given models port, then open the picker via the `/` palette (the real path). */
-  function openPicker(port: HomeModelsPort): HomeController {
-    const c = createHomeController({
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-    });
-    c.handleKey('/', {}); // open the palette
-    type(c, 'models'); // filter HOME_PALETTE_COMMANDS → [/models]
-    c.handleKey('', ENTER); // run the highlighted /models → homeReplCtx.openModels → the picker opens
-    return c;
-  }
-
-  it('drops a model refresh rejection after Home teardown sealed publication', async () => {
-    let rejectRefresh: (cause: Error) => void = () => undefined;
-    const { port } = makeModelsPort({
-      refreshIfStale: () =>
-        new Promise((_resolve, reject) => {
-          rejectRefresh = reject;
-        }),
-    });
-    const c = openPicker(port);
-    const changed = vi.fn();
-    const unsubscribe = c.subscribe(changed);
-    await c.teardownActive();
-    changed.mockClear();
-    const sealed = c.getSnapshot();
-    rejectRefresh(new Error('owner stopped'));
-    await flush();
-    expect(changed, 'HOME_REJECTED_REFRESH_AFTER_SEAL').not.toHaveBeenCalled();
-    expect(c.getSnapshot()).toBe(sealed);
-    unsubscribe();
-  });
-
-  it('opens over the merged catalog and kicks a TTL-bounded background refresh', async () => {
-    const { port, load, refreshIfStale } = makeModelsPort({ refreshedAt: 1000 });
-    const c = openPicker(port);
-    const picker = c.getSnapshot().modelPicker;
-    expect(picker?.entries.map((e) => e.modelId)).toEqual(['a', 'b']);
-    expect(picker?.refreshedAt).toBe(1000);
-    expect(refreshIfStale).toHaveBeenCalledTimes(1); // the auto background refresh (ADR-0064 §5c)
-    await flush();
-    // Nothing was stale (refreshIfStale → undefined): the spinner clears, the cache stands.
-    expect(c.getSnapshot().modelPicker?.loading).toBe(false);
-    expect(load).toHaveBeenCalled();
-  });
-
-  it('selecting a model writes the NEXT session default, closes the picker, and confirms in the notice', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // accept the selected (available) model
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
-    expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
-    expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
-  });
-
-  it("bare Home: the picked model's PROVIDER is persisted with it (ADR-0059 — the Bug-3 fix)", async () => {
-    // The provider is authoritative at pick time (the live `/models` list is per-provider). Persisting it means the
-    // next chat over a live-discovered id whose prefix the inference cannot place (an openai `chat-latest`) still
-    // resolves, instead of crashing "cannot infer a provider". The provider written is the picked ENTRY's provider.
-    const { port, writeDefault, latestProvider } = makeModelsPort({
-      entries: [
-        pickerEntry({ modelId: 'chat-latest', displayName: 'chat-latest', provider: 'openai' }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('chat-latest', 'openai', undefined);
-    expect(latestProvider()).toBe('openai');
-  });
-
-  it('bare Home: a REASONING model offers the effort sub-step, writing BOTH model + effort defaults (ADR-0066 §6)', async () => {
-    // ADR-0066 §6: in the bare Home a reasoning model advances to the effort sub-step (opened on the config effort
-    // default), and accepting writes model + effort together — so the user sets both future-session defaults at once.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'claude-opus-4-8',
-          displayName: 'Claude Opus 4.8',
-          provider: 'anthropic',
-        }),
-      ],
-      currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    expect(c.getSnapshot().modelPicker?.currentEffort).toBe('low'); // opened on the config effort default
-    c.handleKey('', { downArrow: true }); // low → medium
-    c.handleKey('', { downArrow: true }); // medium → high
-    c.handleKey('', ENTER); // accept the model + 'high'
-
-    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'high'); // model+provider+effort, one atomic call
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
-    expect(c.getSnapshot().notice).toContain('Claude Opus 4.8');
-    expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
-    expect(c.getSnapshot().notice).toContain('next chat session');
-  });
-
-  it('bare Home: a reasoning model with NO prior effort default opens on medium; immediate Enter writes medium (ADR-0066 §6)', async () => {
-    // No `currentEffort` opt ⇒ the sub-list opens on the neutral 'medium' (initialEffortIndex(undefined)). There is
-    // no "model-only, skip effort" path for a reasoning model in the bare Home (Esc only backs to the model list), so
-    // accepting immediately writes the neutral default — pin that intended behavior (ADR-0066 §6).
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'claude-opus-4-8',
-          displayName: 'Claude Opus 4.8',
-          provider: 'anthropic',
-        }),
-      ],
-      // no currentEffort → port.currentEffort() is undefined
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
-    c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
-
-    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'medium'); // the neutral default is written
-    expect(c.getSnapshot().notice).toContain('effort medium');
-  });
-
-  it('bare Home: a COLLAPSED reasoning model with no prior effort opens on a reasoning-ON row; immediate Enter never writes `off`', async () => {
-    // The Bug-1 regression guard the opus test above cannot catch (opus keeps all five tiers, so `medium` IS a row).
-    // deepseek-v4-pro collapses to rows [off, high, max] — `medium` is not a row. Before the projection fix the
-    // opening highlight fell to index 0 = `off`, so this immediate Enter WROTE `off`, silently disabling reasoning
-    // on a model the user opened to configure. It must open on `high` (the neutral tier's representative) instead.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'deepseek-v4-pro',
-          displayName: 'DeepSeek V4 Pro',
-          provider: 'deepseek',
-        }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    c.handleKey('', ENTER); // immediate Enter on the opening highlight
-
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'high');
-    expect(writeDefault).not.toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'off');
-  });
-
-  it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
-    // The write lands on the global file, but the effective default stays the project/workspace override, so the
-    // notice must NOT claim "applies to your next chat session" — it says the override still wins here.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      overrideDefault: 'project-pinned',
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
-    expect(c.getSnapshot().notice).toContain('overrides it here');
-    expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
-  });
-
-  it('reports a DISTINCT notice when the config can\'t be re-read after a write (not "overrides")', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      readFaults: true, // the write succeeds, but the re-read to confirm the effective default throws → undefined
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().notice).toContain('could not be re-read');
-    expect(c.getSnapshot().notice).not.toContain('overrides'); // a read fault is NOT an override
-    expect(c.getSnapshot().notice).not.toContain('next chat session'); // nor a confirmed success
-  });
-
-  it('a catalog read fault on OPEN degrades to a notice, never crashes the Home (never opens a broken picker)', () => {
-    const { port } = makeModelsPort({ loadThrows: true });
-    const c = createHomeController({
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-    });
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER); // /models → openModelPicker → port.load() throws → caught
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // no half-open picker
-    expect(c.getSnapshot().notice).toContain('could not read the model catalog');
-  });
-
-  it('a write fault keeps the picker OPEN with a secret-free hint, never crashes the Home', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      writeThrows: true,
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open (recoverable)
-    expect(c.getSnapshot().modelPicker?.hint).toContain('could not save');
-    expect(c.getSnapshot().notice).toBeUndefined(); // no success notice on a failed write
-  });
-
-  it('a DIMMED (unavailable) model is non-selectable: Enter shows a HINT, never a write', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'gone', displayName: 'Gone', available: false })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).not.toHaveBeenCalled(); // never write an unusable default
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open
-    expect(c.getSnapshot().modelPicker?.hint).toContain('Gone'); // an actionable action-hint (not the refresh banner)
-    // A navigation keystroke clears the transient hint (the user has moved on).
-    c.handleKey('x', {}); // a filter keystroke → 'state' step → hint cleared
-    expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
-  });
-
-  it('a `no-key` model is non-selectable with a hint naming the provider by its display name, and no shell command (2.5.G)', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'x',
-          displayName: 'Model X',
-          provider: 'openai',
-          available: false,
-          unavailableReason: 'no-key',
-        }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
-    const hint = c.getSnapshot().modelPicker?.hint ?? '';
-    expect(hint).toContain('OpenAI'); // names the provider the way a person reads it (ADR-0145 §8), not as the id `openai`
-    expect(hint).not.toContain('openai');
-    // No setup port is wired in this fixture, so `/providers` would answer "unavailable": no remedy is named, and never a shell command.
-    expect(hint).not.toContain('/providers');
-    expect(hint).not.toContain('set-key');
-    expect(hint).not.toContain('relavium');
-  });
-
-  it('a `no-key` model names `/providers` as the remedy when the Home has a provider setup to open (ADR-0122 §6)', async () => {
-    const { port } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'x',
-          displayName: 'Model X',
-          provider: 'gemini',
-          available: false,
-          unavailableReason: 'no-key',
-        }),
-      ],
-    });
-    const c = createHomeController({
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-      providerSetup: { initialKeyless: true, open: () => Promise.resolve() },
-    });
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker?.hint).toBe(
-      'Model X: no key for Google Gemini — open /providers to connect a key',
-    );
-  });
-
-  it('in a chat the Home hosts, a `no-key` model says how to get back to /providers, which that chat only points at', async () => {
-    const { port } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'x',
-          displayName: 'Model X',
-          provider: 'gemini',
-          available: false,
-          unavailableReason: 'no-key',
-        }),
-      ],
-    });
-    const c = createHomeController({
-      startChat: () => Promise.resolve(makeSession().session),
-      reseatChat: () => Promise.resolve(makeSession().session),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-      providerSetup: { initialKeyless: false, open: () => Promise.resolve() },
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker?.hint).toBe(
-      'Model X: no key for Google Gemini — go back to the Home ([Ctrl+C] twice) and use /providers',
-    );
-  });
-
-  it('Esc closes the picker without writing a default', async () => {
-    const { port, writeDefault } = makeModelsPort();
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', { escape: true });
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-    expect(writeDefault).not.toHaveBeenCalled();
-  });
-
-  it('Ctrl+R runs an unbounded refresh; a per-provider failure surfaces a secret-free banner', async () => {
-    const { port, refresh } = makeModelsPort({
-      refresh: () =>
-        Promise.resolve({
-          providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }],
-        }),
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('r', CTRL_R);
-    expect(refresh).toHaveBeenCalledTimes(1);
-    await flush();
-    const picker = c.getSnapshot().modelPicker;
-    expect(picker?.loading).toBe(false);
-    expect(picker?.banner).toContain('OpenAI'); // names the failed provider, not the (redacted) error body
-    expect(picker?.banner).not.toContain('redacted');
-  });
-
-  it("a reopened picker is NOT clobbered by a prior open's slow refresh (the epoch guard)", async () => {
-    // Open #1 kicks a SLOW refreshIfStale; open #2 (after a close) gets a fast one. When the slow first refresh
-    // finally resolves with a partial failure, it must NOT stamp the SECOND picker's banner (a different generation).
-    let resolveSlow: (report: RefreshReport) => void = () => undefined;
-    let call = 0;
-    const { port } = makeModelsPort({
-      refreshIfStale: () => {
-        call += 1;
-        return call === 1
-          ? new Promise<RefreshReport>((res) => {
-              resolveSlow = res;
-            })
-          : Promise.resolve(undefined);
-      },
-    });
-    const c = openPicker(port); // open #1 → the slow refresh is in flight (generation 1)
-    c.handleKey('', { escape: true }); // close it
-    // Reopen on the SAME controller (open #2, generation 2) via the palette.
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // picker #2 is open
-
-    resolveSlow({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }); // gen-1 refresh lands late
-    await flush();
-    // The stale gen-1 result is dropped — picker #2's banner is untouched (no ghost partial-failure).
-    expect(c.getSnapshot().modelPicker?.banner).toBeUndefined();
-  });
-
-  it('the picker owns the keyboard: typing filters, it does not edit the Home buffer', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'alpha' }), pickerEntry({ modelId: 'beta' })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('b', {}); // a printable char → extends the picker filter, NOT the Home prompt
-    expect(c.getSnapshot().modelPicker?.filter).toBe('b');
-    expect(c.getSnapshot().input.text).toBe(''); // the Home buffer behind the overlay is untouched
-  });
-
-  it('degrades to an honest notice when no models port is wired (a test/partial host)', () => {
-    const c = createHomeController({
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      // no `models` port
-    });
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-    expect(c.getSnapshot().notice).toContain('unavailable');
-  });
-
-  it('in-Home chat: /models opens the reseat picker; accepting a model RESEATS the live session (ADR-0059)', async () => {
-    const sessionA = makeSession({ sessionId: 'sess-A' });
-    // A LIVE chat has turns on screen — that is the conversation the reseat must carry (2.6.C / F1). An empty store
-    // here would make the carry assertion below vacuous.
-    sessionA.session.store.appendUser('what is 2+2');
-    sessionA.session.store.notice('assistant: four');
-    const sessionB = makeSession({ sessionId: 'sess-A' }); // a reseat continues the SAME sessionId
-    const startChat = vi.fn(() => Promise.resolve(sessionA.session));
-    const reseatChat = vi.fn<
-      (id: string, t: ReseatTarget, carried: readonly TranscriptEntry[]) => Promise<HomeChatSession>
-    >(() => Promise.resolve(sessionB.session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      startChat,
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER); // start the chat (session A)
-    await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
-
-    // Open the reseat picker from the chat palette (`/` → filter `models` → run) — the in-chat intercept opens the
-    // picker instead of dispatching `/models` to the "interactive terminal" hint.
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
-
-    // Accept the (only, available) model → a LIVE reseat, not a next-session-default write.
-    c.handleKey('', ENTER);
-    await flush();
-
-    // The reseat is handed the OUTGOING store's rendered transcript (2.6.C / F1) — the conversation the reseated
-    // store must open with, so the alt-screen viewport does not go blank. Passing `[]` here IS the bug.
-    expect(reseatChat).toHaveBeenCalledWith(
-      'sess-A',
-      { modelId: 'claude-opus-4-8', provider: 'anthropic' },
-      sessionA.session.store.getSnapshot().state.transcript,
-    );
-    expect(reseatChat.mock.calls[0]?.[2]).not.toHaveLength(0); // a live chat has turns; an empty carry is F1
-    expect(sessionA.teardown).toHaveBeenCalledTimes(1); // the old session torn down (bounded)
-    expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
-    expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
-  });
-
-  it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
-    // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
-    // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    c.handleKey('', { downArrow: true }); // low → medium
-    c.handleKey('', { downArrow: true }); // medium → high
-    c.handleKey('', ENTER); // apply 'high'
-    await flush();
-
-    expect(onSetEffort).toHaveBeenCalledWith('high'); // the SESSION override (no reseat)
-    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5, not option (d))
-    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched (no teardown/MCP reconnect)
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed after the effort pick
-  });
-
-  it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('high');
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // effort sub-step opens highlighted on the bound 'high'
-    c.handleKey('', ENTER); // accept 'high' (unchanged)
-    await flush();
-
-    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
-    expect(reseatChat).not.toHaveBeenCalled();
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-  });
-
-  it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
-    // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
-    // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // accept the (only, ALREADY-bound) model
-    await flush();
-
-    expect(reseatChat).not.toHaveBeenCalled(); // no pointless reseat onto the current model
-    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
-    expect(c.getSnapshot().modelPicker?.hint).toContain('Already on'); // the picker stays open with a hint
-  });
 
   /** A chat's settings port whose `/effort` offers `tiers` (none ⇒ the model has no tier to choose). */
   const effortSettings = (
@@ -3113,7 +2535,6 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER); // run /effort → the settings popup (NOT the model picker)
     expect(openSettings).toHaveBeenCalledTimes(1);
     expect(openSettings).toHaveBeenCalledWith({ command: 'effort', chat: settings });
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
     expect(sessionA.lines).not.toContain('/effort'); // it did NOT dispatch
     expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5)
     expect(onSetEffort).not.toHaveBeenCalled(); // opening applies nothing
@@ -3203,314 +2624,6 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   });
 });
 
-describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
-  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
-  const SNAPSHOT: PermissionsSnapshot = {
-    project: {
-      ok: true,
-      rows: [
-        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
-        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
-      ],
-    },
-    session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
-  };
-  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
-    let current = SNAPSHOT;
-    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
-      if (entry.kind === 'project' && current.project.ok)
-        current = {
-          ...current,
-          project: {
-            ok: true,
-            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
-          },
-        };
-      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
-    });
-    return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
-  };
-  /** The monotonic clock the controller's timed keys run on: a test moves it by hand, as the interrupt keymap's tests do. */
-  const clock = (): { now: () => number; advance: (ms: number) => void } => {
-    let t = 10_000;
-    return { now: () => t, advance: (ms) => void (t += ms) };
-  };
-  const inChat = async (
-    made: ReturnType<typeof makeSession>,
-    now: () => number,
-  ): Promise<HomeController> => {
-    const c = createHomeController({
-      startChat: () => Promise.resolve(made.session),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      now,
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    return c;
-  };
-  const open = async (
-    made: ReturnType<typeof makeSession>,
-    t = clock(),
-  ): Promise<{ c: HomeController; sent: string[]; t: ReturnType<typeof clock> }> => {
-    const c = await inChat(made, t.now);
-    const before = made.lines.length;
-    type(c, '/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    return { c, sent: made.lines.slice(before), t };
-  };
-  /** The sheet has settled and the keyboard has been quiet, as after a person has read the list. */
-  const settle = (t: ReturnType<typeof clock>): void => t.advance(SHEET_SETTLE_MS + 100);
-
-  it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
-    const { port } = portOf();
-    const { c, sent } = await open(makeSession({ permissions: port }));
-    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
-    expect(sheet?.surface).toBe('chat');
-    expect(sheet?.mode).toBe('ask');
-    expect(sent, 'nothing was dispatched').toEqual([]);
-    expect(c.getSnapshot().input.text).toBe('');
-  });
-
-  it('is dispatched like any command where the chat has no port', async () => {
-    const { c, sent } = await open(makeSession({}));
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(sent).toEqual(['/permissions']);
-  });
-
-  it('does not open when the port cannot be read: the chat says so', async () => {
-    const { port } = portOf();
-    const made = makeSession({
-      permissions: {
-        ...port,
-        load: () => {
-          throw new Error('boom');
-        },
-      },
-    });
-    const { c } = await open(made);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(made.store.getSnapshot().state.warnings).toContain('Could not read the permissions.');
-  });
-
-  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
-    const { port } = portOf();
-    const { c } = await open(makeSession({ permissions: port }));
-    type(c, 'hello');
-    expect(c.getSnapshot().input.text).toBe('');
-    c.handleKey('', { escape: true });
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    type(c, '/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().chatSheet).toBeDefined();
-    c.handleKey('c', CTRL_C);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
-      false,
-    );
-  });
-
-  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer, each once its moment has passed', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    expect(withdraw).not.toHaveBeenCalled();
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(withdraw).toHaveBeenCalledTimes(1);
-    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
-    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
-    expect(sheet?.armed).toBe(false);
-    expect(sheet?.message).toEqual({
-      tone: 'done',
-      text: 'Withdrawn. Auto mode asks about it again.',
-    });
-    expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
-      'b',
-    ]);
-  });
-
-  it('SECURITY: keys typed ahead withdraw nothing, at any pace: `d` too soon says to wait, and once anything was typed `d` arms nothing until an arrow key', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    // `d` pressed at once: too soon, and it says so; it is not typing.
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
-      tone: 'note',
-      text: 'Wait a moment, then press [d].',
-    });
-    // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
-    for (const char of 'build') {
-      t.advance(380);
-      c.handleKey(char, {});
-    }
-    t.advance(2_000);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed, 'typed text poisons arming').toBe(
-      false,
-    );
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Typed keys are ignored here/u,
-    );
-    t.advance(2_000);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-    // An arrow key says the person is choosing a row: after it `d` arms, and an Enter in the same breath is too early.
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    c.handleKey('', ENTER);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Too early or too late for Enter/u,
-    );
-    expect(withdraw).not.toHaveBeenCalled();
-  });
-
-  it('the settle time runs from the moment the sheet opened on the controller’s own clock', async () => {
-    const { port } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    t.advance(SHEET_SETTLE_MS - 1);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    t.advance(1);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-  });
-
-  it('an Enter long after the question is too late: a suspended or abandoned question is not answered by a stray Enter', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Too early or too late for Enter/u,
-    );
-  });
-
-  it('a paste or any other key drops the question and withdraws nothing', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    c.handlePaste('withdraw it all');
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
-    // The paste was typing: `d` arms nothing until an arrow key.
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('x', {});
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-  });
-
-  it('does not arm in a terminal that cannot show the question, drops a question asked before it shrank, and says how to leave', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    c.setTerminalSize(60, 20); // shrinks while the question is up
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(
-      withdraw,
-      'Enter withdraws nothing in a frame that hides the question',
-    ).not.toHaveBeenCalled();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    c.setTerminalSize(80, 24);
-    // The Enter and the `d` above were keys typed into a sheet: an arrow key says the person is choosing a row again.
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-  });
-
-  it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
-    const { port } = portOf();
-    const { c, t } = await open(
-      makeSession({
-        permissions: {
-          ...port,
-          withdraw: () => {
-            throw new Error('boom');
-          },
-        },
-      }),
-    );
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
-      tone: 'failed',
-      text: 'Could not withdraw that row; nothing changed.',
-    });
-  });
-
-  it('closes, and says so, when the list cannot be read again after a withdrawal', async () => {
-    const { port } = portOf();
-    let reads = 0;
-    const made = makeSession({
-      permissions: {
-        ...port,
-        load: () => {
-          reads += 1;
-          if (reads > 1) throw new Error('boom');
-          return SNAPSHOT;
-        },
-      },
-    });
-    const { c, t } = await open(made);
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(made.store.getSnapshot().state.warnings.join(' ')).toContain(
-      'Could not read the permissions again.',
-    );
-  });
-
-  it('gives way to a card that arrives while it is open: the sheet closes and the key goes on to the card', async () => {
-    const { port, withdraw } = portOf();
-    const made = makeSession({ permissions: port });
-    const { c, t } = await open(made);
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    void made.store.requestApproval(
-      { toolId: 'write_file', action: 'fs_write', preview: { path: 'x' } },
-      true,
-    );
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
-  });
-});
-
 describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
   const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
   const SNAPSHOT: PermissionsSnapshot = {
@@ -3578,7 +2691,6 @@ describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', (
     const snap = c.getSnapshot();
     expect(snap.mode).toBe('home');
     expect(snap.screen?.kind, 'a screen of the slot, not an overlay').toBe('tab-host');
-    expect(snap.chatSheet, 'the chat’s overlay is not the bare Home’s').toBeUndefined();
     expect(sheetOf(c)?.surface).toBe('project');
     expect(sheetOf(c)?.mode, 'no chat, no mode').toBeUndefined();
     expect(snap.input.text).toBe('');
@@ -3686,22 +2798,31 @@ describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', (
     expect(startChat).not.toHaveBeenCalled();
   });
 
-  it('inside a chat the CHAT’s port is the one a withdrawal goes through, even with the Home’s own port wired (the real product wires both)', async () => {
+  /** A chat's settings port holding only `/permissions` (its popup is the chat's, never the bare Home's tab). */
+  const chatPermissionsSettings = (port: PermissionsPort): SettingsPort => ({
+    surface: 'home-chat',
+    announce: vi.fn(),
+    permissions: { port, mode: () => 'ask' },
+  });
+
+  it('inside a chat a pasted /permissions opens the CHAT’s popup through the Home’s settings opener, never the Home’s tab, even with the Home’s own port wired (the real product wires both; MVP-11 step 5c)', async () => {
     const homePort = portOf();
-    const chatWithdraw = vi.fn(
-      (): WithdrawAnswer => ({ tone: 'done', text: 'Session approval withdrawn.' }),
-    );
     const chatPort: PermissionsPort = {
       surface: 'chat',
       load: () => ({
         project: { ok: true, rows: [] },
         session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
       }),
-      withdraw: chatWithdraw,
+      withdraw: vi.fn(
+        (): WithdrawAnswer => ({ tone: 'done', text: 'Session approval withdrawn.' }),
+      ),
     };
-    const t = clock();
-    const { c } = home(homePort.port, t, {
-      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+    const settings = chatPermissionsSettings(chatPort);
+    const made = makeSession();
+    const openSettings = vi.fn();
+    const { c } = home(homePort.port, clock(), {
+      startChat: () => Promise.resolve({ ...made.session, settings }),
+      openSettings,
     });
     type(c, 'hi');
     c.handleKey('', ENTER);
@@ -3709,34 +2830,30 @@ describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', (
     c.handlePaste('/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(chatWithdraw, 'the chat’s port').toHaveBeenCalledTimes(1);
-    expect(homePort.withdraw, 'never the Home’s project-only one').not.toHaveBeenCalled();
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(openSettings).toHaveBeenCalledWith({ command: 'permissions', chat: settings });
+    expect(c.getSnapshot().screen, 'not the bare Home’s Permissions tab').toBeUndefined();
+    expect(made.lines, 'nothing was dispatched to the chat').not.toContain('/permissions');
+    expect(homePort.withdraw, 'never the Home’s project-only port').not.toHaveBeenCalled();
   });
 
-  it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
-    const { port } = portOf();
-    const chatPort: PermissionsPort = {
-      surface: 'chat',
-      load: () => ({ ...SNAPSHOT, session: [] }),
-      withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
-    };
-    const { c } = home(port, clock(), {
-      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+  it('inside a chat with no settings port, /permissions goes to the chat’s dispatch (which says remembered commands are not available) and opens no tab', async () => {
+    const homePort = portOf();
+    const made = makeSession();
+    const openSettings = vi.fn();
+    const { c } = home(homePort.port, clock(), {
+      startChat: () => Promise.resolve(made.session),
+      openSettings,
     });
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
     c.handlePaste('/permissions');
     c.handleKey('', ENTER);
     await flush();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.snapshot.session).toEqual([]);
+    expect(openSettings).not.toHaveBeenCalled();
+    expect(made.lines).toContain('/permissions');
+    expect(c.getSnapshot().screen).toBeUndefined();
   });
 
   it('SECURITY: keys typed ahead after the command withdraw nothing on the Home either, at any pace', async () => {
@@ -4058,18 +3175,27 @@ describe('the lines the controller writes into a chat itself follow `plainGlyphs
   ])(
     'the model-switch marker of a reseat is drawn in the form of the colour setting (plainGlyphs $plain)',
     async ({ plain, mark }) => {
-      const sessionA = makeSession({ sessionId: 'sess-A' });
+      const sessionA = makeSession({ sessionId: 'sess-A', onSetEffort: vi.fn() });
       sessionA.session.store.appendUser('what is 2+2');
       const sessionB = makeSession({ sessionId: 'sess-A' });
       const notice = vi.spyOn(sessionB.session.store, 'notice');
       const { port } = makeModelsPort({
         entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
       });
+      // The `/models` popup's `This chat` reaches the Home's reseat through the chat's member the controller builds (`openSettings`).
+      let opened: SettingsPort | undefined;
       const c = createHomeController({
         ...(plain ? { plainGlyphs: true } : {}),
-        startChat: () => Promise.resolve(sessionA.session),
+        startChat: () =>
+          Promise.resolve({
+            ...sessionA.session,
+            settings: { surface: 'home-chat', announce: vi.fn() },
+          }),
         reseatChat: () => Promise.resolve(sessionB.session),
         models: port,
+        openSettings: ({ chat }) => {
+          opened = chat;
+        },
         homeStore,
         onExit: vi.fn(),
         onError: vi.fn(),
@@ -4080,8 +3206,7 @@ describe('the lines the controller writes into a chat itself follow `plainGlyphs
       c.handleKey('/', {});
       type(c, 'models');
       c.handleKey('', ENTER);
-      await flush();
-      c.handleKey('', ENTER); // the only model: a live reseat
+      opened?.models?.switchModel?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a live reseat
       await flush();
 
       const marker = notice.mock.calls

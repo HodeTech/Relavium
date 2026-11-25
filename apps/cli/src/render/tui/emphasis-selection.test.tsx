@@ -1,19 +1,15 @@
 import './force-no-color.js';
 
-import type { ModelCatalogEntry } from '@relavium/llm';
 import { Box, Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ReplCommand } from '../../commands/repl-commands.js';
-import { EffortTierList } from './effort-tier-list.js';
-import { openAtEndOfEachRow, plain, styleRuns, stylesOver } from './emphasis-test-kit.js';
+import { openAtEndOfEachRow, plain, stylesOver } from './emphasis-test-kit.js';
 import { settleFrames } from './harness-util.js';
 import { HomeView } from './home-view.js';
 import { MentionView } from './mention-view.js';
-import { ModelPickerView } from './model-picker-view.js';
-import type { ModelPickerState } from './model-picker.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import type { PaletteList } from './palette-reducer.js';
 import { PaletteView } from './palette-view.js';
@@ -112,45 +108,6 @@ describe('the / palette', () => {
   });
 });
 
-describe('the /models picker', () => {
-  const entryOf = (modelId: string, displayName: string): ModelCatalogEntry => ({
-    modelId,
-    provider: 'anthropic',
-    displayName,
-    pricingSource: 'catalog',
-    priceKnown: true,
-    available: true,
-    deprecated: false,
-  });
-  const state: ModelPickerState = {
-    entries: [entryOf('claude-a', 'Claude A'), entryOf('claude-b', 'Claude B')],
-    filter: 'claude',
-    selected: 1,
-    loading: false,
-    currentDefault: undefined,
-    refreshedAt: undefined,
-    banner: undefined,
-    hint: undefined,
-    effortTiers: [],
-    phase: 'model',
-    effortStep: false,
-    pending: undefined,
-    effortSelected: 0,
-    currentEffort: undefined,
-  };
-
-  it.each(BOTH)(
-    'draws the selected model inverse and bold, and the filter echo bold (colour %s)',
-    (color) => {
-      const frame = frameOf(
-        <ModelPickerView state={state} color={color} nowMs={0} scope="next-chat" />,
-      );
-      expectSelected(frame, 'Claude B', ['Claude A'], `colour ${String(color)}`);
-      expect(stylesOver(frame, 'claude')).toContain('bold');
-    },
-  );
-});
-
 describe('the @ mention list', () => {
   const candidates = [
     { name: 'src', type: 'directory' as const, path: 'src' },
@@ -168,33 +125,6 @@ describe('the @ mention list', () => {
       );
       expectSelected(frame, 'app.ts', ['src/'], `colour ${String(color)}`);
       expect(stylesOver(frame, 'a')).toContain('bold');
-    },
-  );
-});
-
-describe('the reasoning-effort tiers', () => {
-  it.each(BOTH)(
-    'draws the highlighted tier inverse and bold, its hint inverse only (colour %s)',
-    (color) => {
-      const frame = frameOf(
-        <EffortTierList
-          tiers={['low', 'medium', 'high']}
-          model="claude-sonnet-4-5"
-          selected={1}
-          current={undefined}
-          footer="↑/↓ select · Enter apply · Esc close"
-          color={color}
-        />,
-      );
-      const rows = plain(frame).split('\n');
-      const at = rows.findIndex((row) => row.startsWith(color ? '› ' : '> '));
-      expect(at, 'the marker leads exactly one row').toBeGreaterThan(0);
-      expect(rows.filter((row) => row.startsWith(color ? '› ' : '> '))).toHaveLength(1);
-      const selected = frame.split('\n')[at] ?? '';
-      const others = frame.split('\n').filter((_, index) => index !== at && index > 0 && index < 4);
-      expect(styleRuns(selected)[0]?.styles).toEqual(SELECTED);
-      for (const row of others) expect(styleRuns(row)[0]?.styles ?? []).toEqual([]);
-      expect(openAtEndOfEachRow(frame).every((open) => open.length === 0)).toBe(true);
     },
   );
 });

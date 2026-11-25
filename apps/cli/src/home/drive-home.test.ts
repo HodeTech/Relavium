@@ -31,12 +31,7 @@ import {
   runMigrations,
   type DbClient,
 } from '@relavium/db';
-import {
-  REASONING_EFFORTS,
-  RunEventSchema,
-  type ReasoningEffort,
-  type RunEvent,
-} from '@relavium/shared';
+import { RunEventSchema, type ReasoningEffort, type RunEvent } from '@relavium/shared';
 import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -75,7 +70,6 @@ import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
-import { permissionsSheetOf } from '../render/tui/chat-sheet.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
 import { PRICING_ACTION_SET, PRICING_NOT_RECORDED } from '../render/tui/pricing-card.js';
@@ -86,6 +80,7 @@ import {
   type HomeDeps,
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
+import { answerModelsPopup, openModelsPopup } from './models-popup.test-support.js';
 import { shouldOpenHome } from './should-open-home.js';
 import { RunHost, type RunHostSnapshot } from './run-host.js';
 
@@ -470,16 +465,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         timeout: WAIT_MS,
       });
       const original = ui.controller.getSnapshot().session;
-      ui.controller.handleKey('/', {});
-      type(ui, 'models');
-      ui.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(ui.controller.getSnapshot().modelPicker).toBeDefined(), {
-        timeout: WAIT_MS,
-      });
-      type(ui, 'claude-opus-4-8');
-      ui.controller.handleKey('', ENTER);
-      if (ui.controller.getSnapshot().modelPicker?.phase === 'effort')
-        ui.controller.handleKey('', ENTER);
+      // The `/models` popup's `This chat` on opus: the Home's reseat.
+      await answerModelsPopup(ui, 'claude-opus-4-8', { waitMs: WAIT_MS });
       await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
       expect(closeOutputStore).toHaveBeenCalledOnce();
       expect(ui.controller.getSnapshot().session).toBe(original);
@@ -1515,7 +1502,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   }, 10000);
 
   it.each(['unexpected', 'known-config-refusal'] as const)(
-    'observes an owned /models default-write %s before inline picker recovery',
+    'observes an owned /models default-write %s, and says a known refusal on the Home’s channel',
     async (mode) => {
       const f = invocationFixture();
       const configFile = join(cwd, 'owned-picker-config.toml');
@@ -1535,15 +1522,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured;
       if (props === undefined) throw new Error('Home did not mount');
       try {
-        props.controller.handleKey('/', {});
-        type(props, 'models');
-        props.controller.handleKey('', ENTER);
-        await flush();
-        expect(props.controller.getSnapshot().modelPicker?.entries.length).toBeGreaterThan(0);
-        const postSealHints: Array<string | undefined> = [];
+        const popups = await openModelsPopup(props, { waitMs: WAIT_MS });
+        // The bare Home's own popup: said to be from the Home, over the Home's own port.
+        expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+        // Nothing is said on the Home's channel, nor drawn as its notice, once its input has sealed.
+        const postSealNotices: Array<string | undefined> = [];
         const unsubscribe = props.controller.subscribe(() => {
           if (props.inputEnabled?.() === false)
-            postSealHints.push(props.controller.getSnapshot().modelPicker?.hint);
+            postSealNotices.push(props.controller.getSnapshot().notice);
         });
         if (mode === 'unexpected') {
           // This native entry is before the real writer's filesystem catch; no errno or arbitrary
@@ -1552,11 +1538,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             throw new Error('PRIVATE_HOME_CONFIG_INVARIANT');
           });
         } else writeFileSync(configFile, '[preferences\n');
-        props.controller.handleKey('', ENTER);
-        if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-          props.controller.handleKey('', ENTER);
+        // `Enter` on opus, `Enter` on its form: the popup closes and hands the default to the Home's writer.
+        for (const ch of 'claude-opus-4-8') popups.input(ch, {});
+        popups.input('', { return: true });
+        popups.input('', { return: true });
+        expect(popups.getSnapshot().open).toBe(false);
         // Native preference publication now awaits visible rewrite acknowledgement.
-        // Observe the settled write before checking owner disposition and inline recovery.
+        // Observe the settled write before checking owner disposition and the word on the Home's channel.
+        await flush();
         await flush();
         if (mode === 'unexpected') {
           expect(randomUUID).toHaveBeenCalledOnce();
@@ -1567,15 +1556,24 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(f.registry.budget.deadline()).toBe(3000);
           expect(await drive).toBe(9);
           unsubscribe();
-          expect(postSealHints, 'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION').toEqual([]);
+          expect(
+            postSealNotices.filter((notice) => notice !== undefined),
+            'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION',
+          ).toEqual([]);
         } else {
           unsubscribe();
-          expect(postSealHints).toEqual([]);
-          expect(props.controller.getSnapshot().modelPicker?.hint).toContain('could not save');
+          expect(postSealNotices.filter((notice) => notice !== undefined)).toEqual([]);
+          await vi.waitFor(
+            () =>
+              expect(props.notifications?.getSnapshot().current?.text).toBe(
+                'The default model could not be saved',
+              ),
+            { timeout: WAIT_MS },
+          );
+          // Said on the Home's channel, never as its notice; the Home takes input again.
+          expect(props.controller.getSnapshot().notice).toBeUndefined();
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
           expect(f.registry.termination).toBeUndefined();
-          props.controller.handleKey('', { escape: true });
-          props.controller.handleKey('', { escape: true });
-          expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
           props.controller.handleKey('c', CTRL_C);
           props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           expect(await drive).toBe(0);
@@ -1615,31 +1613,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
 
-    // Open the /models picker via the Home palette, let its background refresh settle.
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    const picker = props.controller.getSnapshot().modelPicker;
-    if (picker === undefined || picker.entries.length === 0) {
-      throw new Error('the /models picker did not open with catalog entries');
-    }
-    const chosen = picker.entries[picker.selected]?.modelId; // the highlighted model (filter empty ⇒ entries[0])
-    if (chosen === undefined) throw new Error('no selected model');
-
-    props.controller.handleKey('', ENTER); // accept the model
-    // ADR-0066 §6: a reasoning-capable pick advances to the bare-Home effort sub-step (writes model + effort); a
-    // non-reasoning one writes + closes directly. Accept the (default) effort too when the sub-step opened, and
-    // capture the tier it will write (the opening highlight) so the next-chat re-read can be asserted.
-    let writtenEffort: ReasoningEffort | undefined;
-    const effortStep = props.controller.getSnapshot().modelPicker;
-    if (effortStep?.phase === 'effort') {
-      writtenEffort = REASONING_EFFORTS[effortStep.effortSelected]; // the tier the opening highlight accepts
-      props.controller.handleKey('', ENTER); // accept the default effort ⇒ writeGlobalPreferences(chosen, effort)
-    }
-    await flush(); // the actual preference port acknowledges its visible notice before publication
-    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // picker closed on accept
-    expect(props.controller.getSnapshot().notice).toContain('next chat session'); // honest success (write took effect)
+    // `/models` on the bare Home: opus (a model other than the default the popup opens on, so the write is not the no-op of a bare
+    // `Enter` chain), its form's tier as it opens (ADR-0066 §6: the default model and its effort in one write).
+    const chosen = 'claude-opus-4-8';
+    const popups = await answerModelsPopup(props, chosen, { waitMs: WAIT_MS });
+    const writtenEffort: ReasoningEffort | undefined = 'medium';
+    // The actual preference port acknowledges its visible notice before publication; what it came to is said on the Home's channel.
+    await vi.waitFor(
+      () =>
+        expect(props.notifications?.getSnapshot().current?.text).toBe(
+          'Default model: claude-opus-4-8 · applies to new chats',
+        ),
+      { timeout: WAIT_MS },
+    );
+    expect(popups.getSnapshot().open).toBe(false);
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
 
     // Start a chat — the NEXT session MUST bind the just-chosen model (the fresh re-read), not a stale startup default.
     type(props, 'hello');
@@ -1737,9 +1725,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137: the in-Home chat is wired to the /permissions sheet through its own line handler, and a typed /permissions opens it', async () => {
-    // The wired-but-dead field: a Home session built without `permissions` would still pass every controller test that hands the controller
-    // a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
+  it('ADR-0137 §2 as a popup (MVP-11 step 5c): the in-Home chat is wired to the /permissions popup through its own line handler, and a typed /permissions opens it', async () => {
+    // The wired-but-dead field: a Home session built without `settings.permissions` would still pass every controller test that hands the
+    // controller a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
     const drivePromise = driveHome(deps);
@@ -1754,7 +1742,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
       timeout: WAIT_MS,
     });
-    const permissions = props.controller.getSnapshot().session?.permissions;
+    const permissions = props.controller.getSnapshot().session?.settings?.permissions?.port;
     expect(permissions?.surface, 'the session carries the port').toBe('chat');
     // The port reads the real store through the mocked keychain: no key was ever written, so the project's list is empty and readable.
     expect(permissions?.load().project).toEqual({ ok: true, rows: [] });
@@ -1762,12 +1750,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, '/permissions');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet).toBeDefined(), {
+    await vi.waitFor(() => expect(props.popups?.getSnapshot().frame?.spec.id).toBe('permissions'), {
       timeout: WAIT_MS,
     });
-    expect(permissionsSheetOf(props.controller.getSnapshot().chatSheet)?.surface).toBe('chat');
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    // Nothing remembered and nothing approved: the popup says so, and writes nothing into the Home's notice or the transcript.
+    expect(props.popups?.getSnapshot().frame?.steps[0]?.content.kind).toBe('empty');
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+    closeReport(props);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1808,8 +1797,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const shown = await openedReport(props, 'agent');
     expect(shown).toContain(view?.detail.model ?? 'no model');
     expect(shown).toMatch(/Reasoning effort\s+not set/u);
-    // Nothing reaches the Home's notice or the transcript (ADR-0148 §6), and no sheet opens.
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    // Nothing reaches the Home's notice or the transcript (ADR-0148 §6).
     expect(props.controller.getSnapshot().notice).toBeUndefined();
     closeReport(props);
 
@@ -3165,13 +3153,8 @@ workflow:
     expect(freshAsk).toBeDefined();
     expect(await drawsACard(first?.store, freshAsk)).toBe(true);
 
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER);
-    props.controller.handleKey('', ENTER);
+    // The `/models` popup's `This chat` on opus: the Home's reseat.
+    await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
       timeout: WAIT_MS,
     });
@@ -3240,22 +3223,12 @@ workflow:
     expect(before).toMatch(/Reasoning effort\s+not set/u);
     closeReport(props);
 
-    // Open the reseat picker from the chat palette, filter to a DIFFERENT available model (opus), accept.
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    expect(props.controller.getSnapshot().modelPicker).toBeDefined();
+    // The `/models` popup from the chat palette, filtered to a DIFFERENT available model (opus): its form (opus is reasoning-capable: the
+    // ADR-0066 tier, opened on `medium`, and `This chat`), then `Enter` ⇒ the REAL reseatChat.
     // Filter to EXACTLY one model. `'opus'` matched a single row while the shipped table had twelve; the generated
     // catalog carries eighty, and several are Opus — so a substring filter now selects whichever sorts first, and
     // the test would silently be asserting about a different model than it names (ADR-0071 §1).
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // opus is reasoning-capable ⇒ the ADR-0066 effort sub-step (not an
-    // immediate reseat). The picker advanced to the effort phase over the pending model.
-    const effortPicker = props.controller.getSnapshot().modelPicker;
-    expect(effortPicker?.phase).toBe('effort');
-    expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
+    const popups = await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await vi.waitFor(
       () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
       { timeout: WAIT_MS },
@@ -3290,7 +3263,7 @@ workflow:
     expect(marker).toContain('@-attached file contents included'); // ADR-0059's bound disclosure clause
     // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
-    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+    expect(popups.getSnapshot().open).toBe(false); // the popup closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
 
     // ADR-0148 §10: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
@@ -3381,6 +3354,8 @@ workflow:
           render: (props, options) => {
             captured = props;
             if (!actualInk) {
+              // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+              props.popups?.bindOpenGate(() => undefined);
               props.onRendererReady?.(async (publish) => {
                 await publish?.();
               });
@@ -3473,14 +3448,7 @@ workflow:
           journal.settle(identity, state, 'synthetic private result');
         }
         const pick = async (model: string) => {
-          props.controller.handleKey('/', {});
-          type(props, 'models');
-          props.controller.handleKey('', ENTER);
-          await flush();
-          type(props, model);
-          props.controller.handleKey('', ENTER);
-          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-            props.controller.handleKey('', ENTER);
+          await answerModelsPopup(props, model, { waitMs: WAIT_MS });
           if (typeof mode === 'string')
             await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error), {
               timeout: WAIT_MS,
@@ -3617,13 +3585,9 @@ workflow:
     const sessionId = props.controller.getSnapshot().session?.sessionId ?? '';
     expect(sessionId).not.toBe('');
 
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // reasoning-capable ⇒ effort sub-step
-    props.controller.handleKey('', ENTER); // apply the default tier ⇒ the REAL reseatChat (fires the mid-build note)
+    // The `/models` popup on opus (reasoning-capable: its form opens on the default tier), `This chat` ⇒ the REAL reseatChat (fires the
+    // mid-build note).
+    await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await flush();
 
     const transcript =
@@ -4534,15 +4498,7 @@ workflow:
             { timeout: WAIT_MS },
           );
         } else if (surface === 'reseated') {
-          type(props, '/models');
-          props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined(), {
-            timeout: WAIT_MS,
-          });
-          type(props, 'claude-opus-4-8');
-          props.controller.handleKey('', ENTER);
-          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-            props.controller.handleKey('', ENTER);
+          await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
           await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
             timeout: WAIT_MS,
           });

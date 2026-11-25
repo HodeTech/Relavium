@@ -20,7 +20,8 @@ import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
-import { visibleModels } from '../render/tui/model-picker.js';
+import { openModelsPopup } from './models-popup.test-support.js';
+import { currentStep, visibleRows } from '../popups/popup-reducer.js';
 
 vi.mock('../engine/providers.js', async (original) => {
   const actual = await original<typeof import('../engine/providers.js')>();
@@ -162,6 +163,8 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     },
     render: (captured) => {
       props = captured;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+      captured.popups?.bindOpenGate(() => undefined);
       const ui = captured.nativePrompt;
       ui?.bindVisibility((expected) => ui.getSnapshot() === expected);
       captured.nativePrompt?.subscribe(() =>
@@ -269,13 +272,15 @@ describe('driveHome native provider setup', () => {
       moveTo(ui, 'defer');
       ui.input('', { ...key, return: true });
       await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
-      p.controller.handleKey('/', {});
-      for (const char of 'models') p.controller.handleKey(char, {});
-      p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
-      p.controller.handleKey('', { return: true });
-      expect(p.controller.getSnapshot().modelPicker?.hint).toContain('/providers');
-      expect(p.controller.getSnapshot().modelPicker?.hint).not.toContain('provider set-key');
+      // The `/models` popup: the models a key would make usable are under the heading that names the Home's remedy, never a shell command.
+      const popups = await openModelsPopup(p);
+      const frame = popups.getSnapshot().frame;
+      const content = frame?.steps[0]?.content;
+      if (content?.kind !== 'list') throw new Error('the /models popup listed nothing');
+      const words = content.rows.map((row) => `${row.label} ${row.reason ?? ''}`).join('\n');
+      expect(words).toContain('/providers');
+      expect(words).not.toContain('provider set-key');
+      popups.input('', { escape: true });
     } finally {
       ui.input('', { ...key, escape: true });
       p.controller.handleKey('', { escape: true });
@@ -327,29 +332,31 @@ describe('driveHome native provider setup', () => {
         writeFileSync(f.path, baseline); // operator repairs the target before the next save
         let chosen: string;
         if (route === 'picker') {
-          p.controller.handleKey('/', {});
-          for (const char of 'models') p.controller.handleKey(char, {});
-          p.controller.handleKey('', { return: true });
-          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
-          const picker = p.controller.getSnapshot().modelPicker;
-          const entry = picker?.entries.find(
-            (model) =>
-              model.provider === 'openai' &&
-              model.available &&
-              model.modelId !== KNOWN_PROVIDERS.openai.testModel,
+          // The `/models` popup on the bare Home: another keyed OpenAI model, its form's `Enter` sets the default of new chats.
+          const popups = await openModelsPopup(p);
+          const listed = popups.getSnapshot().frame?.steps[0]?.content;
+          if (listed?.kind !== 'list') throw new Error('the /models popup listed nothing');
+          const row = listed.rows.find(
+            (candidate) =>
+              candidate.enabled !== false &&
+              candidate.section !== true &&
+              (candidate.detail ?? '').includes('OpenAI') &&
+              candidate.id !== KNOWN_PROVIDERS.openai.testModel,
           );
-          if (!entry) throw new Error('No alternate keyed model');
-          chosen = entry.modelId;
-          for (const char of chosen) p.controller.handleKey(char, {});
-          const filtered = p.controller.getSnapshot().modelPicker;
-          if (!filtered) throw new Error('Picker closed');
-          const index = visibleModels(filtered).findIndex((model) => model.modelId === chosen);
+          if (!row) throw new Error('No alternate keyed model');
+          chosen = row.id;
+          for (const char of chosen) popups.input(char, {});
+          const frame = popups.getSnapshot().frame;
+          if (!frame) throw new Error('the popup closed');
+          const { state } = currentStep(frame);
+          const index = visibleRows(state).findIndex((candidate) => candidate.id === chosen);
           if (index < 0) throw new Error('Selected model not visible');
-          for (let step = 0; step < index; step++) p.controller.handleKey('', { downArrow: true });
-          p.controller.handleKey('', { return: true });
-          if (p.controller.getSnapshot().modelPicker?.phase === 'effort')
-            p.controller.handleKey('', { return: true });
-          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeUndefined());
+          while ((popups.getSnapshot().frame?.steps[0]?.selected ?? index) < index)
+            popups.input('', { downArrow: true });
+          popups.input('', { return: true });
+          popups.input('', { return: true });
+          expect(popups.getSnapshot().open).toBe(false);
+          await vi.waitFor(() => expect(readFileSync(f.path, 'utf8')).toContain(chosen));
         } else {
           // The old source is gone: this is a new first-usable-source setup,
           // rather than key maintenance that must preserve the current model.
@@ -365,13 +372,13 @@ describe('driveHome native provider setup', () => {
           chosen = KNOWN_PROVIDERS.anthropic.testModel;
         }
         expect(readFileSync(f.path, 'utf8')).toContain(chosen);
-        p.controller.handleKey('/', {});
-        for (const char of 'models') p.controller.handleKey(char, {});
-        p.controller.handleKey('', { return: true });
-        await vi.waitFor(() =>
-          expect(p.controller.getSnapshot().modelPicker?.currentDefault).toBe(chosen),
-        );
-        p.controller.handleKey('', { escape: true });
+        // The popup opens on the default in force now: the model just saved.
+        const reopened = await openModelsPopup(p);
+        const frame = reopened.getSnapshot().frame;
+        if (!frame) throw new Error('the /models popup did not open');
+        const { state } = currentStep(frame);
+        expect(visibleRows(state)[state.selected]?.id).toBe(chosen);
+        reopened.input('', { escape: true });
         for (const char of 'next chat') p.controller.handleKey(char, {});
         p.controller.handleKey('', { return: true });
         await vi.waitFor(() => expect(f.built).toHaveLength(1));

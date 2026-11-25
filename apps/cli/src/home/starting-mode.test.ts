@@ -25,6 +25,7 @@ import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import type { HomeChatSession } from '../render/tui/home-controller.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
+import { answerModelsPopup, openModelsPopup } from './models-popup.test-support.js';
 
 const ENTER = { return: true } as const;
 const plain = (frame: string) => stripTerminalControls(frame).replace(/\s+/g, ' ');
@@ -454,12 +455,8 @@ describe('Home configured starting modes and frozen clear binding', () => {
       expect(resumed.store.getSnapshot().approval).toBeUndefined();
 
       f.writeMode('ask');
-      f.command('/models');
-      await vi.waitFor(() => expect(f.props.controller.getSnapshot().modelPicker).toBeDefined());
-      f.props.controller.handlePaste('claude-opus-4-8');
-      f.props.controller.handleKey('', ENTER);
-      if (f.props.controller.getSnapshot().modelPicker?.phase === 'effort')
-        f.props.controller.handleKey('', ENTER);
+      // The `/models` popup's `This chat` on opus (a real Home root is mounted: its slot acknowledges the popup's frames).
+      await answerModelsPopup(f.props, 'claude-opus-4-8', { live: true });
       const reseated = await f.ready(resumed);
       expect(reseated.sessionId).toBe(resumed.sessionId);
       expect(f.publications[3]?.mode).toBe('ask');
@@ -578,41 +575,41 @@ describe('Home configured starting modes and frozen clear binding', () => {
         const selection = f.fresh[0]?.built.startingMode;
         const hook = f.fresh[0]?.policy()?.confirm;
         writeFileSync(f.configPath, '[preferences]\ndefault_mode="PRIVATE_INVALID_MODE"\n');
-        f.props.controller.handleKey('/', {});
-        for (const character of 'models') f.props.controller.handleKey(character, {});
-        f.props.controller.handleKey('', ENTER);
         if (retained) {
-          // The live picker can show cached bound model/effort. Selecting a replacement is
-          // the strict settings read; a file change alone is not an observed revocation.
-          await vi.waitFor(() =>
-            expect(f.props.controller.getSnapshot().modelPicker).toBeDefined(),
-          );
-          f.props.controller.handlePaste('claude-opus-4-8');
-          f.props.controller.handleKey('', ENTER);
-          if (f.props.controller.getSnapshot().modelPicker?.phase === 'effort')
-            f.props.controller.handleKey('', ENTER);
+          // The live popup shows the chat's own bound model and tier. Switching to a replacement is
+          // the strict settings read (the reseat's build); a file change alone is not an observed revocation.
+          await answerModelsPopup(f.props, 'claude-opus-4-8', { live: true });
           await vi.waitFor(() => expect(f.props.controller.getSnapshot().submitBusy).toBe(false));
-          expect(prior?.store.getSnapshot().state.warnings.join(' ')).toContain('could not switch');
-          await vi.waitFor(() =>
-            expect(f.stdout.frames.some((frame) => plain(frame).includes('could not switch'))).toBe(
-              true,
-            ),
-          );
-        } else {
-          await vi.waitFor(() =>
-            expect(f.props.controller.getSnapshot().notice).toContain(
-              'could not read chat settings',
-            ),
+          // Said on the Home's channel, never into the transcript (ADR-0148 §6).
+          expect(prior?.store.getSnapshot().state.warnings.join(' ')).not.toContain(
+            'could not be switched',
           );
           await vi.waitFor(() =>
             expect(
               f.stdout.frames.some((frame) =>
-                plain(frame).includes('could not read chat settings'),
+                plain(frame).includes('The model could not be switched'),
               ),
             ).toBe(true),
           );
+        } else {
+          // The bare Home's popup reads the effective default as it opens: the config that does not parse is its error state, drawn in
+          // the popup and never as the Home's notice.
+          const popups = await openModelsPopup(f.props, { live: true });
+          expect(popups.getSnapshot().frame?.steps[0]?.content).toMatchObject({
+            kind: 'error',
+            what: 'Could not read the chat settings.',
+          });
+          await vi.waitFor(() =>
+            expect(
+              f.stdout.frames.some((frame) =>
+                plain(frame).includes('Could not read the chat settings.'),
+              ),
+            ).toBe(true),
+          );
+          expect(f.props.controller.getSnapshot().notice).toBeUndefined();
+          popups.input('', { escape: true });
         }
-        expect(f.props.controller.getSnapshot().modelPicker).toBeUndefined();
+        expect(f.props.popups?.getSnapshot().open).toBe(false);
         expect(f.props.controller.getSnapshot().session).toBe(prior);
         expect(f.error()).toBeUndefined();
         expect(f.ownership?.registry.termination).toBeUndefined();

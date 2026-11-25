@@ -65,6 +65,15 @@
  * words), and the channel is not held for it. A line that offered its answer on its last acknowledged frame and is cut on a new one (a resize
  * that made the page shorter or narrower) is disarmed at once and told as `cut`.
  *
+ * **A line answered by `Enter`** (`chord.key: 'enter'`: `/permissions`' withdrawal, `[d]` then `Enter`, ADR-0137 §2) is the SAME line: every
+ * rule above holds for it word for word, with `Enter` (a plain one: no `Ctrl`, `Meta` or `Shift`) in place of `Ctrl+Y`, and `Ctrl+Y` on it a
+ * key typed over it. One rule is added, because `Enter` is a key typing makes and a typed line that ends in `d` and `Enter` is a withdrawal's
+ * two keys: in a popup that has such a line, a control letter arms nothing when a key that is typing reached the popup since it opened or since
+ * the last navigation key (`typingOf`: a letter, `Enter` where it answers nothing, a paste, a key typed over a line; a dropped key counts too).
+ * The control's command is not called; it is told `typed` (`chordRefused`) and says to choose a row first. And the key that OPENED the popup
+ * (the composer's `Enter` that typed the command) starts such a line's lockout wherever in the popup it is armed, as the last key before the
+ * open does for a popup that opens on its line: a held `Enter` cannot reach the line on its repeat. A `Ctrl+Y` line reads neither rule.
+ *
  * **A line with no step to go back to** closes its popup when it is disarmed. The command is still told why, and what it says about it in that
  * call is raised on the host's own channel (drawn on the hint row once the popup is gone), not as the closed popup's, which would end with it.
  *
@@ -76,7 +85,6 @@
 
 import { sanitizeInline } from '../render/sanitize.js';
 import {
-  chordOf,
   createChordGuard,
   createChordHistory,
   type ChordGuard,
@@ -109,14 +117,19 @@ import type { NotificationChannel, Schedule } from './notifications.js';
 import { unrefTimer } from './notifications.js';
 import { createOpeningGuard, type OpeningGuard } from './opening-guard.js';
 import {
+  answersALine,
   backOf,
   currentStep,
   foldPopupAction,
+  hasEnterLine,
+  highlightedRow,
+  lineAnswerKeyOf,
   lineFitsPage,
   onChordStep,
   openFrame,
   openingKeyOf,
   reducePopupKey,
+  typingOf,
   visitStep,
   withContent,
   type PopupControl,
@@ -223,13 +236,14 @@ export interface PopupHandlers {
    * form is wholly on the page its frame is drawn on (`formFits`), and, as every answer, behind the opening guard.
    */
   readonly apply?: ((context: PopupContext, values: PopupFormValues) => void) | undefined;
-  /** A control letter the step lists. */
-  readonly control?: ((context: PopupContext, key: string) => void) | undefined;
-  /** `Ctrl+Y` answered a confirmation line, through every layer of its guard. The ONLY way a line is answered. */
+  /** A control letter the step lists, with the highlighted row of a list (what the control acts on). */
+  readonly control?: ((context: PopupContext, key: string, row?: PopupListRow) => void) | undefined;
+  /** The line's answer key (`Ctrl+Y`, or `Enter`) answered a confirmation line, through every layer of its guard. The ONLY way a line is answered. */
   readonly chord?: ((context: PopupContext) => void) | undefined;
   /**
-   * A confirmation line that offered (or was preparing) an answer went away unanswered: a `Ctrl+Y` that did not count, a key typed over it, or
-   * its window ran out. The line is already disarmed when this is called. Never an answer.
+   * A confirmation line that offered (or was preparing) an answer went away unanswered: its answer key that did not count, a key typed over it,
+   * or its window ran out. The line is already disarmed when this is called. Never an answer. In a popup with a line answered by `Enter`, also
+   * a control letter that came after typing (`typed`): the control was not run, so no line was armed.
    */
   readonly chordRefused?: ((context: PopupContext, reason: ChordRefusal) => void) | undefined;
   /** A key moved the popup to another step (`Esc` back, a disarmed line). Not called for a step the command moved to itself. */
@@ -387,6 +401,16 @@ interface FrameRecord {
    * count, not a time: a key that arrives in the same millisecond as the one that armed a line is still a key after it.
    */
   typed: number;
+  /**
+   * A key that is typing (`typingOf`) or a paste reached THIS popup, seen or not, since it opened or since the last navigation key: in a popup
+   * with a line answered by `Enter` a control letter then arms nothing. Kept for every popup; read only for those.
+   */
+  typing: boolean;
+  /**
+   * What the popup was opened against ({@link openingEvidence}: the last key before the open, or the key of a popup that opened it): a line
+   * answered by `Enter` is armed against it as well as against the key that arms it, wherever in the popup it is armed.
+   */
+  readonly openedAfter: number;
 }
 
 export interface PopupHostOptions {
@@ -494,9 +518,14 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       record.chord = undefined;
       return;
     }
+    // A line answered by `Enter` counts the key that opened its popup (the composer's `Enter` that typed the command) as a resolution too,
+    // wherever in the popup it is armed: the one key a person has just pressed there is that line's answer key.
+    const enter = lineAnswerKeyOf(currentStep(record.frame).spec) === 'enter';
     record.chord = {
       typedWhenArmed: record.typed,
-      lastResolvedAt: before.lastResolvedAt,
+      lastResolvedAt: enter
+        ? Math.max(before.lastResolvedAt, record.openedAfter)
+        : before.lastResolvedAt,
       guard: createChordGuard({ now, history, guard: CHORD_STEP_GUARD }),
       cancelExpiry: undefined,
       offered: false,
@@ -692,6 +721,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   const push = (spec: PopupSpec, handlers: PopupHandlers): PopupOpenResult => {
     runSeq += 1;
     const frame = openFrame(spec, runSeq);
+    const opening = openingEvidence();
     const record: FrameRecord = {
       frame,
       handlers,
@@ -700,10 +730,12 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       loadingSince: currentStep(frame).state.content.kind === 'loading' ? now() : undefined,
       chord: undefined,
       typed: 0,
+      typing: false,
+      openedAfter: opening.lastResolvedAt,
     };
     // A popup that opens ON its confirmation line (`/doctor --deep`) is armed as it opens: every key after this moment is evidence, and the last
     // key before it starts the lockout.
-    rearm(record, openingEvidence());
+    rearm(record, opening);
     stack.push(record);
     publish();
     return { opened: true, runId: frame.runId, context: contextOf(frame.runId) };
@@ -912,9 +944,15 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         return;
       }
       case 'control': {
+        // In a popup whose line is answered by `Enter`, a control letter after typing arms nothing: its command is told why instead.
+        if (record.typing && hasEnterLine(record.frame.spec)) {
+          tellRefused(record, 'typed');
+          return;
+        }
         // A control letter resolves nothing (it runs a check, arms a line, copies): it is not stamped, so it locks no line it arms.
         const control = record.handlers.control;
-        if (control !== undefined) guarded(() => control(contextOf(runId), fold.key));
+        const row = highlightedRow(record.frame);
+        if (control !== undefined) guarded(() => control(contextOf(runId), fold.key, row));
         return;
       }
       case 'unchanged':
@@ -994,13 +1032,17 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       const stamp = chord.stamp();
       chord.foreign(stamp);
       const action = reducePopupKey(input, key, currentStep(record.frame).spec);
-      // A `Ctrl+Y` on a step that is not a confirmation line answers nothing: a refused affirmative, which restarts the lockout, so a key held
-      // through the step that arms a line cannot answer that line on its auto-repeat (its repeat and its release included).
-      if (action.kind !== 'chord' && chordOf(input, key) === 'allow') chord.resolved(stamp);
+      // A line's answer key on a step that is not its line answers nothing: a refused affirmative, which restarts the lockout, so a key held
+      // through the step that arms a line cannot answer that line on its auto-repeat (its repeat and its release included). `Ctrl+Y` is one in
+      // every popup; `Enter` in a popup that has a line answered by it (`answersALine`).
+      if (action.kind !== 'chord' && answersALine(input, key, record.frame.spec))
+        chord.resolved(stamp);
       // A key that would answer is evidence against a confirmation line armed before it, seen or not (the line's `typed` rule). On a line every
       // other key but the navigation keys disarms it, so these are the only keys the count can still hold against one.
       const typedBefore = record.typed;
       if (openingKeyOf(action) === 'answer') record.typed += 1;
+      // Typing, or a person choosing a row, seen or not: what a control letter of a popup with a line answered by `Enter` is armed against.
+      record.typing = typingOf(action) ?? record.typing;
       if (admitKey(record, action, stamp)) dispatchKey(record, action, stamp, typedBefore);
       return true;
     },
@@ -1009,6 +1051,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       if (record === undefined || disposed) return false;
       const stamp = chord.stamp();
       chord.foreign(stamp);
+      // A paste is typing, wherever it lands.
+      record.typing = true;
       // A paste answers nothing: on a confirmation line it disarms it, seen or not (so it never has to be counted against an answer).
       if (onChordStep(record.frame)) {
         const offered = lineOffer(record) !== 'nothing';

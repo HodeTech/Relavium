@@ -10,6 +10,7 @@ import {
   type HomeChatSession,
   type HomeModelsPort,
 } from './home-controller.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
@@ -26,7 +27,13 @@ function fixture(
   options: { keyless?: boolean; open?: () => Promise<void>; models?: HomeModelsPort } = {},
 ) {
   const open = options.open ?? vi.fn(() => Promise.resolve());
+  // The `/models` popup is opened over the Home's own port: what it applies through is that port's writer.
+  const opened: SettingsPort[] = [];
   const c = createHomeController({
+    openSettings: ({ chat }) => {
+      opened.push(chat);
+    },
+    announce: () => {},
     homeStore: { read: () => snapshot },
     startChat: () => {
       throw new Error('unexpected chat');
@@ -36,7 +43,7 @@ function fixture(
     providerSetup: { initialKeyless: options.keyless ?? true, open },
     ...(options.models === undefined ? {} : { models: options.models }),
   });
-  return { c, open };
+  return { c, open, opened };
 }
 
 describe('Home provider setup', () => {
@@ -216,16 +223,18 @@ describe('Home provider setup', () => {
           release = resolve;
         }),
     };
-    const { c } = fixture({ keyless: false, models });
+    const { c, opened } = fixture({ keyless: false, models });
     c.handleKey('/', {});
     for (const ch of 'models') c.handleKey(ch, {});
     c.handleKey('', { return: true });
     await flush();
-    c.handleKey('', { return: true });
+    // The popup's hand-off on another model: the Home's writer, its durability what it comes to (the popup says it on the hint row).
+    const saved = opened.at(-1)?.models?.saveDefault?.({ modelId: 'other', provider: 'openai' });
     expect(c.getSnapshot().submitBusy).toBe(true);
     expect(c.getSnapshot().notice).toBeUndefined();
     release({ durability: 'unconfirmed' });
-    await flush();
-    expect(c.getSnapshot().notice).toContain('Crash persistence is unconfirmed');
+    await expect(saved).resolves.toMatchObject({ kind: 'saved', durability: 'unconfirmed' });
+    expect(c.getSnapshot().submitBusy).toBe(false);
+    expect(c.getSnapshot().notice).toBeUndefined();
   });
 });
