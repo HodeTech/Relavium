@@ -392,6 +392,14 @@ describe('Home configured starting modes and frozen clear binding', () => {
         if (observed === 'plan') f.writeMode('plan');
         else writeFileSync(f.configPath, '[preferences]\ndefault_mode="PRIVATE_INVALID_MODE"\n');
         f.command('/doctor');
+        // `/doctor` is a popup over the chat now (ADR-0148 §8): its quick tier reads the configuration through the session's probes in the
+        // work it starts. Once its checks have landed it is closed, as a person closes it, and the chat is in front again.
+        const popups = f.props.popups;
+        if (popups === undefined) throw new Error('the Home has a popup host');
+        await vi.waitFor(() =>
+          expect(popups.getSnapshot().frame?.steps[0]?.content.kind).toBe('list'),
+        );
+        popups.closeAll('escape');
         await f.ready();
         expect(guard, 'W2_STARTUP_HOME_DOCTOR_OBSERVATION').toThrow('revoked');
         expect(f.props.controller.getSnapshot().session).toBe(prior);

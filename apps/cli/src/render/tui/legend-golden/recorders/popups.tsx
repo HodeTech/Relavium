@@ -18,12 +18,36 @@ import {
   foldPopupAction,
   openFrame,
   popupLegend,
+  railOf,
   reducePopupKey,
+  withContent,
   type PopupFrame,
   type PopupSpec,
   type PopupStep,
 } from '../../../../popups/popup-reducer.js';
 import { PopupFrameView } from '../../../../popups/popup-slot.js';
+import type { DoctorCheck } from '../../../../chat/doctor.js';
+import {
+  checksContent,
+  consentContent,
+  detailContent,
+  doctorSpec,
+  DOCTOR_LOADING,
+  DOCTOR_STEP,
+  type DoctorView,
+} from '../../../../popups/doctor-popup.js';
+
+const check = (
+  id: string,
+  status: DoctorCheck['status'],
+  label: string,
+  detail: string,
+): DoctorCheck => ({
+  id,
+  label,
+  status,
+  detail,
+});
 import type { LegendExit, LegendItem } from '../../legend.js';
 
 /**
@@ -49,6 +73,12 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     file: 'popups/frame-model.ts',
     describe: 'the notice and its way back drawn in place of a popup the terminal cannot hold',
   },
+  {
+    id: 'doctor-popup',
+    file: 'popups/doctor-popup.ts',
+    describe:
+      'the /doctor popup (ADR-0148 §8): its checks, a row’s detail, its confirmation line and the deep tier, each with its legend and its words',
+  },
 ];
 
 const LIST: PopupContent = {
@@ -72,7 +102,7 @@ const spec = (steps: readonly PopupStep[]): PopupSpec => ({
 });
 
 /** The rows of the frame of `frame` (its current step), drawn by the frame model at 80×24 in the form colour asks for. */
-function frameRows(
+export function frameRows(
   frame: PopupFrame,
   color: boolean,
   legendParts: { readonly items: readonly LegendItem[]; readonly exit: LegendExit } = popupLegend(
@@ -81,12 +111,13 @@ function frameRows(
 ) {
   const { spec: current, state } = currentStep(frame);
   const body = { ...state, filter: current.filter === true ? state.filter : undefined };
+  const rail = railOf(frame);
   const geometry = popupGeometry({
     columns: 80,
     rows: 24,
     kind: 'standard',
     placement: 'overlay',
-    rail: frame.spec.steps.length > 1,
+    rail: rail.names.length > 1,
     bodyRows: naturalBodyRows(state.content, body),
   });
   if (!geometry.fits) throw new Error('refused');
@@ -95,8 +126,8 @@ function frameRows(
       {
         title: frame.spec.title,
         origin: frame.spec.origin,
-        steps: frame.spec.steps.map((entry) => entry.name),
-        stepIndex: frame.stepIndex,
+        steps: rail.names,
+        stepIndex: rail.index,
         legend: legendParts,
       },
       popupBody(state.content, body, geometry),
@@ -250,8 +281,103 @@ const recordNotice: Recorder = (): StateRows => {
   return states;
 };
 
+/**
+ * The `/doctor` popup in each state that changes its words or its legend, as the session puts them there: the quick tier loading and done
+ * (warning, and failed with a kept deep result), a row's detail on the Home and in a chat, the confirmation line being prepared, drawn and with
+ * nothing to send, the deep tier running, and the checks that could not run.
+ */
+const recordDoctor: Recorder = (): StateRows => {
+  const KEYED: DoctorView = {
+    quick: [
+      check('keychain', 'ok', 'OS keychain', 'reachable'),
+      check('config', 'ok', 'config', 'valid'),
+      check('tools', 'ok', 'wired tools', 'fs, process'),
+      check('provider-keys', 'warn', 'provider keys', 'no provider has a key'),
+    ],
+  };
+  const checksFrame = (view: DoctorView): PopupFrame =>
+    withContent(openFrame(doctorSpec('home', false), 1), DOCTOR_STEP.checks, checksContent(view));
+  const at = (frame: PopupFrame, step: number, content?: Parameters<typeof withContent>[2]) =>
+    ({
+      ...(content === undefined ? frame : withContent(frame, step, content)),
+      stepIndex: step,
+    }) satisfies PopupFrame;
+  const base = checksFrame(KEYED);
+  const deep: DoctorView = {
+    ...KEYED,
+    deep: {
+      checks: [check('provider:openai', 'fail', 'OpenAI', 'key test failed — 401')],
+      ageMs: 65_000,
+    },
+  };
+  return {
+    ...frameStates(
+      label({ step: 'checks', content: 'loading' }),
+      openFrame(doctorSpec('home', false), 1),
+    ),
+    ...frameStates(label({ step: 'checks', outcome: 'warning' }), base),
+    ...frameStates(label({ step: 'checks', outcome: 'failed', deep: 'kept' }), checksFrame(deep)),
+    ...frameStates(
+      label({ step: 'detail', surface: 'home' }),
+      at(
+        base,
+        DOCTOR_STEP.detail,
+        detailContent(
+          'quick',
+          check('provider-keys', 'warn', 'provider keys', 'no provider has a key'),
+          'home',
+          { offered: false },
+        ),
+      ),
+    ),
+    ...frameStates(
+      label({ step: 'detail', surface: 'home-chat' }),
+      at(
+        base,
+        DOCTOR_STEP.detail,
+        detailContent(
+          'quick',
+          check('provider-keys', 'warn', 'provider keys', 'no provider has a key'),
+          'home-chat',
+          { offered: false },
+        ),
+      ),
+    ),
+    ...frameStates(label({ step: 'line', content: 'loading' }), at(base, DOCTOR_STEP.line)),
+    ...frameStates(
+      label({ step: 'line', content: 'drawn' }),
+      at(
+        base,
+        DOCTOR_STEP.line,
+        consentContent(
+          [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
+          [],
+          'home',
+        ),
+      ),
+    ),
+    ...frameStates(
+      label({ step: 'line', content: 'nothing-to-send' }),
+      at(base, DOCTOR_STEP.line, consentContent([], [], 'home')),
+    ),
+    ...frameStates(
+      label({ step: 'checks', content: 'deep-running' }),
+      withContent(base, DOCTOR_STEP.checks, { kind: 'loading', what: DOCTOR_LOADING.deep }),
+    ),
+    ...frameStates(
+      label({ step: 'checks', content: 'error' }),
+      withContent(base, DOCTOR_STEP.checks, {
+        kind: 'error',
+        what: 'The checks could not run.',
+        next: '[r] runs them again.',
+      }),
+    ),
+  };
+};
+
 export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'popup-frame-legend': recordFrameLegend,
   'popup-native-legend': recordNativeLegend,
   'popup-notice': recordNotice,
+  'doctor-popup': recordDoctor,
 };

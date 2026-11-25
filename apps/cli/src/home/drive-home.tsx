@@ -101,6 +101,7 @@ import {
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
 import { createNotificationChannel } from '../popups/notifications.js';
 import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
@@ -371,6 +372,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // typed into a popup is seen by the guards of any card that opens next.
   const notifications = createNotificationChannel();
   let popups: PopupHost | undefined;
+  // The `/doctor` popup's host identity (ADR-0148 §8): one per Home, so a completed deep result and a deep run in flight are the Home's,
+  // whether the popup was opened on the landing or in a chat it hosts.
+  const doctorScope = {};
   let lastSavedSessionId: string | undefined;
   let finalSetupNote: string | undefined;
   const promptFlow = {
@@ -775,13 +779,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       consent: createNativeConsentPrompter(promptFlow),
       renderer: runFeed.renderer,
     }));
-    let keyless = !sampleProviderSetup(providers).some(
-      ({ availability }) => availability.status === 'usable',
-    );
+    // The key presence the Home last sampled (when it opened, and after a provider run): the `/doctor` popup falls back on it for a key it could
+    // not read in time. Booleans only, never a value.
+    let keySample: readonly DoctorKeySample[] = [];
+    const sampleKeys = (): boolean => {
+      keySample = sampleProviderSetup(providers).map(({ id, availability }) => ({
+        id,
+        usable: availability.status === 'usable',
+      }));
+      return !keySample.some((entry) => entry.usable);
+    };
+    let keyless = sampleKeys();
     const refreshKeyless = (): boolean => {
-      keyless = !sampleProviderSetup(providers).some(
-        ({ availability }) => availability.status === 'usable',
-      );
+      keyless = sampleKeys();
       return keyless;
     };
     const assertHomeAdmitting = (): void => {
@@ -910,9 +920,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         try {
           const result = await providerSetup.run(mode, intro);
           if (homeInputSealed) return;
-          keyless = !sampleProviderSetup(providers).some(
-            ({ availability }) => availability.status === 'usable',
-          );
+          keyless = sampleKeys();
           controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
         } finally {
           automaticSetupStarted = true; // finished, however it ended: the offer that waited for room is not spent a second time (round 2, K4)
@@ -946,6 +954,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
       });
+    // The Home's `/doctor` popup (ADR-0148 §8): the same probes, no MCP rows (the Home has no session), the Home's owner and clipboard.
+    const homeDoctor: DoctorPort = {
+      scope: doctorScope,
+      surface: 'home',
+      resultKey: 'home',
+      probes: doctorProbes,
+      ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+      clipboard,
+      cachedKeys: () => keySample,
+      plainGlyphs: !deps.global.color,
+    };
     // The `✓`-marked current default is the EFFECTIVE default — `[chat].default_model` resolves project → workspace
     // → global `[preferences].default_model` (ADR-0063 §1). It is re-read FRESH from disk each call (not the loaded
     // `config` snapshot) so it reflects a same-session `/models` write AND a project/workspace override AND an edit
@@ -1292,6 +1311,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           ...(permissions === undefined ? {} : { permissions }),
           // ADR-0140 §3: `/agent` opens the sheet of the agent THIS session holds (a reseat or a `/clear` wires a new chat, so a new view).
           boundAgent,
+          // ADR-0148 §8: `/doctor` opens the popup over this chat, with THIS session's read-only MCP report and owner.
+          doctor: {
+            scope: doctorScope,
+            surface: 'home-chat',
+            resultKey: built.sessionId,
+            probes: chatDoctorProbes,
+            ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            clipboard,
+            cachedKeys: () => keySample,
+            plainGlyphs: !deps.global.color,
+          },
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };
@@ -2067,6 +2097,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
         popupOpen: () => popups?.getSnapshot().open === true,
+        // `/doctor` opens its popup on the Home's host (ADR-0148 §8); its code is loaded the first time (`openDoctor`), never at start.
+        openDoctor: ({ deep, chat }) => {
+          const host = popups;
+          if (host === undefined || homeInputSealed) return;
+          void openDoctor({
+            host,
+            port: chat ?? homeDoctor,
+            deep,
+            origin: chat === undefined ? 'home' : 'chat',
+          }).catch((cause: unknown) => {
+            ownership?.surface.work.failure(cause);
+          });
+        },
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,
         history,

@@ -25,6 +25,7 @@ import { sanitizeInline } from '../render/sanitize.js';
 import {
   blankHostGlyphs,
   glyph,
+  markWithWord,
   type GlyphRole,
   type StatusGlyphRole,
 } from '../render/tui/glyphs.js';
@@ -62,8 +63,15 @@ export interface PopupListRow {
   readonly label: string;
   /** Words after the label (a status word, a short detail), drawn after two spaces. */
   readonly detail?: string | undefined;
-  /** A status the row carries, drawn as its glyph before the label (its word belongs in `detail`). */
+  /** A status the row carries, drawn as its glyph before the label (its word belongs in `detail`, or in `statusWord`). */
   readonly status?: StatusGlyphRole | undefined;
+  /**
+   * The status's own word, drawn beside its glyph (`✓ ok`, `⚠ warning`), so the glyph is never the only carrier of the status; written once
+   * when the glyph's plain form IS the word (`ok`, colour off). Absent ⇒ the glyph alone (the word is in the detail).
+   */
+  readonly statusWord?: string | undefined;
+  /** A heading inside the list (`Deep check · 3 min ago`): drawn plain and dim, with no marker; never selected (it is not `enabled`). */
+  readonly section?: true | undefined;
   /** `false` ⇒ the row cannot act: it is drawn dim with `reason`, the arrows skip it and `Enter` on it answers nothing. */
   readonly enabled?: boolean | undefined;
   readonly reason?: string | undefined;
@@ -83,8 +91,23 @@ export type PopupContent =
   | { readonly kind: 'loading'; readonly what: string }
   | { readonly kind: 'empty'; readonly what: string; readonly next: string }
   | { readonly kind: 'error'; readonly what: string; readonly next: string }
-  | { readonly kind: 'list'; readonly rows: readonly PopupListRow[] }
+  | {
+      readonly kind: 'list';
+      readonly rows: readonly PopupListRow[];
+      /** One line above the rows that says what they add up to (`⚠ doctor: 1 warning`), its glyph by role and its word beside it. */
+      readonly heading?: PopupHeading | undefined;
+    }
   | { readonly kind: 'report'; readonly lines: readonly string[] };
+
+/**
+ * The line above a list's rows: the dominant outcome's glyph, then the text. A glyph whose plain form IS the status's word (`ok`, colour off) is
+ * not repeated in front of a sentence that already says it (`doctor: all checks passed`), as the doctor's text report does.
+ */
+export interface PopupHeading {
+  readonly status: StatusGlyphRole;
+  readonly statusWord: string;
+  readonly text: string;
+}
 
 /** How long a loading body says nothing but `…` before it shows the elapsed seconds (§5). */
 export const LOADING_ELAPSED_AFTER_MS = 5000;
@@ -131,7 +154,11 @@ export function naturalBodyRows(
     case 'error':
       return filterRows + 2;
     case 'list':
-      return filterRows + Math.min(maxListRows, Math.max(1, content.rows.length));
+      return (
+        filterRows +
+        (content.heading === undefined ? 0 : 1) +
+        Math.min(maxListRows, Math.max(1, content.rows.length))
+      );
     case 'report':
       return filterRows + Math.min(maxListRows, Math.max(1, content.lines.length));
   }
@@ -148,7 +175,12 @@ function marker(selected: boolean): string {
 }
 
 function listRowText(row: PopupListRow, selected: boolean): string {
-  const status = row.status === undefined ? '' : `${glyph(row.status)} `;
+  if (row.section === true) return `  ${popupText(row.label)}`;
+  const mark = row.status === undefined ? undefined : glyph(row.status);
+  const status =
+    mark === undefined
+      ? ''
+      : `${row.statusWord === undefined ? mark : markWithWord(mark, popupText(row.statusWord))}  `;
   const enabled = row.enabled !== false;
   const detail = enabled
     ? row.detail === undefined
@@ -159,7 +191,7 @@ function listRowText(row: PopupListRow, selected: boolean): string {
 }
 
 function rowKind(row: PopupListRow, selected: boolean): SheetLine['kind'] {
-  if (row.enabled === false) return 'text';
+  if (row.enabled === false || row.section === true) return 'text';
   return selected ? 'selected' : 'row';
 }
 
@@ -217,6 +249,13 @@ function reportLines(
   return out;
 }
 
+/** A list's heading as it is drawn, in the glyph form in force: the mark, unless it is the very word of the status, then the text. */
+function headingText(heading: PopupHeading): string {
+  const mark = glyph(heading.status);
+  const lead = mark === heading.statusWord ? '' : `${mark} `;
+  return `${lead}${popupText(heading.text)}`;
+}
+
 /** The furthest a report of `total` lines scrolls in a body of `height` rows. */
 export function reportMaxOffset(total: number, height: number): number {
   return Math.max(0, total - height);
@@ -255,11 +294,15 @@ export function popupBody(
       lines.push(bodyLine('failed', `${glyph('failed')} ${popupText(content.what)}`, width));
       lines.push(bodyLine('text', popupText(content.next), width));
       break;
-    case 'list':
+    case 'list': {
+      if (content.heading !== undefined)
+        lines.push(bodyLine('message', headingText(content.heading), width));
+      const left = Math.max(1, geometry.bodyRows - lines.length);
       lines.push(
-        ...listLines(content.rows, state.selected, Math.min(room, geometry.listRows), width),
+        ...listLines(content.rows, state.selected, Math.min(left, geometry.listRows), width),
       );
       break;
+    }
     case 'report':
       lines.push(
         ...reportLines(content.lines, state.offset, Math.min(room, geometry.listRows), width),
@@ -277,8 +320,15 @@ export interface PopupFrameParts {
   /** The steps' names, in order; the rail is drawn for more than one. */
   readonly steps: readonly string[];
   readonly stepIndex: number;
-  /** The legend's items and its way back, built from the same constants the key fold reads. Items are dropped from the end when they do not fit; the way back never is. */
-  readonly legend: { readonly items: readonly LegendItem[]; readonly exit: LegendExit };
+  /**
+   * The legend's items and its way back, built from the same constants the key fold reads. Items are dropped from the end when they do not fit
+   * (or by `priority`, parallel to `items`, higher kept longer); the way back never is.
+   */
+  readonly legend: {
+    readonly items: readonly LegendItem[];
+    readonly exit: LegendExit;
+    readonly priority?: readonly number[] | undefined;
+  };
 }
 
 /** `text` filled with spaces to exactly `width` columns (it is already clipped to fit). */
@@ -373,7 +423,9 @@ function legendRow(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLin
     [],
     items.map((item, index) => ({
       item,
-      priority: leaves(item) ? Number.MAX_SAFE_INTEGER : items.length - index,
+      priority: leaves(item)
+        ? Number.MAX_SAFE_INTEGER
+        : (parts.legend.priority?.[index] ?? items.length - index),
     })),
     parts.legend.exit,
     geometry.innerWidth,

@@ -62,6 +62,7 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
+import type { DoctorPort } from '../popups/doctor-port.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
   catalogNotice,
@@ -413,6 +414,11 @@ export interface ChatDriveContext {
   readonly clipboard?: ClipboardWriter | undefined;
   /** Explicit masked review copy; independent of mouse selection preferences. */
   readonly reviewClipboard?: ClipboardWriter | undefined;
+  /**
+   * The `/doctor` popup's port (ADR-0148 §8): present on an interactive (TTY, non-`--json`) driver only, where the ink chat opens the popup for
+   * a typed or palette-selected `/doctor`; a plain or `--json` driver has none, and `/doctor` prints exactly the text report it printed before.
+   */
+  readonly doctor?: DoctorPort | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -520,6 +526,11 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /**
+   * The identity the `/doctor` popup keeps its state under for this process (ADR-0148 §8): a completed deep result and a deep run in flight
+   * outlive a `/clear` or a reseat, which mount a new chat. Absent ⇒ each session has its own.
+   */
+  readonly doctorScope?: object;
   /**
    * Which chat this handler serves, for the command list it prints (`/help`, the unknown-slash hint): a stand-alone chat, or the chat the Home
    * hosts, whose palette and `/help` list `/resume` and say where `/exit` goes (ADR-0145 §7). Absent ⇒ a stand-alone chat's, which is what the
@@ -3345,6 +3356,22 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(interactive && permissions !== undefined ? { permissions } : {}),
       // The `/agent` sheet opens only in an interactive chat: a plain or `--json` driver has no sheet, and the command prints a notice there.
       ...(interactive ? { boundAgent } : {}),
+      // The `/doctor` popup opens only in an interactive chat (ADR-0148 §8); a plain or `--json` driver prints the text report as before.
+      ...(interactive
+        ? {
+            doctor: {
+              scope: deps.doctorScope ?? wiring,
+              surface: 'standalone-chat' as const,
+              resultKey: built.sessionId,
+              probes: wiring.doctorProbes,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+              ...(hatchPortsForClipboard === undefined
+                ? {}
+                : { clipboard: hatchPortsForClipboard.clipboard }),
+              plainGlyphs: !deps.global.color,
+            },
+          }
+        : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside
@@ -3744,6 +3771,7 @@ export async function runReplLoop(
     ...deps,
     hatchPorts,
     copyOnSelect,
+    doctorScope: deps.doctorScope ?? {},
     ...(terminalOwner === undefined ? {} : { adoptTerminalMount: terminalOwner.adoptMount }),
   };
 

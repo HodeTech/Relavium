@@ -70,6 +70,7 @@ import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
+import { parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
 import {
   agentStartNotice,
   agentStartReasonOf,
@@ -236,6 +237,13 @@ export interface HomeChatSession {
    *  §3): a typed or palette-selected bare `/agent` opens the read-only sheet over this chat, from the definition the session holds (a reseat
    *  builds a new session, so it is the provider and model the chat runs on now). Absent ⇒ the command is dispatched and prints a notice. */
   readonly boundAgent?: () => BoundAgentView;
+  /**
+   * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §8): its session's probes, its read-only MCP report and its owner. A typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup
+   * over this chat through {@link HomeControllerDeps.openDoctor}, before the line reaches the chat's dispatch. Absent ⇒ the command is dispatched
+   * and prints the text report into the transcript, as before.
+   */
+  readonly doctor?: DoctorPort | undefined;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
@@ -699,6 +707,15 @@ export interface HomeControllerDeps {
    * pauses, the interrupt context) derive from the one record with the popup in it. Absent ⇒ no popup is ever open.
    */
   readonly popupOpen?: (() => boolean) | undefined;
+  /**
+   * Open the `/doctor` popup ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §8) on the
+   * Home's popup host: the Home's own (no `chat`) or the chat's in front (its {@link HomeChatSession.doctor}), on its confirmation line for a
+   * typed `/doctor --deep`. The controller only routes: it recognises the line where it opens a sheet for `/permissions`, clears the editor and
+   * calls this, so nothing reaches the Home's notice or the transcript. Absent ⇒ the Home runs the quick tier into its notice, as before.
+   */
+  readonly openDoctor?:
+    | ((request: { readonly deep: boolean; readonly chat?: DoctorPort | undefined }) => void)
+    | undefined;
   /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
@@ -2620,6 +2637,24 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
+   * `/doctor` and `/doctor --deep` typed at the landing (ADR-0148 §8): the popup opens, on its confirmation line for `--deep` (new on the Home:
+   * it ran only the quick tier). Any other argument is refused in one line that names the one it takes. `false` when the popup is not wired here (the
+   * line then goes on to the landing's own answer, the quick tier into the notice) or a chat is in front (its own routing opens it).
+   */
+  const answerDoctorOnTheLanding = (text: string): boolean => {
+    const open = deps.openDoctor;
+    if (open === undefined || state.session !== undefined) return false;
+    set({ input: emptyEditor() });
+    const doctor = parseDoctorLine(text);
+    if (doctor === undefined) {
+      set({ notice: '/doctor accepts only --deep.' });
+      return true;
+    }
+    open({ deep: doctor.deep });
+    return true;
+  };
+
+  /**
    * A line typed at the prompt, answered by the Home when it is the Home's: whether it was. The first word decides, in this order: a word only
    * the Home has, said in a chat ({@link pointToHome}); a word of {@link homeWords}; the near miss of `/providers`; any other slash line
    * ({@link answerTypedWord}). A line that does not start with a slash is a message, and `false`.
@@ -2634,6 +2669,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       runHomeWord(homeWord, text !== word);
       return true;
     }
+    if (name === 'doctor' && answerDoctorOnTheLanding(text)) return true;
     if (name === 'provider') {
       answerProviderTypo();
       return true;
@@ -3328,6 +3364,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
     runDoctor: (deep) => {
       if (exiting) return Promise.resolve();
+      // The popup where the host wires it (ADR-0148 §8): the palette's `/doctor` opens it, and nothing is written into the notice.
+      if (deps.openDoctor !== undefined) {
+        set({ input: emptyEditor() });
+        deps.openDoctor({ deep });
+        return Promise.resolve();
+      }
       const operation = async (): Promise<void> => {
         const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
         set({ notice: 'doctor: checking…' });
@@ -3447,7 +3489,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // a chat. In a chat the Home does not answer is the chat's own: the line goes down to its dispatch, which validates the tokens and
           // answers an unknown word (round 2, U1), instead of the text being dropped when the palette closes.
           const line = `/${open.state.query.trim()}`;
-          if (!managementCommand(line) && active !== undefined) sendChatLine(active, line, line);
+          if (!managementCommand(line) && active !== undefined) {
+            // A line the chat opens a surface for (`/doctor --deep`, ADR-0148 §8) opens it here too, as the same line typed at the prompt does,
+            // and never reaches the chat's dispatch (which would print its text into the transcript).
+            const overlay = overlayCommandFor(active, line);
+            if (overlay === undefined) sendChatLine(active, line, line);
+            else overlay();
+          }
         }
         return;
       case 'state':
@@ -3699,6 +3747,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (trimmed === '/agent' && active.boundAgent !== undefined)
       return () => openAgentSheet(active);
     if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
+    // `/doctor` and `/doctor --deep` open the popup over this chat (ADR-0148 §8) before the line is a submit, so the open gate never sees it as
+    // a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
+    const doctor = parseDoctorLine(trimmed);
+    const openDoctor = deps.openDoctor;
+    if (doctor !== undefined && openDoctor !== undefined && active.doctor !== undefined) {
+      const port = active.doctor;
+      return () => openDoctor({ deep: doctor.deep, chat: port });
+    }
     return undefined;
   };
 

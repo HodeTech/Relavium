@@ -9,6 +9,8 @@ import {
   currentStep,
   openFrame,
   popupLegend,
+  railOf,
+  type PopupFrame,
   type PopupSpec,
 } from '../../../popups/popup-reducer.js';
 import { withGlyphForm } from '../glyphs.js';
@@ -76,45 +78,51 @@ export function baselineCellsOf(mount: object): readonly (readonly ScreenCell[])
 
 /** Where the test popup is drawn in a cell, and its rows: the one geometry function and the frame model, in the cell's glyph form. */
 export function testPopupBox(origin: PopupOrigin): (variant: Variant) => PopupBox {
-  return (variant) => {
-    const spec = testReportPopup(origin);
-    const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
-    const frame = openFrame(spec, 1);
-    const { spec: step, state: opened } = currentStep(frame);
-    const state = { ...opened, filter: step.filter === true ? opened.filter : undefined };
-    const geometry = popupGeometry({
-      columns: variant.size.cols,
-      rows: variant.size.rows,
-      kind: 'standard',
-      placement,
-      rail: spec.steps.length > 1,
-      bodyRows: naturalBodyRows(
-        state.content,
-        state,
-        placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
-      ),
-    });
-    if (!geometry.fits) throw new Error('the test popup does not fit this cell');
-    const rows = withGlyphForm(!variant.color, () =>
-      popupFrameLines(
-        {
-          title: spec.title,
-          origin: spec.origin,
-          steps: spec.steps.map((entry) => entry.name),
-          stepIndex: 0,
-          legend: popupLegend(frame),
-        },
-        popupBody(state.content, state, geometry),
-        geometry,
-      ),
-    ).map((line) => line.text);
-    return {
-      placement,
-      top: geometry.top,
-      left: geometry.left,
-      width: geometry.width,
-      height: geometry.height,
-      rows,
-    };
+  return (variant) => popupBoxOf(openFrame(testReportPopup(origin), 1), variant);
+}
+
+/**
+ * Where a popup's frame is drawn in a cell, and its rows, from the one geometry function and the frame model exactly as the slot draws them
+ * (its rail, its legend, its body in the cell's glyph form). A product popup's surface passes the frame its host has open.
+ */
+export function popupBoxOf(frame: PopupFrame | undefined, variant: Variant): PopupBox {
+  if (frame === undefined) throw new Error('no popup is open in this cell');
+  const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
+  const { spec: step, state: opened } = currentStep(frame);
+  const state = { ...opened, filter: step.filter === true ? opened.filter : undefined };
+  const rail = railOf(frame);
+  const geometry = popupGeometry({
+    columns: variant.size.cols,
+    rows: variant.size.rows,
+    kind: frame.spec.kind ?? 'standard',
+    placement,
+    rail: rail.names.length > 1,
+    bodyRows: naturalBodyRows(
+      state.content,
+      state,
+      placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+    ),
+  });
+  if (!geometry.fits) throw new Error('the popup does not fit this cell');
+  const rows = withGlyphForm(!variant.color, () =>
+    popupFrameLines(
+      {
+        title: frame.spec.title,
+        origin: frame.spec.origin,
+        steps: rail.names,
+        stepIndex: rail.index,
+        legend: popupLegend(frame),
+      },
+      popupBody(state.content, state, geometry),
+      geometry,
+    ),
+  ).map((line) => line.text);
+  return {
+    placement,
+    top: geometry.top,
+    left: geometry.left,
+    width: geometry.width,
+    height: geometry.height,
+    rows,
   };
 }

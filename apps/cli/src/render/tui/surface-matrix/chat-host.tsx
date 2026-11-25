@@ -22,7 +22,9 @@ import {
   createNotificationChannel,
   type NotificationChannel,
 } from '../../../popups/notifications.js';
+import type { DoctorPort } from '../../../popups/doctor-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
+import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import { mountInk, type InkMount, type MountOptions } from './mount.js';
 import type { Variant } from './variants.js';
 
@@ -51,6 +53,8 @@ export interface ChatSetup {
         readonly home?: HomeSetup | undefined;
       }
     | undefined;
+  /** The chat's `/doctor` popup port: the stand-alone chat's prop, or the Home-hosted chat's session field (with the Home wired to open it). */
+  readonly doctor?: DoctorPort | undefined;
 }
 
 /** A mounted chat, whichever host owns it. */
@@ -74,6 +78,10 @@ export interface ChatMount extends InkMount {
    * lone `/`), so this is the way to run a command whatever the host.
    */
   typeLine: (line: string) => Promise<void>;
+  /** Move the popup host's clock on by `ms` (real time plus what was skipped). */
+  skip: (ms: number) => void;
+  /** The popup on top of the host's popup host, as it is now. */
+  popupFrame: () => PopupFrame | undefined;
 }
 
 const boundOf = (variant: Variant) =>
@@ -94,7 +102,9 @@ export function mountStandaloneChat(
       ? createNativePromptChannel({ history: store.keyHistory })
       : undefined;
   const notifications = createNotificationChannel();
+  let skipped = 0;
   const popups = createPopupHost({
+    now: () => performance.now() + skipped,
     history: store.keyHistory,
     notifications,
     placement: variant.renderer === 'alt' ? 'overlay' : 'replace',
@@ -117,6 +127,7 @@ export function mountStandaloneChat(
       {...(channel === undefined ? {} : { modePrompt: { ui: channel.ui, ready: () => {} } })}
       popups={popups}
       notifications={notifications}
+      {...(setup.doctor === undefined ? {} : { doctor: setup.doctor })}
       {...setup.standalone}
     />,
     variant,
@@ -147,6 +158,10 @@ export function mountStandaloneChat(
       mount.key('\r');
       await mount.settle();
     },
+    skip: (ms) => {
+      skipped += ms;
+    },
+    popupFrame: () => popups.getSnapshot().frame,
   };
 }
 
@@ -157,8 +172,11 @@ export async function mountHostedChat(
   options: MountOptions = {},
 ): Promise<ChatMount> {
   const hosted = setup.hosted;
-  const homeSetup: HomeSetup | undefined =
-    setup.nativePrompt === true ? { ...hosted?.home, nativePrompt: true } : hosted?.home;
+  const homeSetup: HomeSetup | undefined = {
+    ...hosted?.home,
+    ...(setup.nativePrompt === true ? { nativePrompt: true } : {}),
+    ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
+  };
   const homeDeps = homeSetup?.deps;
   const submitted: string[] = [];
   const home: HomeMount = mountHome(
@@ -185,6 +203,7 @@ export async function mountHostedChat(
           shouldStop: () => false,
           stopReason: () => 'exit',
           teardown: () => Promise.resolve(),
+          ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
           ...hosted?.session,
         };
       },

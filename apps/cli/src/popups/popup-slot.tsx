@@ -63,7 +63,7 @@ import {
   type PopupAcknowledgement,
 } from './popup-acknowledgement.js';
 import type { PopupHost, PopupHostSnapshot } from './popup-host.js';
-import { currentStep, popupLegend } from './popup-reducer.js';
+import { currentStep, popupLegend, railOf } from './popup-reducer.js';
 import type { LegendExit, LegendItem } from '../render/tui/legend.js';
 
 type Size = { readonly cols: number; readonly rows: number };
@@ -166,7 +166,7 @@ function HostPopup(
             rows: size.rows,
             kind: frame.spec.kind ?? 'standard',
             placement: snapshot.placement,
-            rail: frame.spec.steps.length > 1,
+            rail: railOf(frame).names.length > 1,
             bodyRows: naturalBodyRows(
               state.content,
               { ...state, filter },
@@ -203,11 +203,12 @@ function HostPopup(
       />
     );
   const { spec, state } = currentStep(frame);
+  const rail = railOf(frame);
   const parts: PopupFrameParts = {
     title: frame.spec.title,
     origin: frame.spec.origin,
-    steps: frame.spec.steps.map((step) => step.name),
-    stepIndex: frame.stepIndex,
+    steps: rail.names,
+    stepIndex: rail.index,
     legend: legendParts,
   };
   const lines = withGlyphForm(!color, () =>

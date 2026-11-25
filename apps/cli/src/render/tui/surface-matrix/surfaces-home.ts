@@ -29,6 +29,14 @@ import {
   TWO_GATES_RUN,
   parkedRunSetup,
 } from './home-fixtures.js';
+import {
+  DOCTOR_FIXTURE,
+  DOCTOR_LANDMARKS,
+  doctorPopupBox,
+  doctorPortFor,
+  driveDoctor,
+  type DoctorState,
+} from './doctor-fixture.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
 import {
   recordBaseline,
@@ -67,6 +75,37 @@ function openCard(
 }
 
 const NATIVE: HomeSetup = { nativePrompt: true };
+
+/**
+ * Type a command into the landing key by key, as the controller reads them (a paste is refused below the floor; a key is not), then Enter: the
+ * line goes through the Home's own routing, which opens a popup where the command has one.
+ */
+async function typeKeys(m: HomeMount, line: string): Promise<void> {
+  for (const letter of line) m.controller.handleKey(letter, {});
+  m.controller.handleKey('', { return: true });
+  await m.settle();
+}
+
+/** The Home's `/doctor` popup in one state: the landing behind it, the command typed and routed, the popup's own rows in its box. */
+function homeDoctorSurface(state: DoctorState, title: string): HomeSurface {
+  return {
+    host: 'home',
+    id: `home.doctor-${state}`,
+    title,
+    exitKey: 'Esc',
+    landmark: DOCTOR_LANDMARKS[state],
+    ...(state === 'checks' ? { selectedRow: 'OS keychain' } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: doctorPopupBox,
+    setup: () => ({ doctor: doctorPortFor('home', DOCTOR_FIXTURE[state]) }),
+    notes:
+      'the body behind the popup: the empty, keyed landing; the popup is opened by typing /doctor, through the Home’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveDoctor(m, () => typeKeys(m, '/doctor'), state);
+    },
+  };
+}
 
 const openTab =
   (tab: 'defined' | 'active' | 'history' | 'agents' | 'sessions' | 'permissions') =>
@@ -297,14 +336,22 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.notice',
-    title: 'A /doctor report as the Home’s notice',
+    // `/doctor` is a popup now (ADR-0148 §8) and writes no notice; a command that answers in a line still does.
+    title: 'A command’s one-line answer as the Home’s notice (`/clear` with no conversation)',
     exitKey: 'Ctrl+C',
-    landmark: 'doctor: all checks passed',
+    landmark: 'no conversation to clear',
     open: async (m) => {
-      await typeCommand(m, '/doctor');
+      await typeCommand(m, '/clear');
       await m.until(() => m.controller.getSnapshot().notice !== undefined);
     },
   },
+  homeDoctorSurface('checks', 'The /doctor popup: the quick tier’s checks'),
+  homeDoctorSurface('detail', 'The /doctor popup: a row’s detail step'),
+  homeDoctorSurface('line', 'The /doctor popup: the deep tier’s confirmation line'),
+  homeDoctorSurface('running', 'The /doctor popup: the deep tier running'),
+  homeDoctorSurface('done', 'The /doctor popup: the deep result, with its age'),
+  homeDoctorSurface('empty', 'The /doctor popup: a line with nothing to send'),
+  homeDoctorSurface('error', 'The /doctor popup: checks that could not run'),
   {
     host: 'home',
     id: 'home.tab-defined',

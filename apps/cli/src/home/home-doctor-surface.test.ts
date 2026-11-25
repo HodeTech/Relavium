@@ -10,14 +10,15 @@ import { captureIo } from '../test-support.js';
 import { driveHome } from './drive-home.js';
 
 /**
- * The Home's `/doctor` reads the notice in the TUI's words (MVP-11 Step 2 review round 2, N1): the real probes (no injected `doctorProbes`),
- * a home that holds a global workflow, and the report the Home draws. A new file, small on purpose: the Home's own drive tests are large.
+ * The Home's `/doctor` reads in the TUI's words (MVP-11 Step 2 review round 2, N1): the real probes (no injected `doctorProbes`), a home that
+ * holds a global workflow, and the report the Home draws. Since MVP-11 Step 4b the report is the `/doctor` POPUP (ADR-0148 §8), which writes
+ * nothing into the Home's notice. A new file, small on purpose: the Home's own drive tests are large.
  */
 vi.mock('../secrets/os-keychain.js', () => ({
   createOsKeychainStore: () => ({ get: () => null, set: () => undefined, delete: () => false }),
 }));
 
-it('the Home’s /doctor names /import and no shell command', async () => {
+it('the Home’s /doctor opens its popup, which names /import and no shell command, and writes no notice', async () => {
   const client = createClient(':memory:');
   runMigrations(client.db);
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-home-doctor-surface-cwd-'));
@@ -81,15 +82,31 @@ it('the Home’s /doctor names /import and no shell command', async () => {
     controller.handleKey('/', {});
     for (const char of 'doctor') controller.handleKey(char, {});
     controller.handleKey('', { return: true });
-    await vi.waitFor(
-      () => expect(controller.getSnapshot().notice).toContain('Workflows or agents in'),
-      {
-        timeout: 5000,
-      },
-    );
-    const report = controller.getSnapshot().notice ?? '';
-    expect(report).toContain('/import');
-    expect(report).not.toContain('relavium import');
+    const popups = props?.popups;
+    if (popups === undefined) throw new Error('the Home has a popup host');
+    /** The rows of the popup's checks, as words. */
+    const report = (): string => {
+      const content = popups.getSnapshot().frame?.steps[0]?.content;
+      return content?.kind === 'list'
+        ? content.rows.map((row) => `${row.label}: ${row.detail ?? ''}`).join('\n')
+        : '';
+    };
+    await vi.waitFor(() => expect(report()).toContain('Workflows or agents in'), {
+      timeout: 5000,
+    });
+    expect(report()).toContain('/import');
+    expect(report()).not.toContain('relavium import');
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    popups.closeAll('escape');
+    // The deep tier is new on the Home: a typed `/doctor --deep` opens the popup on its confirmation line (it still needs its chord).
+    for (const char of '/doctor --deep') controller.handleKey(char, {});
+    controller.handleKey('', { return: true });
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(2), {
+      timeout: 5000,
+    });
+    expect(popups.getSnapshot().frame?.spec.id).toBe('doctor');
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    popups.closeAll('escape');
     controller.handleKey('c', { ctrl: true });
     controller.handleKey('c', { ctrl: true });
   } finally {

@@ -28,6 +28,7 @@ import {
   testPopupBox,
   testReportPopup,
 } from './popup-fixture.js';
+import { DOCTOR_LANDMARKS, doctorPopupBox, doctorPortFor, driveDoctor } from './doctor-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
@@ -302,7 +303,36 @@ const typeLineAndWait =
     await m.until(() => m.text().includes(landmark));
   };
 
+/** A chat's `/doctor` popup in one state: the short exchange behind it, the command typed into the chat and routed by its host. */
+function chatDoctorSurface(
+  state: 'checks' | 'line' | 'done',
+  title: string,
+): ChatSurfaceDefinition {
+  return {
+    name: `doctor-${state}`,
+    title,
+    exitKey: 'Esc',
+    landmark: DOCTOR_LANDMARKS[state],
+    ...(state === 'checks' ? { selectedRow: 'OS keychain' } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: doctorPopupBox,
+    setup: () => ({
+      seed: SHORT_CONVERSATION,
+      doctor: doctorPortFor('standalone-chat', 'keyed'),
+    }),
+    notes:
+      'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /doctor, through the chat host’s routing',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveDoctor(m, () => m.typeLine('/doctor'), state);
+    },
+  };
+}
+
 export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
+  chatDoctorSurface('checks', 'The /doctor popup over the chat: the quick tier’s checks'),
+  chatDoctorSurface('line', 'The /doctor popup over the chat: the deep tier’s confirmation line'),
+  chatDoctorSurface('done', 'The /doctor popup over the chat: the deep result with MCP rows'),
   {
     name: 'popup',
     title: 'A popup over the chat (the test layer’s report popup)',

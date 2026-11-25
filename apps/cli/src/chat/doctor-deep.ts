@@ -6,6 +6,7 @@ import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
   providerDisplayName,
+  providerEndpointOrigin,
   validateProviderKey,
   type ProviderResolver,
 } from '../engine/providers.js';
@@ -86,6 +87,74 @@ async function probeProvider(
   return result.ok
     ? okCheck(`provider:${id}`, providerDisplayName(id), result.detail)
     : failCheck(`provider:${id}`, providerDisplayName(id), sanitizeInline(result.detail));
+}
+
+// ── the consented deep tier (the doctor popup, ADR-0148 §8) ───────────────────────
+
+/**
+ * One provider the deep tier's confirmation line names: its id and the ORIGIN its key would be sent to, both frozen when the line was armed
+ * (`providerEndpointOrigin`, the resolver's pinned destination). The run is given exactly these and refuses anything else.
+ */
+export interface ConsentTarget {
+  readonly providerId: ProviderId;
+  readonly origin: string;
+}
+
+/** What the consented run needs: the resolver it reads the keys and the adapters from, the lifetime its requests run under, and their bound. */
+export interface ConsentedProbeDeps {
+  readonly resolver: ProviderResolver;
+  /** Always given: its signal aborts every request (a closed popup, `Esc`, the owner stopping), and its `work` retains each producer. */
+  readonly lifecycle: NonNullable<Parameters<typeof validateProviderKey>[4]>;
+  /** Per-provider request bound (ms), threaded to {@link validateProviderKey}; default there. */
+  readonly timeoutMs?: number;
+}
+
+/** What a target says when it was not contacted, as its row's detail: the line named another destination, or the key is gone. */
+export const ENDPOINT_CHANGED_DETAIL =
+  'not contacted: its endpoint changed after the confirmation was shown, so nothing was sent';
+export const KEY_GONE_DETAIL =
+  'not contacted: its key could not be read after the confirmation, so nothing was sent';
+
+/**
+ * Validate the keys of EXACTLY the providers the confirmation line named, each only at the origin the line named for it (ADR-0148 §8). No other
+ * id is read or contacted: a key stored after the line was armed is not in `targets`. For each target, in ONE synchronous step before its
+ * request starts, the adapter is taken from the resolver and its pinned destination is read again: a destination that is not the frozen origin
+ * is refused with a `fail` row and no request is made, and the key is read only after that check passed. The request goes through
+ * {@link validateProviderKey} (the seam, its redaction and its bound), whose abort reaches the request.
+ */
+export async function runConsentedProviderChecks(
+  targets: readonly ConsentTarget[],
+  deps: ConsentedProbeDeps,
+): Promise<readonly DoctorCheck[]> {
+  deps.lifecycle.assertAdmitting();
+  const checks = targets.map((target): Promise<DoctorCheck> => {
+    const id = target.providerId;
+    const label = providerDisplayName(id);
+    const provider = deps.resolver.resolveProvider(id);
+    // Read in the same synchronous step as the adapter above and the request below: what is checked is what the request is built from.
+    if (providerEndpointOrigin(deps.resolver, id) !== target.origin)
+      return Promise.resolve(failCheck(`provider:${id}`, label, ENDPOINT_CHANGED_DETAIL));
+    if (provider === undefined)
+      return Promise.resolve(failCheck(`provider:${id}`, label, 'no adapter'));
+    let key: string;
+    try {
+      key = deps.resolver.keyFor(id);
+    } catch {
+      return Promise.resolve(failCheck(`provider:${id}`, label, KEY_GONE_DETAIL));
+    }
+    return validateProviderKey(
+      provider,
+      key,
+      KNOWN_PROVIDERS[id].testModel,
+      deps.timeoutMs,
+      deps.lifecycle,
+    ).then((result) =>
+      result.ok
+        ? okCheck(`provider:${id}`, label, result.detail)
+        : failCheck(`provider:${id}`, label, sanitizeInline(result.detail)),
+    );
+  });
+  return Promise.all(checks);
 }
 
 // ── MCP status (read-only — reports the live session, never connects) ────────────

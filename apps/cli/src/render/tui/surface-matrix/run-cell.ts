@@ -1,5 +1,7 @@
 import type { DOMElement } from 'ink';
 
+import type { PopupFrame } from '../../../popups/popup-reducer.js';
+
 import { baselineCellsOf, baselineOf } from './popup-fixture.js';
 import {
   checkBackdropDim,
@@ -34,6 +36,8 @@ export interface Observable {
   raw: () => string;
   /** Ink's root node, for the overlay-layer property; absent ⇒ not asserted. */
   root?: () => DOMElement | undefined;
+  /** The popup the host has open now, for a product popup's box. */
+  popupFrame?: () => PopupFrame | undefined;
 }
 
 const matches = (text: string, pattern: string | RegExp): boolean =>
@@ -66,7 +70,7 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
         message: 'the surface recorded no frame before it opened the popup',
       });
     else {
-      const box = entry.popup(variant);
+      const box = entry.popup(variant, mount.popupFrame?.());
       violations.push(...checkPopupBox(observation, before, box));
       // How the body looks behind the popup: every cell of it dim (alternate screen, colour on), none dimmed by us otherwise (ADR-0148 §4).
       const cellsBefore = baselineCellsOf(mount);

@@ -79,6 +79,8 @@ export interface ChordGuard {
   readonly begin: () => void;
   /** The card's exact frame was just measured and flushed (a new frame restarts the dwell). */
   readonly shown: () => void;
+  /** When the card's current frame was acknowledged (the dwell origin), or `undefined` while it has not been. Read only, never a second clock. */
+  readonly shownAt: () => number | undefined;
   /**
    * Whether this chord answers. An affirmative one needs every layer clear AND `painted`; a rejection answers at once unless `strict`
    * says it is as consequential as an approval (default: only an affirmative chord is strict). When a strict chord does not count and
@@ -126,6 +128,7 @@ export function createChordGuard(options: {
     shown: () => {
       shownAt = options.now();
     },
+    shownAt: () => shownAt,
     decide: (stamp, chord, painted, strict = chord === 'allow') => {
       if (!strict) {
         history.lastResolvedAt = stamp.now;

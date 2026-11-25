@@ -443,8 +443,9 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
       },
     ],
     // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home capability (pre-chat
-    // diagnostics), so it is placed on every surface (homeReplCtx wires a live impl). The Home refuses `--deep` today (N5), so its row does
-    // not advertise it.
+    // diagnostics), so it is placed on every surface. On every interactive surface the hosts open the `/doctor` popup before this runs
+    // (ADR-0148 §8), and a typed `--deep` opens it on its confirmation line, on the Home too; the Home's row keeps its words (a wording change
+    // of the palette is a commit of its own). A plain, `--json` or one-shot chat runs this and prints the text report.
     run: (ctx, args) => ctx.runDoctor(args.includes('--deep')),
     placements: {
       home: { group: 'check', rank: 10, description: 'Check your setup.', surface: 'popup' },

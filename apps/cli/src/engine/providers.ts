@@ -79,6 +79,30 @@ export function providerEndpointContext(resolver: ProviderResolver, id: Provider
 }
 
 /**
+ * The ORIGIN a provider's key would be sent to, read from the resolver's pinned destination ({@link providerEndpointContext}: the one string
+ * the resolver captures beside the adapter it built, `Official endpoint: <origin>` or `Custom endpoint: <origin>`), or `undefined` when it
+ * cannot be known: a custom endpoint that was refused or whose origin the resolver does not carry, or anything that is not an `https:` origin
+ * exactly. Never the provider's name or its known base URL alone: a stored custom endpoint changes where the key goes, and only the resolver
+ * knows which one its adapter was built for (the doctor's deep-tier consent names this, ADR-0148 §8).
+ */
+export function providerEndpointOrigin(
+  resolver: ProviderResolver,
+  id: ProviderId,
+): string | undefined {
+  const pinned = /^(?:Official|Custom) endpoint: (\S+)$/u.exec(
+    providerEndpointContext(resolver, id),
+  );
+  const written = pinned?.[1];
+  if (written === undefined) return undefined;
+  try {
+    const url = new URL(written);
+    return url.protocol === 'https:' && url.origin === written ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether `resolver` can resolve a key for `id` — a boolean, never the key. Prefers the resolver's own
  * {@link ProviderResolver.hasKey} (the fault-preserving path production always provides); falls back to a
  * `keyFor` try/probe only when a (test) stub omits it. Centralizes the "does this provider have a key" question

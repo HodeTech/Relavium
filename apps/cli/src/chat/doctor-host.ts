@@ -90,5 +90,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
     }),
     deepMcp: () =>
       Promise.resolve(mcpSessionChecks(inputs.agentMcpServers ?? [], inputs.mcpSkipped ?? [])),
+    // A reference, never a call: the popup reads presence and the pinned destinations through it, in the work it starts.
+    providers: inputs.resolver,
   };
 }

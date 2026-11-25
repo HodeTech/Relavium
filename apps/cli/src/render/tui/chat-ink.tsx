@@ -110,6 +110,7 @@ import {
 import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
+import { openDoctor, parseDoctorLine, type DoctorPort } from '../../popups/doctor-port.js';
 import type { PopupPlacement } from '../../popups/geometry.js';
 import { nativeFramed } from '../../popups/native-popup-body.js';
 import {
@@ -348,6 +349,13 @@ interface ChatAppProps {
   readonly popups?: PopupHost | undefined;
   /** The chat's one notification channel, drawn on the hint row. Absent ⇒ the chat builds its own. */
   readonly notifications?: NotificationChannel | undefined;
+  /**
+   * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §8). When present, a typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup instead of dispatching, as `/permissions`
+   * opens its sheet: before the line is counted as a submit, so the popup's open gate never takes the command's own line for a turn in flight.
+   * Absent ⇒ the command is dispatched and prints the text report into the transcript.
+   */
+  readonly doctor?: DoctorPort | undefined;
 }
 
 interface ChatViewProps {
@@ -1678,6 +1686,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openAgentSheet();
       return;
     }
+    // `/doctor` and `/doctor --deep` open the doctor popup (ADR-0148 §8) here, BEFORE the submit is marked in flight: the popup host's open
+    // gate reads a submit in flight as a turn, and this line is not one. Any other form dispatches and is rejected there.
+    const doctor = props.doctor === undefined ? undefined : parseDoctorLine(message);
+    if (doctor !== undefined && props.doctor !== undefined && popups !== undefined) {
+      const port = props.doctor;
+      void openDoctor({ host: popups, port, deep: doctor.deep, origin: 'chat' }).catch(
+        (cause: unknown) => {
+          props.onError(cause);
+        },
+      );
+      return;
+    }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
     // after-turn auto-compaction, ADR-0062) — cleared in EVERY settle branch (success / reject / defensive catch).
     applySubmitBusy(true);
@@ -2744,6 +2764,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           modelPicker: ctx.modelPicker,
           permissions: ctx.permissions,
           boundAgent: ctx.boundAgent,
+          // `/doctor` opens its popup over this chat (ADR-0148 §8); the plain and `--json` drivers have none and print the text report.
+          doctor: ctx.doctor,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
           // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
           mentionReader: ctx.mentionReader,

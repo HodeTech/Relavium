@@ -16,7 +16,9 @@ import {
   createNotificationChannel,
   type NotificationChannel,
 } from '../../../popups/notifications.js';
+import { openDoctor, type DoctorPort } from '../../../popups/doctor-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
+import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import type { ChatStoreController } from '../chat-store.js';
 import { createChatStore } from '../chat-store.js';
 import {
@@ -81,6 +83,11 @@ export interface HomeSetup {
   readonly getSize?: (() => { cols: number; rows: number }) | undefined;
   /** How the Home hears a resize, for a test that resizes. Default: it never does. */
   readonly subscribeResize?: ((onResize: () => void) => () => void) | undefined;
+  /**
+   * The Home's `/doctor` popup port: given, the controller opens the popup on the Home's popup host as `driveHome` wires it (`openDoctor`), for
+   * the landing and, with a session whose `doctor` is set, for the chat it hosts. Absent ⇒ `/doctor` runs the quick tier into the notice.
+   */
+  readonly doctor?: DoctorPort | undefined;
 }
 
 export type NativePromptChannel = ReturnType<typeof createNativePromptChannel>;
@@ -103,6 +110,10 @@ export interface HomeMount extends InkMount {
   homePainted: () => boolean;
   /** The same for the open gate card's exact snapshot. */
   cardPainted: () => boolean;
+  /** Move the popup host's clock on by `ms` (it is real time plus what was skipped): a dwell or a settle passes without a sleep. */
+  skip: (ms: number) => void;
+  /** The popup on top of the Home's popup host, as it is now (the frame a popup surface's box is computed from). */
+  popupFrame: () => PopupFrame | undefined;
 }
 
 /** Bytes of keys the Home's one input owner forwards, by name (what a terminal sends). */
@@ -136,11 +147,16 @@ export function mountHome(
   const channel =
     setup.nativePrompt === true ? createNativePromptChannel({ history: chordHistory }) : undefined;
   const notifications = createNotificationChannel();
+  // The popup host's clock is real time plus what a surface skipped: a dwell or a settle can pass at once, and nothing else moves.
+  let skipped = 0;
+  const popupNow = (): number => performance.now() + skipped;
   const popups = createPopupHost({
+    now: popupNow,
     history: chordHistory,
     notifications,
     placement: variant.renderer === 'alt' ? 'overlay' : 'replace',
   });
+  const doctor = setup.doctor;
   let rendererFlush: NoticeFlush | undefined;
   const context: HomeContext = {
     channel,
@@ -170,6 +186,25 @@ export function mountHome(
     schedule: () => () => {},
     chordHistory,
     popupOpen: () => popups.getSnapshot().open,
+    ...(doctor === undefined
+      ? {}
+      : {
+          openDoctor: ({
+            deep,
+            chat,
+          }: {
+            readonly deep: boolean;
+            readonly chat?: DoctorPort | undefined;
+          }) => {
+            void openDoctor({
+              host: popups,
+              port: chat ?? doctor,
+              deep,
+              origin: chat === undefined ? 'home' : 'chat',
+              now: popupNow,
+            });
+          },
+        }),
     onExit: () => {},
     onError: (cause) => {
       throw cause;
@@ -231,6 +266,10 @@ export function mountHome(
     chatStore,
     text: () => mount.frame().join('\n'),
     homePainted: () => homeVisible?.(controller.getSnapshot()) === true,
+    skip: (ms) => {
+      skipped += ms;
+    },
+    popupFrame: () => popups.getSnapshot().frame,
     cardPainted: () => {
       const screen = controller.getSnapshot().screen;
       return screen?.kind === 'gate-card' && cardVisible?.(screen.card.getSnapshot()) === true;

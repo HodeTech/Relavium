@@ -337,12 +337,15 @@ describe('late results (ADR-0148 §2)', () => {
   it('a result for the popup that is open lands in its step', () => {
     const { host, openSettled } = rig();
     let context: PopupContext | undefined;
-    openSettled(spec({ steps: [{ ...LIST, content: { kind: 'loading', what: 'x' } }] }), {
+    // The context is taken from a control on a step that can answer (a loading step answers nothing: its keys do not act, ADR-0148 §5), and
+    // the step is then put in its loading state, as a command that starts a load does.
+    openSettled(spec(), {
       control: (c) => {
         context = c;
       },
     });
     host.input('r', {});
+    expect(context?.setContent(0, { kind: 'loading', what: 'x' })).toBe(true);
     expect(
       context?.setContent(0, { kind: 'empty', what: 'Nothing here.', next: 'Try again.' }),
     ).toBe(true);

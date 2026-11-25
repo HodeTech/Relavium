@@ -40,6 +40,9 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
     'popup-rich',
     'a popup over a chat with markdown, a tool row and a draft: the backdrop-dim body (ADR-0148 §4)',
   ],
+  ['doctor-checks', 'the /doctor popup: the quick tier’s checks'],
+  ['doctor-line', 'the /doctor popup: the deep tier’s confirmation line'],
+  ['doctor-done', 'the /doctor popup: the deep result with the session’s MCP rows'],
 ];
 
 export const PRODUCT_SURFACES: readonly ProductSurface[] = [
@@ -58,7 +61,15 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.loading', 'the Home while a chat is being built'),
   row('home.palette', 'the / palette on the landing'),
   row('home.help', 'the /help screen'),
-  row('home.notice', 'a /doctor report as the Home’s notice'),
+  row('home.notice', 'a command’s one-line answer as the Home’s notice'),
+  // The `/doctor` popup (ADR-0148 §8), in each of its states.
+  row('home.doctor-checks', 'the /doctor popup: the quick tier’s checks'),
+  row('home.doctor-detail', 'the /doctor popup: a row’s detail step'),
+  row('home.doctor-line', 'the /doctor popup: the deep tier’s confirmation line'),
+  row('home.doctor-running', 'the /doctor popup: the deep tier running'),
+  row('home.doctor-done', 'the /doctor popup: the deep result, with its age'),
+  row('home.doctor-empty', 'the /doctor popup: a confirmation line with nothing to send'),
+  row('home.doctor-error', 'the /doctor popup: checks that could not run'),
   // The screens of the slot: the tab host and the run view.
   row('home.tab-defined', 'the Defined tab'),
   row('home.tab-active', 'the Active tab'),

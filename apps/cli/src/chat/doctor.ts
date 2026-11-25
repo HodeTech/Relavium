@@ -1,5 +1,6 @@
 import type { ToolHost } from '@relavium/core';
 
+import type { ProviderResolver } from '../engine/providers.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
 import { glyphOf, markWithWord, type StatusGlyphRole } from '../render/tui/glyphs.js';
 
@@ -110,6 +111,12 @@ export interface DoctorProbes {
   readonly deepProviders?: () => Promise<readonly DoctorCheck[]>;
   /** `--deep`: probe each declared MCP server (bounded timeout, closed immediately). */
   readonly deepMcp?: () => Promise<readonly DoctorCheck[]>;
+  /**
+   * The provider seam the doctor POPUP reads (ADR-0148 §8): key PRESENCE for its provider-keys row and its consent line (never a value), the
+   * pinned destination the line names, and the consented deep requests. Unread by {@link runDoctorChecks}, so the text report is unchanged.
+   * Absent on a probe set that has none (an injected fake): the popup then says the keys cannot be checked.
+   */
+  readonly providers?: ProviderResolver;
 }
 
 /** Run the staged checks: the fast tier always, the `--deep` tier when requested AND its probes are wired. */
@@ -135,6 +142,14 @@ export async function runDoctorChecks(deep: boolean, probes: DoctorProbes): Prom
 }
 
 // ── rendering ────────────────────────────────────────────────────────────────
+
+/** The glyph-table role of a check status and the word that stands beside its glyph (`completed` and `ok`, `warning`, `failed`). */
+export function doctorAppearance(status: DoctorStatus): {
+  readonly role: StatusGlyphRole;
+  readonly word: string;
+} {
+  return DOCTOR_APPEARANCE[status];
+}
 
 /** The glyph-table role of each check status, and the word that stands beside its glyph (the check's own, not the table's: a check is not `completed`). */
 const DOCTOR_APPEARANCE: Readonly<
