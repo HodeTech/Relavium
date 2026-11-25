@@ -119,6 +119,7 @@ export function popupBoxOf(
         origin: frame.spec.origin,
         steps: rail.names,
         stepIndex: rail.index,
+        done: rail.done,
         legend: popupLegend(frame, reportPageRows(geometry, state.filter !== undefined)),
         notice,
       },

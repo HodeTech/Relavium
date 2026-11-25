@@ -15,7 +15,7 @@ import { scrubPopupText, wrapHanging } from './popup-text.js';
 import type { WorkflowsReading } from './report-port.js';
 
 /** The loading words while the catalog is scanned. */
-export const WORKFLOWS_LOADING = 'Reading the project catalog';
+const WORKFLOWS_LOADING = 'Reading the project catalog';
 
 /** What the error state says first when the scan ran and found a fault: the fault's own words follow on the next line. */
 export const WORKFLOWS_FAULT = 'Could not list the workflows.';

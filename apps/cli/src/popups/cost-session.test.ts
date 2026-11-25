@@ -117,7 +117,9 @@ describe('the report (ADR-0148 §10)', () => {
     await settleWork();
     expect(r.step()).toBe(COST_STEP.release);
     expect(r.content().kind).toBe('empty');
-    expect(r.words()).toContain('Nothing is held against this session’s cap.');
+    expect(r.words()).toContain(
+      'Nothing is held against this session’s cap, so there is nothing to release.',
+    );
     expect(r.content(COST_STEP.cost).kind).toBe('report');
     expect(r.words()).not.toContain('could not be written durably');
     r.clock.advance(600);
@@ -302,7 +304,9 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
     expect(r.step()).toBe(COST_STEP.cost);
-    expect(r.notifications.getSnapshot().current?.text).toBe('Not released: not yet shown.');
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Nothing released: pressed too soon. [r] asks again.',
+    );
   });
 
   it('Ctrl+Y 799 ms after the acknowledged frame releases nothing; 800 ms releases', async () => {
@@ -400,7 +404,9 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     await settleWork();
     expect(r.step()).toBe(COST_STEP.release);
     expect(r.content().kind).toBe('empty');
-    expect(r.words()).toContain('Nothing is held against this session’s cap');
+    expect(r.words()).toContain(
+      'Nothing is held against this session’s cap, so there is nothing to release.',
+    );
     r.clock.advance(2000);
     ctrlY(r);
     expect(fake.release).not.toHaveBeenCalled();
@@ -467,6 +473,45 @@ describe('the answer (what the release does, and what it will not do)', () => {
     arm(r, 900);
     ctrlY(r);
     expect(r.words()).toContain('Released ~$0.000007 back to the cap.');
+  });
+
+  it('reports the durable half too when it is the larger: the record held what the governor did not', async () => {
+    const r = reportRig();
+    const fake = fakeCost({ held: 450, release: () => ({ durable: 700, live: 0 }) });
+    r.open({ cost: fake.port }, { kind: 'cost', release: false });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    arm(r, 900);
+    ctrlY(r);
+    // Money cleared from the record is a release, not "nothing was held".
+    expect(r.words()).toContain('Released ~$0.000007 back to the cap.');
+    expect(r.words()).not.toContain('Nothing was held');
+  });
+
+  it('after an answer that found a turn running, the turn ends, Esc goes back and [r] shows the line again: the chord then releases once', async () => {
+    const { r, fake } = await opened(450);
+    arm(r, 900);
+    r.setTurn(true);
+    ctrlY(r);
+    expect(r.content().kind).toBe('empty');
+    expect(fake.release).not.toHaveBeenCalled();
+    // The turn ends. `Esc` goes back to the report, and `[r]` asks again: the step is the line, not the empty state the answer left on it.
+    r.setTurn(false);
+    r.clock.advance(600);
+    r.press('', ESC);
+    expect(r.step()).toBe(COST_STEP.cost);
+    r.clock.advance(600);
+    arm(r, 900);
+    expect(r.step()).toBe(COST_STEP.release);
+    expect(r.content().kind).toBe('report');
+    expect(r.words()).toContain('lifts about $0.0000045');
+    expect(r.words()).toContain('It cannot be undone.');
+    ctrlY(r);
+    expect(fake.release).toHaveBeenCalledOnce();
+    expect(fake.heldNow()).toBe(0);
+    expect(r.step()).toBe(COST_STEP.done);
+    expect(r.words()).toContain('Released ~$0.0000045 back to the cap.');
   });
 
   it('releases nothing while a turn is in flight at the answer, says so, and leaves the line unanswerable', async () => {

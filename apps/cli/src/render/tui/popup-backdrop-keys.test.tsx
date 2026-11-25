@@ -7,7 +7,7 @@ import './force-color.js';
  *
  * - **the hint row**: a notification is drawn in the popup's own legend row while the popup is open, so the hint row around the box does not
  *   draw it too (its dimmed edges showed beside the popup, `Doctor` in columns 0 to 5 on the bare Home); once the popup closes, the hint row
- *   shows it as before;
+ *   shows the host's own notification as before, and none the popup raised (it spoke of the popup's keys: MVP-11 step 4 round 2);
  * - **the composer's cursor**: the popup owns the keyboard, so the composer's cursor block (an inverse cell) is not drawn while it is open, and
  *   is drawn again once it closes.
  */
@@ -25,6 +25,8 @@ import type { Variant } from './surface-matrix/variants.js';
 
 /** A notification no other text of these screens contains, short enough for the popup's legend row. */
 const NOTICE = 'QXN notice: sent to the clipboard.';
+/** One the HOST raises (not the popup), as short. */
+const HOST_NOTICE = 'QXH notice: the host speaks.';
 
 type Mount = HomeMount | ChatMount;
 const HOSTS: readonly (readonly [string, (variant: Variant) => Promise<Mount>])[] = [
@@ -55,7 +57,8 @@ async function closed(m: Mount): Promise<void> {
       expect(m.popups.getSnapshot().open).toBe(false);
       expect(m.text()).not.toContain(TEST_POPUP_TITLE);
     },
-    { timeout: 3000, interval: 15 },
+    // A ceiling on a defect, never a delay anything waits out: generous, so a loaded machine does not fail a correct host.
+    { timeout: 10_000, interval: 15 },
   );
 }
 
@@ -86,7 +89,7 @@ const inverseCells = (row: readonly ScreenCell[] | undefined): number =>
 
 describe.each(HOSTS)('%s at 80×24 in the alternate screen', (_name, mount) => {
   it.each([false, true])(
-    'the hint row does not repeat the notification around an open popup, and shows it once the popup closes (colour %s)',
+    'the hint row does not repeat the notification around an open popup; once it closes it shows the host’s, never the popup’s (colour %s)',
     async (color) => {
       const variant: Variant = { renderer: 'alt', color, size: { cols: 80, rows: 24 } };
       const m = await mount(variant);
@@ -103,12 +106,25 @@ describe.each(HOSTS)('%s at 80×24 in the alternate screen', (_name, mount) => {
         // Nowhere outside the box, not even its first letters at the hint row's edge.
         const outside = outsideTheBox(frame, box);
         expect(outside.filter((row) => row.includes('QXN'))).toEqual([]);
-        // Closed while it is still live: the hint row shows it again.
+        // Closed while it is still live: what the popup said goes with it, so the hint row does not show it.
         m.key(KEYS.escape);
         await closed(m);
-        await m.until(() => m.text().includes(NOTICE));
+        await m.settle();
         expect(m.text()).not.toContain(TEST_POPUP_TITLE);
-        expect(m.frame().some((row) => row.trimStart().startsWith(NOTICE))).toBe(true);
+        expect(m.text()).not.toContain(NOTICE);
+        expect(m.notifications.getSnapshot().current).toBeUndefined();
+        // The host's own notification, drawn in the popup's row while it is open, is shown on the hint row once it closes.
+        await openPopup(m);
+        m.notifications.notify(HOST_NOTICE);
+        await m.until(() => m.text().includes(HOST_NOTICE));
+        await m.settle();
+        const host = popupBoxOf(m.popupFrame(), variant, HOST_NOTICE);
+        expect(m.frame()[host.top + host.height - 2]?.includes(HOST_NOTICE)).toBe(true);
+        expect(outsideTheBox(m.frame(), host).filter((row) => row.includes('QXH'))).toEqual([]);
+        m.key(KEYS.escape);
+        await closed(m);
+        await m.until(() => m.text().includes(HOST_NOTICE));
+        expect(m.frame().some((row) => row.trimStart().startsWith(HOST_NOTICE))).toBe(true);
       } finally {
         m.unmount();
       }

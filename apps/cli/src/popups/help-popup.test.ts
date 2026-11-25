@@ -31,6 +31,45 @@ function commandRows(lines: readonly string[]): string[] {
   return lines.slice(from, to).filter((line) => line.startsWith('  /'));
 }
 
+describe('the cursor keys of the chat are listed beside the others, with their own names', () => {
+  it('Home/End, Ctrl+←/Ctrl+→ and Alt+B/Alt+F each have a row, whole and not blanked', () => {
+    const rows = helpLines('standalone-chat', KEYS);
+    for (const [name, verb] of [
+      ['Home/End', 'move to the start or the end of the line'],
+      ['Ctrl+←/Ctrl+→', 'move back or forward by one word'],
+      ['Alt+B/Alt+F', 'move back or forward by one word'],
+    ] as const) {
+      const row = rows.find((line) => line.trim().startsWith(name));
+      expect(row, name).toBeDefined();
+      expect(row?.replaceAll(/\s+/gu, ' ')).toContain(`${name} ${verb}`);
+    }
+  });
+});
+
+describe('a row that wraps never continues with a lone slash', () => {
+  it('the real /effort description (off / low / medium / high / max) is wrapped between words, and no line starts like a command', () => {
+    const rows = helpLines('standalone-chat', KEYS);
+    const at = rows.findIndex((row) => row.startsWith('  /effort'));
+    expect(at).toBeGreaterThan(0);
+    // The rows of the one command: its first row and the continuation rows after it, up to the next command or the next blank row.
+    let end = at + 1;
+    while (end < rows.length && /^\s{4,}\S/u.test(rows[end] ?? '')) end += 1;
+    const effort = rows.slice(at, end);
+    expect(effort.length).toBeGreaterThan(1);
+    // The description is the registry's, whole, in the words it has.
+    expect(effort.join(' ').replaceAll(/\s+/gu, ' ')).toContain(
+      'Set the reasoning-effort tier: off / low / medium / high / max.',
+    );
+    for (const row of effort.slice(1)) {
+      expect(displayWidth(row)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
+      expect(row.trim(), row).not.toMatch(/^\/(?:\s|$)/u);
+    }
+    // Every row of the commands, not only this one: none starts with a lone slash (the key `/` of the keys below is a name and not a continuation).
+    for (const row of rows.slice(0, rows.indexOf('Keys')))
+      expect(row.trim()).not.toMatch(/^\/(?:\s|$)/u);
+  });
+});
+
 describe.each(['standalone-chat', 'home-chat'] as const)(
   'the commands of %s',
   (surface: ReportSurface) => {

@@ -109,10 +109,12 @@ describe('branching steps and their rail', () => {
     expect(railOf({ ...openFrame(spec, 1), stepIndex: 0 })).toEqual({
       names: ['Checks'],
       index: 0,
+      done: [false],
     });
     expect(railOf({ ...openFrame(spec, 1), stepIndex: 2 })).toEqual({
       names: ['Checks', 'Deep check'],
       index: 1,
+      done: [true, false],
     });
     // A popup that is a sequence keeps its rail: every step, the ones to come included.
     const sequence = { ...spec, rail: undefined };
@@ -243,7 +245,8 @@ describe('the legend a step keeps longest', () => {
     // The number the geometry itself computes, not a fixture measured against itself.
     expect(floor.innerWidth).toBe(66);
     expect(POPUP_TEXT_COLUMNS).toBe(floor.innerWidth);
-    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(floor.innerWidth);
+    // A notification is drawn beside the legend row's way back (` · Esc close`, MVP-11 step 4 round 2), so it has that much less.
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(floor.innerWidth - ' · Esc close'.length);
     // A real line the doctor draws, with four origins and an unnamed provider, at its longest: every row of it fits whole.
     const line = consentContent(
       [

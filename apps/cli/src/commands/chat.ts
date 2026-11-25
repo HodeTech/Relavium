@@ -193,7 +193,7 @@ import {
   sanitizeInline,
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
-import { agentNotice } from '../render/tui/agent-sheet.js';
+import { agentNotice } from '../chat/agent-notice.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
@@ -334,7 +334,8 @@ export interface ChatDriveContext {
   readonly permissions?: PermissionsPort;
   /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    *  §3), made afresh on every call: the same function `reports.agent` hands the `/agent` popup, kept for a driver (and its tests) that reads it
-   *  directly. Present on an interactive (TTY, non-`--json`) driver only. */
+   *  directly (only tests read it: the production hosts take the view through `reports.agent`). Present on an interactive (TTY, non-`--json`)
+   *  driver only. */
   readonly boundAgent?: () => BoundAgentView;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;

@@ -1818,6 +1818,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     history: chordHistory,
   });
+  /**
+   * The keys the landing takes (its composer, and the lists and sheets that open over it), stamped on the Home's one key history as KEYS,
+   * never as resolutions, as a chat's store stamps every key of a chat. A popup that opens on its confirmation line (`/doctor --deep` typed
+   * here) is armed against the last key before it (ADR-0148 §3, `popup-host.ts`): unstamped, the landing's keys left that line no lockout to
+   * meet, so a `Ctrl+Y` held through the popup's code load could answer it. The cards that read the same history (a gate card, the MCP consent
+   * card) see the landing's keys in their quiet gap too, as a chat's cards see a chat's.
+   */
+  const landingKeys = createChordGuard({
+    now: deps.now ?? ((): number => performance.now()),
+    history: chordHistory,
+  });
   const routeExitGuardKey = (phase: ExitGuardPhase, input: string, key: HomeKeyEvent): void => {
     disarmInterrupt(); // any key at the card ends the armed interrupt state (ADR-0115 §1)
     const stamp = exitGuardChord.stamp();
@@ -4165,6 +4176,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       routeScreenKey(state.screen, input, key);
       return;
     }
+    // In a chat its store stamps the keys (the line its palette sends included); every other key from here on is the landing's, or a list's
+    // over it.
+    if (state.mode !== 'chat' || state.session === undefined) landingKeys.stamp();
     if (routeOverlayKey(input, key)) return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);

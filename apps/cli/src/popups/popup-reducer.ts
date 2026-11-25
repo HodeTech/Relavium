@@ -10,7 +10,7 @@
  * the filter when the step has one, and otherwise nothing at all: typed text goes only into a text field. Neither `Esc` nor `Ctrl+C` ever answers.
  */
 
-import { reduceChordKey } from '../render/tui/chord-guard.js';
+import { chordOf, reduceChordKey } from '../render/tui/chord-guard.js';
 import { exitKey, type LegendExit, type LegendItem } from '../render/tui/legend.js';
 import { POPUP_FLOOR, popupGeometry, popupInnerWidth, type PopupKind } from './geometry.js';
 import {
@@ -115,6 +115,12 @@ export interface PopupFrame {
   readonly runId: number;
   readonly stepIndex: number;
   readonly steps: readonly PopupStepState[];
+  /**
+   * The steps the popup has been on, the one it opened on included ({@link visitStep}): the rail marks an earlier step done only when it was
+   * one of them, so a popup that opens on a later step (`/cost --release`) never says it went through the steps before it. Absent ⇒ every
+   * step before the current one counts as visited (a frame built outside the host).
+   */
+  readonly visited?: readonly number[] | undefined;
 }
 
 /** The `ink` `Key` fields the popup reads (a structural subset, so a test needs no ink import). */
@@ -131,6 +137,8 @@ export interface PopupKey {
   readonly delete?: boolean;
   readonly ctrl?: boolean;
   readonly meta?: boolean;
+  /** Which event of the key it was, from a terminal that reports key events (`chord-guard.ts` `ChordKey`); absent ⇒ a press. */
+  readonly eventType?: 'press' | 'repeat' | 'release' | undefined;
 }
 
 export type PopupKeyAction =
@@ -143,8 +151,11 @@ export type PopupKeyAction =
   | { readonly kind: 'control'; readonly key: string }
   | { readonly kind: 'append'; readonly text: string }
   | { readonly kind: 'backspace' }
-  /** `Ctrl+Y` on a confirmation line: the host's chord guard decides whether it answers. */
-  | { readonly kind: 'chord' }
+  /**
+   * `Ctrl+Y` on a confirmation line: the host's chord guard decides whether it answers. `held` marks a key event that is not a press (a
+   * held key's repeat or its release, from a terminal that reports key events): it is a `Ctrl+Y` that reached the line, and it never answers.
+   */
+  | { readonly kind: 'chord'; readonly held?: true }
   /**
    * Any key on a confirmation line that is not `Ctrl+Y`, `Esc` or a navigation key: the line is disarmed. `interrupt` is `Ctrl+C` (a cancel,
    * as `Esc` is: the host says nothing); `typed` is every other key (a letter, `Enter`, another chord), which the host tells the command about.
@@ -194,7 +205,25 @@ export function openFrame(spec: PopupSpec, runId: number): PopupFrame {
   const initial = spec.initialStep ?? 0;
   const stepIndex =
     Number.isSafeInteger(initial) && initial >= 0 && initial < spec.steps.length ? initial : 0;
-  return { spec, runId, stepIndex, steps: spec.steps.map(initialStepState) };
+  return { spec, runId, stepIndex, steps: spec.steps.map(initialStepState), visited: [stepIndex] };
+}
+
+/** The frame with its current step counted as visited ({@link PopupFrame.visited}); the same frame when it already was. */
+export function visitStep(frame: PopupFrame): PopupFrame {
+  const visited = frame.visited ?? [];
+  return visited.includes(frame.stepIndex)
+    ? frame
+    : { ...frame, visited: [...visited, frame.stepIndex] };
+}
+
+/**
+ * Whether a confirmation line's content is WHOLLY on a page of `pageRows` rows ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §8: the line names what leaves and to whom, so it can be answered only when every one of its lines is on screen at once): a report of at
+ * least one line and of no more lines than the page draws. A line cut short (`▼ N more`), one that says there is nothing to show, and any
+ * other content offer no answer. The host's rule and the legend's are this one function.
+ */
+export function lineFitsPage(content: PopupContent, pageRows: number): boolean {
+  return content.kind === 'report' && content.lines.length > 0 && content.lines.length <= pageRows;
 }
 
 /** The step before `index` along `back`, else the one before it, or `-1` from the first: the chain the rail counts. */
@@ -218,16 +247,31 @@ export function backOf(spec: PopupSpec, index: number): number {
  * The rail and the top edge's count for `frame` ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1): every step's name and the current index (`rail: 'all'`), or only the steps from the first to the current one along `back`
  * (`rail: 'path'`), so a detail reached from a report reads `✓ Checks ╌╌ ◉ Detail` and `step 2 of 2`, never a step that is not to come.
+ * `done` says, node by node, whether a step before the current one was visited ({@link PopupFrame.visited}): one the popup opened past
+ * (`/cost --release` opens on its line) is drawn as a step not done, `○ Cost ╌╌ ◉ Release`, never `✓`.
  */
 export function railOf(frame: PopupFrame): {
   readonly names: readonly string[];
   readonly index: number;
+  readonly done: readonly boolean[];
 } {
   const names = frame.spec.steps.map((step) => step.name);
-  if (frame.spec.rail !== 'path') return { names, index: frame.stepIndex };
+  const visited = (at: number): boolean =>
+    frame.visited === undefined || frame.visited.includes(at);
+  if (frame.spec.rail !== 'path')
+    return {
+      names,
+      index: frame.stepIndex,
+      done: names.map((_, at) => at < frame.stepIndex && visited(at)),
+    };
   const path: number[] = [];
   for (let at = frame.stepIndex; at >= 0; at = chainBackOf(frame.spec, at)) path.unshift(at);
-  return { names: path.map((at) => names[at] ?? ''), index: path.length - 1 };
+  const index = path.length - 1;
+  return {
+    names: path.map((at) => names[at] ?? ''),
+    index,
+    done: path.map((at, node) => node < index && visited(at)),
+  };
 }
 
 /** Whether the frame's current step is a confirmation line answered by `Ctrl+Y` (its `chord`). */
@@ -259,22 +303,43 @@ function isInterrupt(input: string, key: PopupKey): boolean {
   );
 }
 
+/** A key that moves the highlight or scrolls: one of the navigation actions. */
+type NavigationAction = Extract<PopupKeyAction, { readonly kind: 'move' | 'page' | 'jump' }>;
+
+/** The navigation keys, in the order they are read (the first flag that is set wins): one table for every step, a line's included. */
+const NAVIGATION: readonly (readonly [
+  'upArrow' | 'downArrow' | 'pageUp' | 'pageDown' | 'home' | 'end',
+  NavigationAction,
+])[] = [
+  ['upArrow', { kind: 'move', delta: -1 }],
+  ['downArrow', { kind: 'move', delta: 1 }],
+  ['pageUp', { kind: 'page', delta: -1 }],
+  ['pageDown', { kind: 'page', delta: 1 }],
+  ['home', { kind: 'jump', to: 'first' }],
+  ['end', { kind: 'jump', to: 'last' }],
+];
+
+/** The navigation action of `key`, or `undefined` when it is no navigation key. */
+function navigationOf(key: PopupKey): NavigationAction | undefined {
+  return NAVIGATION.find(([flag]) => key[flag] === true)?.[1];
+}
+
 /**
  * A key on a confirmation line (a step with `chord`, ADR-0148 §3 and §8): exactly `Ctrl+Y` is the answer (the one chord the guard reads,
  * `reduceChordKey`), `Esc` steps back, the navigation keys move (they disarm nothing), and EVERY other key disarms the line: `Ctrl+C` first
  * disarms rather than closes (a cancel, `interrupt`), and a letter, `Enter`, a `Ctrl+N` or a key the reducer cannot name is not an answer
- * either (`typed`).
+ * either (`typed`). A `Ctrl+Y` that is a held key's repeat or its release (`chordOf` without `reduceChordKey`) is still a `Ctrl+Y` that
+ * reached the line, marked `held`: the host refuses it as one.
  */
 function reduceChordStepKey(input: string, key: PopupKey): PopupKeyAction {
-  if (reduceChordKey(input, key) === 'allow') return { kind: 'chord' };
+  if (chordOf(input, key) === 'allow')
+    return reduceChordKey(input, key) === 'allow'
+      ? { kind: 'chord' }
+      : { kind: 'chord', held: true };
   if (key.escape === true && key.ctrl !== true) return { kind: 'leave' };
-  if (key.upArrow === true) return { kind: 'move', delta: -1 };
-  if (key.downArrow === true) return { kind: 'move', delta: 1 };
-  if (key.pageUp === true) return { kind: 'page', delta: -1 };
-  if (key.pageDown === true) return { kind: 'page', delta: 1 };
-  if (key.home === true) return { kind: 'jump', to: 'first' };
-  if (key.end === true) return { kind: 'jump', to: 'last' };
-  return { kind: 'disarm', cause: isInterrupt(input, key) ? 'interrupt' : 'typed' };
+  return (
+    navigationOf(key) ?? { kind: 'disarm', cause: isInterrupt(input, key) ? 'interrupt' : 'typed' }
+  );
 }
 
 /** Map one key to what it means on `step` (see the module header). */
@@ -283,12 +348,8 @@ export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): P
   if (isInterrupt(input, key)) return { kind: 'close-all' };
   if (key.escape === true) return { kind: 'leave' };
   if (key.return === true) return { kind: 'enter' };
-  if (key.upArrow === true) return { kind: 'move', delta: -1 };
-  if (key.downArrow === true) return { kind: 'move', delta: 1 };
-  if (key.pageUp === true) return { kind: 'page', delta: -1 };
-  if (key.pageDown === true) return { kind: 'page', delta: 1 };
-  if (key.home === true) return { kind: 'jump', to: 'first' };
-  if (key.end === true) return { kind: 'jump', to: 'last' };
+  const navigation = navigationOf(key);
+  if (navigation !== undefined) return navigation;
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (key.ctrl === true || key.meta === true || input.length === 0) return { kind: 'none' };
   const control = step.controls?.find((entry) => entry.key === input);
@@ -366,41 +427,63 @@ function pageEnabled(
   const target = Math.max(0, Math.min(rows.length - 1, from + direction * Math.max(1, pageRows)));
   if (canAct(rows[target])) return target;
   const onward = nextEnabled(rows, target, direction);
-  return onward !== target ? onward : nextEnabled(rows, target, direction === 1 ? -1 : 1);
+  if (onward !== target) return onward;
+  const opposite: 1 | -1 = direction === 1 ? -1 : 1;
+  return nextEnabled(rows, target, opposite);
+}
+
+/** How far a report scrolls for one `move` or `page` (a line, a page). */
+function scrollDelta(action: NavigationAction, pageRows: number): number {
+  if (action.kind === 'move') return action.delta;
+  if (action.kind === 'page') return action.delta * Math.max(1, pageRows);
+  return 0;
+}
+
+/** A report's first shown line after a navigation key: a line or a page on, or an end, never past either end. */
+function moveInReport(
+  frame: PopupFrame,
+  state: PopupStepState,
+  lines: number,
+  action: NavigationAction,
+  pageRows: number,
+): PopupFold {
+  const max = reportMaxOffset(lines, pageRows);
+  let offset: number;
+  if (action.kind === 'jump') offset = action.to === 'first' ? 0 : max;
+  else offset = Math.max(0, Math.min(max, state.offset + scrollDelta(action, pageRows)));
+  return offset === state.offset
+    ? { kind: 'unchanged' }
+    : { kind: 'frame', frame: withStep(frame, { ...state, offset }) };
+}
+
+/** A list's highlighted row after a navigation key (it skips a row that cannot act and stops at the ends). */
+function selectedAfter(
+  rows: readonly PopupListRow[],
+  from: number,
+  action: NavigationAction,
+  pageRows: number,
+): number {
+  switch (action.kind) {
+    case 'move':
+      return nextEnabled(rows, from, action.delta);
+    case 'page':
+      return pageEnabled(rows, from, action.delta, pageRows);
+    case 'jump':
+      return action.to === 'first' ? firstEnabled(rows) : lastEnabled(rows);
+  }
 }
 
 function moveIn(
   frame: PopupFrame,
   state: PopupStepState,
-  action: PopupKeyAction,
+  action: NavigationAction,
   pageRows: number,
 ): PopupFold {
-  if (state.content.kind === 'report') {
-    const max = reportMaxOffset(state.content.lines.length, pageRows);
-    const delta =
-      action.kind === 'move'
-        ? action.delta
-        : action.kind === 'page'
-          ? action.delta * Math.max(1, pageRows)
-          : 0;
-    const offset =
-      action.kind === 'jump'
-        ? action.to === 'first'
-          ? 0
-          : max
-        : Math.max(0, Math.min(max, state.offset + delta));
-    return offset === state.offset
-      ? { kind: 'unchanged' }
-      : { kind: 'frame', frame: withStep(frame, { ...state, offset }) };
-  }
+  if (state.content.kind === 'report')
+    return moveInReport(frame, state, state.content.lines.length, action, pageRows);
   const rows = visibleRows(state);
   if (rows.length === 0) return { kind: 'unchanged' };
-  let selected = state.selected;
-  if (action.kind === 'move') selected = nextEnabled(rows, state.selected, action.delta);
-  else if (action.kind === 'page')
-    selected = pageEnabled(rows, state.selected, action.delta, pageRows);
-  else if (action.kind === 'jump')
-    selected = action.to === 'first' ? firstEnabled(rows) : lastEnabled(rows);
+  const selected = selectedAfter(rows, state.selected, action, pageRows);
   return selected === state.selected
     ? { kind: 'unchanged' }
     : { kind: 'frame', frame: withStep(frame, { ...state, selected }) };
@@ -415,8 +498,46 @@ function edited(frame: PopupFrame, state: PopupStepState, filter: string): Popup
 }
 
 /**
- * Fold one action into the top popup. `pageRows` is the rows a page moves (the list window the frame draws, from the one geometry function).
+ * `Esc` (`leave`) or a disarmed confirmation line: `Esc` clears a filter first, then steps back (to the step's `back`), and closes on the first
+ * step (§3). A disarmed line steps back the same way, answered by nothing.
  */
+function foldBack(frame: PopupFrame, state: PopupStepState, leaving: boolean): PopupFold {
+  if (leaving && state.filter.length > 0) return edited(frame, state, '');
+  const back = backOf(frame.spec, frame.stepIndex);
+  return back >= 0 ? { kind: 'frame', frame: { ...frame, stepIndex: back } } : { kind: 'close' };
+}
+
+/** `Enter` on the step the frame is on. */
+function foldEnter(spec: PopupStep, state: PopupStepState): PopupFold {
+  // The end of a flow closes on `Enter` as on `Esc`, whatever it shows (a failed result too): its legend says `Enter / Esc close`.
+  if (spec.final === true) return { kind: 'close' };
+  // A step that is loading, or that says there is nothing (empty) or that it failed (error), has nothing for `Enter` to answer.
+  if (
+    spec.enter === undefined ||
+    state.content.kind === 'loading' ||
+    nothingToChoose(state.content)
+  )
+    return { kind: 'unchanged' };
+  if (state.content.kind !== 'list') return { kind: 'enter', row: undefined };
+  const row = visibleRows(state)[state.selected];
+  // A row that cannot act answers nothing.
+  return canAct(row) ? { kind: 'enter', row } : { kind: 'unchanged' };
+}
+
+/**
+ * Fold one action into the top popup. `pageRows` is the rows a page moves (the window the frame draws the step's body in, from the one geometry
+ * function). A host that has judged a `Ctrl+Y` itself folds every other action, and gets no `chord` back (the first signature).
+ */
+export function foldPopupAction(
+  frame: PopupFrame,
+  action: Exclude<PopupKeyAction, { readonly kind: 'chord' }>,
+  pageRows: number,
+): Exclude<PopupFold, { readonly kind: 'chord' }>;
+export function foldPopupAction(
+  frame: PopupFrame,
+  action: PopupKeyAction,
+  pageRows: number,
+): PopupFold;
 export function foldPopupAction(
   frame: PopupFrame,
   action: PopupKeyAction,
@@ -429,31 +550,15 @@ export function foldPopupAction(
     case 'close-all':
       return { kind: 'close-all' };
     case 'leave':
-    case 'disarm': {
-      // `Esc` clears a filter first, then steps back (to the step's `back`), and closes on the first step (§3). A disarmed confirmation
-      // line steps back the same way, answered by nothing.
-      if (action.kind === 'leave' && state.filter.length > 0) return edited(frame, state, '');
-      const back = backOf(frame.spec, frame.stepIndex);
-      return back >= 0
-        ? { kind: 'frame', frame: { ...frame, stepIndex: back } }
-        : { kind: 'close' };
-    }
+    case 'disarm':
+      return foldBack(frame, state, action.kind === 'leave');
     case 'chord':
       // Only a line that is drawn can be answered: one still being prepared, or one with nothing to confirm, takes no chord.
       return spec.chord === undefined || state.content.kind !== 'report'
         ? { kind: 'unchanged' }
         : { kind: 'chord' };
-    case 'enter': {
-      // The end of a flow closes on `Enter` as on `Esc`, whatever it shows (a failed result too): its legend says `Enter / Esc close`.
-      if (spec.final === true) return { kind: 'close' };
-      // A step that is loading, or that says there is nothing (empty) or that it failed (error), has nothing for `Enter` to answer.
-      if (spec.enter === undefined || loading || nothingToChoose(state.content))
-        return { kind: 'unchanged' };
-      if (state.content.kind !== 'list') return { kind: 'enter', row: undefined };
-      const row = visibleRows(state)[state.selected];
-      // A row that cannot act answers nothing.
-      return canAct(row) ? { kind: 'enter', row } : { kind: 'unchanged' };
-    }
+    case 'enter':
+      return foldEnter(spec, state);
     case 'control':
       return loading ? { kind: 'unchanged' } : { kind: 'control', key: action.key };
     case 'append':
@@ -513,71 +618,79 @@ function floorReportRows(frame: PopupFrame): number {
  * `Esc` does there: it goes back (the `step` class, `Esc back`) wherever the step has a step to go back to, and `[Ctrl+C] close` is named before
  * it on a step that is not a confirmation line; it closes on the first step (the `close` class, in the step's own word); with a filter typed it
  * clears the filter first (a step too); and it says `cancel` only where it stops work in flight: a first step that is loading (closing aborts
- * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page: `reportRows`, the rows the frame draws it in (the slot
- * passes its geometry's); absent ⇒ the page of a standard popup at the floor.
+ * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page, and a confirmation line names its answer only when it
+ * does fit: `reportRows`, the rows the frame draws it in (the slot passes its geometry's); absent ⇒ the page of a standard popup at the floor.
  */
-export function popupLegend(
-  frame: PopupFrame,
-  reportRows?: number,
-): {
+export function popupLegend(frame: PopupFrame, reportRows?: number): PopupLegend {
+  const { spec, state } = currentStep(frame);
+  // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
+  if (spec.final === true)
+    return { items: [], exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
+  const back = backOf(frame.spec, frame.stepIndex) >= 0;
+  const page = (): number => reportRows ?? floorReportRows(frame);
+  if (spec.chord !== undefined) return chordLegend(spec, state, back, page);
+  const items = stepItems(spec, state, page);
+  const keep = spec.legendKeep;
+  const finish = (exit: LegendExit): PopupLegend =>
+    keep === undefined ? { items, exit } : { items, exit, priority: legendPriority(items, keep) };
+  // Where `Esc` does not close, `Ctrl+C` is named as the key that does, and `Esc` is still the way back the legend ends with: a step (ADR-0145
+  // §2). With a filter typed `Esc` clears it first; otherwise it goes back.
+  const filtered = state.filter.length > 0;
+  if (filtered || back) {
+    items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
+    return finish(exitKey.step(POPUP_KEYS.leave, filtered ? 'clear the filter' : 'back'));
+  }
+  return finish(exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state)));
+}
+
+/** A popup step's legend: its items, the way back, and how long each item is kept when the row does not fit. */
+export interface PopupLegend {
   readonly items: readonly LegendItem[];
   readonly exit: LegendExit;
   /** How long each item is kept when the row does not fit (higher is kept longer), parallel to `items`; absent ⇒ by position. */
   readonly priority?: readonly number[];
-} {
-  const { spec, state } = currentStep(frame);
-  const loading = state.content.kind === 'loading';
+}
+
+/** What the `Esc` of a first step says: `cancel` where closing stops work in flight (it is loading), else the step's own word. */
+function closingVerb(spec: PopupStep, state: PopupStepState): string {
+  return state.content.kind === 'loading' ? 'cancel' : (spec.exitVerb ?? 'close');
+}
+
+/**
+ * A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. It names its answer only
+ * when the line is wholly on its page ({@link lineFitsPage}): while it is being prepared, when there is nothing to confirm and when it is cut
+ * short it names none (the host takes none then). Its `Esc` steps back to the step it came from (it disarms), and on a first step it closes.
+ */
+function chordLegend(
+  spec: PopupStep,
+  state: PopupStepState,
+  back: boolean,
+  page: () => number,
+): PopupLegend {
   const items: LegendItem[] = [];
-  // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
-  if (spec.final === true)
-    return { items, exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
-  const back = backOf(frame.spec, frame.stepIndex) >= 0;
-  // A confirmation line says its one answer and nothing else; `Ctrl+C` disarms it too, so it is not named as closing. While the line is being
-  // prepared, or when there is nothing to confirm, it names no answer. Its `Esc` steps back to the step it came from (it disarms), and on a
-  // first step it closes.
-  if (spec.chord !== undefined) {
-    if (state.content.kind === 'report')
-      items.push({ keys: POPUP_KEYS.chord, verb: spec.chord.verb });
-    const exit = back
-      ? exitKey.step(POPUP_KEYS.leave, 'back')
-      : exitKey.close(POPUP_KEYS.leave, loading ? 'cancel' : (spec.exitVerb ?? 'close'));
-    return { items, exit };
-  }
+  if (spec.chord !== undefined && lineFitsPage(state.content, page()))
+    items.push({ keys: POPUP_KEYS.chord, verb: spec.chord.verb });
+  const exit = back
+    ? exitKey.step(POPUP_KEYS.leave, 'back')
+    : exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state));
+  return { items, exit };
+}
+
+/**
+ * The keys of a step that is not a line, in the order a person reaches for them. A step that is loading answers nothing yet, so it names no
+ * key that answers (ADR-0148 §5: its cancel key is the one it really has); one that says there is nothing, or that it failed, names no `Enter`.
+ */
+function stepItems(spec: PopupStep, state: PopupStepState, page: () => number): LegendItem[] {
+  const items: LegendItem[] = [];
   if (state.content.kind === 'list' && visibleRows(state).length > 1)
     items.push({ keys: POPUP_KEYS.select, verb: 'select' });
-  if (
-    state.content.kind === 'report' &&
-    state.content.lines.length > (reportRows ?? floorReportRows(frame))
-  )
+  if (state.content.kind === 'report' && state.content.lines.length > page())
     items.push({ keys: POPUP_KEYS.scroll, verb: 'scroll' });
-  // A step that is loading answers nothing yet, so it names no key that answers (ADR-0148 §5: its cancel key is the one it really has); one
-  // that says there is nothing, or that it failed, names no `Enter`.
-  if (!loading) {
-    if (spec.enter !== undefined && !nothingToChoose(state.content))
-      items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
-    for (const control of spec.controls ?? [])
-      items.push({ keys: control.key, verb: control.verb });
-  }
-  const keep = spec.legendKeep;
-  const withPriority = (
-    exit: LegendExit,
-  ): {
-    readonly items: readonly LegendItem[];
-    readonly exit: LegendExit;
-    readonly priority?: readonly number[];
-  } =>
-    keep === undefined ? { items, exit } : { items, exit, priority: legendPriority(items, keep) };
-  // Where `Esc` does not close, `Ctrl+C` is named as the key that does, and `Esc` is still the way back the legend ends with: a step (ADR-0145 §2).
-  if (state.filter.length > 0) {
-    items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
-    return withPriority(exitKey.step(POPUP_KEYS.leave, 'clear the filter'));
-  }
-  if (back) {
-    items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
-    return withPriority(exitKey.step(POPUP_KEYS.leave, 'back'));
-  }
-  const verb = loading ? 'cancel' : (spec.exitVerb ?? 'close');
-  return withPriority(exitKey.close(POPUP_KEYS.leave, verb));
+  if (state.content.kind === 'loading') return items;
+  if (spec.enter !== undefined && !nothingToChoose(state.content))
+    items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
+  for (const control of spec.controls ?? []) items.push({ keys: control.key, verb: control.verb });
+  return items;
 }
 
 /**

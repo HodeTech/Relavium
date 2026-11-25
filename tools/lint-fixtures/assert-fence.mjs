@@ -84,6 +84,18 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/geometry.ts',
   'apps/cli/src/popups/popup-refusal.ts',
   'apps/cli/src/popups/turn-in-flight.ts',
+  'apps/cli/src/popups/chord-refusal.ts',
+  'apps/cli/src/popups/custody.ts',
+  'apps/cli/src/popups/frame-model.ts',
+  'apps/cli/src/popups/opening-guard.ts',
+  'apps/cli/src/popups/popup-bind.ts',
+  'apps/cli/src/popups/popup-reducer.ts',
+  'apps/cli/src/popups/popup-route.ts',
+  'apps/cli/src/popups/popup-text.ts',
+  'apps/cli/src/popups/popup-copy.ts',
+  'apps/cli/src/popups/popup-work.ts',
+  'apps/cli/src/popups/doctor-port.ts',
+  'apps/cli/src/popups/report-port.ts',
   DATA_MODULE,
 ];
 
@@ -97,11 +109,14 @@ const REQUIRED_PATH_NAMES = [
   'openai',
   '@google/genai',
 ];
-/** The groups the entry must forbid by pattern: `node:` modules, bare Node built-ins (`fs`), subpaths of the renderer libraries and of the vendor SDKs. */
+/**
+ * The groups the entry must forbid by pattern: `node:` modules, bare Node built-ins (anchored, `/fs`: an unanchored `process` also matches the repo's own
+ * `../process/…` directory), subpaths of the renderer libraries and of the vendor SDKs.
+ */
 const REQUIRED_PATTERN_GROUPS = [
   'node:*',
-  'fs',
-  'path',
+  '/fs',
+  '/path',
   'ink/*',
   'ink-*',
   'react/*',

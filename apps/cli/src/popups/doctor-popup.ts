@@ -28,8 +28,14 @@ import { formatElapsed } from '../render/notation.js';
 import { glyphOf, markWithWord } from '../render/tui/glyphs.js';
 import { keyToken } from '../render/tui/legend.js';
 import type { DoctorRemedy, DoctorSurface } from './doctor-port.js';
-import type { PopupContent, PopupHeading, PopupListRow, PopupOrigin } from './frame-model.js';
-import { POPUP_FLOOR, popupGeometry } from './geometry.js';
+import {
+  popupText,
+  type PopupContent,
+  type PopupHeading,
+  type PopupListRow,
+  type PopupOrigin,
+} from './frame-model.js';
+import { POPUP_FLOOR, popupGeometry, type PopupPlacement } from './geometry.js';
 import { COPY_CONTROL } from './popup-copy.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapPopupText } from './popup-text.js';
@@ -38,19 +44,35 @@ import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapPopupText } from './popup-text.
 export const DOCTOR_STEP = { checks: 0, detail: 1, line: 2 } as const;
 
 /**
- * The rows of body the doctor popup has at the smallest terminal it is drawn on (80×24, overlay, with its rail): the most a confirmation line
- * may take and still be on screen WHOLE, with no scrolling, before it can be answered (ADR-0148 §7: everything the answer covers has been seen).
+ * The rows of body a confirmation line may take where it is drawn, at the smallest terminal a popup is drawn on (80×24, with its rail): the most
+ * it may take and still be on screen WHOLE, with no scrolling, before it can be answered (ADR-0148 §7: everything the answer covers has been
+ * seen). The figure is the PAGE of that placement, read from the one geometry and never typed: a report is drawn in at most `listRows` rows, which
+ * is every body row in the overlay and at most `INLINE_LIST_MAX_ROWS` in a block in the flow, so the same line that is whole in the
+ * overlay is cut inline.
  */
-export const DOCTOR_LINE_ROWS: number = (() => {
+function linePageRows(placement: PopupPlacement): number {
   const box = popupGeometry({
     columns: POPUP_FLOOR.columns,
     rows: POPUP_FLOOR.rows,
     kind: 'standard',
-    placement: 'overlay',
+    placement,
     rail: true,
   });
-  return box.fits ? box.maxBodyRows : 1;
-})();
+  return box.fits ? Math.min(box.maxBodyRows, box.listRows) : 1;
+}
+
+const LINE_PAGE_ROWS: Readonly<Record<PopupPlacement, number>> = {
+  overlay: linePageRows('overlay'),
+  replace: linePageRows('replace'),
+};
+
+/** The smaller of the two pages: the figure for a line whose placement is not known. */
+export const DOCTOR_LINE_ROWS: number = Math.min(LINE_PAGE_ROWS.overlay, LINE_PAGE_ROWS.replace);
+
+/** The rows a confirmation line may take where the popup is drawn in `placement`; without one, the smaller page. */
+export function doctorLineRows(placement?: PopupPlacement): number {
+  return placement === undefined ? DOCTOR_LINE_ROWS : LINE_PAGE_ROWS[placement];
+}
 
 /** The confirmation line's own words (ADR-0148 §8), around the origins it names. */
 export const CONSENT_LEAD = 'Sends one small request per provider, with its key, to:';
@@ -108,7 +130,7 @@ export interface DoctorView {
 }
 
 /** The words of the deep rows' heading: they come from the deep check, this long ago. */
-export function deepSectionLabel(ageMs: number): string {
+function deepSectionLabel(ageMs: number): string {
   return `Deep check, ${formatElapsed(ageMs)} ago`;
 }
 
@@ -137,22 +159,28 @@ export function hasRows(view: DoctorView): boolean {
   return view.quick.length > 0 || (view.deep?.checks.length ?? 0) > 0;
 }
 
+/** The deep section's heading in the copied text: without the age, which is the moment the person looked and means nothing once pasted. */
+const DEEP_COPY_HEADING = 'Deep check';
+
 /**
  * The report as text, for `[c]`: the heading and the rows the popup shows, in the same scrubbed words, the glyphs in the form asked for. A view
- * with no row (the checks have not landed) is the empty text, never `doctor: all checks passed` over nothing.
+ * with no row (the checks have not landed) is the empty text, never `doctor: all checks passed` over nothing. Every piece of untrusted text
+ * passes the same last step the frame applies to a row ({@link popupText}: host glyphs blanked, line separators folded), so a label or a
+ * detail with U+2028 cannot forge a line of its own in what is pasted. The deep section is headed without its age (it is read when the person
+ * looks, and a pasted report is read later).
  */
 export function doctorCopyText(view: DoctorView, ascii: boolean): string {
   if (!hasRows(view)) return '';
   const heading = doctorHeading([...view.quick, ...(view.deep?.checks ?? [])]);
   const mark = glyphOf(heading.status, ascii);
-  const lines = [`${mark === heading.statusWord ? '' : `${mark} `}${heading.text}`];
+  const lines = [`${mark === heading.statusWord ? '' : `${mark} `}${popupText(heading.text)}`];
   const line = (check: DoctorCheck): string => {
     const { role, word } = doctorAppearance(check.status);
-    return `  ${markWithWord(glyphOf(role, ascii), word)}  ${scrubPopupText(check.label)}  ${scrubPopupText(check.detail)}`;
+    return `  ${markWithWord(glyphOf(role, ascii), word)}  ${popupText(scrubPopupText(check.label))}  ${popupText(scrubPopupText(check.detail))}`;
   };
   lines.push(...view.quick.map(line));
   if (view.deep !== undefined) {
-    lines.push(`  ${deepSectionLabel(view.deep.ageMs)}`);
+    lines.push(`  ${DEEP_COPY_HEADING}`);
     lines.push(...view.deep.checks.map(line));
   }
   return lines.join('\n');
@@ -215,7 +243,7 @@ export function remedyOf(
 }
 
 /** The id of the quick tier's provider-keys row. */
-export const PROVIDER_KEYS_ID = 'provider-keys';
+const PROVIDER_KEYS_ID = 'provider-keys';
 
 /** The quick tier's provider-keys row from the presence of each key (never a value): `warn` at none. */
 export function providerKeysCheck(
@@ -303,11 +331,28 @@ export function detailContent(
   return { kind: 'report', lines };
 }
 
-/** The confirmation line: the origins that will receive a key (each once), and what is never contacted; the providers left out and why. */
+/**
+ * What a line that is too long for its page tells the person to do, in words that are true where it is drawn: a shorter custom address always
+ * helps, and a block in the flow (the accessible mode) can say that the full-screen view has the rows, when the line would be whole there. No
+ * shell command is named inside the TUI (ADR-0122 §6).
+ */
+function tooLongNext(lines: number, placement: PopupPlacement | undefined): string {
+  const back = `${keyToken('Esc')} goes back.`;
+  const fullScreen = placement === 'replace' && lines <= doctorLineRows('overlay');
+  return fullScreen
+    ? `Shorten the custom addresses, or use the full-screen view, which has the rows to show them whole. ${back}`
+    : `Shorten the custom addresses to confirm them. ${back}`;
+}
+
+/**
+ * The confirmation line: the origins that will receive a key (each once), and what is never contacted; the providers left out and why. It is
+ * offered only if it fits the page of `placement` (the overlay's, or the block in the flow's, which is shorter; without one, the smaller of the two).
+ */
 export function consentContent(
   targets: readonly ConsentTarget[],
   unknownOrigin: readonly ProviderId[],
   surface: DoctorSurface,
+  placement?: PopupPlacement,
 ): PopupContent {
   if (targets.length === 0)
     return {
@@ -330,11 +375,11 @@ export function consentContent(
       ),
     );
   // A line that does not fit the page is never offered: the answer would cover lines that had to be scrolled to, or never were.
-  if (lines.length > DOCTOR_LINE_ROWS)
+  if (lines.length > doctorLineRows(placement))
     return {
       kind: 'empty',
       what: CONSENT_TOO_LONG,
-      next: `${keyToken('Esc')} goes back.`,
+      next: tooLongNext(lines.length, placement),
     };
   return { kind: 'report', lines };
 }

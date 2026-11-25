@@ -6,8 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { COST_STEP } from './cost-popup.js';
-import type { ReportWorkOwner } from './report-port.js';
-import { faultCode, startPopupWork } from './popup-work.js';
+import { faultCode, startPopupWork, type PopupWorkOwner } from './popup-work.js';
 import { CliError } from '../process/errors.js';
 import {
   catalogEntry,
@@ -21,7 +20,7 @@ import {
 function countingOwner() {
   const entered: (() => Promise<unknown>)[] = [];
   const failure = vi.fn<(cause: unknown) => void>();
-  const owner: ReportWorkOwner = {
+  const owner: PopupWorkOwner = {
     enter: <T>(operation: () => Promise<T>): Promise<T> => {
       entered.push(operation);
       return operation();

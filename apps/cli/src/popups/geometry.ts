@@ -66,11 +66,19 @@ export function popupInnerWidth(columns: number, kind: PopupKind): number {
 }
 
 /**
- * The most columns a notification may take and still be read whole inside a standard popup at the floor (80×24: 66): while a popup is open the
- * notification is drawn in the popup's own legend row, fitted to its inner width (`frame-model.ts`). Every text a popup or its host passes to the
- * notification channel fits this; a longer one is cut with the ellipsis there. Derived from the geometry, never typed.
+ * The columns the way back takes beside a notification in a popup's legend row (`<notice>`, the legend's separator, then `Esc close`, the way
+ * back of the first step every popup notification is raised on; `frame-model.ts`). This module imports nothing (it moves to a shared package as
+ * it is), so the number is written here, and `frame-model.test.ts` pins it to what the legend builder draws.
  */
-export const POPUP_NOTICE_MAX_COLUMNS = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
+export const POPUP_NOTICE_WAY_BACK_COLUMNS = 12;
+
+/**
+ * The most columns a notification may take and still be read whole inside a standard popup at the floor (80×24): while a popup is open the
+ * notification is drawn in the popup's own legend row, beside the way back ({@link POPUP_NOTICE_WAY_BACK_COLUMNS}), within the inner width
+ * (66), so 66 − 12 = 54. Every text a popup composes fits this; a longer one is cut with the ellipsis there, and the way back never is.
+ */
+export const POPUP_NOTICE_MAX_COLUMNS =
+  popupInnerWidth(POPUP_FLOOR.columns, 'standard') - POPUP_NOTICE_WAY_BACK_COLUMNS;
 
 /** Whether a terminal of this size can hold a popup: at least 80×24, in whole cells. */
 export function popupFits(columns: number, rows: number): boolean {

@@ -118,8 +118,20 @@ describe('the route: inside a dimmed backdrop every glyph is dim', () => {
   it('keeps what dim does not contradict: the inverse cells, the colours and the underline stay, and the bold is the one weight that goes', async () => {
     const { cells } = await drawn(<BackdropDim dimmed>{routeSample}</BackdropDim>);
     const all = cells.flat();
-    expect(all.some((cell) => cell.style.inverse && cell.char === 'i')).toBe(true);
-    expect(all.some((cell) => cell.style.inverse && cell.char === 's')).toBe(true);
+    /** The cells of `word` in the row that reads `line` (each of them, not a letter of the same name elsewhere in the sample). */
+    const cellsOf = (line: string, word: string): readonly ScreenCell[] => {
+      const row = cells.find((candidate) => textOf(candidate).trim() === line);
+      const at = textOf(row).indexOf(word);
+      expect(at, `${word} in ${line}`).toBeGreaterThanOrEqual(0);
+      return (row ?? []).slice(at, at + word.length);
+    };
+    // The inverse span and the selected row's literal pair (`Emph`) keep their inverse, every cell of them (MVP-11 step 4 round 2, H10:
+    // the `s` of `inverse` used to stand in for the `sel` span).
+    expect(
+      cellsOf('plain bold then inverse tail', 'inverse').every((cell) => cell.style.inverse),
+    ).toBe(true);
+    expect(cellsOf('before sel after', 'sel').every((cell) => cell.style.inverse)).toBe(true);
+    expect(cellsOf('before sel after', 'before').some((cell) => cell.style.inverse)).toBe(false);
     expect(all.some((cell) => cell.style.fg === '36')).toBe(true);
     expect(all.some((cell) => cell.style.fg === '32')).toBe(true);
     expect(all.some((cell) => cell.style.underline)).toBe(true);

@@ -21,7 +21,8 @@ import { workflowsContent } from './workflows-popup.js';
 describe('the width', () => {
   it('is the inner width of a standard popup at the 80-column floor: 66', () => {
     expect(POPUP_TEXT_COLUMNS).toBe(66);
-    expect(POPUP_TEXT_COLUMNS).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    // A notification is drawn beside the way back in the legend row, so it has less room than a line of text has.
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBeLessThan(POPUP_TEXT_COLUMNS);
   });
 });
 
@@ -68,6 +69,58 @@ describe('wrapHanging', () => {
     for (const line of lines.slice(1)) expect(line.startsWith('    ')).toBe(true);
     for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(30);
     expect(lines.join(' ').replaceAll(/\s+/gu, ' ')).toBe(`${'word '.repeat(30)}end`);
+  });
+});
+
+describe('no wrap leaves a line that starts with a lone slash', () => {
+  it('moves the break to before the word in front of it, so a slash that means "or" stays with the word it follows', () => {
+    // `off / low / medium / high / max.`: a break before the fourth `/` would leave `/ high / max.` at the head of a line, which reads as a command.
+    expect(wrapPopupText('Set the tier: off / low / medium / high / max.', 31)).toEqual([
+      'Set the tier: off / low /',
+      'medium / high / max.',
+    ]);
+    expect(wrapPopupText('one two three / four', 14)).toEqual(['one two', 'three / four']);
+    // A line that does not start with a lone slash is left where `wrapWords` broke it: a path, a command and a slash glued to a word are words.
+    expect(wrapPopupText('see the file /etc/hosts and /help now', 18)).toEqual([
+      'see the file',
+      '/etc/hosts and',
+      '/help now',
+    ]);
+  });
+
+  it('holds for the hanging form too, and for a slash that would head the first continuation or a later one', () => {
+    // The slash would head the first continuation (`aaa bbb ccc ` fills the first row): `ccc` goes down with it.
+    expect(wrapHanging('aaa bbb ccc / eee', 12, 4)).toEqual(['aaa bbb', '    ccc /', '    eee']);
+    // And one that would head a later continuation moves its word down the same way.
+    expect(wrapHanging('aaa bbb ccc ddd eee / fff', 12, 4)).toEqual([
+      'aaa bbb ccc',
+      '    ddd',
+      '    eee /',
+      '    fff',
+    ]);
+    for (const columns of [10, 11, 12, 13, 14, 16, 20, 25]) {
+      for (const lines of [
+        wrapPopupText('aa bb / cc dd / ee ff / gg hh / ii', columns),
+        wrapHanging('aa bb / cc dd / ee ff / gg hh / ii', columns, 2),
+      ])
+        for (const line of lines.slice(1))
+          expect(line.trim(), `${String(columns)}: ${JSON.stringify(lines)}`).not.toMatch(
+            /^\/(?:\s|$)/u,
+          );
+    }
+  });
+
+  it('keeps every word, in order, and no line wider than the columns, where a break was moved', () => {
+    const text = 'aa bb / cc dd / ee ff / gg hh / ii';
+    for (const columns of [10, 12, 14, 16]) {
+      const lines = wrapPopupText(text, columns);
+      expect(lines.join(' ').replaceAll(/\s+/gu, ' ')).toBe(text);
+      for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(columns);
+    }
+  });
+
+  it('leaves a slash that cannot move: a line of one word has no earlier word to break before', () => {
+    expect(wrapPopupText('aaaaaaaaaa / bb', 10)).toEqual(['aaaaaaaaaa', '/ bb']);
   });
 });
 

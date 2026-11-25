@@ -126,10 +126,12 @@ function presenceOf(resolver: ProviderResolver, id: ProviderId): boolean | undef
 
 /**
  * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): the reason in a few words (`chord-refusal.ts`, the one table of
- * them), and what that means. At most 66 columns, the inner width of a popup at the smallest terminal, so the notification is never cut.
+ * them), what did not happen (nothing was sent) and what asks again. At most `POPUP_NOTICE_MAX_COLUMNS`, the room a notification has beside the way
+ * back in the legend row of a popup at the smallest terminal, so it is never cut. Exported for the tests only (`chord-refusal.test.ts` pins the
+ * sentence by literal beside the cost release's); no host calls it.
  */
 export function chordRefusedText(reason: ChordRefusal): string {
-  return `Not confirmed: ${CHORD_REFUSAL_PHRASE[reason]}. Nothing was sent; ${keyToken('d')} asks again.`;
+  return `Nothing was sent: ${CHORD_REFUSAL_PHRASE[reason]}. ${keyToken('d')} asks again.`;
 }
 
 /** What the line says while the host's last deep run is still stopping: nothing new can be sent yet. */
@@ -298,7 +300,12 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
           if (origin === undefined) notNamed.push(providerId);
           else targets.push({ providerId, origin });
         }
-        const content = consentContent(targets, notNamed, port.surface);
+        const content = consentContent(
+          targets,
+          notNamed,
+          port.surface,
+          host.getSnapshot().placement,
+        );
         // Only a line that was drawn whole can be answered: one that is refused (it does not fit the page) names nothing to confirm.
         armed = { id, targets: content.kind === 'report' ? targets : [] };
         context.setContent(DOCTOR_STEP.line, content);

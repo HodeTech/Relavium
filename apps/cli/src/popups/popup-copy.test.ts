@@ -412,14 +412,14 @@ describe('what [c] says', () => {
     r.press('c');
     await settleWork();
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      `Workflows: sent ${String((written.texts[0] ?? '').length)} characters to the terminal clipboard.`,
+      `Workflows: sent ${String((written.texts[0] ?? '').length)} characters to the clipboard.`,
     );
     expect(r.notifications.getSnapshot().queued).toBe(0);
     for (const [outcome, said] of [
       [{ kind: 'failed' } as const, 'Workflows: the clipboard request failed.'],
       [
         { kind: 'too-large', base64Length: 99_999, limit: 74_994 } as const,
-        'Workflows: too large for the terminal clipboard.',
+        'Workflows: too large for the clipboard.',
       ],
     ] as const) {
       const clip = spyClipboard(outcome);
@@ -515,7 +515,7 @@ describe('copyPopupText: the one send of every popup, the doctor’s included', 
     const clip = spyClipboard();
     const text = 'doctor: all checks passed\n  ok  OS keychain  reachable';
     expect(await sendOnce(clip.writer, 'Doctor', text)).toEqual([
-      `Doctor: sent ${String(text.length)} characters to the terminal clipboard.`,
+      `Doctor: sent ${String(text.length)} characters to the clipboard.`,
     ]);
     expect(clip.texts).toEqual([text]);
   });
@@ -530,7 +530,7 @@ describe('copyPopupText: the one send of every popup, the doctor’s included', 
     [{ kind: 'failed' } as const, 'Doctor: the clipboard request failed.'],
     [
       { kind: 'too-large', base64Length: 99_999, limit: 74_994 } as const,
-      'Doctor: too large for the terminal clipboard.',
+      'Doctor: too large for the clipboard.',
     ],
   ])('says that a write that %o did not happen', async (outcome, said) => {
     expect(await sendOnce(() => outcome, 'Doctor', 'a report')).toEqual([said]);

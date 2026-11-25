@@ -98,7 +98,8 @@ function rig(options: { readonly line?: Partial<PopupStep>; readonly dropTimers?
   let painted = true;
   host.bindVisibility(() => painted);
   host.bindOpenGate(() => undefined); // an unbound gate opens nothing: this host lets every open through
-  host.bindPageRows(() => 1);
+  // A standard popup's page at 80×24: the line's three rows are on it whole (a line cut short offers no answer: `popup-host.ts`).
+  host.bindPageRows(() => 18);
   const chord = vi.fn();
   const refusals: ChordRefusal[] = [];
   const stepChanged = vi.fn();
@@ -384,12 +385,12 @@ describe('a key typed over the line is told; the cancels are not (MVP-11 step 4 
 
 describe('the line’s expiry timer never outlives the line (MVP-11 step 4 review)', () => {
   it('one timer from the acknowledged frame, cleared by a new frame, a disarm, an answer, a step change, a close and dispose', () => {
-    // A new frame (a scroll): the timer goes with the frame, and the next acknowledgement starts a new one.
+    // A new frame (the line's content set again): the timer goes with the frame, and the next acknowledgement starts a new one.
     const frame = rig();
     expect(frame.time.live()).toBe(0);
     frame.arm();
     expect(frame.time.live()).toBe(1);
-    frame.press('', DOWN);
+    frame.context().setContent(1, REPORT);
     expect(frame.time.live()).toBe(0);
     frame.show();
     expect(frame.time.live()).toBe(1);
@@ -429,7 +430,7 @@ describe('the line’s expiry timer never outlives the line (MVP-11 step 4 revie
     const r = rig();
     r.arm();
     r.time.advance(9000);
-    r.press('', DOWN);
+    r.context().setContent(1, REPORT);
     r.show();
     r.time.advance(9000);
     expect(r.step()).toBe(1);

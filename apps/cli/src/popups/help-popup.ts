@@ -24,7 +24,7 @@ import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js
 import type { HelpPort, ReportSurface } from './report-port.js';
 
 /** The two headings of the report. */
-export const HELP_HEADINGS = { commands: 'Commands', keys: 'Keys' } as const;
+const HELP_HEADINGS = { commands: 'Commands', keys: 'Keys' } as const;
 
 /**
  * A key's name as the list draws it: what a person presses, such as `Ctrl+J`, which the full scrub would take for an answer chord and replace.

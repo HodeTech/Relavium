@@ -28,27 +28,59 @@ export function scrubPopupText(text: string): string {
 }
 
 /**
- * `text` in lines of at most `columns`, nothing cut, a long word broken where it must be. `wrapWords` keeps the white space it breaks at, so a
- * line that ended just before a space would start the next one with it: every continuation line starts where the first does.
+ * A row that starts with a lone `/` (a slash that stands for "or" between two words): drawn at the start of a row it reads as the start of a
+ * command (`/ high / max.` under a description that ends `off / low / medium`), so no wrap leaves one there.
+ */
+const LONE_SLASH_START = /^\s*\/(?:\s|$)/u;
+
+/**
+ * `wrapWords` of `text`, but never leaving a row that starts with a lone `/`: the break moves to before the word that stood in front of it (the
+ * word goes down to the next row with its slash), and the rest is wrapped again from there. A row of one word has nothing earlier to break at, and
+ * is left.
+ */
+function wrapWithoutLoneSlashStart(text: string, columns: number): string[] {
+  const rows = wrapWords(text, columns);
+  for (let at = 1; at < rows.length; at += 1) {
+    if (!LONE_SLASH_START.test(rows[at] ?? '')) continue;
+    const previous = rows[at - 1] ?? '';
+    const cut = previous.trimEnd().lastIndexOf(' ');
+    if (cut <= 0) continue;
+    const tail = previous.slice(cut + 1) + rows.slice(at).join('');
+    return [
+      ...rows.slice(0, at - 1),
+      previous.slice(0, cut + 1),
+      ...wrapWithoutLoneSlashStart(tail, columns),
+    ];
+  }
+  return rows;
+}
+
+/**
+ * `text` in lines of at most `columns`, nothing cut, a long word broken where it must be, and no line starting with a lone `/`. `wrapWords` keeps
+ * the white space it breaks at, so a line that ended just before a space would start the next one with it: every continuation line starts where
+ * the first does.
  */
 export function wrapPopupText(text: string, columns = POPUP_TEXT_COLUMNS): string[] {
-  return wrapWords(text, columns).map((line, index) =>
+  return wrapWithoutLoneSlashStart(text, columns).map((line, index) =>
     index === 0 ? line.trimEnd() : line.trim(),
   );
 }
 
 /**
  * `text` as lines of at most `columns`, the lines after the first indented by `hang` columns, so a row of a table that is wider than the popup
- * still reads as one row. Nothing is cut: the first line is what fits, and the rest wraps in the room the indent leaves.
+ * still reads as one row. Nothing is cut: the first line is what fits, and the rest wraps in the room the indent leaves. No line starts with a lone
+ * `/` ({@link wrapPopupText}).
  */
 export function wrapHanging(text: string, columns = POPUP_TEXT_COLUMNS, hang = 4): string[] {
-  const [first = ''] = wrapWords(text, columns);
+  const [first = ''] = wrapWithoutLoneSlashStart(text, columns);
   const head = first.trimEnd();
   const rest = text.slice(first.length).trimStart();
   if (rest === '') return [head];
   const indent = ' '.repeat(hang);
   return [
     head,
-    ...wrapWords(rest, Math.max(1, columns - hang)).map((line) => `${indent}${line.trimEnd()}`),
+    ...wrapWithoutLoneSlashStart(rest, Math.max(1, columns - hang)).map(
+      (line) => `${indent}${line.trimEnd()}`,
+    ),
   ];
 }

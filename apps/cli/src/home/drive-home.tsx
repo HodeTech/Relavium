@@ -144,7 +144,13 @@ import {
 } from '../render/tui/home-controller.js';
 import { exitKey, keyToken, legend } from '../render/tui/legend.js';
 import { overlayOwnsKeyboard } from '../render/tui/overlay-flags.js';
-import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
+import {
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
+  HIDE_CURSOR,
+  homeAfterInkEnter,
+  SHOW_CURSOR,
+} from '../render/alt-screen.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
@@ -2508,6 +2514,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     stdout: deps.io.nativeStdout,
                     stderr: deps.io.nativeStderr,
                   }),
+              // ink writes the alternate-screen enter without a cursor home: on the alternate screen its stream is ours, which does.
+              ...(alternateScreen
+                ? {
+                    stdout: homeAfterInkEnter(
+                      ownership === undefined
+                        ? process.stdout
+                        : (deps.io.nativeStdout ?? process.stdout),
+                    ),
+                  }
+                : {}),
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),

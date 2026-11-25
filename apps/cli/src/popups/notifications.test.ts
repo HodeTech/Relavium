@@ -3,12 +3,13 @@
  * transient, one at a time and in order, never twice, held while a chord or secret surface is shown (and shown again, whole, after), with its
  * time on an injected timer.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createNotificationChannel,
   NOTIFICATION_MS,
   notificationText,
+  unrefTimer,
   type Schedule,
 } from './notifications.js';
 
@@ -91,7 +92,7 @@ describe('held while a chord or secret surface is shown', () => {
     expect(text(channel)).toBe('waits');
   });
 
-  it('puts the one that was showing back at the front, and shows it again whole when the hold ends', () => {
+  it('puts the one that was showing back at the front, and shows it again whole when the hold ends (nobody said it was seen)', () => {
     const time = clock();
     const channel = createNotificationChannel({ schedule: time.schedule });
     channel.notify('one');
@@ -106,6 +107,120 @@ describe('held while a chord or secret surface is shown', () => {
     expect(text(channel), 'shown whole again, not for the 100 ms it had left').toBe('one');
     time.advance(1);
     expect(text(channel)).toBe('two');
+  });
+});
+
+describe('a notification that was seen is spent; what a popup raised goes with it (MVP-11 step 4 round 2, observation #1)', () => {
+  it('one a frame showed (`seen`) is dropped when a hold begins, not replayed; the next one waits its turn', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('one');
+    channel.notify('two');
+    time.advance(1000);
+    channel.seen('one');
+    channel.hold(true);
+    expect(text(channel)).toBeUndefined();
+    expect(channel.getSnapshot().queued).toBe(1);
+    time.advance(10_000);
+    channel.hold(false);
+    expect(text(channel)).toBe('two');
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel), 'the seen one is never shown again').toBeUndefined();
+  });
+
+  it('only the one showing is marked, by its own text: another text marks nothing', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('one');
+    channel.seen('two');
+    channel.hold(true);
+    channel.hold(false);
+    expect(text(channel)).toBe('one');
+  });
+
+  it('the mark belongs to the one that was showing: the next one is unseen until it is shown', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    channel.notify('one');
+    channel.notify('two');
+    channel.seen('one');
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBe('two');
+    channel.hold(true);
+    channel.hold(false);
+    expect(text(channel), 'two was never seen: it is shown again').toBe('two');
+  });
+
+  it('`discard` drops what one popup raised, showing or waiting, and nothing else', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    const popup = {};
+    const other = {};
+    channel.notify('the popup says', popup);
+    channel.notify('the host says');
+    channel.notify('the popup again', popup);
+    channel.notify('another popup', other);
+    expect(text(channel)).toBe('the popup says');
+    const before = channel.getSnapshot();
+    channel.discard(popup);
+    expect(channel.getSnapshot()).not.toBe(before);
+    expect(text(channel)).toBe('the host says');
+    expect(channel.getSnapshot().queued).toBe(1);
+    time.advance(NOTIFICATION_MS);
+    expect(text(channel)).toBe('another popup');
+    // Nothing of that popup's to drop: nothing changes, and no listener is woken.
+    const quiet = channel.getSnapshot();
+    channel.discard(popup);
+    expect(channel.getSnapshot()).toBe(quiet);
+    expect(time.pending()).toBe(1);
+  });
+
+  it('a discard of what only waits is published too (the count of what waits changed)', () => {
+    const channel = createNotificationChannel({ schedule: clock().schedule });
+    const popup = {};
+    channel.notify('the host says');
+    channel.notify('the popup says', popup);
+    const listener = vi.fn();
+    channel.subscribe(listener);
+    expect(channel.getSnapshot().queued).toBe(1);
+    channel.discard(popup);
+    expect(channel.getSnapshot().queued).toBe(0);
+    expect(listener).toHaveBeenCalledOnce();
+    expect(text(channel)).toBe('the host says');
+  });
+
+  it('a discarded one showing gives its row and its timer to the next at once', () => {
+    const time = clock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    const popup = {};
+    channel.notify('the popup says', popup);
+    channel.notify('next');
+    time.advance(2000);
+    channel.discard(popup);
+    expect(text(channel)).toBe('next');
+    expect(time.pending()).toBe(1);
+    time.advance(NOTIFICATION_MS - 1);
+    expect(text(channel), 'the next one has its own three seconds').toBe('next');
+  });
+});
+
+describe('the production timer (C38)', () => {
+  it('never keeps the process alive (it is unref’d) and cancels', () => {
+    const spy = vi.spyOn(globalThis, 'setTimeout');
+    const fired = vi.fn();
+    try {
+      const cancel = unrefTimer(fired, 100_000);
+      expect(spy).toHaveBeenCalledOnce();
+      const handle: unknown = spy.mock.results[0]?.value;
+      const isTimer = (value: unknown): value is NodeJS.Timeout =>
+        typeof value === 'object' && value !== null && 'hasRef' in value;
+      if (!isTimer(handle)) throw new Error('setTimeout returned no timer');
+      expect(handle.hasRef()).toBe(false);
+      cancel();
+      expect(fired).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

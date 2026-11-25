@@ -23,6 +23,7 @@ import {
   TEST_POPUP_TITLE,
   testReportPopup,
 } from '../render/tui/surface-matrix/popup-fixture.js';
+import { reportsPortFor } from '../render/tui/surface-matrix/report-fixture.js';
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { naturalBodyRows, popupBody, popupFrameLines, reportPageRows } from './frame-model.js';
 import {
@@ -135,9 +136,10 @@ function outsideUnchanged(
 
 async function closeWithEsc(m: Mounted): Promise<void> {
   m.key(KEYS.escape);
-  // A lone Esc is held back a moment while the input layer rules out an escape sequence.
+  // A lone Esc is held back a moment while the input layer rules out an escape sequence. The bound is a ceiling on a defect, never a delay
+  // anything waits out: generous, so a loaded machine (a failure at load ~60 was seen with 3 s) does not fail a correct host.
   await vi.waitFor(() => expect(m.popups.getSnapshot().open).toBe(false), {
-    timeout: 3000,
+    timeout: 10_000,
     interval: 15,
   });
   await m.settle();
@@ -552,4 +554,80 @@ describe('an empty or error state draws both its sentences whole in a real host 
       }
     },
   );
+});
+
+describe('the hosts’ own wiring around an open popup (MVP-11 step 4, review round 2, mutation sweep L01–L04, L23)', () => {
+  const NOTICE = 'QXS settings saved for this chat';
+
+  it('L04/L06: while a popup is open over the body, its notification is read once, in the popup, not again on the hint row behind it', async () => {
+    const variant: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 40 } };
+    const m = mountStandaloneChat(variant);
+    try {
+      await m.settle();
+      expect(m.popups.openForUser(testReportPopup('chat')).opened).toBe(true);
+      await m.settle();
+      m.notifications.notify(NOTICE);
+      await m.until(() => m.frame().join('\n').includes(NOTICE));
+      await m.settle();
+      expect(m.frame().join('\n').split(NOTICE).length - 1).toBe(1);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  it('L01/L02: the composer’s cursor block is not lit while a popup owns the keys (the control: it is lit before)', async () => {
+    const variant: Variant = { renderer: 'alt', color: true, size: { cols: 100, rows: 40 } };
+    const m = mountStandaloneChat(variant);
+    try {
+      await m.settle();
+      const lit = (): number =>
+        m
+          .cells()
+          .flat()
+          .filter((cell) => cell.style.inverse).length;
+      expect(lit()).toBeGreaterThan(0);
+      expect(m.popups.openForUser(testReportPopup('chat')).opened).toBe(true);
+      await m.settle();
+      const frame = m.popups.getSnapshot().frame;
+      if (frame === undefined) throw new Error('open');
+      const box = popupBoxOf(frame, variant);
+      const outside = m
+        .cells()
+        .flatMap((row, index) => (index >= box.top && index < box.top + box.height ? [] : row))
+        .filter((cell) => cell.style.inverse).length;
+      expect(outside).toBe(0);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  it('L03: what was typed stays on the composer behind the popup (only the cursor is taken away)', async () => {
+    const variant: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 40 } };
+    const m = mountStandaloneChat(variant);
+    try {
+      await m.settle();
+      m.key('hello there');
+      await m.until(() => m.frame().join('\n').includes('hello there'));
+      expect(m.popups.openForUser(testReportPopup('chat')).opened).toBe(true);
+      await m.settle();
+      expect(m.frame().join('\n')).toContain('hello there');
+    } finally {
+      m.unmount();
+    }
+  });
+
+  it('L23: a report opened in a chat says on its top edge that it came from the chat', async () => {
+    const variant: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 40 } };
+    const m = mountStandaloneChat(variant, { reports: reportsPortFor('standalone-chat', 'help') });
+    try {
+      await m.settle();
+      await m.typeLine('/help');
+      await m.until(() => m.popups.getSnapshot().frame?.spec.id === 'help');
+      await m.settle();
+      expect(m.frame().join('\n')).toContain('from chat');
+      expect(m.frame().join('\n')).not.toContain('from Home');
+    } finally {
+      m.unmount();
+    }
+  });
 });

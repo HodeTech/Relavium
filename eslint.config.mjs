@@ -280,7 +280,8 @@ const dataModuleImportEntry = /** @type {const} */ ([
     patterns: [
       ...seamImportOptions.patterns,
       { group: ['node:*'], message: DATA_MODULE_MESSAGE },
-      { group: NODE_BUILTINS, message: DATA_MODULE_MESSAGE },
+      // Anchored (`/fs`): an unanchored `process` is a gitignore-style pattern that also matches the repo's own `../process/…` directory.
+      { group: NODE_BUILTINS.map((name) => `/${name}`), message: DATA_MODULE_MESSAGE },
       { group: ['ink/*', 'ink-*', 'react/*', 'react-dom/*'], message: DATA_MODULE_MESSAGE },
     ],
   },
@@ -307,6 +308,18 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/popups/geometry.ts',
   'apps/cli/src/popups/popup-refusal.ts',
   'apps/cli/src/popups/turn-in-flight.ts',
+  'apps/cli/src/popups/chord-refusal.ts',
+  'apps/cli/src/popups/custody.ts',
+  'apps/cli/src/popups/frame-model.ts',
+  'apps/cli/src/popups/opening-guard.ts',
+  'apps/cli/src/popups/popup-bind.ts',
+  'apps/cli/src/popups/popup-reducer.ts',
+  'apps/cli/src/popups/popup-route.ts',
+  'apps/cli/src/popups/popup-text.ts',
+  'apps/cli/src/popups/popup-copy.ts',
+  'apps/cli/src/popups/popup-work.ts',
+  'apps/cli/src/popups/doctor-port.ts',
+  'apps/cli/src/popups/report-port.ts',
   'tools/lint-fixtures/forbidden-in-data-module.ts',
 ];
 const ENGINE_NODE_GLOBALS = [

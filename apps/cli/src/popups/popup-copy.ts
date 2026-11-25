@@ -2,7 +2,7 @@
  * `[c] copy` on the popups that show a report ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1: every report popup offers it, because a closed report leaves nothing to re-read and pasting one into a bug report is the common case):
  * the `/doctor` popup and the four report popups share one path (`attemptClipboardWrite`, OSC 52 through the host's one clipboard closure), one
- * sentence family (`Cost: sent 412 characters to the terminal clipboard.`, `Doctor: sent …`) and nothing written anywhere but the popup host's
+ * sentence family (`Cost: sent 412 characters to the clipboard.`, `Doctor: sent …`) and nothing written anywhere but the popup host's
  * notification channel.
  *
  * **What is copied is what is drawn.** A report popup's own lines, which every builder has already scrubbed with the full floor
@@ -46,15 +46,15 @@ export function reportCopyText(lines: readonly string[], plainGlyphs: boolean): 
   return withGlyphForm(plainGlyphs, () => lines.map((line) => popupText(line)).join('\n'));
 }
 
-/** What a copy says, under the popup's name and short enough for the popup's legend row, where it is drawn (`Cost: sent 412 characters to the terminal clipboard.`). */
+/** What a copy says, under the popup's name and short enough for the popup's legend row, where it is drawn beside the way back (`Cost: sent 412 characters to the clipboard.`). */
 export function popupCopyNotice(label: string, outcome: ClipboardOutcome): string | undefined {
   switch (outcome.kind) {
     case 'written':
-      return `${label}: sent ${String(outcome.characters)} characters to the terminal clipboard.`;
+      return `${label}: sent ${String(outcome.characters)} characters to the clipboard.`;
     case 'failed':
       return `${label}: the clipboard request failed.`;
     case 'too-large':
-      return `${label}: too large for the terminal clipboard.`;
+      return `${label}: too large for the clipboard.`;
     case 'empty':
       return undefined;
   }

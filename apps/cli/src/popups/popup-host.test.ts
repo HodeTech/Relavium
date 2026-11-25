@@ -625,12 +625,14 @@ describe('which keys are resolutions on the host’s key history (ADR-0148 §2)'
 });
 
 describe('a scroll of a confirmation line is not a step change (ADR-0148 §3)', () => {
-  it('fires no stepChanged, keeps the line armed, and a later Ctrl+Y still answers', () => {
+  it('fires no stepChanged and keeps the line on its step; a line that has to be scrolled to be read offers no answer (MVP-11 step 4 round 2)', () => {
     const r = rig();
     const chord = vi.fn();
+    const chordRefused = vi.fn();
     const stepChanged = vi.fn();
-    r.openSettled(lineSpec({ initialStep: 1 }), { chord, stepChanged });
+    // A one-row page from the line's first frame on (a page that shrinks under a line that fitted disarms it: see the `cut` tests).
     r.host.bindPageRows(() => 1);
+    r.openSettled(lineSpec({ initialStep: 1 }), { chord, chordRefused, stepChanged });
     r.show();
     r.time.advance(100);
     const before = r.host.getSnapshot();
@@ -640,8 +642,11 @@ describe('a scroll of a confirmation line is not a step change (ADR-0148 §3)', 
     expect(stepChanged).not.toHaveBeenCalled();
     r.show();
     r.time.advance(800);
+    // Three lines on a one-row page: the line is cut short, so it takes no answer and stays (the command says why in its own words).
     r.host.input('y', CTRL_Y);
-    expect(chord).toHaveBeenCalledOnce();
+    expect(chord).not.toHaveBeenCalled();
+    expect(chordRefused).not.toHaveBeenCalled();
+    expect(r.host.getSnapshot().frame?.stepIndex).toBe(1);
   });
 
   it('does not re-arm the line: a Ctrl+Y counted on it before the scroll still refuses the answer as typed', () => {
@@ -669,12 +674,14 @@ describe('a scroll of a confirmation line is not a step change (ADR-0148 §3)', 
     r.host.input('y', CTRL_Y);
     expect(currentStep(r.host.getSnapshot().frame ?? fail()).state.content.kind).toBe('empty');
     expect(r.host.getSnapshot().frame?.stepIndex).toBe(1);
-    // The line now has something to confirm (a command's late result), and is scrolled.
+    // The line now has something to confirm (a command's late result), and is scrolled on a one-row page.
     context?.setContent(1, LINE_STEP.content);
     r.host.bindPageRows(() => 1);
     r.show();
     r.time.advance(100);
     r.host.input('', DOWN);
+    // The page grows to hold the whole line (the line is answerable again from its next acknowledged frame), and the earlier key still counts.
+    r.host.bindPageRows(() => 18);
     r.show();
     r.time.advance(2400);
     r.host.input('y', CTRL_Y);
@@ -916,29 +923,44 @@ describe('what the host says fits one row of the popup at the floor (MVP-11 step
     'Test report',
   ];
 
-  it('every refusal and every closing text of every popup title, at most POPUP_NOTICE_MAX_COLUMNS (66) columns', () => {
-    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(66);
+  it('every refusal and every closing text of every popup title: one drawn in an open popup’s legend row fits beside its way back (54), one drawn on the hint row the inner width at the floor (66) (MVP-11 step 4 round 2)', () => {
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(54);
+    const IN_A_POPUP = new Set(['popup-open', 'depth']);
     for (const title of TITLES) {
       for (const reason of REFUSALS) {
         const text = refusedOpenText(title, reason);
-        expect(displayWidth(text), text).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
-        expect(text.startsWith(title), text).toBe(true);
+        expect(displayWidth(text), text).toBeLessThanOrEqual(
+          IN_A_POPUP.has(reason) ? POPUP_NOTICE_MAX_COLUMNS : 66,
+        );
+        expect(text.startsWith(IN_A_POPUP.has(reason) ? title.slice(0, 8) : title), text).toBe(
+          true,
+        );
       }
       for (const reason of ['sheet', 'error', 'resize'] as const) {
         const text = closedUnansweredText(title, reason);
-        expect(displayWidth(text), text).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
+        expect(displayWidth(text), text).toBeLessThanOrEqual(66);
         expect(text.startsWith(title), text).toBe(true);
       }
     }
+    // Each of the two that can be drawn in a popup keeps a title of the common commands whole.
+    expect(refusedOpenText('/doctor', 'depth')).toBe(
+      '/doctor cannot open now: two popups are already open',
+    );
+    expect(refusedOpenText('/workflows', 'popup-open')).toBe(
+      '/workflows cannot open now: another popup is open',
+    );
   });
 
   it('a title too long for the row is cut first, with the ellipsis; the words that say why stay whole', () => {
     const title = `/${'x'.repeat(100)}`;
     const text = closedUnansweredText(title, 'resize');
-    expect(displayWidth(text)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    expect(displayWidth(text)).toBe(66);
     expect(text.endsWith('… closed: terminal too small, nothing was answered')).toBe(true);
     const refused = refusedOpenText(title, 'card-open');
-    expect(displayWidth(refused)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    expect(displayWidth(refused)).toBe(66);
     expect(refused.endsWith('… cannot open now: a card is waiting for your answer')).toBe(true);
+    const inPopup = refusedOpenText(title, 'popup-open');
+    expect(displayWidth(inPopup)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    expect(inPopup.endsWith('… cannot open now: another popup is open')).toBe(true);
   });
 });

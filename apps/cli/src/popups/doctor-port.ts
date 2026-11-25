@@ -12,20 +12,21 @@
 import type { ProviderId } from '@relavium/llm';
 
 import type { DoctorProbes } from '../chat/doctor.js';
-import type { ClipboardWriter } from '../render/clipboard.js';
 import type { Surface } from '../render/surface.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import type { PopupOrigin } from './frame-model.js';
 import type { PopupContext, PopupHost } from './popup-host.js';
+import type { PopupPortBase, PopupWorkOwner } from './popup-work.js';
 
 /** Where the popup is read: the bare Home, the chat the Home hosts, or a stand-alone `relavium chat`. Decides the words of a remedy. */
 export type DoctorSurface = Exclude<Surface, 'shell'>;
 
-/** The owner the deep tier's run is entered on: its signal aborts the run, its retained work holds each request until it settles. */
-export type DoctorWorkOwner = Pick<
-  InvocationWorkOwner,
-  'signal' | 'work' | 'assertAdmitting' | 'enter' | 'failure'
->;
+/**
+ * The owner the deep tier's run is entered on: the owner every popup's work starts on ({@link PopupWorkOwner}) and, for the deep tier, its signal
+ * (which aborts the run) and its retained work (which holds each request until it settles).
+ */
+export type DoctorWorkOwner = PopupWorkOwner &
+  Pick<InvocationWorkOwner, 'signal' | 'work' | 'assertAdmitting'>;
 
 /** A remedy a row's detail can offer on a surface that has it. Today one: the provider setup, which is the Home's alone (OD-2). */
 export interface DoctorRemedy {
@@ -47,7 +48,7 @@ export interface DoctorKeySample {
 }
 
 /** What a host hands the popup. Built once per surface; nothing in it is read until the popup runs a check. */
-export interface DoctorPort {
+export interface DoctorPort extends PopupPortBase {
   /**
    * The host this doctor belongs to (one per terminal host: the Home, or a stand-alone chat's process). A completed deep result and a deep
    * run in flight are kept under it for the process, so reopening the popup shows the result and cannot stack a second run.
@@ -62,13 +63,10 @@ export interface DoctorPort {
   /** The quick tier's probes (the keychain's reachability, the configuration, the tools, the global artifacts), the provider seam and, in a
    *  chat, the session's read-only MCP report. The same probes the text report runs. */
   readonly probes: DoctorProbes;
+  /** The owner of the quick tier's work and of the deep tier's run. Its `clipboard` and `plainGlyphs` are the copy's ({@link PopupPortBase}). */
   readonly workOwner?: DoctorWorkOwner | undefined;
-  /** `[c]` puts the report on the clipboard through this, as `/copy` does (OSC 52). Absent ⇒ `[c]` says copying is not available here. */
-  readonly clipboard?: ClipboardWriter | undefined;
   /** The key presence the host already sampled (the Home samples it when it opens and after a provider run); a check past its bound falls back on it. */
   readonly cachedKeys?: (() => readonly DoctorKeySample[] | undefined) | undefined;
-  /** The copied report is written in the glyphs' plain forms (colour is off, ADR-0145 §5). */
-  readonly plainGlyphs?: boolean | undefined;
   /** The seam for the provider popup ({@link DoctorRemedyOpener}); absent today. */
   readonly openRemedy?: DoctorRemedyOpener | undefined;
 }

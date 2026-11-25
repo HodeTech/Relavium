@@ -5,8 +5,8 @@
  * EAGER half, split from the lazy half as `doctor-port.ts` is: types, the parse of a typed line, and a loader that brings the popups' code in
  * (`report-session.ts` and what it imports) only when the person first asks for a report, so a host never pays for it at start. What the four
  * reports and the `/doctor` popup share (the scrub and the wrap, the work starter, the copy, the phrases of a refused chord) is
- * `popup-text.ts`, `popup-work.ts`, `popup-copy.ts` and `chord-refusal.ts`, written once; `ReportWorkOwner` below is the owner they all start
- * work on.
+ * `popup-text.ts`, `popup-work.ts`, `popup-copy.ts` and `chord-refusal.ts`, written once; `PopupWorkOwner` (`popup-work.ts`) is the owner they all
+ * start work on.
  *
  * The hosts route and open, and hold no popup logic: the chat host (`chat-ink.tsx`) and the Home controller recognise the line
  * ({@link parseReportLine}) in the same place they open `/permissions` and `/doctor`, BEFORE the line is counted as a submit (so the popup
@@ -18,21 +18,14 @@ import type { SessionCostRow } from '@relavium/db';
 import type { UsageCoverage } from '@relavium/shared';
 
 import type { BoundAgentView } from '../chat/bound-agent-view.js';
-import type { ClipboardWriter } from '../render/clipboard.js';
 import type { Surface } from '../render/surface.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
-import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import type { PopupOrigin } from './frame-model.js';
 import type { PopupHost } from './popup-host.js';
+import type { PopupPortBase } from './popup-work.js';
 
 /** Where a report is read: the chat the Home hosts, or a stand-alone `relavium chat` (the words of a remedy differ). */
 export type ReportSurface = Extract<Surface, 'home-chat' | 'standalone-chat'>;
-
-/**
- * The owner a report's work is entered on (`enter`: the session's database stays open until the read has settled) and a fault of it goes to
- * (`failure`), never to an unhandled rejection.
- */
-export type ReportWorkOwner = Pick<InvocationWorkOwner, 'enter' | 'failure'>;
 
 /** The session's spend as one read of the database and the live governor gave it. */
 export interface CostReading {
@@ -97,40 +90,27 @@ export interface HelpPort {
 }
 
 /** What a chat host hands the report popups. Built once per chat session; nothing in it is read until a popup runs. */
-export interface ReportsPort {
+export interface ReportsPort extends PopupPortBase {
   readonly surface: ReportSurface;
   /** The agent this chat is bound to, made afresh on every call (the tier the session uses now). Absent ⇒ `/agent` is not a popup here. */
   readonly agent?: (() => BoundAgentView) | undefined;
   readonly cost?: CostPort | undefined;
   readonly workflows?: WorkflowsPort | undefined;
   readonly help?: HelpPort | undefined;
-  readonly workOwner?: ReportWorkOwner | undefined;
-  /**
-   * `[c] copy` puts the report on the clipboard through this, as `/copy` and the doctor's `[c]` do (OSC 52). Absent ⇒ `[c]` says copying is not
-   * available here.
-   */
-  readonly clipboard?: ClipboardWriter | undefined;
-  /** The copied report is written in the glyphs' plain forms (colour is off, ADR-0145 §5). */
-  readonly plainGlyphs?: boolean | undefined;
 }
-
-/** The members of a {@link ReportsPort} that come from the session's own line handler (the host adds the surface, the owner and the glyph form). */
-export type ReportMembers = Pick<ReportsPort, 'agent' | 'cost' | 'workflows' | 'help'>;
-
-/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows` or `/help`: the name of the member of the port that makes it a popup. */
-export type ReportKind = keyof ReportMembers;
 
 /** One report: the port member it needs, the command that names it, and whether the command takes `--release`. */
 interface ReportDefinition {
-  readonly kind: ReportKind;
+  readonly kind: keyof ReportsPort;
   readonly command: string;
   readonly takesRelease: boolean;
 }
 
 /**
  * The reports, in one table: what a typed line is matched against ({@link parseReportLine}) and what a port has to hold for the report to be a
- * popup ({@link reportAvailable}: the member that is named like the kind). A fifth report is one member of the port, one row here and one opener
- * in `report-session.ts` (its table is typed over {@link ReportKind}, and `report-port.test.ts` opens every row).
+ * popup ({@link reportAvailable}: the member that is named like the kind). **The kinds are read from this table** ({@link ReportKind},
+ * {@link ReportMembers}), so a fifth report is one row here, which names a member of the port (a row for a member that is not there does not
+ * compile) and which the opener table of `report-session.ts` (typed over {@link ReportKind}) then requires; `report-port.test.ts` opens every row.
  */
 export const REPORTS = [
   { kind: 'agent', command: '/agent', takesRelease: false },
@@ -138,6 +118,12 @@ export const REPORTS = [
   { kind: 'workflows', command: '/workflows', takesRelease: false },
   { kind: 'help', command: '/help', takesRelease: false },
 ] as const satisfies readonly ReportDefinition[];
+
+/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows` or `/help`: the name of the member of the port that makes it a popup. */
+export type ReportKind = (typeof REPORTS)[number]['kind'];
+
+/** The members of a {@link ReportsPort} that come from the session's own line handler (the host adds the surface, the owner and the glyph form). */
+export type ReportMembers = Pick<ReportsPort, ReportKind>;
 
 export interface ParsedReportLine {
   readonly kind: ReportKind;

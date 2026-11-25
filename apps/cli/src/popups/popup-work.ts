@@ -10,7 +10,22 @@
  */
 
 import { CliError } from '../process/errors.js';
-import type { ReportWorkOwner } from './report-port.js';
+import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
+import type { PopupCopyPort } from './popup-copy.js';
+
+/**
+ * The owner a popup's work is entered on (`enter`: the session's database stays open until the read has settled) and a fault of it goes to
+ * (`failure`), never to an unhandled rejection. The one owner type of every popup's port: the doctor's and the four reports'.
+ */
+export type PopupWorkOwner = Pick<InvocationWorkOwner, 'enter' | 'failure'>;
+
+/**
+ * What every popup's port holds in common, written once for the two ports (`DoctorPort`, `ReportsPort`) to extend: the owner its work starts on
+ * ({@link startPopupWork}) and what its `[c]` needs (the host's clipboard and the glyph form, `PopupCopyPort`).
+ */
+export interface PopupPortBase extends PopupCopyPort {
+  readonly workOwner?: PopupWorkOwner | undefined;
+}
 
 /** A macrotask: the event loop renders and reads keys before the next read. */
 export const macrotask = (): Promise<void> =>
@@ -28,7 +43,7 @@ export function faultCode(cause: unknown): string {
  * puts the state in the popup). An owner that no longer admits work (the host is closing) throws on entry: that is a fault of the same kind.
  */
 export function startPopupWork(
-  owner: ReportWorkOwner | undefined,
+  owner: PopupWorkOwner | undefined,
   operation: () => Promise<void>,
   failed: (cause: unknown) => void,
 ): void {

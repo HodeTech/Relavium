@@ -51,7 +51,7 @@ export const EMPTY_PROMPT = '(empty)';
 const NOTICE_WIDTH = 78;
 const NOTICE_ROOM = FIELD_ROWS + 1 + TOOL_LINES_MAX + PROMPT_LINES_MAX;
 
-export function agentSheetTitle(view: BoundAgentView): string {
+export function agentTitle(view: BoundAgentView): string {
   return `Agent · ${view.id}`;
 }
 
@@ -284,7 +284,7 @@ export function effortText(view: BoundAgentView): string {
  * the room is short, the head at least three), and a cut is shown by `…`. Nothing else of the definition is shown: no absolute path, no full
  * prompt, no MCP reference.
  */
-export function agentSheetBody(
+export function agentNoticeBody(
   view: BoundAgentView,
   width: number,
   room: number,
@@ -344,11 +344,13 @@ function floored(lines: readonly SheetLine[]): readonly string[] {
 
 /**
  * The same fields as a notice, for a chat that has no popup to open (a plain, `--json` or one-shot chat): the title and the body lines,
- * trailing blanks removed, joined by newlines. Built from {@link agentSheetBody}, so the notice and the popup cannot name different fields.
+ * trailing blanks removed, joined by newlines. Built from {@link agentNoticeBody}, which names the same fields as the `/agent` popup
+ * (`popups/agent-popup.ts` builds its own rows from the same helpers: the notice pairs the temperature and the reasoning effort on one row and
+ * the popup gives each its own, and the labels are the same), pinned by `agent-notice.test.ts`.
  */
 export function agentNotice(view: BoundAgentView): string {
   return [
-    sanitizeInline(agentSheetTitle(view)),
-    ...floored(agentSheetBody(view, NOTICE_WIDTH, NOTICE_ROOM)).map((line) => line.trimEnd()),
+    sanitizeInline(agentTitle(view)),
+    ...floored(agentNoticeBody(view, NOTICE_WIDTH, NOTICE_ROOM)).map((line) => line.trimEnd()),
   ].join('\n');
 }

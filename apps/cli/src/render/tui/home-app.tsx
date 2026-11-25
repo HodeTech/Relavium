@@ -53,6 +53,7 @@ import {
   type TranscriptAcknowledgement,
 } from './transcript-acknowledgement.js';
 import type { EditorState } from './chat-input.js';
+import { pressesOnly } from './chord-guard.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -525,15 +526,27 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // unbound off the prototype, so this form is immune to how the context object is shaped.
   const app = useApp();
   const suspendPort = props.suspendPort;
+  // Bumped once a suspension is over: one render then commits an open popup's frame again (see below).
+  const [, setReclaimed] = useState(0);
+  // The popup's acknowledgement is created further down; the suspension reads it when it happens, never while this effect is set up.
+  const popupAcknowledgementRef = useRef<PopupAcknowledgement<PopupHostSnapshot> | undefined>(
+    undefined,
+  );
   useEffect(() => {
     if (suspendPort === undefined) return;
     suspendPort.attach(async (callback) => {
       controller.getSnapshot().session?.store.invalidateToolReview();
+      popupAcknowledgementRef.current?.invalidate();
       try {
         await app.suspendTerminal(callback);
       } finally {
         // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
         controller.getSnapshot().session?.store.invalidateToolReview();
+        // The renderer redraws its last output on resume but commits nothing, so an open popup's frame would never be measured again and every
+        // key but `Esc` and `Ctrl+C` would stay dropped as unseen: one render commits it anew, and its acknowledgement (flushed after the
+        // terminal is ours again) is new evidence, its dwell counted from it.
+        popupAcknowledgementRef.current?.invalidate();
+        setReclaimed((count) => count + 1);
       }
     });
     return () => suspendPort.attach(undefined);
@@ -608,6 +621,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       });
     },
   );
+  popupAcknowledgementRef.current = popupAcknowledgement;
   useEffect(() => {
     const popups = props.popups;
     if (popups === undefined || popupAcknowledgement === undefined) return;
@@ -719,16 +733,15 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     () =>
       subscribeResize(() => {
         nativeAcknowledgement?.invalidate();
-        popupAcknowledgement?.invalidate();
         homeFrame.invalidate();
         cardFrame.invalidate();
         controller.getSnapshot().session?.store.invalidateToolReview();
-        const next = getSize();
-        // A step that holds a chord or a secret is not left pending behind the notice below the floor (ADR-0148 §4).
-        propsRef.current.popups?.resized(next.cols, next.rows);
-        setSize(next);
+        // The popup host is told by the slot, in the render this size causes, before the popup's frame at the size is committed (and on mount,
+        // so a Home that starts below the floor knows it): a step that holds a chord or a secret is not left pending behind the notice below
+        // the floor (ADR-0148 §4).
+        setSize(getSize());
       }),
-    [subscribeResize, getSize, nativeAcknowledgement, popupAcknowledgement, cardFrame],
+    [subscribeResize, getSize, nativeAcknowledgement, cardFrame],
   );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
@@ -972,7 +985,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return true;
   };
 
-  useInput((input, key) => {
+  const readHomeKey = (input: string, key: Key): void => {
     if (props.inputEnabled?.() === false) return;
     // Ink raw mode parses Ctrl-Z as Ctrl+`z` (some harnesses surface the literal SUB byte). Consume it BEFORE mouse,
     // overlays, and the Home controller so it can neither type into a prompt nor answer a pending approval.
@@ -1035,7 +1048,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       }
     }
     controller.handleKey(input, key);
-  });
+  };
+  // The Home's one reader never hears a key's release (`pressesOnly`: a release would type a letter twice and give a card or a line a second
+  // `Ctrl+Y`).
+  useInput(pressesOnly(readHomeKey));
   // Bracketed paste arrives on ink 7's native `usePaste` channel (separate from `useInput`): the whole paste is
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
@@ -1079,6 +1095,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     color,
     flush: () => app.waitUntilRenderFlush(),
   };
+  // The slot tells the popup host the size, and voids its frame, before it commits the frame at that size (and once on mount).
   const slot = <PopupSlot {...slotProps} />;
   // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4).
   // It is the slot's own predicate, asked of the slot's own props, and the slot itself stays OUTSIDE the dimmed subtree in every branch: the
@@ -1205,11 +1222,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box
       flexDirection="column"
       width={layoutColumns(size.cols)}
-      {...(occupiesRows(flags) && nativeCardShown(prompt)
-        ? { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' }
-        : overlayOpen
-          ? { minHeight: Math.max(1, size.rows - 1) }
-          : {})}
+      {...landingRootHeight(occupiesRows(flags) && nativeCardShown(prompt), overlayOpen, size)}
     >
       <BackdropDim dimmed={dimmed}>
         {nativeAcknowledgement && (
@@ -1329,6 +1342,21 @@ function LoadingEcho(
       {props.children}
     </Box>
   );
+}
+
+/**
+ * The landing root's height: a native card that takes the rows fills the screen (one row when the screen cannot hold it), clipping what
+ * overflows; an overlay keeps the root as tall as the screen less a row, so the absolutely positioned popup lies inside it; otherwise the root
+ * takes its content's height.
+ */
+function landingRootHeight(
+  nativeCardTakesRows: boolean,
+  overlayOpen: boolean,
+  size: { readonly cols: number; readonly rows: number },
+): { readonly height?: number; readonly overflowY?: 'hidden'; readonly minHeight?: number } {
+  if (nativeCardTakesRows)
+    return { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' };
+  return overlayOpen ? { minHeight: Math.max(1, size.rows - 1) } : {};
 }
 
 /**

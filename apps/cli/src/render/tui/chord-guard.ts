@@ -29,15 +29,49 @@ import {
 export type ChordAnswer = 'allow' | 'deny';
 
 /**
- * Which answer this key is, or `undefined` for every key that is not a chord. Exactly `Ctrl+Y` and `Ctrl+N`: the letter must be the
- * whole input (a pasted run that contains one is not a key), `ctrl` must be set (a bare letter is typing) and `meta` must not be (a
- * different chord). Nothing else answers.
+ * A key as a chord surface reads it: the chat's key fields and, from a terminal that reports key events (the kitty keyboard protocol's
+ * "report event types", which Ink 7 parses: `ESC[121;5:2u` is a held `Ctrl+Y`'s repeat, `ESC[121;5:3u` its release), which event it was.
+ * The CLI never enables that mode, but a terminal another program left in it sends the repeat and the release as keys of their own.
  */
-export function reduceChordKey(input: string, key: ChatKey): ChordAnswer | undefined {
+export interface ChordKey extends ChatKey {
+  readonly eventType?: 'press' | 'repeat' | 'release' | undefined;
+}
+
+/**
+ * Which chord this key is, whatever its event (a press, a held key's repeat, its release), or `undefined` for every key that is not one.
+ * Exactly `Ctrl+Y` and `Ctrl+N`: the letter must be the whole input (a pasted run that contains one is not a key), `ctrl` must be set (a
+ * bare letter is typing) and `meta` must not be (a different chord). What a surface uses to RECOGNISE the key (a held `Ctrl+Y` is still a
+ * refused affirmative on a step that is no line); never what answers: that is {@link reduceChordKey}.
+ */
+export function chordOf(input: string, key: ChordKey): ChordAnswer | undefined {
   if (key.ctrl !== true || key.meta === true) return undefined;
   if (input === 'y') return 'allow';
   if (input === 'n') return 'deny';
   return undefined;
+}
+
+/**
+ * A host's key reader that never hears a key's RELEASE (a terminal left in the kitty protocol's event-type mode reports one after every
+ * press). A release is not a key: read, it would type a letter twice into a composer and give a card or a popup line a second `Ctrl+Y`.
+ * Nothing in the CLI acts on one, so each host's one reader is wrapped in this. A held key's repeat IS a key, as a legacy terminal's
+ * auto-repeat is, and goes through; the chord surfaces refuse it as an answer ({@link reduceChordKey}).
+ */
+export function pressesOnly<Key extends { readonly eventType?: ChordKey['eventType'] }>(
+  read: (input: string, key: Key) => void,
+): (input: string, key: Key) => void {
+  return (input, key) => {
+    if (key.eventType === 'release') return;
+    read(input, key);
+  };
+}
+
+/**
+ * Which answer this key is, or `undefined` for every key that is not a chord PRESS ({@link chordOf}). A key's repeat is never a first
+ * press and its release is not a press at all: neither answers anything, on any surface that reads its answer here.
+ */
+export function reduceChordKey(input: string, key: ChordKey): ChordAnswer | undefined {
+  if (key.eventType === 'repeat' || key.eventType === 'release') return undefined;
+  return chordOf(input, key);
 }
 
 /**

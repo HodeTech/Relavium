@@ -15,9 +15,19 @@
 
 import type { HelpKey, HelpKeyEvent, HelpKeyPress } from './help-sheet.js';
 
-/** The press of a key of the chat: the landing's own flags and `↑`, which the chat's history recall and the Home's `↓` row do not share. */
+/**
+ * The press of a key of the chat: the landing's own flags and the ones the chat's editor reads besides (`↑` for the history, the horizontal arrows,
+ * `Home`/`End` and the meta flag of `Alt+B`/`Alt+F` for the cursor), which the Home's `↓` row does not share.
+ */
 export interface ChatKeyPress extends HelpKeyPress {
-  readonly key: HelpKeyEvent & { readonly upArrow?: boolean };
+  readonly key: HelpKeyEvent & {
+    readonly upArrow?: boolean;
+    readonly leftArrow?: boolean;
+    readonly rightArrow?: boolean;
+    readonly home?: boolean;
+    readonly end?: boolean;
+    readonly meta?: boolean;
+  };
 }
 
 /** A key of the chat: how it is written, what it does, and the presses that do it. */
@@ -29,7 +39,7 @@ export interface ChatKeyDefinition extends Omit<HelpKey, 'presses'> {
  * The bytes of the mouse reports (SGR 1006) the full-screen chat reads: a wheel notch up or down, and a drag along the whole of the second row
  * of the screen (the press at its first column, the motion past its last, the release).
  */
-export const MOUSE_REPORTS = {
+const MOUSE_REPORTS = {
   wheelUp: '\u001b[<64;10;5M',
   wheelDown: '\u001b[<65;10;5M',
   press: '\u001b[<0;1;2M',
@@ -62,6 +72,30 @@ export const CHAT_KEYS = {
     presses: [
       { input: 'a', key: { ctrl: true } },
       { input: 'e', key: { ctrl: true } },
+    ],
+  },
+  lineEdgeKeys: {
+    keys: 'Home/End',
+    verb: 'move to the start or the end of the line',
+    presses: [
+      { input: '', key: { home: true } },
+      { input: '', key: { end: true } },
+    ],
+  },
+  wordMotion: {
+    keys: 'Ctrl+←/Ctrl+→',
+    verb: 'move back or forward by one word',
+    presses: [
+      { input: '', key: { ctrl: true, leftArrow: true } },
+      { input: '', key: { ctrl: true, rightArrow: true } },
+    ],
+  },
+  wordMotionAlt: {
+    keys: 'Alt+B/Alt+F',
+    verb: 'move back or forward by one word',
+    presses: [
+      { input: 'b', key: { meta: true } },
+      { input: 'f', key: { meta: true } },
     ],
   },
   deleteWord: {

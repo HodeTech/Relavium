@@ -31,6 +31,13 @@ describe('parseDoctorLine', () => {
     'thanks',
     'doctor',
     '/doctors',
+    // A prefix of the command is not the command, and a suffix glued to it is another word: the parse never widens what it takes.
+    '/doc',
+    '/d',
+    '/docto',
+    '/doctor--deep',
+    '/doctor --deep--deep',
+    '/doctor --deep,',
     '/doctor now',
     '/doctor --deep now',
     '/doctor --deep x',

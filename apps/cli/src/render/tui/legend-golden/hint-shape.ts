@@ -55,9 +55,9 @@ const PRESS_LETTER = /\b[Pp]ress [a-z](?![A-Za-z])/u;
 const ANY_KEY = /\b[Aa]ny (?:other )?key\b/u;
 /** The verb `Enter`, at the start of a sentence: `Enter a different key`, `Enter 0 to record it as free.` */
 const IMPERATIVE_ENTER = /(?:^|[.!?]\s+)Enter (?:a|an|the|your|value|it|0|one|some|text)\b/u;
-/** A whole literal that is one key expression, as a legend item's `keys` field is: `Esc`, `Ctrl+C`, `[Enter]`, `Esc / Ctrl+C`. */
+/** A whole literal that is one key expression, as a legend item's `keys` field is: `Esc`, `Ctrl+C`, `Alt+B/Alt+F`, `[Enter]`, `Esc / Ctrl+C`. */
 const KEY_EXPRESSION =
-  /^\[?(?:(?:Esc|Enter|Tab|Space|Backspace|Ctrl[+-][A-Za-z]|Shift\+Tab|PgUp|PgDn|Home|End|↑|↓|←|→|↑|↓)(?:(?: \/ |\/|\+| |, )(?:Esc|Enter|Tab|Space|Ctrl[+-][A-Za-z]|Shift\+Tab|PgUp|PgDn|Home|End|↑|↓|←|→|↑|↓|[a-z]))*)\]?$/u;
+  /^\[?(?:(?:Esc|Enter|Tab|Space|Backspace|Ctrl[+-][A-Za-z]|Alt\+[A-Za-z]|Shift\+Tab|PgUp|PgDn|Home|End|↑|↓|←|→|↑|↓)(?:(?: \/ |\/|\+| |, )(?:Esc|Enter|Tab|Space|Ctrl[+-][A-Za-z]|Alt\+[A-Za-z]|Shift\+Tab|PgUp|PgDn|Home|End|↑|↓|←|→|↑|↓|[a-z]))*)\]?$/u;
 
 /** Whether a string, as the source writes it, is a key legend, a hint, or a sentence that names a key. */
 export function isHintShaped(text: string): boolean {

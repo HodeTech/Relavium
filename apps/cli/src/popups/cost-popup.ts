@@ -17,6 +17,7 @@
 
 import { costLineText, costParts } from '../chat/repl-info.js';
 import { formatUsdExact } from '../render/notation.js';
+import { keyToken } from '../render/tui/legend.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import { COPY_CONTROL } from './popup-copy.js';
@@ -29,15 +30,18 @@ import type { CostReading, CostRelease } from './report-port.js';
 export const COST_STEP = { cost: 0, release: 1, done: 2 } as const;
 
 /** The control of the report that goes to the release step, and what it says. */
-export const RELEASE_CONTROL: PopupControl = { key: 'r', verb: 'release held estimates' };
+const RELEASE_CONTROL: PopupControl = { key: 'r', verb: 'release held estimates' };
 
 /** The loading words while the session's spend is read, and while the total is read again after a release. */
-export const COST_LOADING = 'Reading the session cost';
+const COST_LOADING = 'Reading the session cost';
 
-/** What the release step says when nothing is held (each line fits the popup's text columns at the 80-column floor: the legend names the way back). */
+/**
+ * What the release step says when nothing is held: one sentence that says why there is nothing to release (it wraps in the popup, nothing is cut),
+ * and what a release would lift. The legend names the way back.
+ */
 export const NOTHING_HELD = {
-  what: 'Nothing is held against this session’s cap.',
-  next: 'There is nothing to release.',
+  what: 'Nothing is held against this session’s cap, so there is nothing to release.',
+  next: 'A release lifts estimated spend that no turn has confirmed.',
 } as const;
 
 /** What the release step says when an answer found a turn in flight: nothing was released. */
@@ -87,14 +91,13 @@ export function costControls(reading: CostReading): readonly PopupControl[] {
 }
 
 /** The `costParts` of a reading, as the notice computes them (the same call, the same options). */
-function partsOf(reading: CostReading, released?: number) {
+function partsOf(reading: CostReading) {
   return costParts(reading.totalCostMicrocents, reading.rows, {
     ...(reading.coverage === undefined ? {} : { coverage: reading.coverage }),
     ...(reading.models === undefined ? {} : { models: reading.models }),
     ...(reading.governor === undefined
       ? {}
       : { durabilityBroken: reading.governor.durabilityBroken }),
-    ...(released === undefined ? {} : { released }),
   });
 }
 
@@ -140,11 +143,12 @@ export function releaseContent(reading: CostReading): PopupContent {
 }
 
 /**
- * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): nothing was released, and why. One short sentence, because the
- * popup draws it in its legend row.
+ * What the person is told when a `Ctrl+Y` did not count (it disarmed the line): nothing was released, why, and what asks again (like the
+ * doctor's, in the same shape and the same words of the cause). Short, because the popup draws it in its legend row beside the way back
+ * (`POPUP_NOTICE_MAX_COLUMNS`).
  */
 export function releaseRefusedText(reason: ChordRefusal): string {
-  return `Not released: ${CHORD_REFUSAL_PHRASE[reason]}.`;
+  return `Nothing released: ${CHORD_REFUSAL_PHRASE[reason]}. ${keyToken('r')} asks again.`;
 }
 
 /** The release step after an answer found a turn in flight: an empty state, so the line cannot be answered again from stale evidence. */

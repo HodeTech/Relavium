@@ -14,7 +14,7 @@
  */
 
 import {
-  agentSheetTitle,
+  agentTitle,
   effortText,
   EMPTY_PROMPT,
   fieldLead,
@@ -32,7 +32,7 @@ import type { PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js';
 
 /** What the popup says when the view of the agent cannot be made. */
-export const AGENT_REPORT_UNREADABLE = {
+const AGENT_REPORT_UNREADABLE = {
   what: 'The agent could not be shown.',
   next: 'Close this popup and open it again.',
 } as const;
@@ -41,7 +41,7 @@ export const AGENT_REPORT_UNREADABLE = {
  * The view with every string passed through the full scrub, whatever scrub the view was built with: the id, the name, the provider, the model,
  * each tool name, the prompt's head, the effort the definition declares and the file label. The numbers and the booleans carry no text.
  */
-export function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
+function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
   const { detail } = view;
   return {
     ...view,
@@ -91,7 +91,7 @@ export function agentReportLines(view: BoundAgentView): readonly string[] {
   const scrubbed = scrubbedAgentView(view);
   const { detail } = scrubbed;
   return [
-    agentSheetTitle(scrubbed),
+    agentTitle(scrubbed),
     '',
     ...field('Name', nameText(scrubbed)),
     ...(scrubbed.sourceLabel === undefined ? [] : field('File', scrubbed.sourceLabel)),

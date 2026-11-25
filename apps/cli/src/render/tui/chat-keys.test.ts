@@ -25,6 +25,12 @@ type Host = 'chat' | 'standalone-chat';
 
 /** The bytes a terminal sends for a press the data module names (`Ctrl+J` is a line feed, `Shift+Tab` a back-tab, an arrow an escape sequence). */
 function bytesOf({ input, key }: ChatKeyPress): string {
+  // A modified arrow is a CSI sequence with the modifier (5 is Ctrl); a meta key is the letter after an escape; Home and End are their CSI finals.
+  if (key.leftArrow === true) return key.ctrl === true ? '\u001b[1;5D' : '\u001b[D';
+  if (key.rightArrow === true) return key.ctrl === true ? '\u001b[1;5C' : '\u001b[C';
+  if (key.home === true) return '\u001b[H';
+  if (key.end === true) return '\u001b[F';
+  if (key.meta === true) return `\u001b${input}`;
   if (key.ctrl === true) return String.fromCharCode(input.toUpperCase().charCodeAt(0) - 64);
   if (key.return === true) return '\r';
   if (key.escape === true) return '\u001b';
@@ -98,6 +104,30 @@ async function mount(
 }
 
 const ALT: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 30 } };
+
+/**
+ * A key that moves by a word: back from the end of `one two` to the start of `two` (where the `X` lands), and forward again past it (where the `Y`
+ * lands), so each press moved by exactly one word and in its own direction.
+ */
+async function checkWordMotion(host: Host, id: 'wordMotion' | 'wordMotionAlt'): Promise<void> {
+  const { m } = await mount(host, ALT);
+  try {
+    m.key('one two');
+    await m.settle();
+    pressAll(m, id, 0);
+    await m.settle();
+    m.key('X');
+    await m.settle();
+    pressAll(m, id, 1);
+    await m.settle();
+    m.key('Y');
+    await m.settle();
+    pressAll(m, 'send');
+    await vi.waitFor(() => expect(m.submitted).toEqual(['one XtwoY']));
+  } finally {
+    m.unmount();
+  }
+}
 
 /** Each key's check: what its verb says, on a chat that has it. The table must name every key of the data module. */
 const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
@@ -174,6 +204,32 @@ const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
     } finally {
       m.unmount();
     }
+  },
+  lineEdgeKeys: async (host) => {
+    const { m } = await mount(host, ALT);
+    try {
+      m.key('abc');
+      await m.settle();
+      pressAll(m, 'lineEdgeKeys', 0);
+      await m.settle();
+      m.key('X');
+      await m.settle();
+      pressAll(m, 'lineEdgeKeys', 1);
+      await m.settle();
+      m.key('Y');
+      await m.settle();
+      pressAll(m, 'send');
+      // The start of the line took the `X`, and the end of the line took the `Y`.
+      await vi.waitFor(() => expect(m.submitted).toEqual(['XabcY']));
+    } finally {
+      m.unmount();
+    }
+  },
+  wordMotion: async (host) => {
+    await checkWordMotion(host, 'wordMotion');
+  },
+  wordMotionAlt: async (host) => {
+    await checkWordMotion(host, 'wordMotionAlt');
   },
   deleteWord: async (host) => {
     const { m } = await mount(host, ALT);
@@ -445,6 +501,9 @@ describe('every key `/help` lists for a chat does what its verb says', () => {
         'recall what you sent before, from the first or the last line of the prompt',
       ],
       ['lineEdges', 'Ctrl+A/Ctrl+E', 'move to the start or the end of the line'],
+      ['lineEdgeKeys', 'Home/End', 'move to the start or the end of the line'],
+      ['wordMotion', 'Ctrl+←/Ctrl+→', 'move back or forward by one word'],
+      ['wordMotionAlt', 'Alt+B/Alt+F', 'move back or forward by one word'],
       ['deleteWord', 'Ctrl+W', 'delete the word before the cursor'],
       ['deleteToStart', 'Ctrl+U', 'delete from the cursor back to the start of the line'],
       ['deleteToEnd', 'Ctrl+K', 'delete from the cursor to the end of the line'],

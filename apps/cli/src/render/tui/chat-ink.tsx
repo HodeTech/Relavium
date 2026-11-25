@@ -4,7 +4,17 @@ import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
-import { Box, Static, render, useApp, useInput, usePaste, useStdout, useWindowSize } from 'ink';
+import {
+  Box,
+  Static,
+  render,
+  useApp,
+  useInput,
+  usePaste,
+  useStdout,
+  useWindowSize,
+  type Key,
+} from 'ink';
 import { BackdropDim, Text } from './text.js';
 import {
   createElement,
@@ -80,6 +90,7 @@ import {
   reduceChatKey,
   type EditorState,
 } from './chat-input.js';
+import { pressesOnly } from './chord-guard.js';
 import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
@@ -1645,19 +1656,27 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // off the prototype, so this form is immune to how the context object is shaped.
   const app = useApp();
   const suspendPort = props.suspendPort;
+  // Bumped once a suspension is over: one render then commits an open popup's frame again (see below).
+  const [, setReclaimed] = useState(0);
   useEffect(() => {
     if (suspendPort === undefined) return;
     suspendPort.attach(async (callback) => {
       props.store.invalidateToolReview();
+      popupAcknowledgement?.invalidate();
       try {
         await app.suspendTerminal(callback);
       } finally {
         // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
         props.store.invalidateToolReview();
+        // The renderer redraws its last output on resume but commits nothing, so an open popup's frame would never be measured again and every
+        // key but `Esc` and `Ctrl+C` would stay dropped as unseen: one render commits it anew, and its acknowledgement (flushed after the
+        // terminal is ours again) is new evidence, its dwell counted from it.
+        popupAcknowledgement?.invalidate();
+        setReclaimed((count) => count + 1);
       }
     });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort, props.store]);
+  }, [app, suspendPort, props.store, popupAcknowledgement]);
 
   /**
    * The chat's one open adapter (ADR-0148 §2): the popup `route` names, on this chat's popup host with this chat's port. The popup's code is
@@ -1950,7 +1969,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     popups?.input(char, key);
   };
 
-  useInput((char, key) => {
+  const readChatKey = (char: string, key: Key): void => {
     if (popupReads()) {
       routePopupKey(char, key);
       return;
@@ -2290,7 +2309,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'none':
         return;
     }
-  });
+  };
+  // The chat's one reader never hears a key's release (`pressesOnly`: a release would type a letter twice and give a card or a line a second
+  // `Ctrl+Y`).
+  useInput(pressesOnly(readChatKey));
 
   // Observe the captured output stream on resize, as the Home does. Ink's
   // useWindowSize supplies defaults when dimensions are unavailable, but also
@@ -2327,11 +2349,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   useEffect(() => {
     applySelection(undefined);
   }, [windowSize.columns]);
-  // A resize voids the popup's measured frame, and below the floor a step that holds a chord or a secret closes unanswered (ADR-0148 §4).
-  useEffect(() => {
-    popupAcknowledgement?.invalidate();
-    popups?.resized(windowSize.columns, windowSize.rows);
-  }, [windowSize.columns, windowSize.rows, popupAcknowledgement, popups]);
+  // A resize voids the popup's measured frame, and below the floor a step that holds a chord or a secret closes unanswered (ADR-0148 §4): the
+  // slot does both, from `slotProps.size`, BEFORE it commits the frame at the new size (a passive effect here ran after that commit, voided the
+  // new frame's acknowledgement as it was made, and left every popup unanswerable until something re-rendered).
   // The notification channel is held while a decision is on screen or the hint row is not drawn (ADR-0148 §2).
   const notificationsHeld =
     renderedOverlays.approval ||

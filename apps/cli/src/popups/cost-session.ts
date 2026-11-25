@@ -119,7 +119,12 @@ export function openCostPopup(request: ReportOpenRequest, cost: CostPort): Popup
       if (context.stepIndex() !== COST_STEP.cost || reading === undefined) return;
       // Each control is listed only when it applies (`[r]` when something is held, `[c]` when a reading has landed), and the report lists no
       // control while it loads or says the read failed: a key the step does not list never gets here.
-      if (key === 'r') context.goToStep(COST_STEP.release);
+      // The line is built again from the reading each time it is asked for: an earlier answer that found a turn running left the step on its
+      // empty state, and that state must not outlive the turn.
+      if (key === 'r') {
+        context.setContent(COST_STEP.release, releaseContent(reading));
+        context.goToStep(COST_STEP.release);
+      }
       // The report as it is at this moment: the lines of the reading the step shows, which is what is drawn.
       else if (key === 'c') copyReport(context, port, 'Cost', costReportLines(reading));
     },

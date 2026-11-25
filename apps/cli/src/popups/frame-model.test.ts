@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { exitKey, type LegendItem } from '../render/tui/legend.js';
+import { exitKey, legend, LEGEND_SEPARATOR, type LegendItem } from '../render/tui/legend.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import {
@@ -22,6 +22,8 @@ import {
 } from './frame-model.js';
 import {
   INLINE_LIST_MAX_ROWS,
+  POPUP_NOTICE_MAX_COLUMNS,
+  POPUP_NOTICE_WAY_BACK_COLUMNS,
   popupGeometry,
   popupInnerWidth,
   type PopupBoxGeometry,
@@ -397,34 +399,77 @@ describe('the rule rows keep a blank cell at each end (MVP-11 step 4 review: a r
   );
 });
 
-describe('a live notification is drawn in the legend row while the popup is open (MVP-11 step 4 review)', () => {
-  it('in place of the legend, on one row, cut with the ellipsis at the inner width, in both placements', () => {
+describe('a live notification is drawn in the legend row while the popup is open, and the row still ends with the way back (MVP-11 step 4 round 2; ADR-0148 §1.4)', () => {
+  const COPIED = 'Doctor: sent 164 characters to the terminal clipboard.';
+
+  it('in place of the legend’s keys, on one row, then ` · ` and the way back whole, in both placements', () => {
     for (const placement of ['overlay', 'replace'] as const) {
       const shown = frame(
         { kind: 'list', rows: rows(2) },
-        {
-          placement,
-          parts: { notice: 'Doctor: sent 164 characters to the terminal clipboard.' },
-        },
+        { placement, parts: { notice: COPIED } },
       );
       const plain = frame({ kind: 'list', rows: rows(2) }, { placement });
       expect(shown.text.length).toBe(plain.text.length);
-      expect(shown.text.at(-2)?.trim()).toBe(
-        'Doctor: sent 164 characters to the terminal clipboard.',
-      );
+      expect(shown.text.at(-2)?.trim()).toBe(`${COPIED} · Esc close`);
       expect(shown.lines.at(-2)?.kind).toBe('notice');
-      expect(shown.text.at(-2)).not.toContain('Esc close');
+      expect(shown.text.at(-2)).not.toContain('[c] copy');
       expect(plain.text.at(-2)?.trim()).toBe('↑/↓ select · [c] copy · Esc close');
+      // The way back is drawn as a key, as in the legend: `Esc` strong, the separator and the verb dim.
+      const row = shown.lines.at(-2);
+      const roleAt = (word: string): string | undefined => {
+        const at = row?.text.lastIndexOf(word) ?? -1;
+        return row?.spans?.find((span) => span.from <= at && at < span.to)?.role;
+      };
+      expect(roleAt('Esc')).toBe('strong');
+      expect(roleAt('close')).toBe('dim');
+      expect(roleAt('·')).toBe('dim');
+      expect(roleAt('Doctor')).toBeUndefined();
     }
-    const long = frame(
-      { kind: 'list', rows: rows(2) },
-      { parts: { notice: `${'word '.repeat(30)}END` } },
-    );
-    const row = long.text.at(-2) ?? '';
-    expect(displayWidth(row)).toBe(long.geometry.width);
-    expect(row.trim().endsWith('…')).toBe(true);
-    expect(row).not.toContain('END');
-    expect(long.text.length).toBe(long.geometry.height);
+  });
+
+  it('a notification too long for the row is cut with the ellipsis; the way back never is, whatever it says', () => {
+    for (const [exit, words] of [
+      [exitKey.close(), 'Esc close'],
+      [exitKey.step(), 'Esc back'],
+      [exitKey.close(['Enter', 'Esc']), 'Enter / Esc close'],
+      [exitKey.step('Esc', 'clear the filter'), 'Esc clear the filter'],
+    ] as const) {
+      const long = frame(
+        { kind: 'list', rows: rows(2) },
+        { parts: { notice: `${'word '.repeat(30)}END`, legend: { items: [], exit } } },
+      );
+      const row = long.text.at(-2) ?? '';
+      expect(displayWidth(row)).toBe(long.geometry.width);
+      expect(row.trim().endsWith(`… · ${words}`), row).toBe(true);
+      expect(row).not.toContain('END');
+      expect(long.text.length).toBe(long.geometry.height);
+    }
+  });
+
+  it('the budget a popup’s texts are written to (POPUP_NOTICE_MAX_COLUMNS, 54) is exactly what fits beside `Esc close` at the floor: a text of 54 columns is whole, one of 55 is cut', () => {
+    expect(POPUP_NOTICE_MAX_COLUMNS).toBe(54);
+    // The way back the geometry reserves is the one the legend builder draws: the separator and `Esc close`.
+    const way = `${LEGEND_SEPARATOR}${legend([], exitKey.close())}`;
+    expect(displayWidth(way)).toBe(POPUP_NOTICE_WAY_BACK_COLUMNS);
+    expect(popupInnerWidth(80, 'standard') - displayWidth(way)).toBe(POPUP_NOTICE_MAX_COLUMNS);
+    const whole = 'x'.repeat(POPUP_NOTICE_MAX_COLUMNS - 3) + 'END';
+    for (const placement of ['overlay', 'replace'] as const) {
+      const fits = frame({ kind: 'list', rows: rows(2) }, { placement, parts: { notice: whole } });
+      expect(fits.text.at(-2)?.trim()).toBe(`${whole} · Esc close`);
+      const over = frame(
+        { kind: 'list', rows: rows(2) },
+        { placement, parts: { notice: `${whole}!` } },
+      );
+      expect(over.text.at(-2)?.trim().endsWith('… · Esc close')).toBe(true);
+      expect(over.text.at(-2)).not.toContain('END!');
+    }
+  });
+
+  it('a line or paragraph separator in it is folded before it is measured (the row is still exactly the frame’s width)', () => {
+    const notice = `a${String.fromCharCode(0x2028)}b`;
+    const shown = frame({ kind: 'list', rows: rows(2) }, { parts: { notice } });
+    expect(shown.text.at(-2)?.trim()).toBe('a b · Esc close');
+    expect(displayWidth(shown.text.at(-2) ?? '')).toBe(shown.geometry.width);
   });
 });
 
@@ -551,5 +596,94 @@ describe('the notice in place of a popup covers its rows to the terminal’s edg
     );
     for (const line of lines) expect(displayWidth(line.text)).toBe(columns);
     expect(lines[0]?.text.trim()).toBe('Terminal too small for this popup — enlarge it to 80×24');
+  });
+});
+
+describe('what the body draws, row for row (MVP-11 step 4, review round 2, mutation sweep B15–B50)', () => {
+  const GEOMETRY = { bodyRows: 8, listRows: 8, innerWidth: 60 } as const;
+  const at = (over: { readonly selected?: number; readonly offset?: number } = {}) => ({
+    selected: over.selected ?? 0,
+    offset: over.offset ?? 0,
+  });
+  const textOf = (
+    content: PopupContent,
+    state = at(),
+    geometry: {
+      readonly bodyRows: number;
+      readonly listRows: number;
+      readonly innerWidth: number;
+    } = GEOMETRY,
+  ): string[] => popupBody(content, state, geometry).lines.map((line) => line.text);
+  const longReport = (): PopupContent => ({
+    kind: 'report',
+    lines: Array.from({ length: 30 }, (_, index) => `line ${String(index)}`),
+  });
+
+  it('B41: scrolled to the end, a report draws its last line, and no marker where nothing is below', () => {
+    const drawn = textOf(longReport(), at({ offset: 22 }));
+    expect(drawn.at(-1)).toContain('line 29');
+    expect(drawn.join('\n')).not.toContain('▼');
+  });
+
+  it('B36: an offset past the end draws the last page, never rows past the report', () => {
+    const drawn = textOf(longReport(), at({ offset: 100 }));
+    expect(drawn.at(-1)).toContain('line 29');
+    expect(drawn).toHaveLength(8);
+  });
+
+  it('B34/B31: an empty report and a list with no rows (a filter that matches nothing) say there is nothing to show', () => {
+    expect(textOf({ kind: 'report', lines: [] })).toEqual(['Nothing to show.']);
+    expect(textOf({ kind: 'list', rows: [] })).toEqual(['Nothing to show.']);
+  });
+
+  it('B50: with a heading, a list whose selection is at the bottom of its window still draws the selected row, within the body', () => {
+    const many = Array.from({ length: 14 }, (_, index) => ({
+      id: `r${String(index)}`,
+      label: `row${String(index)}`,
+    }));
+    for (const geometry of [
+      { bodyRows: 10, listRows: 10, innerWidth: 60 },
+      // Inline at 80×24: a heading and a window of ten under it, the body one row taller.
+      { bodyRows: 11, listRows: 10, innerWidth: 66 },
+    ]) {
+      const body = popupBody(
+        {
+          kind: 'list',
+          rows: many,
+          heading: { status: 'completed', statusWord: 'ok', text: 'doctor: all checks passed' },
+        },
+        at({ selected: 13 }),
+        geometry,
+      );
+      const drawn = body.lines.map((line) => line.text);
+      expect(drawn.join('\n')).toContain('row13');
+      expect(drawn.length).toBeLessThanOrEqual(geometry.bodyRows);
+    }
+  });
+
+  it('B15/B16: an error’s and an empty state’s two sentences pass the floor: no control sequence reaches a row', () => {
+    for (const kind of ['error', 'empty'] as const) {
+      const drawn = textOf({ kind, what: 'bad\u001b[31m thing', next: 'then\u001b[2J this' }).join(
+        '\n',
+      );
+      expect(drawn).not.toContain('\u001b');
+      expect(drawn).toContain('bad');
+      expect(drawn).toContain('this');
+    }
+  });
+
+  it('B24/B25/B27: a section label, a reason and a status word pass the floor too', () => {
+    const drawn = textOf({
+      kind: 'list',
+      rows: [
+        { id: 's', label: 'sec\u001b[31mtion', section: true, enabled: false },
+        { id: 'd', label: 'disabled', enabled: false, reason: 'why\u001b[2J' },
+        { id: 'w', label: 'word', status: 'warning', statusWord: 'wa\u001b[31mrn' },
+      ],
+    }).join('\n');
+    expect(drawn).not.toContain('\u001b');
+    expect(drawn).toContain('sec');
+    expect(drawn).toContain('why');
+    expect(drawn).toContain('wa');
   });
 });

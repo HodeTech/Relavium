@@ -7,11 +7,11 @@ import '../render/tui/force-color.js';
  * in the real hosts:
  *
  * - at 80×24 a popup over the bare Home covers the hint row the notification is drawn on (and inline it replaces it), so the popup draws the
- *   live notification in its own legend row, whole, and the legend comes back when it expires;
+ *   live notification in its own legend row, whole, still followed by its way back (`· Esc close`), and the legend comes back when it expires;
  * - below the floor the notice in the popup's place covers its rows to the terminal's edge: no cell of the conversation behind is left at
  *   their end.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { mountStandaloneChat } from '../render/tui/surface-matrix/chat-host.js';
 import { KEYS, mountHome } from '../render/tui/surface-matrix/home-host.js';
@@ -24,8 +24,8 @@ import {
 import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { NOTIFICATION_MS } from './notifications.js';
 
-const NOTICE = 'Test report: sent 164 characters to the terminal clipboard.';
-const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** A notification within the budget of a popup's texts (`POPUP_NOTICE_MAX_COLUMNS`, 54): drawn whole beside the way back. */
+const NOTICE = 'Test report: sent 164 characters to the clipboard.';
 
 describe('a notification is read in the open popup’s own legend row (H6)', () => {
   it.each([
@@ -33,8 +33,10 @@ describe('a notification is read in the open popup’s own legend row (H6)', () 
     ['alt', true],
     ['inline', false],
   ] as const)(
-    'on the bare Home at 80×24 (%s, colour %s): after [c] the text is whole in the popup, and the legend comes back',
+    'on the bare Home at 80×24 (%s, colour %s): after [c] the text is whole in the popup, then its way back, and the legend comes back',
     async (renderer, color) => {
+      // The notification's three seconds pass on a fake timer (no real sleep); the rest of the time runs on as it does (the renderer's own).
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
       const variant: Variant = { renderer, color, size: { cols: 80, rows: 24 } };
       const m = mountHome(variant);
       try {
@@ -52,7 +54,7 @@ describe('a notification is read in the open popup’s own legend row (H6)', () 
         const frame = m.frame();
         const box = popupBoxOf(m.popupFrame(), variant, NOTICE);
         const legendRow = box.rows[box.height - 2] ?? '';
-        expect(legendRow.trim()).toBe(NOTICE);
+        expect(legendRow.trim()).toBe(`${NOTICE} · Esc close`);
         if (box.placement === 'overlay') {
           // The legend row of the popup, cell for cell, in the popup's own box.
           const drawn = frame[box.top + box.height - 2] ?? '';
@@ -71,14 +73,14 @@ describe('a notification is read in the open popup’s own legend row (H6)', () 
         await m.until(() => m.popups.getSnapshot().frame?.steps[0]?.selected === 1);
         expect(m.popups.getSnapshot().frame?.steps[0]?.selected).toBe(1);
         // Expired: the legend is back in its row.
-        m.skip(0);
-        await pause(NOTIFICATION_MS + 100);
+        await vi.advanceTimersByTimeAsync(NOTIFICATION_MS + 100);
         await m.until(() => m.text().includes(TEST_POPUP_LEGEND_ROW));
         expect(m.text()).not.toContain(NOTICE);
         m.key(KEYS.escape);
         await m.until(() => !m.popups.getSnapshot().open);
       } finally {
         m.unmount();
+        vi.useRealTimers();
       }
     },
   );

@@ -17,6 +17,12 @@ import {
   runConsentedProviderChecks,
 } from './doctor-deep.js';
 
+/** What a target that was not contacted says, pinned by literal: each tells the person that nothing was sent. */
+const ENDPOINT_CHANGED =
+  'not contacted: its endpoint changed after the confirmation was shown, so nothing was sent';
+const KEY_GONE =
+  'not contacted: its key could not be read after the confirmation, so nothing was sent';
+
 const KEY = ['sk', 'ant', 'consent', 'ABCDEF123456'].join('-');
 
 const lifecycle = (signal: AbortSignal = new AbortController().signal) => ({
@@ -106,7 +112,7 @@ describe('runConsentedProviderChecks', () => {
       [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
       { resolver: seam.resolver, lifecycle: lifecycle() },
     );
-    expect(checks[0]).toMatchObject({ status: 'fail', detail: ENDPOINT_CHANGED_DETAIL });
+    expect(checks[0]).toMatchObject({ status: 'fail', detail: ENDPOINT_CHANGED });
     expect(anthropic.requests).toEqual([]);
     expect(seam.keyFor).not.toHaveBeenCalled();
   });
@@ -121,7 +127,7 @@ describe('runConsentedProviderChecks', () => {
       [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
       { resolver: seam.resolver, lifecycle: lifecycle() },
     );
-    expect(checks[0]).toMatchObject({ status: 'fail', detail: ENDPOINT_CHANGED_DETAIL });
+    expect(checks[0]).toMatchObject({ status: 'fail', detail: ENDPOINT_CHANGED });
     expect(anthropic.requests).toEqual([]);
     expect(seam.keyFor).not.toHaveBeenCalled();
   });
@@ -133,8 +139,32 @@ describe('runConsentedProviderChecks', () => {
       [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
       { resolver: seam.resolver, lifecycle: lifecycle() },
     );
-    expect(checks[0]).toMatchObject({ status: 'fail', detail: KEY_GONE_DETAIL });
+    expect(checks[0]).toMatchObject({ status: 'fail', detail: KEY_GONE });
     expect(anthropic.requests).toEqual([]);
+  });
+
+  it('a target whose adapter is gone is a failed row that says so, and nothing is read or sent, never a throw', async () => {
+    // The destination is the one named and the key is there, but the resolver has no adapter for the provider any more.
+    const seam = stubResolver({ keys: { anthropic: KEY }, providers: {} });
+    const checks = await runConsentedProviderChecks(
+      [{ providerId: 'anthropic', origin: 'https://api.anthropic.com' }],
+      { resolver: seam.resolver, lifecycle: lifecycle() },
+    );
+    expect(checks).toHaveLength(1);
+    expect(checks[0]).toMatchObject({
+      id: 'provider:anthropic',
+      label: 'Anthropic',
+      status: 'fail',
+      detail: 'no adapter',
+    });
+    expect(seam.keyFor).not.toHaveBeenCalled();
+  });
+
+  it('the two sentences that say a target was not contacted are these words, and each says that nothing was sent', () => {
+    expect(ENDPOINT_CHANGED_DETAIL).toBe(ENDPOINT_CHANGED);
+    expect(KEY_GONE_DETAIL).toBe(KEY_GONE);
+    for (const detail of [ENDPOINT_CHANGED_DETAIL, KEY_GONE_DETAIL])
+      expect(detail).toMatch(/^not contacted: .*, so nothing was sent$/u);
   });
 
   it('its abort reaches the request at once', async () => {

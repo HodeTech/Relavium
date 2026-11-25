@@ -35,6 +35,14 @@ const variantOf = (renderer: (typeof RENDERERS)[number]): Variant => ({
   size: { cols: 80, rows: 24 },
 });
 
+/**
+ * How long a wait on a real host may take. Generous on purpose: a machine under load (a mutation sweep, a full gate beside it) takes seconds for
+ * what takes milliseconds alone, and a wait for something that never comes fails by its own assertion when the time is up. The test's own timeout
+ * is three times it, so no wait is cut short by the test that holds it.
+ */
+const WAIT_MS = 10_000;
+vi.setConfig({ testTimeout: 3 * WAIT_MS });
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -57,12 +65,12 @@ function costOf(port: ReportsPort): NonNullable<ReportsPort['cost']> {
 const popupId = (m: ChatMount): string | undefined => m.popups.getSnapshot().frame?.spec.id;
 const popupStep = (m: ChatMount): number | undefined => m.popups.getSnapshot().frame?.stepIndex;
 const opens = async (m: ChatMount, id: string): Promise<void> => {
-  await vi.waitFor(() => expect(popupId(m)).toBe(id), { timeout: 3000, interval: 15 });
+  await vi.waitFor(() => expect(popupId(m)).toBe(id), { timeout: WAIT_MS, interval: 15 });
   await m.settle();
 };
 const closes = async (m: ChatMount): Promise<void> => {
   await vi.waitFor(() => expect(m.popups.getSnapshot().open).toBe(false), {
-    timeout: 3000,
+    timeout: WAIT_MS,
     interval: 15,
   });
 };
@@ -141,12 +149,15 @@ describe.each(HOSTS)('the reports in the %s host', (host) => {
           expect(shown.lines.length).toBeGreaterThan(1);
           expect(written[0]).toBe(reportCopyText(shown.lines, false));
           expect(written[0]?.split('\n')).toHaveLength(shown.lines.length);
-          const said = `${{ agent: 'Agent', cost: 'Cost', workflows: 'Workflows', help: 'Help' }[id as 'agent']}: sent ${String(written[0]?.length)} characters to the terminal clipboard.`;
+          const said = `${{ agent: 'Agent', cost: 'Cost', workflows: 'Workflows', help: 'Help' }[id as 'agent']}: sent ${String(written[0]?.length)} characters to the clipboard.`;
           expect(m.submitted).toEqual([]);
+          // One notification, and it is the popup's: it is said in the popup's own legend row while the popup is open (the host's hint row is
+          // under it, and the inline block hides it), and it goes with the popup (a note about this popup's keys is not left after it).
+          await vi.waitFor(() => expect(m.notifications.getSnapshot().current?.text).toBe(said));
+          expect(m.text()).toContain(said);
           m.key(KEYS.escape);
           await closes(m);
-          // One notification, and it is the whole of what the copy left (the inline block hides the hint row, so it is drawn once the popup is gone).
-          await vi.waitFor(() => expect(m.notifications.getSnapshot().current?.text).toBe(said));
+          expect(m.notifications.getSnapshot().current).toBeUndefined();
           expect(residue(m)).toEqual(before);
         } finally {
           m.unmount();
@@ -196,7 +207,9 @@ describe.each(HOSTS)('the reports in the %s host', (host) => {
         await opens(m, 'cost');
         await vi.waitFor(() => expect(m.text()).toContain('This lifts about'));
         await m.settle();
-        m.skip(900);
+        // A popup that opened on its line from a typed command is answered only once the typing is over: a Ctrl+Y held across the open is locked
+        // out for two seconds after the last key, so a patient press, not the dwell alone, is what answers it.
+        m.skip(2100);
         m.key(KEYS.ctrlY);
         await vi.waitFor(() => expect(m.text()).toContain('back to the cap.'));
         expect(release).toHaveBeenCalledOnce();
@@ -226,7 +239,7 @@ describe.each(HOSTS)('the reports in the %s host', (host) => {
           sequenceNumber: 1,
           timestamp: '2026-11-25T00:00:00.000Z',
         });
-        m.skip(900);
+        m.skip(2100);
         m.key(KEYS.ctrlY);
         await m.settle();
         expect(release).not.toHaveBeenCalled();

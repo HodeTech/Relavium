@@ -6,7 +6,6 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { ENDPOINT_CHANGED_DETAIL, KEY_GONE_DETAIL } from '../chat/doctor-deep.js';
 import type { DoctorCheck } from '../chat/doctor.js';
 import { KNOWN_PROVIDER_IDS } from '../engine/providers.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
@@ -18,6 +17,7 @@ import {
   CONSENT_MCP,
   CONSENT_TOO_LONG,
   DOCTOR_LINE_ROWS,
+  doctorLineRows,
   DOCTOR_LOADING,
   DOCTOR_STEP,
   checksContent,
@@ -37,7 +37,7 @@ import {
 } from './doctor-popup.js';
 import type { DoctorSurface } from './doctor-port.js';
 import { naturalBodyRows, popupBody, popupFrameLines, type PopupContent } from './frame-model.js';
-import { popupGeometry, type PopupBoxGeometry } from './geometry.js';
+import { INLINE_LIST_MAX_ROWS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
 import { openFrame, popupLegend, withContent } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, scrubPopupText } from './popup-text.js';
 
@@ -269,11 +269,54 @@ describe('the copied report', () => {
       [
         'x doctor: 1 check failed',
         '  ok  OS keychain  reachable',
-        '  Deep check, 3s ago',
+        '  Deep check',
         '  x failed  OpenAI  key test failed',
       ].join('\n'),
     );
     expect(doctorCopyText(view, false).split('\n')[1]).toBe('  ✓ ok  OS keychain  reachable');
+  });
+
+  it('heads the deep section without its age, whatever the age: it is the moment the person looked, and a pasted report is read later', () => {
+    const texts = [0, 3000, 125_000, 40_000_000].map((ageMs) =>
+      doctorCopyText(
+        {
+          quick: [check('keychain', 'ok', 'OS keychain', 'reachable')],
+          deep: { checks: [check('provider:openai', 'ok', 'OpenAI', 'key works')], ageMs },
+        },
+        false,
+      ),
+    );
+    for (const text of texts) {
+      expect(text.split('\n')).toContain('  Deep check');
+      expect(text).not.toMatch(/ago/u);
+    }
+    // The same report for every age: nothing in the copy changes with the clock.
+    expect(new Set(texts).size).toBe(1);
+  });
+
+  it('is one line to a row, whatever a label or a detail carries: line and paragraph separators, escapes, host glyphs and key tokens are all made inert', () => {
+    const LS = String.fromCharCode(0x2028);
+    const PS = String.fromCharCode(0x2029);
+    const forged = ['  ok  Anthropic  key works', '  ✓ ok  OS keychain  reachable'];
+    const text = doctorCopyText(
+      {
+        quick: [check('config', 'fail', `config${LS}${forged[0]}`, `bad${PS}${forged[1]}`)],
+        deep: {
+          checks: [check('mcp:x', 'ok', `files\u001b[31m [Ctrl+Y] send ✓ ›`, 'connected')],
+          ageMs: 0,
+        },
+      },
+      false,
+    );
+    expect(text).not.toContain(LS);
+    expect(text).not.toContain(PS);
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('[Ctrl+Y]');
+    // Every line of the copy, split on EVERY separator a viewer might honour, is one of the four the report has: the heading, the quick row, the
+    // deep section's heading and the deep row. A forged row has nowhere to start.
+    const lines = text.split(new RegExp(`[\\n\\r${LS}${PS}]`, 'u'));
+    expect(lines).toHaveLength(4);
+    for (const line of lines) expect(forged).not.toContain(line);
   });
 });
 
@@ -351,7 +394,10 @@ describe('the words the popup says, pinned by literal', () => {
     },
   );
 
-  it.each([ENDPOINT_CHANGED_DETAIL, KEY_GONE_DETAIL])(
+  it.each([
+    'not contacted: its endpoint changed after the confirmation was shown, so nothing was sent',
+    'not contacted: its key could not be read after the confirmation, so nothing was sent',
+  ])(
     'a provider that was not contacted keeps the remedy of its key and endpoint, not the network’s: %s',
     (detail) => {
       const notContacted = check('provider:openai', 'fail', 'OpenAI', detail);
@@ -692,14 +738,35 @@ describe('rows and their remedies', () => {
 });
 
 describe('the confirmation line fits the page whole, or is not offered (ADR-0148 §7)', () => {
-  /** What the popup draws of `content` in its body at the smallest terminal, from the top: its lines, and whether any row is a scroll marker. */
-  function drawn(content: PopupContent) {
-    const body = popupBody(
+  /** The placements a popup is drawn in, at each terminal size the matrix covers: the overlay's page and the block in the flow's. */
+  const PAGES = (['overlay', 'replace'] as const).flatMap((placement) =>
+    [
+      { columns: 80, rows: 24 },
+      { columns: 100, rows: 30 },
+    ].map((size) => ({ placement, ...size })),
+  );
+
+  /** The page `placement` draws at `size`, as the geometry gives it. */
+  function pageOf(page: (typeof PAGES)[number]): PopupBoxGeometry {
+    const box = popupGeometry({
+      columns: page.columns,
+      rows: page.rows,
+      kind: 'standard',
+      placement: page.placement,
+      rail: true,
+    });
+    if (!box.fits) throw new Error('a popup fits 80×24');
+    return box;
+  }
+
+  /** What the popup draws of `content` in its body on `page`, from the top: its lines (a scroll marker among them when the page is too short). */
+  function drawn(content: PopupContent, page: (typeof PAGES)[number]) {
+    const box = pageOf(page);
+    return popupBody(
       content,
       { selected: 0, offset: 0 },
-      { bodyRows: DOCTOR_LINE_ROWS, listRows: DOCTOR_LINE_ROWS, innerWidth: POPUP_TEXT_COLUMNS },
-    );
-    return body.lines;
+      { bodyRows: box.bodyRows, listRows: box.listRows, innerWidth: box.innerWidth },
+    ).lines;
   }
 
   const OFFICIAL: Readonly<Record<string, string>> = {
@@ -710,33 +777,89 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
   const originOf = (id: (typeof KNOWN_PROVIDER_IDS)[number]): string =>
     OFFICIAL[id] ?? longestOrigin(id === 'openai' ? 'a' : 'b');
 
-  it('has the body rows of a popup at 80×24', () => {
-    expect(DOCTOR_LINE_ROWS).toBe(17);
-    expect(POPUP_TEXT_COLUMNS).toBe(66);
+  /** Every way the four providers can be named or left out, with the longest origins a custom endpoint can have. */
+  const MASKS = Array.from({ length: 2 ** KNOWN_PROVIDER_IDS.length - 1 }, (_, index) => {
+    const named = KNOWN_PROVIDER_IDS.filter((_id, at) => ((index + 1) & (1 << at)) !== 0);
+    const left = KNOWN_PROVIDER_IDS.filter((id) => !named.includes(id));
+    return {
+      named,
+      left,
+      targets: named.map((providerId) => ({ providerId, origin: originOf(providerId) })),
+    };
   });
 
-  it('every way the four providers can be named or left out, with the longest origins a custom endpoint can have, is on the page whole', () => {
-    let checked = 0;
-    for (let mask = 1; mask < 2 ** KNOWN_PROVIDER_IDS.length; mask += 1) {
-      const named = KNOWN_PROVIDER_IDS.filter((_, index) => (mask & (1 << index)) !== 0);
-      const left = KNOWN_PROVIDER_IDS.filter((id) => !named.includes(id));
-      const content = consentContent(
-        named.map((providerId) => ({ providerId, origin: originOf(providerId) })),
-        left,
-        'standalone-chat',
+  it('has the rows the page of each placement has, read from the geometry: the overlay’s whole body, the block in the flow’s list window', () => {
+    expect(POPUP_TEXT_COLUMNS).toBe(66);
+    for (const page of PAGES) {
+      const box = pageOf(page);
+      // The rows a report is drawn in: every body row, but at most the list window of the placement.
+      expect(doctorLineRows(page.placement), `${page.placement} ${page.columns}×${page.rows}`).toBe(
+        Math.min(box.maxBodyRows, box.listRows),
       );
-      if (content.kind !== 'report') throw new Error(`the line is a report (${named.join(',')})`);
-      const lines = drawn(content);
-      // Every line the answer covers is a row of the page: no scroll marker, no row left out.
-      expect(lines.map((line) => line.kind)).not.toContain('marker');
-      expect(lines.map((line) => line.text.trimEnd())).toEqual(content.lines);
-      expect(lines.length).toBeLessThanOrEqual(DOCTOR_LINE_ROWS);
-      // And no origin is shown in part: each one is on the page, in lines that rejoin to it.
-      for (const providerId of named)
-        expect(content.lines.map((line) => line.trim()).join('')).toContain(originOf(providerId));
-      checked += 1;
     }
-    expect(checked).toBe(15);
+    expect(doctorLineRows('overlay')).toBe(17);
+    expect(doctorLineRows('replace')).toBe(INLINE_LIST_MAX_ROWS);
+    // Without a placement, the smaller of the two pages.
+    expect(DOCTOR_LINE_ROWS).toBe(10);
+    expect(doctorLineRows()).toBe(DOCTOR_LINE_ROWS);
+  });
+
+  it.each(PAGES)(
+    'every way the four providers can be named or left out is on the %s page at $columns×$rows whole, or is not offered',
+    (page) => {
+      let offered = 0;
+      let refused = 0;
+      for (const { named, left, targets } of MASKS) {
+        const content = consentContent(targets, left, 'standalone-chat', page.placement);
+        if (content.kind === 'empty') {
+          // Not offered: nothing to answer, and the sentence says why.
+          expect(content.what).toBe(CONSENT_TOO_LONG);
+          refused += 1;
+          continue;
+        }
+        if (content.kind !== 'report') throw new Error(`the line is a report (${named.join(',')})`);
+        const lines = drawn(content, page);
+        // Every line the answer covers is a row of the page: no scroll marker, no row left out.
+        expect(
+          lines.map((line) => line.kind),
+          named.join(','),
+        ).not.toContain('marker');
+        expect(lines.map((line) => line.text.trimEnd())).toEqual(content.lines);
+        expect(lines.length).toBeLessThanOrEqual(doctorLineRows(page.placement));
+        // And no origin is shown in part: each one is on the page, in lines that rejoin to it.
+        for (const providerId of named)
+          expect(content.lines.map((line) => line.trim()).join('')).toContain(originOf(providerId));
+        offered += 1;
+      }
+      // Both outcomes occur on every page, so neither half of the check is vacuous: 15 ways in all.
+      // 15 ways in all. In the overlay every one is whole (its page has the 17 rows the longest need); inline the five that need 11 or more rows
+      // are not offered, and the other ten are: neither half of the check is vacuous.
+      expect(offered + refused).toBe(15);
+      expect(refused).toBe(page.placement === 'overlay' ? 0 : 5);
+    },
+  );
+
+  it('the block in the flow refuses more than the overlay does: a line of 11 to 17 rows is whole in the overlay and is cut inline', () => {
+    const between = MASKS.filter(({ targets, left }) => {
+      const overlay = consentContent(targets, left, 'standalone-chat', 'overlay');
+      const inline = consentContent(targets, left, 'standalone-chat', 'replace');
+      return overlay.kind === 'report' && inline.kind === 'empty';
+    });
+    expect(between.length).toBeGreaterThan(0);
+    for (const { targets, left } of between) {
+      const overlay = consentContent(targets, left, 'standalone-chat', 'overlay');
+      if (overlay.kind !== 'report') throw new Error('report');
+      expect(overlay.lines.length).toBeGreaterThan(doctorLineRows('replace'));
+      expect(overlay.lines.length).toBeLessThanOrEqual(doctorLineRows('overlay'));
+      // On the inline page those lines would have been scrolled to: the very row-hiding the whole-line rule forbids.
+      const cut = drawn(overlay, { placement: 'replace', columns: 80, rows: 24 });
+      expect(cut.map((line) => line.kind)).toContain('marker');
+    }
+    // Nothing is ever refused that the smaller page could show: the bound without a placement is the inline one.
+    for (const { targets, left } of MASKS)
+      expect(consentContent(targets, left, 'home').kind).toBe(
+        consentContent(targets, left, 'home', 'replace').kind,
+      );
   });
 
   it('is offered at exactly the rows the page has, and not at one more', () => {
@@ -744,31 +867,60 @@ describe('the confirmation line fits the page whole, or is not offered (ADR-0148
       providerId,
       origin: longestOrigin(String.fromCharCode(97 + index)),
     }));
-    // The lead, three origins of five lines each and the MCP sentence: seventeen lines, the whole body.
-    const fits = consentContent(three, [], 'home');
+    // The lead, three origins of five lines each and the MCP sentence: seventeen lines, the whole body of the overlay.
+    const fits = consentContent(three, [], 'home', 'overlay');
     if (fits.kind !== 'report') throw new Error('report');
-    expect(fits.lines).toHaveLength(DOCTOR_LINE_ROWS);
+    expect(fits.lines).toHaveLength(doctorLineRows('overlay'));
     // One more sentence, of one line (the provider left out is named in the 66 columns), makes eighteen: refused, and nothing is offered.
-    const over = consentContent(three, ['openai'], 'home');
+    const over = consentContent(three, ['openai'], 'home', 'overlay');
     expect(over.kind).toBe('empty');
     expect(
       displayWidth('Not contacted (its key or its endpoint could not be read): OpenAI.'),
     ).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
-  });
-
-  it('four of the longest origins cannot all be named: the line says so and offers nothing', () => {
-    const content = consentContent(
-      KNOWN_PROVIDER_IDS.map((providerId, index) => ({
-        providerId,
-        origin: longestOrigin(String.fromCharCode(97 + index)),
-      })),
+    // The same seventeen lines are not offered inline, where the page has ten.
+    expect(consentContent(three, [], 'home', 'replace').kind).toBe('empty');
+    // And a line of exactly ten rows is: the lead, one origin of eight lines is not possible, so two origins of four and the MCP sentence.
+    const ten = consentContent(
+      [
+        { providerId: 'openai', origin: `https://${'a'.repeat(190)}.example` },
+        { providerId: 'deepseek', origin: `https://${'b'.repeat(190)}.example` },
+      ],
       [],
       'home',
+      'replace',
     );
-    if (content.kind !== 'empty') throw new Error('empty');
-    expect(content.what).toBe('These destinations are too long to confirm, so nothing is sent.');
-    expect(content.what).toBe(CONSENT_TOO_LONG);
-    expect(content.next).toBe('Esc goes back.');
-    expect(displayWidth(content.what)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
+    if (ten.kind !== 'report') throw new Error('report');
+    expect(ten.lines.length).toBeLessThanOrEqual(doctorLineRows('replace'));
+  });
+
+  it('four of the longest origins cannot all be named: the line says so and offers nothing, in words that are true where it is drawn', () => {
+    const targets = KNOWN_PROVIDER_IDS.map((providerId, index) => ({
+      providerId,
+      origin: longestOrigin(String.fromCharCode(97 + index)),
+    }));
+    for (const placement of ['overlay', 'replace', undefined] as const) {
+      const content = consentContent(targets, [], 'home', placement);
+      if (content.kind !== 'empty') throw new Error('empty');
+      expect(content.what).toBe('These destinations are too long to confirm, so nothing is sent.');
+      expect(content.what).toBe(CONSENT_TOO_LONG);
+      // Twenty lines or more: no page shows them whole, so the full-screen view is not offered as the way out.
+      expect(content.next).toBe('Shorten the custom addresses to confirm them. Esc goes back.');
+      expect(displayWidth(content.what)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
+    }
+  });
+
+  it('a line the overlay can show says, inline, that the full-screen view has the rows, and says so only there', () => {
+    const three = (['anthropic', 'gemini', 'deepseek'] as const).map((providerId, index) => ({
+      providerId,
+      origin: longestOrigin(String.fromCharCode(97 + index)),
+    }));
+    const inline = consentContent(three, [], 'home', 'replace');
+    if (inline.kind !== 'empty') throw new Error('empty');
+    expect(inline.what).toBe(CONSENT_TOO_LONG);
+    expect(inline.next).toBe(
+      'Shorten the custom addresses, or use the full-screen view, which has the rows to show them whole. Esc goes back.',
+    );
+    // No shell command and no /providers, which a chat does not have: only what a person can do on the surface that drew it.
+    expect(inline.next).not.toMatch(/relavium\s|\/providers/u);
   });
 });

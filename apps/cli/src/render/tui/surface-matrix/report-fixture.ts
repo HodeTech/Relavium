@@ -157,7 +157,9 @@ export async function driveReport(
   await m.until(shows(state === 'cost-done' ? REPORT_LANDMARKS['cost-release'] : landmark));
   await m.settle();
   if (state !== 'cost-done') return;
-  m.skip(900);
+  // The popup opened on its line from a typed command, so a `Ctrl+Y` held across the open is locked out for two seconds after the last key: the
+  // answer of a patient press, past both that and the dwell.
+  m.skip(2100);
   m.key(KEYS.ctrlY);
   await m.until(shows(landmark));
   await m.settle();

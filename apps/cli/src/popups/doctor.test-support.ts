@@ -16,6 +16,7 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { openDoctorPopup } from './doctor-session.js';
 import type { DoctorPort } from './doctor-port.js';
 import type { PopupContent } from './frame-model.js';
+import type { PopupPlacement } from './geometry.js';
 import { createNotificationChannel, type Schedule } from './notifications.js';
 import {
   createPopupHost,
@@ -164,8 +165,13 @@ export function stubProbes(
   };
 }
 
-/** A popup host on a manual clock, with the doctor opened on it and its frame "on screen" unless a test says otherwise. */
-export function doctorRig(options: { readonly settleMs?: number } = {}) {
+/**
+ * A popup host on a manual clock, with the doctor opened on it and its frame "on screen" unless a test says otherwise. Drawn in the overlay of the
+ * alternate screen unless `placement` says it is a block in the flow (the accessible mode).
+ */
+export function doctorRig(
+  options: { readonly settleMs?: number; readonly placement?: PopupPlacement } = {},
+) {
   const clock = manualClock();
   const notifications = createNotificationChannel({ schedule: clock.schedule });
   const history = createChordHistory();
@@ -174,7 +180,7 @@ export function doctorRig(options: { readonly settleMs?: number } = {}) {
     schedule: clock.schedule,
     notifications,
     history,
-    placement: 'overlay',
+    placement: options.placement ?? 'overlay',
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
   });
   // The handlers the doctor gave the host, so a test can call one the keys cannot reach (a control the step does not list).

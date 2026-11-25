@@ -78,8 +78,8 @@ describe('nothing of the sheet is left in the source', () => {
         'NOT_SET',
         'NOT_WIRED_MARK',
         'agentNotice',
-        'agentSheetBody',
-        'agentSheetTitle',
+        'agentNoticeBody',
+        'agentTitle',
         'boundToolsText',
         'effortText',
         'fieldLead',
@@ -91,10 +91,14 @@ describe('nothing of the sheet is left in the source', () => {
     );
   });
 
-  it('the old path is a shim of exactly the two names the frozen pins still import, the same bindings', () => {
-    expect(Object.keys(agentSheetShim).sort()).toEqual(['NOT_WIRED_MARK', 'agentNotice']);
-    expect(agentSheetShim.agentNotice).toBe(noticeModule.agentNotice);
+  it('the old path is a shim of exactly the one name the frozen pin still imports, the same binding, and no production module imports it', () => {
+    expect(Object.keys(agentSheetShim)).toEqual(['NOT_WIRED_MARK']);
     expect(agentSheetShim.NOT_WIRED_MARK).toBe(noticeModule.NOT_WIRED_MARK);
+    const importers = PRODUCTION.filter(
+      ({ file, text }) =>
+        file !== 'render/tui/agent-sheet.ts' && /from\s+'[^']*\/agent-sheet\.js'/u.test(text),
+    ).map(({ file }) => file);
+    expect(importers).toEqual([]);
   });
 
   it('the chat’s one sheet slot holds one kind: the permissions sheet', () => {

@@ -31,7 +31,7 @@ import { costReadFailedContent } from './cost-session.js';
 import { openFrame, railOf } from './popup-reducer.js';
 import type { ChordRefusal } from './popup-host.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
-import { POPUP_TEXT_COLUMNS } from './popup-text.js';
+import { POPUP_TEXT_COLUMNS, wrapPopupText } from './popup-text.js';
 import { COMPLETE, costReading, costRow } from './report.test-support.js';
 import type { CostReading } from './report-port.js';
 
@@ -144,6 +144,11 @@ describe('the confirmation line and the result', () => {
     expect(text).toContain('This lifts about $0.0000045 of estimated-but-unconfirmed spend');
     expect(text).toContain('from this session’s cap, so later turns can spend that much more.');
     expect(text.endsWith('It cannot be undone.')).toBe(true);
+    // What the line does and the sentence that it cannot be undone are two paragraphs: one blank row between them.
+    const at = content.lines.indexOf('It cannot be undone.');
+    expect(at).toBeGreaterThan(1);
+    expect(content.lines[at - 1]).toBe('');
+    expect(content.lines.slice(0, at - 1).every((line) => line !== '')).toBe(true);
     // The amount is never rounded down: 1,999,999 micro-cents is $0.01999999, not $0.0200.
     const odd = releaseContent(costReading(1_999_999));
     expect(odd.kind === 'report' && odd.lines.join(' ')).toContain('$0.01999999');
@@ -157,6 +162,16 @@ describe('the confirmation line and the result', () => {
     expect(releasedAmount({ durable: 450, live: 450 })).toBe(450);
     expect(releasedAmount({ durable: 0, live: 700 })).toBe(700);
     expect(releasedAmount({ durable: 300, live: undefined })).toBe(300);
+    // The durable half is the larger one as often as the live half is: whichever is larger is the amount, whether the other is smaller or zero.
+    expect(releasedAmount({ durable: 5000, live: 1000 })).toBe(5000);
+    expect(releasedAmount({ durable: 5000, live: 0 })).toBe(5000);
+    expect(releasedAmount({ durable: 1000, live: 5000 })).toBe(5000);
+    expect(releasedAmount({ durable: 0, live: undefined })).toBe(0);
+    // Money cleared from the durable record alone is a release, never "nothing was held".
+    const durableOnly = releaseDoneContent({ durable: 5_000_000, live: 0 }, undefined);
+    expect(durableOnly.kind === 'report' && durableOnly.lines[0]).toBe(
+      'Released ~$0.0500 back to the cap.',
+    );
     const done = releaseDoneContent({ durable: 450, live: 450 }, costReading(0, undefined, []));
     if (done.kind !== 'report') throw new Error('a report');
     expect(done.lines[0]).toBe('Released ~$0.0000045 back to the cap.');
@@ -207,15 +222,24 @@ describe('the total wraps like every other line (the notice’s words, the popup
 });
 
 describe('the rail follows the path (rail: path)', () => {
+  const names = (onRelease: boolean, step?: number) => {
+    const frame = openFrame(costSpec('chat', onRelease), 1);
+    return railOf({ ...frame, stepIndex: step ?? frame.stepIndex });
+  };
+
   it('names only the steps from the first to the current one: the report alone, then the report and the line, then all three', () => {
-    const names = (onRelease: boolean, step?: number) => {
-      const frame = openFrame(costSpec('chat', onRelease), 1);
-      return railOf({ ...frame, stepIndex: step ?? frame.stepIndex });
-    };
     expect(names(false).names).toEqual(['Cost']);
-    expect(names(true)).toEqual({ names: ['Cost', 'Release'], index: 1 });
-    expect(names(false, COST_STEP.done)).toEqual({ names: ['Cost', 'Release', 'Done'], index: 2 });
+    expect(names(true)).toMatchObject({ names: ['Cost', 'Release'], index: 1 });
+    expect(names(false, COST_STEP.done)).toMatchObject({
+      names: ['Cost', 'Release', 'Done'],
+      index: 2,
+    });
     expect(costSpec('chat', false).rail).toBe('path');
+  });
+
+  it('a typed /cost --release opens on its line and never says it went through the report: the step before it is not marked done', () => {
+    // The frame's own visited steps: opened on the line, the report was never on screen (the host's rail rule, `railOf`).
+    expect(names(true).done).toEqual([false, false]);
   });
 });
 
@@ -225,18 +249,36 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
     early: true,
     expired: true,
     typed: true,
+    cut: true,
   };
 
   /** The room a line has: the popup's text columns, and two fewer where the frame puts a glyph in front of it (an error’s first line). */
   const ROOM = POPUP_TEXT_COLUMNS;
 
   it.each([
-    ['NOTHING_HELD', NOTHING_HELD],
     ['TURN_IN_FLIGHT', TURN_IN_FLIGHT],
     ['RELEASE_FAILED', RELEASE_FAILED],
   ])('%s: each of its two lines fits, with room for the glyph of an error', (_name, texts) => {
     expect(displayWidth(texts.what)).toBeLessThanOrEqual(ROOM - 2);
     expect(displayWidth(texts.next)).toBeLessThanOrEqual(ROOM);
+  });
+
+  it('with nothing held the step says why there is nothing to release once, in these words, wrapped whole', () => {
+    // Pinned by literal, not by the constant: the sentence is the product's, and it says the reason in one sentence and not twice.
+    expect(NOTHING_HELD).toEqual({
+      what: 'Nothing is held against this session’s cap, so there is nothing to release.',
+      next: 'A release lifts estimated spend that no turn has confirmed.',
+    });
+    expect(releaseContent(costReading(0, undefined, []))).toEqual({
+      kind: 'empty',
+      ...NOTHING_HELD,
+    });
+    // The sentence is wider than a row, and the popup wraps it whole: no row of it is cut, and the words rejoin.
+    const rows = wrapPopupText(NOTHING_HELD.what);
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(ROOM);
+    expect(rows.join(' ')).toBe(NOTHING_HELD.what);
+    expect(displayWidth(NOTHING_HELD.next)).toBeLessThanOrEqual(ROOM);
   });
 
   it('the empty, in-flight and failed contents carry exactly those lines, and none of them says what the legend already says', () => {
@@ -268,7 +310,20 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
     for (const reason of Object.keys(REASONS) as ChordRefusal[]) {
       const text = releaseRefusedText(reason);
       expect(displayWidth(text), reason).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
-      expect(text, reason).toMatch(/^Not released: /u);
+      expect(text, reason).toMatch(/^Nothing released: /u);
     }
   });
+
+  it.each([
+    ['unseen', 'Nothing released: pressed too soon. [r] asks again.'],
+    ['early', 'Nothing released: pressed too soon. [r] asks again.'],
+    ['expired', 'Nothing released: time ran out. [r] asks again.'],
+    ['typed', 'Nothing released: a key was typed. [r] asks again.'],
+    ['cut', 'Nothing released: the line was cut. [r] asks again.'],
+  ] as const satisfies readonly (readonly [ChordRefusal, string])[])(
+    'a refused answer (%s) says why, that nothing changed and what asks again, in these words',
+    (reason, words) => {
+      expect(releaseRefusedText(reason)).toBe(words);
+    },
+  );
 });

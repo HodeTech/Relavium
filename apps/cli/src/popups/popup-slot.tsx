@@ -65,7 +65,7 @@ import {
   type PopupAcknowledgement,
 } from './popup-acknowledgement.js';
 import type { PopupHost, PopupHostSnapshot } from './popup-host.js';
-import { currentStep, popupLegend, railOf } from './popup-reducer.js';
+import { currentStep, popupLegend, railOf, type PopupFrame } from './popup-reducer.js';
 import type { LegendExit, LegendItem } from '../render/tui/legend.js';
 
 type Size = { readonly cols: number; readonly rows: number };
@@ -141,6 +141,45 @@ function PopupNotice(
   );
 }
 
+/**
+ * The rows of the page `frame`'s current step is drawn in, in `geometry`: a report's page (`reportPageRows`, the very rows `popupBody` draws it
+ * in, the filter line taken out), else the list window; one row when no frame fits.
+ */
+export function framePage(
+  frame: PopupFrame | undefined,
+  geometry: PopupGeometry | undefined,
+): number {
+  if (frame === undefined || geometry?.fits !== true) return 1;
+  const { spec, state } = currentStep(frame);
+  return state.content.kind === 'report'
+    ? reportPageRows(geometry, spec.filter === true)
+    : geometry.listRows;
+}
+
+/**
+ * Tells a popup host the terminal's size, and voids its popup's measured frame, BEFORE the frame drawn at that size is committed: the slot
+ * renders it ahead of the popup, so its layout effect runs before the popup's own (React runs a parent's children's layout effects in order,
+ * each subtree before the next sibling's). After that commit would be too late: the acknowledgement of the frame at the new size would be voided
+ * as it is made, the frame never acknowledged, and every key but `Esc` and `Ctrl+C` dropped as unseen (the stand-alone chat did that from a
+ * passive effect). It runs on mount too, so a host that starts below the floor tells its popup host so before any popup opens. A step that holds
+ * a chord or a secret is closed below the floor here (ADR-0148 §4), in the render the size causes.
+ */
+function PopupResizeWatch(
+  props: Readonly<{
+    host?: PopupHost | undefined;
+    acknowledgement?: Pick<PopupAcknowledgement<PopupHostSnapshot>, 'invalidate'> | undefined;
+    columns: number;
+    rows: number;
+  }>,
+): null {
+  const { host, acknowledgement, columns, rows } = props;
+  useLayoutEffect(() => {
+    acknowledgement?.invalidate();
+    host?.resized(columns, rows);
+  }, [host, acknowledgement, columns, rows]);
+  return null;
+}
+
 /** The popup host's top popup, drawn from its reducer state. */
 function HostPopup(
   props: Readonly<{
@@ -181,13 +220,12 @@ function HostPopup(
             ),
           });
         })();
-  const geometryRef = useRef(geometry);
-  geometryRef.current = geometry;
+  // The rows of the page this frame draws its step's body in: a report's page (what a confirmation line must fit whole to be answered, and
+  // what a page of it scrolls by), else a list's window. Read through a ref, so the host always reads the frame that was drawn last.
+  const pageRef = useRef(1);
+  pageRef.current = framePage(frame, geometry);
   useLayoutEffect(() => {
-    host.bindPageRows(() => {
-      const latest = geometryRef.current;
-      return latest?.fits === true ? latest.listRows : 1;
-    });
+    host.bindPageRows(() => pageRef.current);
     return () => host.bindPageRows(undefined);
   }, [host]);
   useLayoutEffect(() => {
@@ -215,6 +253,7 @@ function HostPopup(
     origin: frame.spec.origin,
     steps: rail.names,
     stepIndex: rail.index,
+    done: rail.done,
     // The legend is judged on the page this frame draws (a report that fits names no scroll).
     legend: withGlyphForm(!color, () =>
       popupLegend(frame, reportPageRows(geometry, spec.filter === true)),
@@ -405,8 +444,26 @@ export function dimsBackdrop(drawing: SlotDrawing | undefined, color: boolean): 
   return color && drawing?.placement === 'overlay';
 }
 
-/** The overlay slot: the last child of a host's root. It draws the open popup, or nothing. */
-export function PopupSlot(props: Readonly<PopupSlotProps>): ReactElement | null {
+/**
+ * The overlay slot: the last child of a host's root. It draws the open popup, or nothing, and it tells the popup host the terminal's size first
+ * ({@link PopupResizeWatch}, ahead of the popup in the slot), so a frame at a new size is always measured after the host knows that size.
+ */
+export function PopupSlot(props: Readonly<PopupSlotProps>): ReactElement {
+  return (
+    <>
+      <PopupResizeWatch
+        host={props.host}
+        acknowledgement={props.acknowledgement}
+        columns={props.size.cols}
+        rows={props.size.rows}
+      />
+      <SlotBody {...props} />
+    </>
+  );
+}
+
+/** What the slot draws: the native channel's framed prompt, or the popup host's top popup, or nothing. */
+function SlotBody(props: Readonly<PopupSlotProps>): ReactElement | null {
   const snapshot = useSyncExternalStore(
     props.host?.subscribe ?? noSubscribe,
     props.host?.getSnapshot ?? closedPopups,

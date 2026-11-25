@@ -5,7 +5,7 @@
 import type { Agent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import { NOT_WIRED_MARK } from '../chat/agent-notice.js';
+import { agentNotice, NOT_WIRED_MARK } from '../chat/agent-notice.js';
 import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js';
 import { buildDefaultChatAgent } from '../chat/default-agent.js';
 import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
@@ -63,6 +63,46 @@ describe('the fields', () => {
     // Each of them has a row of its own: the sheet's paired row is gone.
     expect(lines.filter((line) => line.includes('Temperature'))).toHaveLength(1);
     expect(lines.filter((line) => line.includes('Reasoning effort'))).toHaveLength(1);
+  });
+
+  it('lists the same fields as the plain chat’s notice: the field LABELS of the popup and of `agentNotice` are the same, with and without a file', () => {
+    // The notice pairs the temperature and the reasoning effort on one row and the popup gives each its own, so the rows differ and the labels do
+    // not. Every label a row can have, each looked for at the start of a row (after its indent) or after the two spaces that end the one before.
+    const LABELS = [
+      'Name',
+      'File',
+      'Provider',
+      'Model',
+      'Temperature',
+      'Reasoning effort',
+      'Tools',
+      'System prompt',
+    ];
+    const labelsIn = (text: string): string[] =>
+      LABELS.filter((label) => new RegExp(`(?:^|\\s{2})${label}\\s{2,}\\S`, 'mu').test(text));
+    const withFile = boundAgentView(
+      definition({ temperature: 0.4, reasoning_effort: 'high' }),
+      'high',
+      {
+        wiredTools: ['read_file', 'search_files'],
+        sourceLabel: '.relavium/agents/reviewer.agent.yaml',
+      },
+    );
+    const builtIn = boundAgentView(
+      buildDefaultChatAgent('claude-sonnet-4-6', undefined, 'anthropic'),
+      undefined,
+      { wiredTools: ['read_file'] },
+    );
+    for (const view of [withFile, builtIn]) {
+      const popup = labelsIn(agentReportLines(view).join('\n'));
+      const notice = labelsIn(agentNotice(view));
+      expect(notice).toEqual(popup);
+      expect(popup.length).toBeGreaterThanOrEqual(7);
+    }
+    expect(labelsIn(agentReportLines(withFile).join('\n'))).toEqual(LABELS);
+    expect(labelsIn(agentReportLines(builtIn).join('\n'))).toEqual(
+      LABELS.filter((label) => label !== 'File'),
+    );
   });
 
   it('says what a definition leaves out, marks the built-in agent, and marks a tool the chat does not wire, with how many are offered', () => {

@@ -7,7 +7,9 @@
  * popup of more than one step, so a glyph is never the only carrier of the step); the step rail, only for more than one step, in the Home rail's
  * language (`✓ done ╌╌ ◉ current ╌╌ ○ to come`, each glyph from the table, with its plain form when colour is off); the body; and the legend,
  * which always ends with the way back and is the last thing truncated. A bottom edge closes the frame. While a notification is live the legend
- * row draws it instead, fitted to the row and cut with the ellipsis, never wrapped (the hint row it is drawn on otherwise is under the popup).
+ * row draws it in place of the legend's keys and still ends with the way back (`<notice> · Esc close`); the notification is cut with the
+ * ellipsis, never wrapped, and never the way back (the hint row it is drawn on otherwise is under the popup). The rail marks a step done only
+ * when the popup was on it.
  *
  * **Every row is exactly the frame's width** (§4). A row is filled with spaces to the width, because the spike showed that a row one cell short
  * lets the body behind it show through at its edge: the padding is what makes the popup opaque, and opacity is the safety property. The frame's
@@ -37,6 +39,7 @@ import {
   fitLegend,
   inertLegendText,
   legend,
+  LEGEND_SEPARATOR,
   legendSpans,
   type LegendExit,
   type LegendItem,
@@ -47,6 +50,7 @@ import {
   windowMarkers,
   wrappedLines,
   type SheetLine,
+  type SheetRole,
   type SheetSpan,
 } from '../render/tui/sheet-frame.js';
 import { displayWidth, wrapWords } from '../render/tui/viewport.js';
@@ -220,20 +224,23 @@ function marker(selected: boolean): string {
   return selected ? glyph('selection') : ' ';
 }
 
+/** A row's status, as it leads the row: its glyph, with its word where it has one, and two spaces; nothing for a row with no status. */
+function statusText(row: PopupListRow): string {
+  if (row.status === undefined) return '';
+  const mark = glyph(row.status);
+  const shown = row.statusWord === undefined ? mark : markWithWord(mark, popupText(row.statusWord));
+  return `${shown}  `;
+}
+
+/** What follows a row's label: its detail, or, for a row that cannot act, why. */
+function detailText(row: PopupListRow): string {
+  if (row.enabled === false) return `  ${popupText(row.reason ?? 'unavailable')}`;
+  return row.detail === undefined ? '' : `  ${popupText(row.detail)}`;
+}
+
 function listRowText(row: PopupListRow, selected: boolean): string {
   if (row.section === true) return `  ${popupText(row.label)}`;
-  const mark = row.status === undefined ? undefined : glyph(row.status);
-  const status =
-    mark === undefined
-      ? ''
-      : `${row.statusWord === undefined ? mark : markWithWord(mark, popupText(row.statusWord))}  `;
-  const enabled = row.enabled !== false;
-  const detail = enabled
-    ? row.detail === undefined
-      ? ''
-      : `  ${popupText(row.detail)}`
-    : `  ${popupText(row.reason ?? 'unavailable')}`;
-  return `${marker(selected)} ${status}${popupText(row.label)}${detail}`;
+  return `${marker(selected)} ${statusText(row)}${popupText(row.label)}${detailText(row)}`;
 }
 
 function rowKind(row: PopupListRow, selected: boolean): SheetLine['kind'] {
@@ -334,15 +341,11 @@ export function popupBody(
     lines.push(bodyLine('row', `Filter: ${popupText(state.filter)}${glyph('caret')}`, width));
   const room = Math.max(1, geometry.bodyRows - lines.length);
   switch (content.kind) {
-    case 'loading':
-      lines.push(
-        bodyLine(
-          'message',
-          `${popupText(content.what)}…${elapsed === undefined ? '' : `  ${elapsed}`}`,
-          width,
-        ),
-      );
+    case 'loading': {
+      const clock = elapsed === undefined ? '' : `  ${elapsed}`;
+      lines.push(bodyLine('message', `${popupText(content.what)}…${clock}`, width));
       break;
+    }
     case 'empty':
     case 'error': {
       // Both sentences whole, wrapped to the row; only a popup that has no more rows cuts them, the last row it keeps ending in the ellipsis.
@@ -393,6 +396,11 @@ export interface PopupFrameParts {
   readonly steps: readonly string[];
   readonly stepIndex: number;
   /**
+   * Parallel to `steps`: whether each step before the current one was done (the popup was on it). One that was not is drawn as a step not done
+   * (`○`), never `✓`. Absent ⇒ every step before the current one was.
+   */
+  readonly done?: readonly boolean[] | undefined;
+  /**
    * The legend's items and its way back, built from the same constants the key fold reads. Items are dropped from the end when they do not fit
    * (or by `priority`, parallel to `items`, higher kept longer); the way back never is.
    */
@@ -402,8 +410,9 @@ export interface PopupFrameParts {
     readonly priority?: readonly number[] | undefined;
   };
   /**
-   * The live notification while a popup is open (the host's channel, through the popup host's snapshot), drawn in the legend row in place of
-   * the legend for its lifetime: the hint row it is drawn on otherwise is under the popup. Absent ⇒ the legend.
+   * The live notification while a popup is open (the host's channel, through the popup host's snapshot), drawn in the legend row for its
+   * lifetime in place of the legend's keys, with the way back still at the end (`<notice> · Esc close`): the hint row it is drawn on otherwise
+   * is under the popup. Absent ⇒ the legend.
    */
   readonly notice?: string | undefined;
 }
@@ -485,6 +494,20 @@ function bottomEdge(geometry: PopupBoxGeometry): SheetLine {
   };
 }
 
+/**
+ * How a rail node is drawn: the current step strong, a step before it that was done (visited, {@link PopupFrameParts.done}) with the
+ * completed glyph, and every other step, one the popup opened past included, as a step not done.
+ */
+function railNode(
+  parts: PopupFrameParts,
+  index: number,
+): { readonly glyph: GlyphRole; readonly role: SheetRole } {
+  if (index === parts.stepIndex) return { glyph: 'currentStep', role: 'strong' };
+  if (index < parts.stepIndex && parts.done?.[index] !== false)
+    return { glyph: 'completed', role: 'ok' };
+  return { glyph: 'pending', role: 'dim' };
+}
+
 /** The rail: `✓ done ╌╌ ◉ current ╌╌ ○ to come`, each node's glyph from the table by its state. */
 function rail(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
   const spans: SheetSpan[] = [];
@@ -495,27 +518,39 @@ function rail(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
       spans.push({ from: text.length, to: text.length + join.length, role: 'dim' });
       text += join;
     }
-    const role: GlyphRole =
-      index < parts.stepIndex ? 'completed' : index === parts.stepIndex ? 'currentStep' : 'pending';
-    const node = `${glyph(role)} ${popupText(name)}`;
-    spans.push({
-      from: text.length,
-      to: text.length + node.length,
-      role: index < parts.stepIndex ? 'ok' : index === parts.stepIndex ? 'strong' : 'dim',
-    });
+    const look = railNode(parts, index);
+    const node = `${glyph(look.glyph)} ${popupText(name)}`;
+    spans.push({ from: text.length, to: text.length + node.length, role: look.role });
     text += node;
   });
   return framedRow({ kind: 'row', text, spans }, geometry);
 }
 
 /**
+ * The legend row while a notification is live ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §1.4: the legend always ends with the way back): the notification, then the separator and the step's way back, whole. The notification
+ * is what is cut, with the ellipsis, when the two do not fit the inner width together (`POPUP_NOTICE_MAX_COLUMNS` is the room it has beside
+ * `Esc close` at the floor); it is never wrapped (the frame's height is the geometry's). Its line separators are folded by `framedRow` (one
+ * unit for one: the measure is the same before and after).
+ */
+function noticeRow(notice: string, exit: LegendExit, geometry: PopupBoxGeometry): SheetLine {
+  const way = `${LEGEND_SEPARATOR}${legend([], exit)}`;
+  const room = Math.max(1, geometry.innerWidth - displayWidth(way));
+  const said = clipLine(notice, room);
+  const at = said.length + LEGEND_SEPARATOR.length;
+  const spans: SheetSpan[] = [
+    { from: said.length, to: at, role: 'dim' },
+    ...legendSpans([], exit).map((span) => ({ ...span, from: span.from + at, to: span.to + at })),
+  ];
+  return framedRow({ kind: 'notice', text: `${said}${way}`, spans }, geometry);
+}
+
+/**
  * The legend, fitted to the inner width: the way back is always kept and the other items go from the end first. While a notification is live
- * the row draws it instead, on one row cut with the ellipsis by `framedRow` (which also folds its line separators; it is never wrapped: the
- * frame's height is the geometry's).
+ * the row draws it in place of the other items ({@link noticeRow}).
  */
 function legendRow(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine {
-  if (parts.notice !== undefined)
-    return framedRow({ kind: 'notice', text: parts.notice }, geometry);
+  if (parts.notice !== undefined) return noticeRow(parts.notice, parts.legend.exit, geometry);
   const items = parts.legend.items.map((item) =>
     'text' in item ? { text: inertLegendText(sanitizeInline(item.text)) } : item,
   );

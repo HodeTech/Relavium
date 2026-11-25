@@ -8,10 +8,21 @@
  *   long after the line's frame, is refused. Nothing is sent, nothing is released.
  * - **A control letter resolves nothing** (`[r]` runs the quick check, `[d]` arms the line): it does not lock the line it leads to, so a patient
  *   `Ctrl+Y` 900 ms after the line's frame answers; a key that DID resolve something (`Enter` on a row) still locks it for the lockout.
+ * - **A popup that OPENS on its line** (`/doctor --deep`, `/cost --release`; MVP-11 step 4 round 2, security F2): the keys that typed the
+ *   command went to the composer, which stamps them as keys, never as resolutions, so a `Ctrl+Y` held there through the popup's code load
+ *   reached the line with no lockout to meet. The last key before the open now starts the line's lockout, the same 2 s the `[d]` path has: a
+ *   held key's repeat within 2 s of it is refused (and disarms the line), a patient press after it answers.
  */
-import { describe, expect, it } from 'vitest';
+import '../render/tui/force-color.js';
 
+import { describe, expect, it, vi } from 'vitest';
+
+import { createChordGuard } from '../render/tui/chord-guard.js';
+import { mountHostedChat, mountStandaloneChat } from '../render/tui/surface-matrix/chat-host.js';
+import { KEYS, mountHome } from '../render/tui/surface-matrix/home-host.js';
+import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { COST_STEP } from './cost-popup.js';
+import type { DoctorPort } from './doctor-port.js';
 import { DOCTOR_STEP } from './doctor-popup.js';
 import {
   CTRL,
@@ -156,4 +167,208 @@ describe('a control letter resolves nothing; a key that resolved something does 
     await settleWork();
     expect(r.history.lastResolvedAt).toBe(before);
   });
+});
+
+/**
+ * Keys the COMPOSER took before a popup opened: the chat store stamps each on the host's one key history as a key (`previousKeyAt`), never as
+ * a resolution. `at` are the times, on the rig's clock.
+ */
+function composerKeys(
+  r: { readonly history: ReturnType<typeof doctorRig>['history'] },
+  clock: { readonly now: () => number; readonly advance: (ms: number) => void },
+  times: readonly number[],
+): void {
+  const composer = createChordGuard({ now: clock.now, history: r.history });
+  for (const at of times) {
+    clock.advance(at - clock.now());
+    composer.stamp();
+  }
+}
+
+/** The doctor opened ON its line (`/doctor --deep`) 30 ms after the last composer key (the code's first-use import), its frame acknowledged 10 ms later. */
+async function deepOpenedAfter(times: readonly number[]) {
+  const r = doctorRig();
+  const anthropic = recordingProvider('anthropic');
+  const seam = stubResolver({ keys: { anthropic: KEY }, providers: { anthropic } });
+  composerKeys(r, r.clock, times);
+  const last = r.clock.now();
+  r.clock.advance(30);
+  expect(r.open({ probes: stubProbes(seam.resolver) }, true).opened).toBe(true);
+  await settleWork();
+  expect(r.step()).toBe(DOCTOR_STEP.line);
+  r.clock.advance(10);
+  r.show();
+  return { r, anthropic, last };
+}
+
+describe('a popup that opens on its line: the last key before the open starts its lockout (MVP-11 step 4 round 2, F2)', () => {
+  it.each([850, 1200, 1800, 1990])(
+    'a Ctrl+Y held in the composer through the open: its repeat %i ms after the last key is refused, the line is disarmed, nothing is sent',
+    async (repeatAt) => {
+      // The key went down in the composer 4 s ago and repeats every `repeatAt` ms; the line opens on itself between two repeats.
+      const { r, anthropic, last } = await deepOpenedAfter([
+        1000,
+        1000 + repeatAt,
+        1000 + 2 * repeatAt,
+      ]);
+      r.clock.advance(last + repeatAt - r.clock.now());
+      r.press('y', CTRL);
+      await settleWork();
+      expect(anthropic.requests).toHaveLength(0);
+      expect(r.step()).toBe(DOCTOR_STEP.checks);
+      // It goes on repeating on the checks, where each repeat is a refused affirmative: nothing is ever sent.
+      for (let repeat = 0; repeat < 6; repeat += 1) {
+        r.clock.advance(repeatAt);
+        r.press('y', CTRL);
+        await settleWork();
+      }
+      expect(anthropic.requests).toHaveLength(0);
+    },
+  );
+
+  it('a patient press 2.1 s after the last key before the open answers', async () => {
+    const { r, anthropic, last } = await deepOpenedAfter([1000]);
+    r.clock.advance(last + 2100 - r.clock.now());
+    r.press('y', CTRL);
+    await settleWork();
+    expect(anthropic.requests).toHaveLength(1);
+  });
+
+  it('the line of `/cost --release` the same way: refused 1.9 s after the typed line, released 2.1 s after it', async () => {
+    for (const [after, released] of [
+      [1900, false],
+      [2100, true],
+    ] as const) {
+      const r = reportRig();
+      const fake = fakeCost({ held: 450 });
+      composerKeys(r, r.clock, [1000]);
+      r.clock.advance(30);
+      r.open({ cost: fake.port }, { kind: 'cost', release: true });
+      await settleWork();
+      expect(r.step()).toBe(COST_STEP.release);
+      r.clock.advance(10);
+      r.show();
+      r.clock.advance(1000 + after - r.clock.now());
+      r.press('y', CTRL);
+      expect(fake.release.mock.calls.length, `${String(after)} ms`).toBe(released ? 1 : 0);
+    }
+  });
+});
+
+describe('typed `/doctor --deep` in a real chat, then Ctrl+Y (MVP-11 step 4 round 2, F2)', () => {
+  // Built at runtime (no contiguous secret literal: leakwatch).
+  const MOUNTED_KEY = ['sk', 'ant', 'typed', 'ABCDEF1234567890'].join('-');
+
+  it.each([
+    [900, 0],
+    [1200, 0],
+    [1900, 0],
+    [2100, 1],
+  ] as const)(
+    'a Ctrl+Y %i ms after the line appeared sends %i request(s): the Enter that typed the line locks it for 2 s',
+    async (wait, sent) => {
+      const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
+      const anthropic = recordingProvider('anthropic');
+      const seam = stubResolver({ keys: { anthropic: MOUNTED_KEY }, providers: { anthropic } });
+      const port: DoctorPort = {
+        scope: {},
+        surface: 'standalone-chat',
+        resultKey: 'session',
+        probes: stubProbes(seam.resolver),
+      };
+      const m = mountStandaloneChat(variant, { standalone: { doctor: port } });
+      try {
+        await m.settle();
+        await m.typeLine('/doctor --deep');
+        await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
+        await m.settle();
+        m.skip(wait);
+        m.key(KEYS.ctrlY);
+        await m.settle();
+        await settleWork();
+        await m.settle();
+        expect(anthropic.requests).toHaveLength(sent);
+      } finally {
+        m.unmount();
+      }
+    },
+  );
+});
+
+describe('the Home: its landing and its chat’s lists stamp their keys too, so a line typed there is locked the same 2 s (MVP-11 step 4 round 2, F2)', () => {
+  // Built at runtime (no contiguous secret literal: leakwatch).
+  const HOME_KEY = ['sk', 'ant', 'home', 'ABCDEF1234567890'].join('-');
+  const doctorOnHome = (surface: 'home' | 'home-chat') => {
+    const anthropic = recordingProvider('anthropic');
+    const seam = stubResolver({ keys: { anthropic: HOME_KEY }, providers: { anthropic } });
+    const port: DoctorPort = {
+      scope: {},
+      surface,
+      resultKey: surface === 'home' ? 'home' : 'session',
+      probes: stubProbes(seam.resolver),
+    };
+    return { anthropic, port };
+  };
+  const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
+
+  it.each([
+    [900, 0],
+    [2100, 1],
+  ] as const)(
+    'typed on the landing, then a Ctrl+Y %i ms after the line appeared: %i request(s)',
+    async (wait, sent) => {
+      const { anthropic, port } = doctorOnHome('home');
+      const m = mountHome(variant, { doctor: port });
+      try {
+        await m.settle();
+        m.key('\u001b[200~/doctor --deep\u001b[201~');
+        await m.until(() => m.controller.getSnapshot().input.text === '/doctor --deep');
+        m.key(KEYS.enter);
+        await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
+        await m.settle();
+        m.skip(wait);
+        m.key(KEYS.ctrlY);
+        await m.settle();
+        await settleWork();
+        await m.settle();
+        expect(anthropic.requests).toHaveLength(sent);
+      } finally {
+        m.unmount();
+      }
+    },
+  );
+
+  it.each([
+    [900, 0],
+    [2100, 1],
+  ] as const)(
+    'chosen from the palette of the chat the Home hosts (the `/` 2.5 s before), then a Ctrl+Y %i ms after the line appeared: %i request(s)',
+    async (wait, sent) => {
+      // One clock for every guard of the host (the chat's store, the Home's lists, the popup), moved by hand: the `/` that opened the palette
+      // is long past, so only the keys the palette took (its filter, its `Enter`) can lock the line.
+      vi.useFakeTimers({ toFake: ['performance'] });
+      const { anthropic, port } = doctorOnHome('home-chat');
+      const m = await mountHostedChat(variant, { doctor: port });
+      try {
+        await m.settle();
+        m.key('/');
+        await m.settle();
+        vi.advanceTimersByTime(2500);
+        m.key('doctor --deep');
+        await m.settle();
+        m.key(KEYS.enter);
+        await m.until(() => m.frame().join('\n').includes('https://api.anthropic.com'));
+        await m.settle();
+        vi.advanceTimersByTime(wait);
+        m.key(KEYS.ctrlY);
+        await m.settle();
+        await settleWork();
+        await m.settle();
+        expect(anthropic.requests).toHaveLength(sent);
+      } finally {
+        m.unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
 });

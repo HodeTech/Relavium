@@ -12,22 +12,55 @@
  * The load-bearing guarantee is EXIT SAFETY: with the ink option false, ink's own restoration net goes inert, so this
  * `restore()` must run on EVERY termination path — the `finally`, a `process.exit` force-quit (via a `process.on('exit')`
  * net), and a SIGTERM/SIGHUP handler. It is therefore IDEMPOTENT (a `restored` latch), so calling it from several nets
- * is safe. Byte sequences are copied verbatim from ink (`ink/build/base.js` enter/exit + `cursor-helpers.js`) so the
- * hoisted toggle is indistinguishable from ink's.
+ * is safe. Byte sequences are copied from ink (`ink/build/base.js` enter/exit + `cursor-helpers.js`) so the hoisted toggle is
+ * indistinguishable from ink's, except that an enter is followed by the cursor home and a clear ({@link ENTER_ALT_SCREEN}: ink writes neither).
+ *
+ * **Which surface this serves.** `relavium chat` (`session-chat-terminal.ts`) enters here. The bare Home mounts ink with its own
+ * `alternateScreen` option (`home/drive-home.tsx`), so ink writes the enter there; it is given its stdout through {@link homeAfterInkEnter}, so
+ * its enter is this module's too.
  */
 
-/** Enter the alternate screen buffer (DECSET 1049). Matches ink's `enterAlternativeScreen`. */
-export const ENTER_ALT_SCREEN = '\x1b[?1049h';
+/** Cursor-home + erase-to-end-of-screen — clears the persistent alt buffer BETWEEN a re-drive's unmount and the next
+ *  mount, so successive sessions never STACK (ink's non-fullscreen unmount `log.done()` does not erase, and a fresh
+ *  mount starts at `previousLineCount=0`). It also ends every ENTER ({@link ENTER_ALT_SCREEN}). */
+export const CLEAR_ALT_SCREEN = '\x1b[H\x1b[J';
+/**
+ * Enter the alternate screen buffer (DECSET 1049) and put the cursor at its top-left. ink's own `enterAlternativeScreen` is the first half
+ * alone, and xterm's 1049 saves the cursor and clears the new buffer but LEAVES THE CURSOR WHERE THE SHELL HAD IT, so a first frame drawn after
+ * it starts at the shell's row (twelve shell lines before launch: the first frame starts at row twelve) and snaps up at the next full redraw.
+ * Every entry is this one sequence: the first, and the reclaim after a job-control stop or `$EDITOR` (`render/suspend.ts` writes it too).
+ */
+export const ENTER_ALT_SCREEN = '\x1b[?1049h' + CLEAR_ALT_SCREEN;
+/** The bytes ink writes to enter the alternate screen (`ansiEscapes.enterAlternativeScreen`): its first mount and its re-entry after a suspension. */
+const INK_ENTER_ALT_SCREEN = '\x1b[?1049h';
+
+/**
+ * `stream` as ink sees it, with ONE difference: ink's own enter ({@link INK_ENTER_ALT_SCREEN}, written on its first mount and again after a
+ * suspension) is written as {@link ENTER_ALT_SCREEN}, the cursor home and the clear included. The bare Home mounts ink with its `alternateScreen`
+ * option, so ink writes the enter there and writes no home: the Home's first frame started at the row the shell's cursor was on (twelve shell
+ * lines before launch: row twelve) until the first full redraw snapped it up. Every other property and method is the stream's own (bound to it),
+ * every other write passes through untouched, and the wrapper holds no state.
+ */
+export function homeAfterInkEnter<T extends object>(stream: T): T {
+  return new Proxy(stream, {
+    get: (target, property): unknown => {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (property !== 'write') return value.bind(target);
+      return (chunk: unknown, ...rest: unknown[]): unknown =>
+        Reflect.apply(value, target, [
+          chunk === INK_ENTER_ALT_SCREEN ? ENTER_ALT_SCREEN : chunk,
+          ...rest,
+        ]);
+    },
+  });
+}
 /** Leave the alternate screen buffer, restoring the primary buffer + its scrollback (DECRST 1049). */
 export const EXIT_ALT_SCREEN = '\x1b[?1049l';
 /** Hide the cursor (paired with enter, as ink pairs them). */
 export const HIDE_CURSOR = '\x1b[?25l';
 /** Show the cursor (paired with exit — never leave the cursor invisibly hidden after the chat ends). */
 export const SHOW_CURSOR = '\x1b[?25h';
-/** Cursor-home + erase-to-end-of-screen — clears the persistent alt buffer BETWEEN a re-drive's unmount and the next
- *  mount, so successive sessions never STACK (ink's non-fullscreen unmount `log.done()` does not erase, and a fresh
- *  mount starts at `previousLineCount=0`). */
-export const CLEAR_ALT_SCREEN = '\x1b[H\x1b[J';
 /**
  * Enable terminal mouse reporting — **DECSET 1002** (button-event tracking: press, release, wheel, and motion ONLY
  * while a button is held) + SGR extended coordinates (1006, so columns past 223 report correctly).

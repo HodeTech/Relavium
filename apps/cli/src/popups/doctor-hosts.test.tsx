@@ -30,6 +30,14 @@ const KEY = ['sk', 'ant', 'hosts', 'ABCDEF1234567890'].join('-');
 const HOSTS: readonly Host[] = ['home', 'chat', 'standalone-chat'];
 const RENDERERS = ['alt', 'inline'] as const;
 
+/**
+ * How long a wait on a real host may take. Generous on purpose: a machine under load (a mutation sweep, a full gate beside it) takes seconds for
+ * what takes milliseconds alone, and a wait for something that never comes fails by its own assertion when the time is up. The test's own timeout
+ * is three times it, so no wait is cut short by the test that holds it.
+ */
+const WAIT_MS = 10_000;
+vi.setConfig({ testTimeout: 3 * WAIT_MS });
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -122,7 +130,7 @@ describe.each(HOSTS)('/doctor in the %s host', (host) => {
         if ('controller' in m) expect(m.controller.getSnapshot().notice).toBe(notice);
         m.key(KEYS.escape);
         await vi.waitFor(() => expect(m.popups.getSnapshot().open).toBe(false), {
-          timeout: 3000,
+          timeout: WAIT_MS,
           interval: 15,
         });
         if ('store' in m) expect(m.store.getSnapshot().state.transcript).toBe(transcript);
@@ -229,7 +237,7 @@ describe('the deep tier through a real host, both placements (ADR-0148 §4, §8)
         await m.until(() => m.frame().join('\n').includes('Deep check'));
         m.key(KEYS.escape);
         await vi.waitFor(() => expect(m.popups.getSnapshot().open).toBe(false), {
-          timeout: 3000,
+          timeout: WAIT_MS,
           interval: 15,
         });
       } finally {

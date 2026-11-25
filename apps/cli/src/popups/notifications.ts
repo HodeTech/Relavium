@@ -5,15 +5,19 @@
  *
  * - **Transient.** One notification is shown at a time, for {@link NOTIFICATION_MS}, on the HINT ROW (the last row of the prompt block), in
  *   place of the hint, or, while a popup is open, in the popup's own legend row (the popup covers the hint row in the alternate screen and
- *   replaces it inline, so that is where it is read; `frame-model.ts` fits it to the popup's inner width, and every text a popup composes fits
- *   `POPUP_NOTICE_MAX_COLUMNS` of `geometry.ts`, that width at the floor).
+ *   replaces it inline, so that is where it is read; `frame-model.ts` draws it beside the popup's way back, `<notice> · Esc close`, and every
+ *   text a popup composes fits `POPUP_NOTICE_MAX_COLUMNS` of `geometry.ts`, the room beside that way back at the floor).
  *   It is never an absolutely positioned layer: the overlay slot is the popup's alone.
  * - **Queued, in order.** What arrives while one is shown waits its turn; a text already shown or waiting is not queued twice.
  * - **Held while a chord or secret surface is shown** (a card, a sheet, a chord or secret step) and while the row it is drawn on is not drawn:
  *   nothing is shown then, so nothing paints over a decision's rows, and a notification the person could not see is not spent. The one that was
- *   showing goes back to the front of the queue and is shown again, whole, when the hold ends. The host says whether its hint row is held
- *   ({@link NotificationChannel.hold}); while a popup is open the popup host says it instead ({@link NotificationChannel.popupHold}), because the
- *   popup's legend row is then where the notification is drawn.
+ *   showing goes back to the front of the queue and is shown again, whole, when the hold ends, UNLESS it was seen: a notification a popup drew
+ *   in a frame the host measured and flushed ({@link NotificationChannel.seen}) has been read, and is dropped rather than replayed over a later
+ *   step it no longer describes. The host says whether its hint row is held ({@link NotificationChannel.hold}); while a popup is open the popup
+ *   host says it instead ({@link NotificationChannel.popupHold}), because the popup's legend row is then where the notification is drawn.
+ * - **What a popup says belongs to it.** A notification a popup raised (`from`) is about that popup and its keys (`[d] asks again`), so it is
+ *   discarded, shown or waiting, when that popup closes ({@link NotificationChannel.discard}); the host's own words (a refused open, a popup
+ *   closed by the system) are about the host and stay.
  * - **No residue.** It writes nothing into the conversation's transcript and nothing into the Home's notice area: those are the person's
  *   record, and a setting or a closed report is not part of it (§6). The host draws {@link NotificationSnapshot.current} and nothing else.
  *
@@ -34,10 +38,13 @@ import { foldLineSeparators } from './frame-model.js';
 /** How long a notification stays on the hint row (ADR-0145 §1: about three seconds). */
 export const NOTIFICATION_MS = 3000;
 
+/** Who raised a notification, when it was a popup: what {@link NotificationChannel.discard} is given when that popup closes. */
+export type NotificationSource = object;
+
 export interface Notification {
-  /** Increases with every notification, so two of the same text at different times are told apart. */
-  readonly id: number;
   readonly text: string;
+  /** The popup that raised it; absent ⇒ the host (it outlives every popup). */
+  readonly from?: NotificationSource | undefined;
 }
 
 export interface NotificationSnapshot {
@@ -45,13 +52,26 @@ export interface NotificationSnapshot {
   readonly current: Notification | undefined;
   /** How many are waiting. */
   readonly queued: number;
-  /** Whether the channel is held (a chord or secret surface is shown, or the hint row is not drawn). */
+  /**
+   * Whether the channel is held (a chord or secret surface is shown, or the hint row is not drawn). No host draws it (a host draws `current`
+   * alone); it is the observable fact the tests of the hold read.
+   */
   readonly held: boolean;
 }
 
 export interface NotificationChannel {
-  /** Report one line. Through {@link notificationText}; an empty text is ignored; a text shown or waiting is not queued again. */
-  readonly notify: (text: string) => void;
+  /**
+   * Report one line, raised by the host or (`from`) by a popup. Through {@link notificationText}; an empty text is ignored; a text shown or
+   * waiting is not queued again.
+   */
+  readonly notify: (text: string, from?: NotificationSource) => void;
+  /**
+   * The notification showing now, whose text is `text`, was drawn in a frame the host measured and flushed (the popup host tells it of a popup
+   * frame it acknowledged): a hold that begins after this drops it instead of showing it again.
+   */
+  readonly seen: (text: string) => void;
+  /** The popup `from` closed: every notification it raised, the one showing included, is dropped. */
+  readonly discard: (from: NotificationSource) => void;
   /** The HOST's hold: `true` while a chord or secret surface is shown or the hint row is not drawn, `false` to release it. */
   readonly hold: (held: boolean) => void;
   /**
@@ -86,19 +106,18 @@ export function notificationText(text: string): string {
 
 export function createNotificationChannel(options?: {
   readonly schedule?: Schedule | undefined;
-  readonly durationMs?: number | undefined;
 }): NotificationChannel {
   const schedule = options?.schedule ?? unrefTimer;
-  const durationMs = options?.durationMs ?? NOTIFICATION_MS;
   const listeners = new Set<() => void>();
   const queue: Notification[] = [];
   let current: Notification | undefined;
+  /** Whether {@link current} was seen ({@link NotificationChannel.seen}): a hold then drops it rather than putting it back. */
+  let currentSeen = false;
   let cancelExpiry: (() => void) | undefined;
   /** The host's hold and the popup's (which, while set, decides alone), and the hold in force. */
   let hostHeld = false;
   let popupHeld: boolean | undefined;
   let held = false;
-  let nextId = 1;
   let disposed = false;
   let snapshot: NotificationSnapshot = { current: undefined, queued: 0, held: false };
 
@@ -118,6 +137,7 @@ export function createNotificationChannel(options?: {
     const next = queue.shift();
     if (next === undefined) return;
     current = next;
+    currentSeen = false;
     const shown = next;
     cancelExpiry = schedule(() => {
       if (current !== shown) return;
@@ -125,7 +145,7 @@ export function createNotificationChannel(options?: {
       current = undefined;
       pump();
       publish();
-    }, durationMs);
+    }, NOTIFICATION_MS);
   };
 
   /** Put the hold in force: the popup's while it is set, else the host's. */
@@ -134,9 +154,10 @@ export function createNotificationChannel(options?: {
     if (disposed || next === held) return;
     held = next;
     if (held && current !== undefined) {
-      // It was not seen to its end: it goes back to the front and is shown again, whole, when the hold ends.
+      // It is not shown to its end. One nobody saw goes back to the front and is shown again, whole, when the hold ends; one a frame the host
+      // measured showed has been read, and it is spent (replayed later it would speak of a step that is gone).
       stopTimer();
-      queue.unshift(current);
+      if (!currentSeen) queue.unshift(current);
       current = undefined;
     }
     pump();
@@ -144,15 +165,30 @@ export function createNotificationChannel(options?: {
   };
 
   return {
-    notify: (text) => {
+    notify: (text, from) => {
       if (disposed) return;
       const clean = notificationText(text);
       if (clean.length === 0) return;
       if (current?.text === clean || queue.some((waiting) => waiting.text === clean)) return;
-      queue.push({ id: nextId, text: clean });
-      nextId += 1;
+      queue.push(from === undefined ? { text: clean } : { text: clean, from });
       pump();
       publish();
+    },
+    seen: (text) => {
+      if (current !== undefined && current.text === text) currentSeen = true;
+    },
+    discard: (from) => {
+      if (disposed) return;
+      const before = queue.length;
+      for (let index = queue.length - 1; index >= 0; index -= 1)
+        if (queue[index]?.from === from) queue.splice(index, 1);
+      const showing = current?.from === from;
+      if (showing) {
+        stopTimer();
+        current = undefined;
+        pump();
+      }
+      if (showing || queue.length !== before) publish();
     },
     hold: (next) => {
       hostHeld = next;
