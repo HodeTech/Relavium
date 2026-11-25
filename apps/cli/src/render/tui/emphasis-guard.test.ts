@@ -31,6 +31,8 @@ const RAW_PROP_ALLOWED: Readonly<Record<string, string>> = {
     'the rule itself: its table of the three pairs and the description of a set (a tone a test names)',
   'render/tui/markdown-text.tsx':
     'draws MODEL content (a markdown heading, strong text, a link) under its own colour gate; the highlight of a mouse selection is host feedback and is drawn through emphasis.ts; the markdown layer is never handed literal SGR from model text',
+  'render/tui/text.tsx':
+    'the one route of ink’s <Text> (ADR-0148 §4): under the dimmed backdrop of an open popup it passes `bold={false}` to REMOVE a bold (bold and dim share a close code, and ink’s cell encoder drops the dim after a bold-and-dim cell); it never asks for one',
   'render/tui/syntax-palette.ts':
     'the colours and weights of a highlighted CODE BLOCK in a model’s reply (ADR-0144), a model-content style under its own colour gate',
 };

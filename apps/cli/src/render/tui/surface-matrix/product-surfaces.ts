@@ -36,6 +36,10 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['reverse-search', 'the Ctrl+R reverse search'],
   ['reasoning-panel', 'the expanded reasoning panel'],
   ['popup', 'a popup: the test layer’s minimal report popup in the one overlay slot (ADR-0148)'],
+  [
+    'popup-rich',
+    'a popup over a chat with markdown, a tool row and a draft: the backdrop-dim body (ADR-0148 §4)',
+  ],
 ];
 
 export const PRODUCT_SURFACES: readonly ProductSurface[] = [
@@ -90,6 +94,14 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row(
     'home.popup',
     'a popup: the test layer’s minimal report popup in the one overlay slot (ADR-0148)',
+  ),
+  row(
+    'home.popup-populated',
+    'a popup over the populated landing: its strip and its attention row (the backdrop-dim body, ADR-0148 §4)',
+  ),
+  row(
+    'home.popup-selected-row',
+    'a popup over the populated landing with a strip row selected (an inverse row; the backdrop-dim body, ADR-0148 §4)',
   ),
   // The chat, in both of its hosts.
   ...(['chat', 'standalone-chat'] as const).flatMap((host) =>

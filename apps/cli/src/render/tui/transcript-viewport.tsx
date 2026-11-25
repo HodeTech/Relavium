@@ -1,4 +1,5 @@
-import { Box, Text, measureElement, type DOMElement } from 'ink';
+import { Box, measureElement, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
 import { Emph } from './emphasis-view.js';

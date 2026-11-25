@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 
 import { settleFrames } from '../harness-util.js';
 import { OwnedTtyInput } from '../../../test-support.js';
-import { FakeStdout } from './terminal.js';
+import { FakeStdout, type ScreenCell } from './terminal.js';
 import type { Variant } from './variants.js';
 
 /**
@@ -17,6 +17,8 @@ export interface InkMount {
   readonly variant: Variant;
   /** The screen as a terminal shows it now (styling absent), after the pending render has been flushed by the caller. */
   frame: () => string[];
+  /** The same rows with what each cell was drawn with (bold, dim, inverse, underline, colours), for a property about how the screen LOOKS. */
+  cells: () => ScreenCell[][];
   /** Every byte written to the terminal since the mount, styling included. */
   raw: () => string;
   /** Write bytes to the terminal's input, as a keyboard does. */
@@ -92,6 +94,7 @@ export function mountInk(
     stdin,
     variant,
     frame: () => stdout.screen.lines(),
+    cells: () => stdout.screen.cells(),
     raw: () => stdout.raw(),
     key: (bytes) => {
       stdin.push(bytes);

@@ -1,4 +1,5 @@
-import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import { Box, useApp, useStdout, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { denialReasonDisclosure } from './chat-projection.js';
 import {
   useEffect,

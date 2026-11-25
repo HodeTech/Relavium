@@ -13,7 +13,12 @@ import {
   type PopupAcknowledgement,
 } from '../../popups/popup-acknowledgement.js';
 import type { PopupHost, PopupHostSnapshot, PopupRefusal } from '../../popups/popup-host.js';
-import { PopupSlot } from '../../popups/popup-slot.js';
+import {
+  dimsBackdrop,
+  PopupSlot,
+  slotDrawing,
+  type PopupSlotProps,
+} from '../../popups/popup-slot.js';
 import type { PopupPlacement } from '../../popups/geometry.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
 import {
@@ -21,7 +26,8 @@ import {
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
-import { Box, Text, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
+import { Box, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
+import { BackdropDim, Text } from './text.js';
 import {
   useEffect,
   useLayoutEffect,
@@ -1058,81 +1064,87 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   }, [flushVisible, props.onRendererReady]);
 
   // The one overlay slot (ADR-0148 §2): the LAST child of the root in every branch, and the only absolutely positioned node of the CLI.
-  const slot = (
-    <PopupSlot
-      host={props.popups}
-      acknowledgement={popupAcknowledgement}
-      native={
-        nativeAcknowledgement === undefined
-          ? undefined
-          : { snapshot: prompt, acknowledgement: nativeAcknowledgement }
-      }
-      placement={placement}
-      size={size}
-      color={color}
-      flush={() => app.waitUntilRenderFlush()}
-    />
-  );
+  const slotProps: PopupSlotProps = {
+    host: props.popups,
+    acknowledgement: popupAcknowledgement,
+    native:
+      nativeAcknowledgement === undefined
+        ? undefined
+        : { snapshot: prompt, acknowledgement: nativeAcknowledgement },
+    placement,
+    size,
+    color,
+    flush: () => app.waitUntilRenderFlush(),
+  };
+  const slot = <PopupSlot {...slotProps} />;
+  // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4).
+  // It is the slot's own predicate, asked of the slot's own props, and the slot itself stays OUTSIDE the dimmed subtree in every branch: the
+  // popup's cells are never dim, and nothing that is not the slot is positioned absolutely. A boolean: it changes only when a popup opens or closes.
+  const dimmed = dimsBackdrop(slotDrawing(slotProps, popupSnapshot), color);
   // In the overlay the root must be as tall as the screen less a row, so the absolutely positioned popup lies inside it.
   const overlayOpen =
     placement === 'overlay' && (popupSnapshot.open || (prompt.active && nativeFramed(prompt)));
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
       <>
-        <ChatRegion
-          acknowledgement={acknowledgement}
-          store={state.session.store}
-          reviewSize={size}
-          reviewCustody={() =>
-            props.inputEnabled?.() !== false &&
-            props.suspendPort?.isSuspended() !== true &&
-            holdsCustody(liveOverlays())
-          }
-          reviewClipboard={props.reviewClipboard}
-          editor={state.input}
-          overlays={flags}
-          palette={state.palette}
-          search={state.search}
-          mention={state.mention}
-          modelPicker={state.modelPicker}
-          effortPicker={state.effortPicker}
-          chatSheet={state.chatSheet}
-          now={props.nowMs}
-          cols={size.cols}
-          // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
-          // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
-          viewport={
-            props.alternateScreen === true
-              ? {
-                  rows: chatViewportRows(flags, prompt, size),
-                  cols: size.cols,
-                  scroll,
-                  // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
-                  ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
-                  onMeasure: (g: ViewportGeometry): void => {
-                    scrollGeomRef.current = g;
-                  },
-                }
-              : undefined
-          }
-          interruptArmed={state.interruptArmed}
-          shellBusy={state.shellBusy}
-          submitBusy={state.submitBusy}
-          shellCommand={state.shellCommand}
-          historyEntries={state.historyEntries}
-          attachments={state.attachments}
-          copied={copied}
-          promptHeight={chatPromptHeight(flags, prompt, size)}
-          notification={notification.current?.text}
-        />
-        {nativeAcknowledgement && (
-          <NativePromptView
-            snapshot={prompt}
-            color={color}
-            acknowledgement={nativeAcknowledgement}
-            size={size}
+        <BackdropDim dimmed={dimmed}>
+          <ChatRegion
+            acknowledgement={acknowledgement}
+            store={state.session.store}
+            reviewSize={size}
+            reviewCustody={() =>
+              props.inputEnabled?.() !== false &&
+              props.suspendPort?.isSuspended() !== true &&
+              holdsCustody(liveOverlays())
+            }
+            reviewClipboard={props.reviewClipboard}
+            editor={state.input}
+            overlays={flags}
+            palette={state.palette}
+            search={state.search}
+            mention={state.mention}
+            modelPicker={state.modelPicker}
+            effortPicker={state.effortPicker}
+            chatSheet={state.chatSheet}
+            now={props.nowMs}
+            cols={size.cols}
+            // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
+            // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
+            viewport={
+              props.alternateScreen === true
+                ? {
+                    rows: chatViewportRows(flags, prompt, size),
+                    cols: size.cols,
+                    scroll,
+                    // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
+                    ...(selection === undefined
+                      ? {}
+                      : { selection: normalizeSelection(selection) }),
+                    onMeasure: (g: ViewportGeometry): void => {
+                      scrollGeomRef.current = g;
+                    },
+                  }
+                : undefined
+            }
+            interruptArmed={state.interruptArmed}
+            shellBusy={state.shellBusy}
+            submitBusy={state.submitBusy}
+            shellCommand={state.shellCommand}
+            historyEntries={state.historyEntries}
+            attachments={state.attachments}
+            copied={copied}
+            promptHeight={chatPromptHeight(flags, prompt, size)}
+            notification={notification.current?.text}
           />
-        )}
+          {nativeAcknowledgement && (
+            <NativePromptView
+              snapshot={prompt}
+              color={color}
+              acknowledgement={nativeAcknowledgement}
+              size={size}
+            />
+          )}
+        </BackdropDim>
         {slot}
       </>
     );
@@ -1147,35 +1159,37 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
         }}
       >
-        {state.pendingMessage !== '' && (
-          // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
-          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-            {'> '}
-            {sanitizeInline(state.pendingMessage)}
-          </Text>
-        )}
-        {!homeFitsTerminal(size.cols, size.rows) && (
-          // The landing says so below 80×24 and so does its echo: a card drawn in the degrade, and a `Ctrl+Y` that answers nothing
-          // there, are explained by the one line that says what to do about it.
-          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-            {tooSmallMessage(size.cols, size.rows)}
-          </Text>
-        )}
-        {state.exitGuard === undefined ? (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {STARTING_CHAT_LINE}
-          </Text>
-        ) : (
-          <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
-        )}
-        {nativeAcknowledgement && (
-          <NativePromptView
-            snapshot={prompt}
-            color={color}
-            acknowledgement={nativeAcknowledgement}
-            size={size}
-          />
-        )}
+        <BackdropDim dimmed={dimmed}>
+          {state.pendingMessage !== '' && (
+            // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
+            <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+              {'> '}
+              {sanitizeInline(state.pendingMessage)}
+            </Text>
+          )}
+          {!homeFitsTerminal(size.cols, size.rows) && (
+            // The landing says so below 80×24 and so does its echo: a card drawn in the degrade, and a `Ctrl+Y` that answers nothing
+            // there, are explained by the one line that says what to do about it.
+            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+              {tooSmallMessage(size.cols, size.rows)}
+            </Text>
+          )}
+          {state.exitGuard === undefined ? (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {STARTING_CHAT_LINE}
+            </Text>
+          ) : (
+            <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
+          )}
+          {nativeAcknowledgement && (
+            <NativePromptView
+              snapshot={prompt}
+              color={color}
+              acknowledgement={nativeAcknowledgement}
+              size={size}
+            />
+          )}
+        </BackdropDim>
         {slot}
       </LoadingEcho>
     );
@@ -1190,85 +1204,92 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           ? { minHeight: Math.max(1, size.rows - 1) }
           : {})}
     >
-      {nativeAcknowledgement && (
-        <NativePromptView
-          snapshot={prompt}
-          color={color}
-          acknowledgement={nativeAcknowledgement}
-          size={size}
-        />
-      )}
-      {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
-      {!occupiesRows(flags) && state.screen?.kind === 'run-view' && (
-        <RunScreenView
-          runId={state.screen.runId}
-          store={state.screen.store}
-          hostedRun={state.hostedRun}
-          notices={state.screen.notices}
-          interruptArmed={state.interruptArmed}
-          openGate={state.gateCards}
-          gateOpenFailed={state.screen.note !== undefined}
-          columns={size.cols}
-          rows={size.rows}
-          color={color}
-        />
-      )}
-      {!occupiesRows(flags) && state.screen?.kind === 'gate-card' && (
-        <GateCardScreenView
-          screen={state.screen}
-          frame={cardFrame}
-          flush={() => app.waitUntilRenderFlush()}
-          columns={size.cols}
-          rows={size.rows}
-          nowMs={props.nowMs()}
-          color={color}
-        />
-      )}
-      {!occupiesRows(flags) && state.screen?.kind === 'tab-host' && (
-        <TabHostView state={state.screen.host} color={color} columns={size.cols} rows={size.rows} />
-      )}
-      {!occupiesRows(flags) && state.screen?.kind === 'help' && (
-        <SheetLinesView
-          lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
-          color={color}
-        />
-      )}
-      {!occupiesRows(flags) && state.screen === undefined && (
-        <HomeView
-          onFrame={(node) => {
-            homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
-          }}
-          snapshot={state.snapshot}
-          editor={state.input}
-          notice={state.notice}
-          nowMs={props.nowMs()}
-          cols={Number.isFinite(size.cols) ? size.cols : 0}
-          rows={size.rows}
-          color={color}
-          paletteOpen={landingPromptHidden(flags)}
-          {...(state.palette === undefined ? {} : { palette: state.palette })}
-          showBanner={props.showBanner}
-          paths={props.paths}
-          keyless={state.keyless}
-          parkedRuns={state.parkedRuns}
-          stripFocus={state.stripFocus}
-          noticePage={noticePage}
-          interruptArmed={state.interruptArmed}
-          hostedRun={state.hostedRun}
-          exitGuard={state.exitGuard}
-          notification={notification.current?.text}
-        />
-      )}
-      {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
-      {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
-        <ModelPickerView
-          state={state.modelPicker}
-          color={color}
-          nowMs={props.nowMs()}
-          providerName={providerDisplayName}
-          scope="next-chat"
-        />
-      )}
+      <BackdropDim dimmed={dimmed}>
+        {nativeAcknowledgement && (
+          <NativePromptView
+            snapshot={prompt}
+            color={color}
+            acknowledgement={nativeAcknowledgement}
+            size={size}
+          />
+        )}
+        {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
+        {!occupiesRows(flags) && state.screen?.kind === 'run-view' && (
+          <RunScreenView
+            runId={state.screen.runId}
+            store={state.screen.store}
+            hostedRun={state.hostedRun}
+            notices={state.screen.notices}
+            interruptArmed={state.interruptArmed}
+            openGate={state.gateCards}
+            gateOpenFailed={state.screen.note !== undefined}
+            columns={size.cols}
+            rows={size.rows}
+            color={color}
+          />
+        )}
+        {!occupiesRows(flags) && state.screen?.kind === 'gate-card' && (
+          <GateCardScreenView
+            screen={state.screen}
+            frame={cardFrame}
+            flush={() => app.waitUntilRenderFlush()}
+            columns={size.cols}
+            rows={size.rows}
+            nowMs={props.nowMs()}
+            color={color}
+          />
+        )}
+        {!occupiesRows(flags) && state.screen?.kind === 'tab-host' && (
+          <TabHostView
+            state={state.screen.host}
+            color={color}
+            columns={size.cols}
+            rows={size.rows}
+          />
+        )}
+        {!occupiesRows(flags) && state.screen?.kind === 'help' && (
+          <SheetLinesView
+            lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
+            color={color}
+          />
+        )}
+        {!occupiesRows(flags) && state.screen === undefined && (
+          <HomeView
+            onFrame={(node) => {
+              homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
+            }}
+            snapshot={state.snapshot}
+            editor={state.input}
+            notice={state.notice}
+            nowMs={props.nowMs()}
+            cols={Number.isFinite(size.cols) ? size.cols : 0}
+            rows={size.rows}
+            color={color}
+            paletteOpen={landingPromptHidden(flags)}
+            {...(state.palette === undefined ? {} : { palette: state.palette })}
+            showBanner={props.showBanner}
+            paths={props.paths}
+            keyless={state.keyless}
+            parkedRuns={state.parkedRuns}
+            stripFocus={state.stripFocus}
+            noticePage={noticePage}
+            interruptArmed={state.interruptArmed}
+            hostedRun={state.hostedRun}
+            exitGuard={state.exitGuard}
+            notification={notification.current?.text}
+          />
+        )}
+        {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
+        {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
+          <ModelPickerView
+            state={state.modelPicker}
+            color={color}
+            nowMs={props.nowMs()}
+            providerName={providerDisplayName}
+            scope="next-chat"
+          />
+        )}
+      </BackdropDim>
       {slot}
     </Box>
   );

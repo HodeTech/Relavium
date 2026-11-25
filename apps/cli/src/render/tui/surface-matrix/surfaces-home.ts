@@ -154,7 +154,49 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     legendRow: TEST_POPUP_LEGEND_ROW,
     belowFloor: /too small for this popup/iu,
     popup: testPopupBox('home'),
+    notes:
+      'the body behind the popup: the empty, keyed landing (the banner, the wordmark, the hints, and the prompt with its cursor)',
     open: async (m) => {
+      recordBaseline(m);
+      m.popups.openForUser(testReportPopup('home'));
+      await settleOn(m, TEST_POPUP_TITLE);
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.popup-populated',
+    title: 'A popup over the populated landing (its strip and its attention row)',
+    exitKey: 'Esc',
+    landmark: TEST_POPUP_TITLE,
+    selectedRow: 'alpha check',
+    belowFloor: /too small for this popup/iu,
+    popup: testPopupBox('home'),
+    setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
+    notes:
+      'the body behind the popup: the landing with its banner, the failed-run attention row, the strips of conversations, runs and agents, and the prompt with its cursor',
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      recordBaseline(m);
+      m.popups.openForUser(testReportPopup('home'));
+      await settleOn(m, TEST_POPUP_TITLE);
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.popup-selected-row',
+    title: 'A popup over the populated landing with a strip row selected (the ↓ flow)',
+    exitKey: 'Esc',
+    landmark: TEST_POPUP_TITLE,
+    selectedRow: 'alpha check',
+    belowFloor: /too small for this popup/iu,
+    popup: testPopupBox('home'),
+    setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
+    notes:
+      'the body behind the popup: the populated landing with the failed run focused, so its row is bold and inverse (a popup cannot open over a tab screen, which owns the keyboard)',
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined && m.homePainted());
       recordBaseline(m);
       m.popups.openForUser(testReportPopup('home'));
       await settleOn(m, TEST_POPUP_TITLE);

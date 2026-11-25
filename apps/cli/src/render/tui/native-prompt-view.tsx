@@ -1,4 +1,5 @@
-import { Box, Text, useApp, type DOMElement } from 'ink';
+import { Box, useApp, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { withGlyphForm } from './glyphs.js';
 import { keyToken, legend, type LegendItem, type LegendKey } from './legend.js';

@@ -1,4 +1,4 @@
-import { Text } from 'ink';
+import { Text } from './text.js';
 import type { ComponentProps, ReactElement } from 'react';
 
 import type { MarkdownSpan } from '../markdown/types.js';

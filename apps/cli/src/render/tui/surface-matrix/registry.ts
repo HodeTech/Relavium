@@ -60,8 +60,20 @@ export interface SurfaceBase {
   readonly notes?: string | undefined;
   /**
    * The surface is a popup (ADR-0148): where it is drawn in this cell and what its rows are, from the one geometry function and the frame
-   * model. The matrix then expects exactly one absolutely positioned node (the slot, last in the tree), the popup's own rows in its box, and no
-   * cell outside it changed from the frame the surface recorded before opening it (`popup-fixture.ts`). Absent ⇒ the tree positions nothing.
+   * model. The matrix then expects exactly one absolutely positioned node (the slot, last in the tree), the popup's own rows in its box, no
+   * cell outside it changed from the frame the surface recorded before opening it (`popup-fixture.ts`), and, in the alternate screen with colour
+   * on, every cell of that body dim on a body that held bold, inverse and coloured spans (`backdrop-dim`, ADR-0148 §4). Absent ⇒ the tree
+   * positions nothing.
+   *
+   * **The body each popup surface sits over** (each records it with `recordBaseline` before it opens the popup, and says so in its `notes`):
+   *
+   * | surface | the body behind the popup |
+   * | --- | --- |
+   * | `home.popup` | the empty, keyed landing: the banner, the wordmark (bold), the hints, the prompt and its cursor (inverse) |
+   * | `home.popup-populated` | the populated landing: the attention row of a failed run, the strips of conversations, runs and agents |
+   * | `home.popup-selected-row` | the same, with the failed run focused by `↓`: a bold-and-inverse row under the dim (a popup cannot open over a tab screen) |
+   * | `chat.popup`, `standalone-chat.popup` | one short exchange with a strong word, and the prompt with its cursor |
+   * | `chat.popup-rich`, `standalone-chat.popup-rich` | a user turn, a tool row, a markdown answer (heading, strong, code, quote, list, table, fenced block), a second exchange and a draft in the prompt |
    */
   readonly popup?: ((variant: Variant) => PopupBox) | undefined;
 }

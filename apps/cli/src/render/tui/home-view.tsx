@@ -1,4 +1,5 @@
-import { Box, Text, type DOMElement } from 'ink';
+import { Box, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';

@@ -1,7 +1,8 @@
 import type { DOMElement } from 'ink';
 
-import { baselineOf } from './popup-fixture.js';
+import { baselineCellsOf, baselineOf } from './popup-fixture.js';
 import {
+  checkBackdropDim,
   checkOverlayLayer,
   checkPopupBox,
   checkProperties,
@@ -15,6 +16,7 @@ import {
   type KnownFailure,
   type SurfaceBase,
 } from './registry.js';
+import type { ScreenCell } from './terminal.js';
 import { isBelowFloor, type Variant } from './variants.js';
 
 /** What a cell found: the observation, every violation of every property, and the frame for a failure message. */
@@ -27,6 +29,8 @@ export interface CellResult {
 export interface Observable {
   readonly variant: Variant;
   frame: () => string[];
+  /** The rows with each cell's style, for the backdrop-dim property; absent ⇒ not asserted. */
+  cells?: () => ScreenCell[][];
   raw: () => string;
   /** Ink's root node, for the overlay-layer property; absent ⇒ not asserted. */
   root?: () => DOMElement | undefined;
@@ -61,7 +65,15 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
         property: 'popup-box',
         message: 'the surface recorded no frame before it opened the popup',
       });
-    else violations.push(...checkPopupBox(observation, before, entry.popup(variant)));
+    else {
+      const box = entry.popup(variant);
+      violations.push(...checkPopupBox(observation, before, box));
+      // How the body looks behind the popup: every cell of it dim (alternate screen, colour on), none dimmed by us otherwise (ADR-0148 §4).
+      const cellsBefore = baselineCellsOf(mount);
+      const cellsNow = mount.cells?.();
+      if (cellsBefore !== undefined && cellsNow !== undefined)
+        violations.push(...checkBackdropDim({ variant, before: cellsBefore, now: cellsNow, box }));
+    }
   }
   if (below) {
     const expected = entry.belowFloor ?? DEFAULT_BELOW_FLOOR;

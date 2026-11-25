@@ -1,4 +1,5 @@
-import { Text, useStdout } from 'ink';
+import { useStdout } from 'ink';
+import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import { attachmentChip, type PendingAttachment } from './attachments.js';

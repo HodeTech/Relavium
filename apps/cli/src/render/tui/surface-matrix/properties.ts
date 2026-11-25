@@ -1,6 +1,7 @@
 import type { DOMElement } from 'ink';
 import stringWidth from 'string-width';
 
+import { cellsAreSound, type ScreenCell } from './terminal.js';
 import type { Variant } from './variants.js';
 
 /**
@@ -32,7 +33,13 @@ export type PropertyId =
    * Not one of the five (ADR-0148 §2, §4): a popup in the overlay draws exactly its own rows in its box (nothing over them) and changes no cell
    * outside its box; a popup in the flow is the live region and nothing else.
    */
-  | 'popup-box';
+  | 'popup-box'
+  /**
+   * Not one of the five (ADR-0148 §4): while a popup is open in the alternate screen with colour on, EVERY cell of the body outside the popup that
+   * shows something carries the dim attribute, on a body that holds bold, inverse and coloured spans; the popup's own cells are not dimmed; with
+   * colour off, or inline, nothing is dimmed by us.
+   */
+  | 'backdrop-dim';
 
 export interface Violation {
   readonly property: PropertyId;
@@ -358,6 +365,106 @@ export function checkPopupBox(
     }
   }
   return problems.map((message) => ({ property: 'popup-box', message }));
+}
+
+/** What `checkBackdropDim` reads: the screen's cells before the popup opened and with it open, and the popup's box. */
+export interface BackdropObservation {
+  readonly variant: Variant;
+  readonly before: readonly (readonly ScreenCell[])[];
+  readonly now: readonly (readonly ScreenCell[])[];
+  readonly box: PopupBox;
+}
+
+/** A cell that shows something: a character, or an inverse or background block (a cursor, a selected row's blank tail). A plain space shows nothing. */
+const showsSomething = (cell: ScreenCell): boolean =>
+  cell.char !== ' ' || cell.style.inverse || cell.style.bg !== undefined;
+
+const insideBox = (box: PopupBox, row: number, column: number): boolean =>
+  row >= box.top &&
+  row < box.top + box.height &&
+  column >= box.left &&
+  column < box.left + box.width;
+
+const at = (
+  rows: readonly (readonly ScreenCell[])[],
+  row: number,
+  column: number,
+): ScreenCell | undefined => rows[row]?.[column];
+
+/** The cells outside `box` of `rows` that `want` is true of, as `row:column` and the character, at most `limit` of them and their count. */
+function cellsOutside(
+  rows: readonly (readonly ScreenCell[])[],
+  box: PopupBox,
+  want: (cell: ScreenCell, row: number, column: number) => boolean,
+): { count: number; first: string[] } {
+  let count = 0;
+  const first: string[] = [];
+  rows.forEach((cells, row) => {
+    cells.forEach((cell, column) => {
+      if (insideBox(box, row, column) || !want(cell, row, column)) return;
+      count += 1;
+      if (first.length < 3) first.push(`${String(row + 1)}:${String(column + 1)} "${cell.char}"`);
+    });
+  });
+  return { count, first };
+}
+
+/**
+ * (10) The backdrop (ADR-0148 §4). In the alternate screen with colour on, every cell outside the popup's box that shows something is dim,
+ * on a body that is not vacuous: before the popup opened the same screen held a bold cell, an inverse cell and a coloured one (so the check
+ * cannot pass on a plain body), and a dim cell that the popup's own rows hold is a popup that was drawn inside the dimmed subtree. With colour
+ * off no cell outside the box is dimmer than it was (chalk prints no dim, and the backdrop is simply not dimmed); inline there is no backdrop and
+ * nothing is checked. A row the box crosses must be read soundly (`cellsAreSound`): a column of the emulator is a column of the terminal.
+ */
+export function checkBackdropDim(observation: BackdropObservation): Violation[] {
+  const { variant, before, now, box } = observation;
+  if (variant.renderer !== 'alt' || box.placement !== 'overlay') return [];
+  const problems: string[] = [];
+  if (!variant.color) {
+    const dimmer = cellsOutside(
+      now,
+      box,
+      (cell, row, column) => cell.style.dim && at(before, row, column)?.style.dim !== true,
+    );
+    if (dimmer.count > 0)
+      problems.push(
+        `${String(dimmer.count)} cell(s) outside the popup were dimmed with colour off, first ${dimmer.first.join(', ')}`,
+      );
+    return problems.map((message) => ({ property: 'backdrop-dim', message }));
+  }
+  const holds = (want: (cell: ScreenCell) => boolean): boolean =>
+    before.some((row) => row.some((cell) => cell.char !== ' ' && want(cell)) || false);
+  if (!holds((cell) => cell.style.bold))
+    problems.push(
+      'the body behind the popup held no bold cell before it opened: the check would pass on a plain body',
+    );
+  if (!before.some((row) => row.some((cell) => cell.style.inverse)))
+    problems.push(
+      'the body behind the popup held no inverse cell before it opened: the check would pass on a plain body',
+    );
+  if (!holds((cell) => cell.style.fg !== undefined || cell.style.bg !== undefined))
+    problems.push(
+      'the body behind the popup held no coloured cell before it opened: the check would pass on a plain body',
+    );
+  const crossed = now.slice(box.top, box.top + box.height);
+  if (!cellsAreSound(crossed))
+    problems.push(
+      'a row the popup crosses holds a character that is not one column wide, so its columns cannot be read: the fixture must not draw one there',
+    );
+  const bright = cellsOutside(now, box, (cell) => showsSomething(cell) && !cell.style.dim);
+  if (bright.count > 0)
+    problems.push(
+      `${String(bright.count)} cell(s) of the body outside the popup are not dim, first ${bright.first.join(', ')}`,
+    );
+  const own = now
+    .slice(box.top, box.top + box.height)
+    .flatMap((row) => row.slice(box.left, box.left + box.width))
+    .filter((cell) => cell.style.inverse && cell.style.dim);
+  if (own.length > 0)
+    problems.push(
+      `${String(own.length)} inverse cell(s) of the popup itself are dim: the popup was drawn inside the dimmed subtree`,
+    );
+  return problems.map((message) => ({ property: 'backdrop-dim', message }));
 }
 
 /** (5) With colour off the raw bytes carry no colour SGR (bold, dim, inverse and underline are allowed). */

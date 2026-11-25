@@ -243,6 +243,58 @@ const LONG_CONVERSATION: SessionViewSeed = {
   ]).flat(),
 };
 
+/**
+ * The body a popup is opened over in the richest chat cell of the backdrop check ([ADR-0148](../../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §4): your own turn, an answer in markdown that holds a heading, strong text, an inline code span, a quote, a list, a table
+ * and a fenced block, a tool-call row, and a draft in the prompt, so bold (strong text, the heading), inverse (the prompt's cursor), coloured, underlined and dimmed spans
+ * are all under the popup and every one of them has to be dim. No wide character: the check reads columns, and a row it cannot read soundly is a
+ * failure of its own.
+ */
+const RICH_MARKDOWN = [
+  '# The plan',
+  '',
+  'Here is **strong text**, `inline code`, *emphasis* and a [link](https://example.com/docs).',
+  '',
+  '> a quoted line of the answer',
+  '',
+  '- first item',
+  '- second item with `code`',
+  '',
+  '| name | value |',
+  '| ---- | ----- |',
+  '| alpha | 1 |',
+  '| bravo | 2 |',
+  '',
+  '```ts',
+  'const answer = 42;',
+  '```',
+].join('\n');
+
+const SHORT_CONVERSATION: SessionViewSeed = {
+  model: MODEL,
+  transcript: [
+    { role: 'user', text: 'hello' },
+    { role: 'assistant', text: 'Hi, this is **bold**.' },
+  ],
+};
+
+const RICH_CONVERSATION: SessionViewSeed = {
+  model: MODEL,
+  transcript: [
+    { role: 'user', text: 'show me the plan for the migration' },
+    {
+      role: 'tools',
+      text: '',
+      calls: [
+        { id: 'call-1', toolId: 'read_file', resolved: true, success: true, outcome: 'success' },
+      ],
+    },
+    { role: 'assistant', text: RICH_MARKDOWN },
+    { role: 'user', text: 'and what about the second step' },
+    { role: 'assistant', text: 'The **second step** moves the data; see `migrate.ts`.' },
+  ],
+};
+
 const typeLineAndWait =
   (command: string, landmark: string) =>
   async (m: ChatMount): Promise<void> => {
@@ -260,7 +312,31 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     legendRow: TEST_POPUP_LEGEND_ROW,
     belowFloor: /too small for this popup/iu,
     popup: testPopupBox('chat'),
+    // The body is one short exchange with a strong word in it: a chat with an empty transcript has no bold at all, and the backdrop check
+    // refuses a body it could pass on without a bold, an inverse and a coloured cell.
+    setup: { seed: SHORT_CONVERSATION },
+    notes:
+      'the body behind the popup: one short exchange (a strong word in the answer) and the prompt with its cursor',
     open: async (m) => {
+      recordBaseline(m);
+      m.popups.openForUser(testReportPopup('chat'));
+      await m.until(() => m.text().includes(TEST_POPUP_TITLE));
+    },
+  },
+  {
+    name: 'popup-rich',
+    title: 'A popup over a chat with markdown, a tool row and a draft in the prompt',
+    exitKey: 'Esc',
+    landmark: TEST_POPUP_TITLE,
+    selectedRow: 'alpha check',
+    belowFloor: /too small for this popup/iu,
+    popup: testPopupBox('chat'),
+    setup: { seed: RICH_CONVERSATION },
+    notes:
+      'the body behind the popup: a user turn, a tool row, a markdown answer (heading, strong, code, quote, list, table, fenced block) and a draft in the prompt (the cursor is its inverse cell)',
+    open: async (m) => {
+      m.key('a draft in the prompt');
+      await m.until(() => m.text().includes('a draft in the prompt'));
       recordBaseline(m);
       m.popups.openForUser(testReportPopup('chat'));
       await m.until(() => m.text().includes(TEST_POPUP_TITLE));

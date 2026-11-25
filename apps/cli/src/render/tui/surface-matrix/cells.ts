@@ -1,5 +1,5 @@
-import { mountHostedChat, mountStandaloneChat } from './chat-host.js';
-import { mountHome } from './home-host.js';
+import { mountHostedChat, mountStandaloneChat, type ChatMount } from './chat-host.js';
+import { mountHome, type HomeMount } from './home-host.js';
 import type { MountOptions } from './mount.js';
 import { observe, type CellResult } from './run-cell.js';
 import type { Surface } from './surface-types.js';
@@ -20,15 +20,19 @@ async function resolve<T extends object>(
   return isSetupFunction(setup) ? await setup(variant) : setup;
 }
 
+/** A mounted surface of either kind of host: what a check of a popup over it reads and does. */
+export type SurfaceMount = HomeMount | ChatMount;
+
 /**
- * Mount one surface in one cell, put it on screen, and read what the terminal shows and was sent. The mount is always torn down, and a
- * surface that throws while opening is a failure of the cell, never a hang.
+ * Mount one surface in one cell, put it on screen, and hand the mount to `use`. The mount is always torn down, whether `use` returns or
+ * throws, and a surface that throws while opening is a failure of the cell, never a hang.
  */
-export async function runCell(
+export async function withSurface<T>(
   entry: Surface,
   variant: Variant,
-  options: MountOptions = {},
-): Promise<CellResult> {
+  options: MountOptions,
+  use: (mount: SurfaceMount) => T | Promise<T>,
+): Promise<T> {
   if (entry.host === 'home') {
     const setup = await resolve(entry.setup, variant);
     const mount = mountHome(variant, setup, options);
@@ -36,7 +40,7 @@ export async function runCell(
       await mount.settle();
       await entry.open(mount);
       await mount.settle();
-      return observe(entry, mount);
+      return await use(mount);
     } finally {
       mount.unmount();
       setup?.dispose?.();
@@ -51,8 +55,20 @@ export async function runCell(
     await mount.settle();
     await entry.open(mount);
     await mount.settle();
-    return observe(entry, mount);
+    return await use(mount);
   } finally {
     mount.unmount();
   }
+}
+
+/**
+ * Mount one surface in one cell, put it on screen, and read what the terminal shows and was sent. The mount is always torn down, and a
+ * surface that throws while opening is a failure of the cell, never a hang.
+ */
+export function runCell(
+  entry: Surface,
+  variant: Variant,
+  options: MountOptions = {},
+): Promise<CellResult> {
+  return withSurface(entry, variant, options, (mount) => observe(entry, mount));
 }

@@ -4,17 +4,8 @@ import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
-import {
-  Box,
-  Static,
-  Text,
-  render,
-  useApp,
-  useInput,
-  usePaste,
-  useStdout,
-  useWindowSize,
-} from 'ink';
+import { Box, Static, render, useApp, useInput, usePaste, useStdout, useWindowSize } from 'ink';
+import { BackdropDim, Text } from './text.js';
 import {
   createElement,
   useCallback,
@@ -134,7 +125,12 @@ import {
   type PopupRefusal,
 } from '../../popups/popup-host.js';
 import { currentStep } from '../../popups/popup-reducer.js';
-import { PopupSlot } from '../../popups/popup-slot.js';
+import {
+  dimsBackdrop,
+  PopupSlot,
+  slotDrawing,
+  type PopupSlotProps,
+} from '../../popups/popup-slot.js';
 import {
   foldMentionKey,
   mentionOpensAt,
@@ -2332,142 +2328,147 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       : undefined;
 
   const flushPopup = (): Promise<void> => app.waitUntilRenderFlush();
+  const slotProps: PopupSlotProps = {
+    host: popups,
+    acknowledgement: popupAcknowledgement,
+    native:
+      nativeAcknowledgement === undefined
+        ? undefined
+        : { snapshot: nativeSnapshot, acknowledgement: nativeAcknowledgement },
+    placement,
+    size: { cols: windowSize.columns, rows: windowSize.rows },
+    color,
+    flush: flushPopup,
+  };
+  // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4):
+  // the slot's own predicate over the slot's own props. The slot stays OUTSIDE the dimmed subtree, as the last child of the root.
+  const dimmed = dimsBackdrop(slotDrawing(slotProps, popupSnapshot), color);
   return (
     <>
-      {nativeActive && props.modePrompt !== undefined && (
-        <NativePromptHost
-          ui={props.modePrompt.ui}
-          acknowledgement={nativeAcknowledgement}
-          color={color}
-          {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
-          suspendPort={props.suspendPort}
-          ownsSuspendAttachment={false}
-          {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
-          onRendererReady={props.modePrompt.ready}
-          onRendererError={props.onError}
-        />
-      )}
-      <Box
-        display={occupiesRows(renderedOverlays) ? 'none' : 'flex'}
-        flexDirection="column"
-        width={layoutColumns(windowSize.columns)}
-        {...(viewport === undefined ? {} : { height: viewport.rows })}
-      >
-        <ChatView
-          hidden={review !== undefined && review.screen !== 'card'}
-          toolDisplays={toolDisplays}
-          markdown={markdown}
-          displaySuspended={displaySuspended}
-          acknowledgement={acknowledgement}
-          state={state}
-          tick={tick}
-          nowMs={Date.now()}
-          color={color}
-          editor={editor}
-          running={chatIsBusy({
-            turnRunning: running,
-            shellBusy,
-            submitBusy,
-            // Not observable here today (the stand-alone chat hides its conversation behind a card), and kept so that both hosts feed the
-            // one predicate the same inputs: the Home's wire is the one that is drawn, and it is pinned.
-            nativePrompt: renderedOverlays.nativePrompt,
-            approvalCard: state.approvalSinceMs !== undefined,
-          })}
-          mode={mode}
-          reasoningEffort={reasoningEffort}
-          reasoningVisible={reasoningVisible}
-          attachments={attachments}
-          busyCommand={busyCommand}
-          // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
-          columns={windowSize.columns}
-          viewport={viewport}
-          interruptArmed={interruptArmed}
-          copied={copied}
-          paletteOpen={promptHidden(renderedOverlays)}
-          notification={notification.current?.text}
-        />
-        {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
-            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
-        <ToolReviewHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          clipboard={props.reviewClipboard}
-          color={color}
-        />
-        {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
-        <QuestionCardHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          color={color}
-        />
-        {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
-        <CheckpointCardHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          color={color}
-        />
-        {palette !== undefined && (
-          <PaletteView
-            list={palette.list}
-            state={palette.state}
+      <BackdropDim dimmed={dimmed}>
+        {nativeActive && props.modePrompt !== undefined && (
+          <NativePromptHost
+            ui={props.modePrompt.ui}
+            acknowledgement={nativeAcknowledgement}
             color={color}
-            maxRows={windowSize.rows - 1}
+            {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
+            suspendPort={props.suspendPort}
+            ownsSuspendAttachment={false}
+            {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
+            onRendererReady={props.modePrompt.ready}
+            onRendererError={props.onError}
           />
         )}
-        {search !== undefined && (
-          <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
-        )}
-        {mention !== undefined && <MentionView state={mention} color={color} />}
-        {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
-          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
-        {modelPicker !== undefined && (
-          <ModelPickerView
-            state={modelPicker}
-            color={color}
+        <Box
+          display={occupiesRows(renderedOverlays) ? 'none' : 'flex'}
+          flexDirection="column"
+          width={layoutColumns(windowSize.columns)}
+          {...(viewport === undefined ? {} : { height: viewport.rows })}
+        >
+          <ChatView
+            hidden={review !== undefined && review.screen !== 'card'}
+            toolDisplays={toolDisplays}
+            markdown={markdown}
+            displaySuspended={displaySuspended}
+            acknowledgement={acknowledgement}
+            state={state}
+            tick={tick}
             nowMs={Date.now()}
-            providerName={providerDisplayName}
-            scope="this-chat"
-          />
-        )}
-        {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
-        {effortPicker !== undefined && (
-          <EffortTierList
-            tiers={effortPicker.tiers}
-            model={effortPicker.model}
-            selected={effortPicker.selected}
-            current={effortPicker.current}
-            labelSuffix={effortPicker.model}
-            footer={EFFORT_OVERLAY_FOOTER}
             color={color}
-          />
-        )}
-        {/* The docked sheet — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — here with the other overlays; the transcript stays above it. */}
-        {chatSheet !== undefined && (
-          <ChatSheetView
-            state={chatSheet}
-            color={color}
+            editor={editor}
+            running={chatIsBusy({
+              turnRunning: running,
+              shellBusy,
+              submitBusy,
+              // Not observable here today (the stand-alone chat hides its conversation behind a card), and kept so that both hosts feed the
+              // one predicate the same inputs: the Home's wire is the one that is drawn, and it is pinned.
+              nativePrompt: renderedOverlays.nativePrompt,
+              approvalCard: state.approvalSinceMs !== undefined,
+            })}
+            mode={mode}
+            reasoningEffort={reasoningEffort}
+            reasoningVisible={reasoningVisible}
+            attachments={attachments}
+            busyCommand={busyCommand}
+            // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
             columns={windowSize.columns}
-            rows={windowSize.rows}
+            viewport={viewport}
+            interruptArmed={interruptArmed}
+            copied={copied}
+            paletteOpen={promptHidden(renderedOverlays)}
+            notification={notification.current?.text}
           />
-        )}
-      </Box>
+          {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
+            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
+          <ToolReviewHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            clipboard={props.reviewClipboard}
+            color={color}
+          />
+          {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
+          <QuestionCardHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            color={color}
+          />
+          {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
+          <CheckpointCardHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            color={color}
+          />
+          {palette !== undefined && (
+            <PaletteView
+              list={palette.list}
+              state={palette.state}
+              color={color}
+              maxRows={windowSize.rows - 1}
+            />
+          )}
+          {search !== undefined && (
+            <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
+          )}
+          {mention !== undefined && <MentionView state={mention} color={color} />}
+          {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
+          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
+          {modelPicker !== undefined && (
+            <ModelPickerView
+              state={modelPicker}
+              color={color}
+              nowMs={Date.now()}
+              providerName={providerDisplayName}
+              scope="this-chat"
+            />
+          )}
+          {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
+          {effortPicker !== undefined && (
+            <EffortTierList
+              tiers={effortPicker.tiers}
+              model={effortPicker.model}
+              selected={effortPicker.selected}
+              current={effortPicker.current}
+              labelSuffix={effortPicker.model}
+              footer={EFFORT_OVERLAY_FOOTER}
+              color={color}
+            />
+          )}
+          {/* The docked sheet — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — here with the other overlays; the transcript stays above it. */}
+          {chatSheet !== undefined && (
+            <ChatSheetView
+              state={chatSheet}
+              color={color}
+              columns={windowSize.columns}
+              rows={windowSize.rows}
+            />
+          )}
+        </Box>
+      </BackdropDim>
       {/* The one overlay slot (ADR-0148 §2): the last child of the root, and the only absolutely positioned node of the CLI. */}
-      <PopupSlot
-        host={popups}
-        acknowledgement={popupAcknowledgement}
-        native={
-          nativeAcknowledgement === undefined
-            ? undefined
-            : { snapshot: nativeSnapshot, acknowledgement: nativeAcknowledgement }
-        }
-        placement={placement}
-        size={{ cols: windowSize.columns, rows: windowSize.rows }}
-        color={color}
-        flush={flushPopup}
-      />
+      <PopupSlot {...slotProps} />
     </>
   );
 }

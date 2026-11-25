@@ -7,7 +7,9 @@
  * - **Placement.** In the alternate screen a popup is an absolutely positioned box, centred over a body that stays drawn (`overlay`); inline it
  *   is a framed block in the flow that takes the body's place (`replace`), because the inline renderer cannot draw over its own scrollback.
  * - **Opacity.** Every row is exactly the frame's width, filled with spaces (`frame-model.ts`): the padding is what keeps the body from showing
- *   through. The dimming of the body behind is the next part's (a leaf-level route); nothing here dims.
+ *   through. Opacity is the safety property; the dimming of the body behind is the look, and it is not done here: the slot is OUTSIDE the
+ *   dimmed subtree (the host wraps everything but the slot in `BackdropDim`), so the popup's own cells are never dim, and
+ *   {@link slotDrawing} / {@link dimsBackdrop} are the one predicate the hosts ask.
  * - **The measured frame.** The acknowledgement is handed the popup's CONTENT node, which has no fixed size, and refuses a frame that is not
  *   exactly the geometry's (`popup-acknowledgement.ts`). Below the floor, or inline with no room, a notice with the way back is drawn instead
  *   and nothing is acknowledged.
@@ -354,14 +356,52 @@ const CLOSED_POPUPS: PopupHostSnapshot = {
 };
 const closedPopups = (): PopupHostSnapshot => CLOSED_POPUPS;
 
+/** What the slot is drawing, and where: the native channel's framed prompt, or the popup host's top popup. */
+export interface SlotDrawing {
+  readonly source: 'native' | 'host';
+  readonly placement: PopupPlacement;
+}
+
+/**
+ * **The one predicate** of what the slot draws now: the native channel's prompt when a flow framed it (it wins, as it holds the keyboard
+ * first), else the popup host's top popup when the host is wired and one is open, else nothing. The slot decides with it, and so do the
+ * hosts when they ask whether the body behind is dimmed ({@link dimsBackdrop}), so the two can never disagree about whether a popup is up.
+ * `snapshot` is the host's popup snapshot, which the caller reads as it reads it for the slot.
+ */
+export function slotDrawing(
+  props: Pick<PopupSlotProps, 'host' | 'acknowledgement' | 'native' | 'placement'>,
+  snapshot: PopupHostSnapshot,
+): SlotDrawing | undefined {
+  if (props.native !== undefined && nativeFramed(props.native.snapshot))
+    return { source: 'native', placement: props.placement };
+  if (
+    props.host === undefined ||
+    props.acknowledgement === undefined ||
+    !snapshot.open ||
+    snapshot.frame === undefined
+  )
+    return undefined;
+  return { source: 'host', placement: snapshot.placement };
+}
+
+/**
+ * Whether the body behind the slot is the backdrop of an open popup, drawn dim ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §4): exactly when the slot draws a box over a body that STAYS drawn (the overlay, in the alternate screen; inline a popup replaces the body,
+ * so there is nothing to dim) and colour is on (with colour off chalk prints no dim, and the popup is opaque and framed anyway).
+ */
+export function dimsBackdrop(drawing: SlotDrawing | undefined, color: boolean): boolean {
+  return color && drawing?.placement === 'overlay';
+}
+
 /** The overlay slot: the last child of a host's root. It draws the open popup, or nothing. */
 export function PopupSlot(props: Readonly<PopupSlotProps>): ReactElement | null {
   const snapshot = useSyncExternalStore(
     props.host?.subscribe ?? noSubscribe,
     props.host?.getSnapshot ?? closedPopups,
   );
+  const drawing = slotDrawing(props, snapshot);
   const native = props.native;
-  if (native !== undefined && nativeFramed(native.snapshot))
+  if (drawing?.source === 'native' && native !== undefined)
     return (
       <NativePopup
         snapshot={native.snapshot}
@@ -375,9 +415,9 @@ export function PopupSlot(props: Readonly<PopupSlotProps>): ReactElement | null 
   const host = props.host;
   const acknowledgement = props.acknowledgement;
   if (
+    drawing?.source !== 'host' ||
     host === undefined ||
     acknowledgement === undefined ||
-    !snapshot.open ||
     snapshot.frame === undefined
   )
     return null;

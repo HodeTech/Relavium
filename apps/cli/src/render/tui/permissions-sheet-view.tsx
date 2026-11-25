@@ -1,4 +1,5 @@
-import { Box, Text } from 'ink';
+import { Box } from 'ink';
+import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import { Emph } from './emphasis-view.js';

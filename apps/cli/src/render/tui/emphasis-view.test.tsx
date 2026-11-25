@@ -6,7 +6,7 @@ import type { ReactElement } from 'react';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { Emph, EmphText } from './emphasis-view.js';
+import { Emph, EmphText, emphElement } from './emphasis-view.js';
 import { emphasize } from './emphasis.js';
 import { openAtEndOfEachRow, plain, styleRuns, stylesOver } from './emphasis-test-kit.js';
 
@@ -87,14 +87,14 @@ describe('Emph, as the element it returns', () => {
   };
 
   it('is its children and nothing else when there is nothing to draw, or no style: no bytes are written for nothing', () => {
-    expect(childrenOf(Emph({ kinds: 'bold', children: '' }))).toBe('');
-    expect(childrenOf(Emph({ kinds: 'bold', children: undefined }))).toBeUndefined();
-    expect(childrenOf(Emph({ kinds: undefined, children: 'x' }))).toBe('x');
-    expect(childrenOf(Emph({ kinds: [], children: 'x' }))).toBe('x');
+    expect(childrenOf(emphElement('bold', ''))).toBe('');
+    expect(childrenOf(emphElement('bold', undefined))).toBeUndefined();
+    expect(childrenOf(emphElement(undefined, 'x'))).toBe('x');
+    expect(childrenOf(emphElement([], 'x'))).toBe('x');
   });
 
   it('is the opening sequence, the children and the closing sequence otherwise', () => {
-    expect(childrenOf(Emph({ kinds: ['bold', 'inverse'], children: 'x' }))).toEqual([
+    expect(childrenOf(emphElement(['bold', 'inverse'], 'x'))).toEqual([
       '\u001b[1m\u001b[7m',
       'x',
       '\u001b[27m\u001b[22m',

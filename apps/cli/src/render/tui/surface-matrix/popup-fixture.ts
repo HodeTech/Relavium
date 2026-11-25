@@ -13,6 +13,7 @@ import {
 } from '../../../popups/popup-reducer.js';
 import { withGlyphForm } from '../glyphs.js';
 import type { PopupBox } from './properties.js';
+import type { ScreenCell } from './terminal.js';
 import type { Variant } from './variants.js';
 
 /**
@@ -48,17 +49,29 @@ export function testReportPopup(origin: PopupOrigin): PopupSpec {
   };
 }
 
-/** The frame each mount showed just before the test opened its popup (the popup-box property compares the cells outside the box with it). */
-const BASELINES = new WeakMap<object, readonly string[]>();
+/** What each mount showed just before the test opened its popup: its rows (the popup-box property) and its cells with their styles (the backdrop-dim property). */
+interface Baseline {
+  readonly lines: readonly string[];
+  readonly cells: readonly (readonly ScreenCell[])[] | undefined;
+}
+const BASELINES = new WeakMap<object, Baseline>();
 
 /** Record what `mount` shows now, before a popup is opened over it. */
-export function recordBaseline(mount: { readonly frame: () => string[] }): void {
-  BASELINES.set(mount, mount.frame());
+export function recordBaseline(mount: {
+  readonly frame: () => string[];
+  readonly cells?: () => ScreenCell[][];
+}): void {
+  BASELINES.set(mount, { lines: mount.frame(), cells: mount.cells?.() });
 }
 
 /** The frame `mount` showed before its popup opened, or `undefined` when none was recorded. */
 export function baselineOf(mount: object): readonly string[] | undefined {
-  return BASELINES.get(mount);
+  return BASELINES.get(mount)?.lines;
+}
+
+/** The cells (with their styles) `mount` showed before its popup opened, or `undefined` when none were recorded. */
+export function baselineCellsOf(mount: object): readonly (readonly ScreenCell[])[] | undefined {
+  return BASELINES.get(mount)?.cells;
 }
 
 /** Where the test popup is drawn in a cell, and its rows: the one geometry function and the frame model, in the cell's glyph form. */

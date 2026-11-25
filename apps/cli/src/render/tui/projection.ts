@@ -1,4 +1,4 @@
-import type { Text } from 'ink';
+import type { Text } from './text.js';
 import type { ComponentProps } from 'react';
 import type { DisplayLine } from './viewport.js';
 import { formatDuration } from '../notation.js';
