@@ -28,6 +28,34 @@ afterEach(() => {
 const legacyRunSql =
   'INSERT INTO runs (id, workflow_id, workflow_definition_snapshot, project_root, status, input_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
 
+/** The migrations folder as it stood when 0022 was the newest: 0000 through 0022, with its journal. */
+function migrationsThrough0022(): string {
+  const folder = join(temporary ?? tmpdir(), 'through-0022');
+  mkdirSync(join(folder, 'meta'), { recursive: true });
+  const metadata = readMigrationFiles({ migrationsFolder });
+  const names = readdirSync(migrationsFolder)
+    .filter((name) => /^\d{4}_.*\.sql$/u.test(name))
+    .sort()
+    .slice(0, 23);
+  expect(names.at(-1)).toBe('0022_lethal_jackpot.sql');
+  for (const name of names) copyFileSync(join(migrationsFolder, name), join(folder, name));
+  writeFileSync(
+    join(folder, 'meta/_journal.json'),
+    JSON.stringify({
+      version: '7',
+      dialect: 'sqlite',
+      entries: names.map((name, idx) => ({
+        idx,
+        version: '6',
+        when: metadata[idx]?.folderMillis,
+        tag: name.slice(0, -4),
+        breakpoints: true,
+      })),
+    }),
+  );
+  return folder;
+}
+
 /** A database as migration 0021 left it, holding one workflow, three runs and a run's worth of children. */
 function openOld(): DbClient {
   temporary = mkdtempSync(join(tmpdir(), 'relavium-migration-0022-'));
@@ -121,7 +149,9 @@ describe('migration 0022 — run_pins and the project-scoped runs index (ADR-014
     const opened = openOld();
     const rows = dumpOf(opened);
     const before = schemaOf(opened);
-    migrate(opened.db, { migrationsFolder });
+    // Through 0022 only: this pins what 0022 does to an existing schema, and a later additive migration (0023 adds columns to
+    // `session_messages`, which rewrites that table's stored SQL text in place) is not 0022's doing.
+    migrate(opened.db, { migrationsFolder: migrationsThrough0022() });
     expect(dumpOf(opened)).toEqual(rows);
     // Nothing that existed moved: same b-tree root page and same SQL text, so no table was rebuilt.
     const after = schemaOf(opened);

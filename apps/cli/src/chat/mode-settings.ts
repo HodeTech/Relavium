@@ -9,6 +9,7 @@ import {
 import { CliError } from '../process/errors.js';
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 import { CHAT_MODES, MODE_DESCRIPTION } from './chat-mode.js';
+import { MODE_EFFECT } from './mode-effects.js';
 import {
   startingModePreference,
   startingModeConfigObserver,
@@ -37,8 +38,8 @@ function selectedMode(value: string | symbol): ChatMode | undefined {
   return CHAT_MODES.find((mode) => mode === value);
 }
 
-const AUTO_RISK =
-  'Auto permits ordinary governed actions without approval, including file writes. Protected-path and permission denials still apply.';
+/** What both `auto` confirmations state before their question: the effect of `auto`, from the one source (`mode-effects.ts`). */
+const AUTO_RISK = MODE_EFFECT.auto.full;
 
 async function endModeSettings(flow: NativePromptFlow): Promise<void> {
   try {

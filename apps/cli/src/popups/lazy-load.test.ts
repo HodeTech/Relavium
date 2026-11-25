@@ -1,6 +1,7 @@
 /**
  * The popups' code is loaded when the person first opens one, and not before ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §2, MVP-11 §4.4): `doctor-port.ts` and `report-port.ts` are the eager halves and bring the lazy halves in with a dynamic `import()`. One static
+ * §2, MVP-11 §4.4): `doctor-port.ts`, `report-port.ts` and `settings-port.ts` are the eager halves and bring the lazy halves in with a dynamic
+ * `import()`. One static
  * value import of a lazy module anywhere in the closure of the Home or a chat pulls the popups into the first paint, and every behavioural test stays
  * green, so this reads the sources: the STATIC value-import closure of each host entry holds none of the lazy modules. Only an `import type { … }`
  * declaration, an `export type { … } from` and a dynamic `import()` do not count: `verbatimModuleSyntax` keeps `import { type X } from './m.js'` as a
@@ -40,6 +41,8 @@ const LAZY = [
   'popup-work',
   'popup-copy',
   'chord-refusal',
+  'settings-session',
+  'effort-popup',
 ].map((name) => `popups/${name}.ts`);
 
 /** Every source file of the CLI (tests and their support excluded), by its path under `src`. */
@@ -190,9 +193,13 @@ describe('the popups load on first use', () => {
     expect(readFileSync(join(SRC, 'popups/report-port.ts'), 'utf8')).toContain(
       "import('./report-session.js')",
     );
+    expect(readFileSync(join(SRC, 'popups/settings-port.ts'), 'utf8')).toContain(
+      "import('./settings-session.js')",
+    );
     const reached = closure('render/tui/home-controller.ts');
     expect(reached.has('popups/doctor-port.ts')).toBe(true);
     expect(reached.has('popups/report-port.ts')).toBe(true);
+    expect(reached.has('popups/settings-port.ts')).toBe(true);
   });
 
   it.each(ENTRIES)('%s reaches no lazy module through a static value import', (entry) => {

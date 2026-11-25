@@ -21,7 +21,6 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['running-turn', 'a running turn: the streamed answer and the live line'],
   ['palette', 'the / palette, laid out upwards from the prompt'],
   ['model-picker', 'the /models picker'],
-  ['effort-picker', 'the /effort picker'],
   ['sheet-permissions', 'the docked /permissions sheet'],
   ['mode-prompt', 'the /mode flow’s native card (the startup default)'],
   ['approval-file-edit', 'the approval card of a file edit'],
@@ -54,6 +53,15 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['report-workflows-loading', 'the /workflows popup: the catalog being read'],
   ['report-workflows-error', 'the /workflows popup: the catalog could not be listed'],
   ['report-help', 'the /help popup: the commands and keys of a chat'],
+  ['settings-effort', 'the /effort popup: the tiers of the bound model, the one in force marked'],
+  [
+    'settings-form',
+    'a form popup: the test layer’s tabs, radio group and warning (the body of the /models second step)',
+  ],
+  [
+    'settings-effect',
+    'a list popup whose highlighted row states its effect: the test layer’s (the body of the /mode first step)',
+  ],
 ];
 
 export const PRODUCT_SURFACES: readonly ProductSurface[] = [

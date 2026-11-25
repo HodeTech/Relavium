@@ -64,7 +64,18 @@ import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import type { DoctorPort } from '../popups/doctor-port.js';
 import type { ReportMembers, ReportsPort, WorkflowsReading } from '../popups/report-port.js';
+import {
+  effortAnnouncement,
+  type SettingsMembers,
+  type SettingsPort,
+} from '../popups/settings-port.js';
 import { releaseHeldEstimates } from '../chat/cost-release.js';
+import {
+  announcesEffect,
+  modeChangedNotice,
+  MODE_NOT_RECORDED_NOTICE,
+  widensAuthority,
+} from '../chat/mode-effects.js';
 import { CHAT_KEYS } from '../render/tui/chat-keys.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
@@ -431,6 +442,17 @@ export interface ChatDriveContext {
    * `reports.agent` reads (a driver and its tests read it directly).
    */
   readonly reports?: ReportsPort | undefined;
+  /**
+   * The settings popups' port (ADR-0148 §3, §6; MVP-11 step 5: `/effort` today). Present on an interactive (TTY, non-`--json`) driver only, where
+   * the ink chat opens the popup for a typed or palette-selected bare command; a plain, `--json` or one-shot driver has none, and each command
+   * prints exactly the text it printed before.
+   */
+  readonly settings?: SettingsPort | undefined;
+  /**
+   * Bind the session's announcements to the driver's notification channel (`ChatLineHandler.setAnnouncer`): an interactive driver binds its
+   * chat's channel while the chat is mounted and unbinds it when it unmounts. Absent on a plain or `--json` driver, which keeps its text.
+   */
+  readonly setAnnouncer?: ((announce: ((text: string) => void) | undefined) => void) | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -1685,8 +1707,15 @@ interface ReplWiring {
 export interface ChatModeControl {
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
   readonly onAbort: () => void;
-  /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
-  readonly onModeChange: (mode: ChatMode) => void;
+  /**
+   * Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). The ONE mode setter after the
+   * session's start (`Shift+Tab` in both hosts, a typed `/mode <name>`, the `/mode` popup): while a turn runs it refuses; in an
+   * interactive session every change appends a content-free record row first (ADR-0148 §6), a WIDENING change is applied only if that row
+   * landed (a narrowing always applies; the amended D-4), and a change into
+   * `accept-edits` or `auto` is announced with its effect. Returns whether the requested mode (a non-interactive session clamps it to
+   * `ask`) is in force now: `false` for a refusal, which has already said why.
+   */
+  readonly onModeChange: (mode: ChatMode) => boolean;
   /**
    * Set the session's reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
    * — the `/effort` command + the `/models` effort sub-step wire to this. It pushes the SESSION override (a per-turn
@@ -1757,6 +1786,19 @@ export function createChatModeControl(
      * A required key, so that a host that forgets it does not silently draw the absolute path.
      */
     readonly commandPaths: DisplayPathRoots | undefined;
+    /**
+     * Append the content-free record of an effective mode change (`from` → `to`, never equal) to the session, and say whether it landed
+     * (ADR-0148 §6). A WIDENING change is applied ONLY when this returns `true`; a narrowing applies either way (its record is best
+     * effort, the amended D-4). Asked on an interactive session only, never for the initial mode
+     * (the session's start is not a change; the config that chose it is its record) and never for the non-interactive clamp. The chat's
+     * line handler supplies it from the session's persister; absent ⇒ changes apply unrecorded (a unit test of the policy alone).
+     */
+    readonly recordModeChange?: (from: ChatMode, to: ChatMode) => boolean;
+    /**
+     * The host's own transient notification (ADR-0148 §2 and §6): what a change into `accept-edits` or `auto` says, and why a change that
+     * could not be recorded did not happen. Never the transcript. Absent ⇒ nothing is announced.
+     */
+    readonly announce?: (text: string) => void;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1838,11 +1880,28 @@ export function createChatModeControl(
       // card. Both surfaces (this chat and the Home) reach the mode only through here, so the refusal lives here.
       if (store.getSnapshot().state.status === 'running') {
         store.notice(MODE_CHANGE_RUNNING_NOTICE);
-        return;
+        return false;
       }
       const effective = interactive ? mode : 'ask';
+      const from = store.getSnapshot().mode;
+      const changes = interactive && from !== effective;
+      // ADR-0148 §6 (the lead's amended D-4): RECORD FIRST. A WIDENING change is applied only if its row landed; one whose record cannot
+      // be written is refused, in one line on the host's channel, and the session is not latched (its egress stays): a lost record of
+      // authority is refused rather than dropped. A NARROWING change always applies and its record is best effort: refusing it would keep
+      // the session in the wider mode, the wrong direction, so a lost row is neither announced nor latched.
+      if (changes && opts.recordModeChange !== undefined) {
+        const recorded = opts.recordModeChange(from, effective);
+        if (!recorded && widensAuthority(from, effective)) {
+          opts.announce?.(MODE_NOT_RECORDED_NOTICE);
+          return false;
+        }
+      }
       store.setMode(effective);
       applyChatMode(modeEnv, effective);
+      // Whatever started it (the popup, `Shift+Tab`, a typed `/mode auto`), a change into a mode that approves without a card says what it
+      // does; the status line already shows the mode's name.
+      if (changes && announcesEffect(effective)) opts.announce?.(modeChangedNotice(effective));
+      return true;
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
     // so the footer reflects it only on a reasoning-capable model. The override lives on THIS session instance only
@@ -1889,6 +1948,19 @@ export interface ChatLineHandler extends ChatModeControl {
    * catalog and the keys of a chat. Present on an interactive session only; the host adds the surface, the owner and the glyph form.
    */
   readonly reports: ReportMembers | undefined;
+  /**
+   * What the settings popups read and apply from this session (ADR-0148 §3, §6; MVP-11 step 5): `/effort` today (the tiers of the bound model,
+   * the tier in force and the session's setter), and the announcement this handler routes to the host's channel ({@link setAnnouncer}).
+   * Present on an interactive session only; the host adds the surface and the owner.
+   */
+  readonly settings: SettingsMembers | undefined;
+  /**
+   * Bind (or, with `undefined`, unbind) the host's own transient notification (ADR-0148 §2 and §6: `NotificationChannel.notify` with no
+   * popup as its source, so it outlives a popup that closes): where this session's mode control and its typed settings report a change
+   * and a refusal instead of the transcript. Until a host binds it, those announcements are dropped (the status line still shows the
+   * mode). A plain, `--json` or one-shot chat never binds it and keeps its text output.
+   */
+  readonly setAnnouncer: (announce: ((text: string) => void) | undefined) => void;
 }
 
 /**
@@ -2051,12 +2123,23 @@ export function createChatLineHandler(
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
   const commandGrants = openCommandGrants(interactive, built, deps, store);
+  // The host's own notification channel (ADR-0148 §2), bound by the host through `setAnnouncer`; nothing is announced until it is, and
+  // nothing after this invocation stopped publishing output.
+  let announcer: ((text: string) => void) | undefined;
+  const announce = (text: string): void => {
+    if (noticesStopped()) return;
+    announcer?.(text);
+  };
   const modeControl = createChatModeControl(built, store, {
     interactive,
     ...(commandGrants === undefined ? {} : { commandGrants }),
     // The roots the command card names its directory against (ADR-0145 §8): the same for the stand-alone chat and the one the Home hosts,
     // which both build their handler here.
     commandPaths: displayRoots(deps.global.cwd, built.operatorHomeDir),
+    // ADR-0148 §6: an effective mode change is recorded in THIS session through its persister, which owns the sequence; the stand-alone
+    // chat and the chat the Home hosts both build their handler here, so both keys and every typed or popup change reach this one record.
+    recordModeChange: (from, to) => persister.appendRecord({ kind: 'mode_change', from, to }),
+    announce,
   });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&
@@ -2127,6 +2210,8 @@ export function createChatLineHandler(
       sessionId: built.sessionId,
       governor: built.governor,
       now: Date.now,
+      // ADR-0148 §6: the release's `cost_release` row, atomic with the release, at the slot this session's persister reserves.
+      record: persister,
     });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
@@ -2229,12 +2314,25 @@ export function createChatLineHandler(
       emitOutput(PERMISSIONS_NOT_AVAILABLE);
     },
     showCost: (release = false) => {
+      // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
+      // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
+      // session seeds its cap from — clearing only the live governor let a released commitment come straight
+      // back on the next `chat-resume`), then the in-memory governor.
+      let released: number | undefined;
+      if (release) {
+        try {
+          released = releaseHeldCommitments().durable;
+        } catch (err) {
+          workOwner?.failure(err);
+          // A failed RELEASE is not a failed read: its transaction rolled back (the holds, the governor and the record row are all as
+          // they were), so it says that, by CODE and never a raw message (a DB error can carry a path), and shows no panel.
+          emitOutput(
+            `could not release the held estimates: ${err instanceof CliError ? err.code : 'unexpected error'} — nothing was released`,
+          );
+          return;
+        }
+      }
       try {
-        // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
-        // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
-        // session seeds its cap from — clearing only the live governor let a released commitment come straight
-        // back on the next `chat-resume`), then the in-memory governor.
-        const released = release ? releaseHeldCommitments().durable : undefined;
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
         const { totalCostMicrocents, rows, coverage, models } =
@@ -2304,8 +2402,17 @@ export function createChatLineHandler(
         emitOutput(`/mode: unknown mode '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
         return;
       }
-      modeControl.onModeChange(mode);
-      emitOutput(`mode: ${MODE_LABEL[store.getSnapshot().mode]}`);
+      const from = store.getSnapshot().mode;
+      const applied = modeControl.onModeChange(mode);
+      // A plain, `--json` or one-shot chat says the mode in force as text, byte for byte as before (the clamp keeps it `ask`).
+      if (!interactive) {
+        emitOutput(`mode: ${MODE_LABEL[store.getSnapshot().mode]}`);
+        return;
+      }
+      // ADR-0148 §6: a typed setting applies directly and writes nothing into the transcript; it is confirmed by the status line and the
+      // host's notification. The mode control has announced a change into `accept-edits` or `auto` and said why a refused change did not
+      // happen; a narrowing, or a mode already in force, is confirmed here.
+      if (applied && (from === mode || !announcesEffect(mode))) announce(modeChangedNotice(mode));
     },
     // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
     // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
@@ -2365,10 +2472,17 @@ export function createChatLineHandler(
         emitOutput(effortRejectedNote(built.agent.model, tier, offered, noticeSurface));
         return;
       }
+      const already = store.getSnapshot().reasoningEffort === tier;
       modeControl.onSetEffort(tier);
-      emitOutput(
-        `reasoning effort: ${effortRowLabel(built.agent.model, tier).label} — applies to your next message.`,
-      );
+      const label = effortRowLabel(built.agent.model, tier).label;
+      // A plain, `--json` or one-shot chat says the tier as text, byte for byte as before.
+      if (!interactive) {
+        emitOutput(`reasoning effort: ${label} — applies to your next message.`);
+        return;
+      }
+      // ADR-0148 §6: a typed setting applies directly and writes nothing into the transcript; the status line shows the tier and the host's
+      // notification says what changed, in the words of the `/effort` popup's `Enter`.
+      announce(effortAnnouncement(label, already));
     },
     // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
     // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only
@@ -2551,6 +2665,9 @@ export function createChatLineHandler(
       stop = true;
     },
     reseatTarget: () => reseatRequested,
+    setAnnouncer: (next) => {
+      announcer = next;
+    },
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
@@ -2593,6 +2710,19 @@ export function createChatLineHandler(
             },
           },
           help: { keys: Object.values(CHAT_KEYS) },
+        }
+      : undefined,
+    // The settings popups' members (ADR-0148 §3, §6): interactive only, where there is a popup host to open them on. Each applies through the
+    // same function its typed form does (`/effort high` and the popup's `Enter` both reach `onSetEffort`), and says so through `announce`.
+    settings: interactive
+      ? {
+          announce,
+          effort: {
+            model: () => built.agent.model,
+            tiers: () => effortTiersFor(built.agent.model),
+            current: () => store.getSnapshot().reasoningEffort,
+            apply: modeControl.onSetEffort,
+          },
         }
       : undefined,
   };
@@ -3316,6 +3446,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     permissions,
     boundAgent,
     reports,
+    settings,
+    setAnnouncer,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3443,6 +3575,18 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
                 : { clipboard: hatchPortsForClipboard.clipboard }),
               plainGlyphs: !deps.global.color,
             },
+          }
+        : {}),
+      // The settings popups (`/effort` today; ADR-0148 §3, §6) open only in an interactive chat, whose driver binds the session's announcements
+      // to its own channel; a plain, `--json` or one-shot driver has neither, and each command prints the text it printed before.
+      ...(interactive && settings !== undefined
+        ? {
+            settings: {
+              ...settings,
+              surface: 'standalone-chat' as const,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            },
+            setAnnouncer,
           }
         : {}),
       // The `/doctor` popup opens only in an interactive chat (ADR-0148 §8); a plain or `--json` driver prints the text report as before.

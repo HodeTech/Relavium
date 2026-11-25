@@ -1,0 +1,101 @@
+/**
+ * Test support for the settings popups ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §3, §6): a popup host on a manual monotonic clock with a settings popup opened on it, a settings port over fakes whose every call is recorded
+ * (the session's setter, the announcement on the host's channel), and the words of the step on screen. Nothing here reaches a session, a
+ * database, a disk or a network.
+ */
+
+import type { ReasoningEffort } from '@relavium/shared';
+
+import { createChordHistory } from '../render/tui/chord-guard.js';
+import { manualClock } from './doctor.test-support.js';
+import { createNotificationChannel } from './notifications.js';
+import { createPopupHost, type PopupOpenResult } from './popup-host.js';
+import { currentStep, visibleRows, type PopupKey } from './popup-reducer.js';
+import type { SettingsKind, SettingsPort } from './settings-port.js';
+import { openSettingsPopup } from './settings-session.js';
+
+/** An `/effort` member over `model` and `tiers`, the tier in force `current`, every apply recorded (and moving the tier in force). */
+export function fakeEffort(
+  model: string,
+  tiers: readonly ReasoningEffort[],
+  current: ReasoningEffort | undefined,
+) {
+  let now = current;
+  const applied: ReasoningEffort[] = [];
+  return {
+    applied,
+    current: (): ReasoningEffort | undefined => now,
+    member: {
+      model: () => model,
+      tiers: () => tiers,
+      current: () => now,
+      apply: (effort: ReasoningEffort) => {
+        applied.push(effort);
+        now = effort;
+      },
+    } satisfies NonNullable<SettingsPort['effort']>,
+  };
+}
+
+export const ENTER: PopupKey = { return: true };
+export const ESC: PopupKey = { escape: true };
+export const DOWN: PopupKey = { downArrow: true };
+export const UP: PopupKey = { upArrow: true };
+
+/** A popup host on a manual clock with its frame "on screen", and a settings popup opened on it through the opener table. */
+export function settingsRig() {
+  const clock = manualClock();
+  const notifications = createNotificationChannel({ schedule: clock.schedule });
+  const host = createPopupHost({
+    now: clock.now,
+    schedule: clock.schedule,
+    notifications,
+    history: createChordHistory(),
+    placement: 'overlay',
+  });
+  host.bindVisibility(() => true);
+  host.bindOpenGate(() => undefined);
+  host.bindPageRows(() => 17);
+  host.bindInnerWidth(() => 66);
+  /** Every announcement the port made, in order (the host's channel shows them one at a time). */
+  const announced: string[] = [];
+  const open = (members: Partial<SettingsPort>, command: SettingsKind): PopupOpenResult =>
+    openSettingsPopup({
+      host,
+      port: {
+        surface: 'standalone-chat',
+        announce: (text) => {
+          announced.push(text);
+          notifications.notify(text);
+        },
+        ...members,
+      },
+      command,
+      origin: 'chat',
+    });
+  return {
+    host,
+    clock,
+    notifications,
+    announced,
+    open,
+    /** The popup has appeared and its settle time has passed: an `Enter` may answer. */
+    settle: (): void => {
+      host.shown(host.getSnapshot());
+      clock.advance(600);
+    },
+    press: (input: string, key: PopupKey = {}): boolean => host.input(input, key),
+    /** The rows of the step on screen, as `label detail`, and the one highlighted. */
+    rows: (): { readonly all: readonly string[]; readonly highlighted: string | undefined } => {
+      const frame = host.getSnapshot().frame;
+      if (frame === undefined) return { all: [], highlighted: undefined };
+      const { state } = currentStep(frame);
+      const shown = visibleRows(state);
+      return {
+        all: shown.map((row) => `${row.label} ${row.detail ?? ''}`.trim()),
+        highlighted: shown[state.selected]?.id,
+      };
+    },
+  };
+}

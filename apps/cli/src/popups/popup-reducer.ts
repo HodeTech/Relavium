@@ -8,18 +8,26 @@
  * the step (the command decides what that is: the next step, an apply, a child popup); `Esc` clears a filter first, then goes back one step, and
  * closes on the first step; `Ctrl+C` closes the whole popup and arms no exit window. A letter is a control when the step lists it, typing into
  * the filter when the step has one, and otherwise nothing at all: typed text goes only into a text field. Neither `Esc` nor `Ctrl+C` ever answers.
+ *
+ * On a form (`frame-model.ts` `PopupForm`) `←/→` change its tabs and `↑/↓` (a page, a jump) its radio group's choice, each stopping at the ends;
+ * there is no focus to move between them. `Enter` applies the form as a whole (`apply`, with the ids chosen); it is an answer like any other,
+ * held behind the opening guard. `←/→` do nothing on any other step (and disarm a confirmation line, as every key but a navigation key does).
  */
 
 import { chordOf, reduceChordKey } from '../render/tui/chord-guard.js';
 import { exitKey, type LegendExit, type LegendItem } from '../render/tui/legend.js';
 import { POPUP_FLOOR, popupGeometry, popupInnerWidth, type PopupKind } from './geometry.js';
 import {
+  bodyPageRows,
+  filterListRows,
+  formFits,
+  formOptionIndex,
   naturalBodyRows,
   reportLinesFit,
   reportMaxOffset,
-  reportPageRows,
   reportPageStep,
   type PopupContent,
+  type PopupForm,
   type PopupListRow,
   type PopupOrigin,
 } from './frame-model.js';
@@ -108,6 +116,14 @@ export interface PopupStepState {
    * the data is read (`/cost`'s `[r]`, offered only when something is held). Absent ⇒ the step's own `controls`. `[]` ⇒ none.
    */
   readonly controls?: readonly PopupControl[] | undefined;
+  /** The chosen option of a form's tabs (`selected` is its radio group's). Absent ⇒ the first. */
+  readonly tab?: number | undefined;
+}
+
+/** What a form was answered with: the id of the chosen option of its tabs and of its radio group (absent for a field the form does not have). */
+export interface PopupFormValues {
+  readonly tab?: string | undefined;
+  readonly radio?: string | undefined;
 }
 
 /** One open popup: its spec, the step it is on and every step's state (a step it went back from keeps its own). */
@@ -133,6 +149,9 @@ export interface PopupKey {
   readonly pageDown?: boolean;
   readonly home?: boolean;
   readonly end?: boolean;
+  /** `←` and `→`: they change a form's tabs, and do nothing on any other step (a confirmation line is disarmed by them, as by any key). */
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
   readonly return?: boolean;
   readonly escape?: boolean;
   readonly backspace?: boolean;
@@ -149,6 +168,8 @@ export type PopupKeyAction =
   | { readonly kind: 'move'; readonly delta: 1 | -1 }
   | { readonly kind: 'page'; readonly delta: 1 | -1 }
   | { readonly kind: 'jump'; readonly to: 'first' | 'last' }
+  /** `←` (`-1`) or `→` (`1`): a form's tabs move to the option before or after the chosen one, and stop at the ends. */
+  | { readonly kind: 'adjust'; readonly delta: 1 | -1 }
   | { readonly kind: 'enter' }
   | { readonly kind: 'control'; readonly key: string }
   | { readonly kind: 'append'; readonly text: string }
@@ -165,16 +186,9 @@ export type PopupKeyAction =
   | { readonly kind: 'disarm'; readonly cause: 'typed' | 'interrupt' }
   | { readonly kind: 'none' };
 
-/** The rows a list step shows: its rows with the filter applied (the label or the detail contains it, case folded). */
+/** The rows a list step shows: its rows with the filter applied (`filterListRows`, the one filter the body draws with too). */
 export function visibleRows(step: PopupStepState): readonly PopupListRow[] {
-  if (step.content.kind !== 'list') return [];
-  const query = step.filter.trim().toLowerCase();
-  if (query.length === 0) return step.content.rows;
-  return step.content.rows.filter(
-    (row) =>
-      row.label.toLowerCase().includes(query) ||
-      (row.detail?.toLowerCase().includes(query) ?? false),
-  );
+  return step.content.kind === 'list' ? filterListRows(step.content.rows, step.filter) : [];
 }
 
 const canAct = (row: PopupListRow | undefined): boolean =>
@@ -190,9 +204,27 @@ function lastEnabled(rows: readonly PopupListRow[]): number {
   return 0;
 }
 
-/** The state a step opens in: on its current value when it names one, else on the first row that can act. */
+/**
+ * The choices of a form as it is (re)built: each field on the option with the id it had in `previous` (a form whose content is replaced keeps
+ * what the person chose, by id), else on its own initial option (the CURRENT value).
+ */
+function formChoices(
+  form: PopupForm,
+  previous: PopupStepState | undefined,
+): { readonly selected: number; readonly tab: number } {
+  const before = previous?.content.kind === 'form' ? previous.content : undefined;
+  const idOf = (field: 'tabs' | 'radio', index: number | undefined): string | undefined =>
+    before?.[field]?.options[index ?? 0]?.id;
+  return {
+    tab: formOptionIndex(form.tabs, idOf('tabs', previous?.tab)),
+    selected: formOptionIndex(form.radio, idOf('radio', previous?.selected)),
+  };
+}
+
+/** The state a step opens in: on its current value when it names one, else on the first row that can act; a form on its fields' initial options. */
 export function initialStepState(step: PopupStep): PopupStepState {
   const base: PopupStepState = { content: step.content, selected: 0, offset: 0, filter: '' };
+  if (step.content.kind === 'form') return { ...base, ...formChoices(step.content, undefined) };
   const rows = visibleRows(base);
   const current =
     step.initialRow === undefined ? -1 : rows.findIndex((row) => row.id === step.initialRow);
@@ -358,6 +390,8 @@ export function reducePopupKey(input: string, key: PopupKey, step: PopupStep): P
   if (key.return === true) return { kind: 'enter' };
   const navigation = navigationOf(key);
   if (navigation !== undefined) return navigation;
+  if (key.leftArrow === true) return { kind: 'adjust', delta: -1 };
+  if (key.rightArrow === true) return { kind: 'adjust', delta: 1 };
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (key.ctrl === true || key.meta === true || input.length === 0) return { kind: 'none' };
   const control = step.controls?.find((entry) => entry.key === input);
@@ -379,9 +413,11 @@ export function openingKeyOf(action: PopupKeyAction): OpeningKey {
     case 'close-all':
     case 'disarm':
       return 'leave';
+    // Changing a form's tab (`adjust`) decides nothing (only `Enter` applies the form), as moving a highlight decides nothing.
     case 'move':
     case 'page':
     case 'jump':
+    case 'adjust':
       return 'navigate';
     case 'enter':
     case 'control':
@@ -404,6 +440,8 @@ export type PopupFold =
   | { readonly kind: 'close-all' }
   /** `Enter` on a step that answers it: the command decides (the highlighted row, if the step is a list). */
   | { readonly kind: 'enter'; readonly row: PopupListRow | undefined }
+  /** `Enter` on a form: the command applies the options chosen (the host first checks that the form is wholly on its page, `formFits`). */
+  | { readonly kind: 'apply'; readonly values: PopupFormValues }
   /** A control letter the step lists. */
   | { readonly kind: 'control'; readonly key: string }
   /** `Ctrl+Y` on a confirmation line that is drawn: the host's chord guard decides whether it answers. */
@@ -484,6 +522,49 @@ function selectedAfter(
   }
 }
 
+/**
+ * A form option `delta` away from `from` in a field of `count` options, stopping at the ends (no wrap-around, as a list's highlight); a page
+ * or a jump goes to the end it points at.
+ */
+function optionAfter(from: number, count: number, action: NavigationAction): number {
+  if (count <= 0) return from;
+  const last = count - 1;
+  switch (action.kind) {
+    case 'move':
+      return Math.max(0, Math.min(last, from + action.delta));
+    case 'page':
+      return action.delta < 0 ? 0 : last;
+    case 'jump':
+      return action.to === 'first' ? 0 : last;
+  }
+}
+
+/** `↑/↓` (and a page or a jump) on a form: its radio group's choice moves, and nothing happens on a form that has none. */
+function moveInForm(
+  frame: PopupFrame,
+  state: PopupStepState,
+  form: PopupForm,
+  action: NavigationAction,
+): PopupFold {
+  const selected = optionAfter(state.selected, form.radio?.options.length ?? 0, action);
+  return selected === state.selected
+    ? { kind: 'unchanged' }
+    : { kind: 'frame', frame: withStep(frame, { ...state, selected }) };
+}
+
+/** `←/→` on a form: its tabs' choice moves one option, stopping at the ends; nothing happens on any other content. */
+function adjustIn(frame: PopupFrame, state: PopupStepState, delta: 1 | -1): PopupFold {
+  if (state.content.kind !== 'form') return { kind: 'unchanged' };
+  const from = state.tab ?? 0;
+  const tab = optionAfter(from, state.content.tabs?.options.length ?? 0, {
+    kind: 'move',
+    delta,
+  });
+  return tab === from
+    ? { kind: 'unchanged' }
+    : { kind: 'frame', frame: withStep(frame, { ...state, tab }) };
+}
+
 function moveIn(
   frame: PopupFrame,
   state: PopupStepState,
@@ -492,6 +573,7 @@ function moveIn(
 ): PopupFold {
   if (state.content.kind === 'report')
     return moveInReport(frame, state, state.content.lines.length, action, pageRows);
+  if (state.content.kind === 'form') return moveInForm(frame, state, state.content, action);
   const rows = visibleRows(state);
   if (rows.length === 0) return { kind: 'unchanged' };
   const selected = selectedAfter(rows, state.selected, action, pageRows);
@@ -518,6 +600,13 @@ function foldBack(frame: PopupFrame, state: PopupStepState, leaving: boolean): P
   return back >= 0 ? { kind: 'frame', frame: { ...frame, stepIndex: back } } : { kind: 'close' };
 }
 
+/** The ids of the options a form's state has chosen: what `Enter` applies (a field the form does not have, or one with no option, is absent). */
+export function formValues(state: PopupStepState, form: PopupForm): PopupFormValues {
+  const tab = form.tabs?.options[state.tab ?? 0]?.id;
+  const radio = form.radio?.options[state.selected]?.id;
+  return { ...(tab === undefined ? {} : { tab }), ...(radio === undefined ? {} : { radio }) };
+}
+
 /** `Enter` on the step the frame is on. */
 function foldEnter(spec: PopupStep, state: PopupStepState): PopupFold {
   // The end of a flow closes on `Enter` as on `Esc`, whatever it shows (a failed result too): its legend says `Enter / Esc close`.
@@ -529,6 +618,8 @@ function foldEnter(spec: PopupStep, state: PopupStepState): PopupFold {
     nothingToChoose(state.content)
   )
     return { kind: 'unchanged' };
+  if (state.content.kind === 'form')
+    return { kind: 'apply', values: formValues(state, state.content) };
   if (state.content.kind !== 'list') return { kind: 'enter', row: undefined };
   const row = visibleRows(state)[state.selected];
   // A row that cannot act answers nothing.
@@ -583,6 +674,8 @@ export function foldPopupAction(
     case 'page':
     case 'jump':
       return moveIn(frame, state, action, pageRows);
+    case 'adjust':
+      return adjustIn(frame, state, action.delta);
     case 'none':
       return { kind: 'unchanged' };
   }
@@ -592,6 +685,8 @@ export function foldPopupAction(
 export const POPUP_KEYS = {
   select: '↑/↓',
   scroll: '↑/↓',
+  /** The keys that change a form's tabs (`←/→ effort`). */
+  adjust: '←/→',
   enter: 'Enter',
   leave: 'Esc',
   closeAll: 'Ctrl+C',
@@ -601,10 +696,10 @@ export const POPUP_KEYS = {
 } as const;
 
 /**
- * The rows a report of `frame`'s step is drawn in on a standard popup at the floor (80×24, the alternate screen): the page {@link popupLegend}
- * judges an overflow on when its caller has no geometry of its own.
+ * The rows of the page `frame`'s step is drawn in on a standard popup at the floor (80×24, the alternate screen; `bodyPageRows`): the page
+ * {@link popupLegend} judges an overflow, a confirmation line and a form on when its caller has no geometry of its own.
  */
-function floorReportRows(frame: PopupFrame): number {
+function floorPageRows(frame: PopupFrame): number {
   const { spec, state } = currentStep(frame);
   const filter = spec.filter === true ? state.filter : undefined;
   const kind = frame.spec.kind ?? 'standard';
@@ -621,7 +716,7 @@ function floorReportRows(frame: PopupFrame): number {
       popupInnerWidth(POPUP_FLOOR.columns, kind),
     ),
   });
-  return geometry.fits ? reportPageRows(geometry, filter !== undefined) : 1;
+  return geometry.fits ? bodyPageRows(state.content, filter !== undefined, geometry) : 1;
 }
 
 /** The columns a row of `frame`'s body may use on a popup of its kind at the floor (80×24): the row {@link popupLegend} judges a line's width on when its caller has no geometry of its own. */
@@ -635,13 +730,14 @@ function floorInnerWidth(frame: PopupFrame): number {
  * `Esc` does there: it goes back (the `step` class, `Esc back`) wherever the step has a step to go back to, and `[Ctrl+C] close` is named before
  * it on a step that is not a confirmation line; it closes on the first step (the `close` class, in the step's own word); with a filter typed it
  * clears the filter first (a step too); and it says `cancel` only where it stops work in flight: a first step that is loading (closing aborts
- * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page, and a confirmation line names its answer only when it
- * does fit, every line of it whole: `reportRows`, the rows the frame draws it in, and `innerWidth`, the columns of each of its rows (the slot
- * passes its geometry's); absent ⇒ the page and the row of a popup of the frame's kind at the floor.
+ * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page, a confirmation line names its answer only when it
+ * does fit, every line of it whole, and a form names its `Enter` only when it is wholly on its page: `pageRows`, the rows the frame draws the
+ * step's body in (`bodyPageRows`), and `innerWidth`, the columns of each of its rows (the slot passes its geometry's); absent ⇒ the page and the
+ * row of a popup of the frame's kind at the floor.
  */
 export function popupLegend(
   frame: PopupFrame,
-  reportRows?: number,
+  pageRows?: number,
   innerWidth?: number,
 ): PopupLegend {
   const { spec, state } = currentStep(frame);
@@ -649,10 +745,10 @@ export function popupLegend(
   if (spec.final === true)
     return { items: [], exit: exitKey.close(POPUP_KEYS.finish, spec.exitVerb ?? 'close') };
   const back = backOf(frame.spec, frame.stepIndex) >= 0;
-  const page = (): number => reportRows ?? floorReportRows(frame);
-  if (spec.chord !== undefined)
-    return chordLegend(spec, state, back, page, () => innerWidth ?? floorInnerWidth(frame));
-  const items = stepItems(spec, state, page);
+  const page = (): number => pageRows ?? floorPageRows(frame);
+  const width = (): number => innerWidth ?? floorInnerWidth(frame);
+  if (spec.chord !== undefined) return chordLegend(spec, state, back, page, width);
+  const items = stepItems(spec, state, page, width);
   const keep = spec.legendKeep;
   const finish = (exit: LegendExit): PopupLegend =>
     keep === undefined ? { items, exit } : { items, exit, priority: legendPriority(items, keep) };
@@ -701,19 +797,38 @@ function chordLegend(
   return { items, exit };
 }
 
+/** A form's own keys, in the order a person reaches for them: `←/→` for its tabs and `↑/↓` for its radio group, each only with a choice to make. */
+function formItems(form: PopupForm): LegendItem[] {
+  const items: LegendItem[] = [];
+  if (form.tabs !== undefined && form.tabs.options.length > 1)
+    items.push({ keys: POPUP_KEYS.adjust, verb: form.tabs.verb });
+  if (form.radio !== undefined && form.radio.options.length > 1)
+    items.push({ keys: POPUP_KEYS.select, verb: form.radio.verb });
+  return items;
+}
+
 /**
  * The keys of a step that is not a line, in the order a person reaches for them. A step that is loading answers nothing yet, so it names no
- * key that answers (ADR-0148 §5: its cancel key is the one it really has); one that says there is nothing, or that it failed, names no `Enter`.
+ * key that answers (ADR-0148 §5: its cancel key is the one it really has); one that says there is nothing, or that it failed, names no `Enter`,
+ * and a form that is not wholly on its page ({@link formFits}) names none either.
  */
-function stepItems(spec: PopupStep, state: PopupStepState, page: () => number): LegendItem[] {
+function stepItems(
+  spec: PopupStep,
+  state: PopupStepState,
+  page: () => number,
+  width: () => number,
+): LegendItem[] {
   const items: LegendItem[] = [];
   if (state.content.kind === 'list' && visibleRows(state).length > 1)
     items.push({ keys: POPUP_KEYS.select, verb: 'select' });
   if (state.content.kind === 'report' && state.content.lines.length > page())
     items.push({ keys: POPUP_KEYS.scroll, verb: 'scroll' });
+  if (state.content.kind === 'form') items.push(...formItems(state.content));
   if (state.content.kind === 'loading') return items;
-  if (spec.enter !== undefined && !nothingToChoose(state.content))
-    items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
+  const answers =
+    !nothingToChoose(state.content) &&
+    (state.content.kind !== 'form' || formFits(state.content, page(), width()));
+  if (spec.enter !== undefined && answers) items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
   for (const control of spec.controls ?? []) items.push({ keys: control.key, verb: control.verb });
   return items;
 }
@@ -744,6 +859,8 @@ export function withContent(
     steps: frame.steps.map((state, index) => {
       if (index !== stepIndex) return state;
       const next = { ...state, content, ...(controls === undefined ? {} : { controls }) };
+      // A form keeps the options the person chose, by id, when its content is replaced (a step that becomes a form opens on its initial options).
+      if (content.kind === 'form') return { ...next, ...formChoices(content, state), offset: 0 };
       const rows = visibleRows(next);
       const selected = canAct(rows[state.selected]) ? state.selected : firstEnabled(rows);
       return { ...next, selected, offset: 0 };

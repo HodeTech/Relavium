@@ -67,6 +67,11 @@
  *
  * **A line with no step to go back to** closes its popup when it is disarmed. The command is still told why, and what it says about it in that
  * call is raised on the host's own channel (drawn on the hint row once the popup is gone), not as the closed popup's, which would end with it.
+ *
+ * **A form** (a settings step, ADR-0148 §3: a setting applies with `Enter`, it is not an approval) is answered by `Enter` as a whole
+ * ({@link PopupHandlers.apply}), behind the opening guard like every answer, and only while it is wholly on the page its frame is drawn on
+ * (`formFits`, read against the same rows and inner width the slot binds): a form is never windowed, and the warning it states is part of what
+ * `Enter` applies. The chord rules do not apply to it (a form is no consent line); a step that consents keeps its chord step.
  */
 
 import { sanitizeInline } from '../render/sanitize.js';
@@ -87,7 +92,12 @@ import {
   type ApprovalGuard,
 } from '../render/tui/tool-review-model.js';
 import { displayWidth } from '../render/tui/viewport.js';
-import { loadingElapsedText, type PopupContent, type PopupListRow } from './frame-model.js';
+import {
+  formFits,
+  loadingElapsedText,
+  type PopupContent,
+  type PopupListRow,
+} from './frame-model.js';
 import {
   POPUP_FLOOR,
   POPUP_NOTICE_MAX_COLUMNS,
@@ -110,6 +120,7 @@ import {
   visitStep,
   withContent,
   type PopupControl,
+  type PopupFormValues,
   type PopupFrame,
   type PopupKey,
   type PopupKeyAction,
@@ -207,6 +218,11 @@ export interface PopupContext {
 export interface PopupHandlers {
   /** `Enter` on a step that answers it (the step's `enter`), with the highlighted row of a list. */
   readonly enter?: ((context: PopupContext, row: PopupListRow | undefined) => void) | undefined;
+  /**
+   * `Enter` on a form (a step whose content is a `form` and that has an `enter`), with the ids of the options chosen. Called only while the
+   * form is wholly on the page its frame is drawn on (`formFits`), and, as every answer, behind the opening guard.
+   */
+  readonly apply?: ((context: PopupContext, values: PopupFormValues) => void) | undefined;
   /** A control letter the step lists. */
   readonly control?: ((context: PopupContext, key: string) => void) | undefined;
   /** `Ctrl+Y` answered a confirmation line, through every layer of its guard. The ONLY way a line is answered. */
@@ -884,6 +900,15 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
         chord.resolved(stamp);
         const enter = record.handlers.enter;
         if (enter !== undefined) guarded(() => enter(contextOf(runId), fold.row));
+        return;
+      }
+      case 'apply': {
+        // An `Enter` that tried to answer, whether or not it does: it resolves, as an `Enter` on a list does.
+        chord.resolved(stamp);
+        // A form is never windowed: one that is not wholly on the page its frame is drawn on applies nothing (its legend names no `Enter`).
+        if (!formFits(currentStep(record.frame).state.content, pageNow(), widthNow())) return;
+        const apply = record.handlers.apply;
+        if (apply !== undefined) guarded(() => apply(contextOf(runId), fold.values));
         return;
       }
       case 'control': {

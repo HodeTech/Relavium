@@ -45,6 +45,7 @@ import {
   type LegendItem,
 } from '../render/tui/legend.js';
 import {
+  clampSpans,
   clipLine,
   markedWindow,
   windowMarkers,
@@ -54,7 +55,12 @@ import {
   type SheetSpan,
 } from '../render/tui/sheet-frame.js';
 import { displayWidth, wrapWords } from '../render/tui/viewport.js';
-import { POPUP_SIDE_MARGIN, type PopupBoxGeometry } from './geometry.js';
+import {
+  POPUP_FLOOR,
+  POPUP_SIDE_MARGIN,
+  popupInnerWidth,
+  type PopupBoxGeometry,
+} from './geometry.js';
 
 /** Where the popup was opened from, said on its top edge. */
 export type PopupOrigin = 'home' | 'chat';
@@ -83,17 +89,66 @@ export interface PopupListRow {
   /** `false` ⇒ the row cannot act: it is drawn dim with `reason`, the arrows skip it and `Enter` on it answers nothing. */
   readonly enabled?: boolean | undefined;
   readonly reason?: string | undefined;
+  /**
+   * What choosing the row does, in a sentence or two (ADR-0148 §3: a setting states its effect before it applies): drawn as a paragraph
+   * wrapped under the list while the row is highlighted. The room of the LONGEST effect of the list is kept whichever row is highlighted (a
+   * row with none leaves it blank), so the frame never jumps when the highlight moves. A list none of whose rows has one draws no room.
+   */
+  readonly effect?: string | undefined;
 }
 
 /**
- * What a popup's body shows: the four content states every popup draws (§5) and the two bodies that hold data.
+ * One option of a form's field: what the form is answered with (`id`), its words, and for an option of a radio group the words after them
+ * (`switches the model now; the conversation stays`) and the warning drawn while it is the chosen one.
+ */
+export interface PopupFormOption {
+  readonly id: string;
+  readonly label: string;
+  /** A radio option's words after its label; a tab has none. */
+  readonly detail?: string | undefined;
+  /** A radio option's own warning, drawn in place of the form's while the option is chosen (the room of the longest is kept). */
+  readonly warning?: string | undefined;
+}
+
+/** A field of a form: a row of tabs (`←/→` changes it) or a radio group (`↑/↓` moves its choice). */
+export interface PopupFormField {
+  /** The field's heading (`Reasoning effort`, `Apply to`). */
+  readonly label: string;
+  /** What the field's keys do, as the legend names them (`←/→ effort`, `↑/↓ apply to`). */
+  readonly verb: string;
+  readonly options: readonly PopupFormOption[];
+  /** The option the field opens on: the CURRENT value, so a bare `Enter` changes nothing (ADR-0148 §3). Absent or unknown ⇒ the first. */
+  readonly initial?: string | undefined;
+}
+
+/**
+ * A form ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1: "a list, a form or a
+ * report"; the `/models` second step, `popup-models-step2-80x24.png`): a summary line, a row of tabs, a radio group and a warning, each
+ * optional, answered as a whole by `Enter`. There is no focus to move between the fields: the tabs answer `←/→` and the radio group `↑/↓`.
+ * A form is never windowed (the warning it states is part of what `Enter` applies): it is drawn whole or it offers no answer
+ * ({@link formFits}).
+ */
+export interface PopupForm {
+  readonly kind: 'form';
+  /** One row above the fields that names what the form sets (`gpt-5  400k context · $1.25 / $10 per M · openai`); cut to the row. */
+  readonly summary?: string | undefined;
+  readonly tabs?: PopupFormField | undefined;
+  readonly radio?: PopupFormField | undefined;
+  /** The warning drawn under the fields (`⚠ This chat moves from Anthropic to OpenAI. …`), wrapped whole; a chosen radio option's replaces it. */
+  readonly warning?: string | undefined;
+}
+
+/**
+ * What a popup's body shows: the four content states every popup draws (§5) and the three bodies that hold data.
  *
  * - `loading`: a static `…`, and the elapsed seconds once past five (a display value from the host's clock, never at the frame rate, never
  *   inline); the legend names the cancel key it really has.
  * - `empty`: what is empty, and what to do.
  * - `error`: what failed, and the next action INSIDE the TUI (never a shell command: `no-shell-remedy.test.ts` reads this directory).
- * - `list`: rows to choose from, windowed with `▲ N more` / `▼ N more` and the highlighted row always in the window.
+ * - `list`: rows to choose from, windowed with `▲ N more` / `▼ N more` and the highlighted row always in the window; a row's effect is drawn
+ *   under it ({@link PopupListRow.effect}).
  * - `report`: lines to read, windowed the same way.
+ * - `form`: fields set together and applied by `Enter` ({@link PopupForm}).
  */
 export type PopupContent =
   | { readonly kind: 'loading'; readonly what: string }
@@ -105,7 +160,8 @@ export type PopupContent =
       /** One line above the rows that says what they add up to (`⚠ doctor: 1 warning`), its glyph by role and its word beside it. */
       readonly heading?: PopupHeading | undefined;
     }
-  | { readonly kind: 'report'; readonly lines: readonly string[] };
+  | { readonly kind: 'report'; readonly lines: readonly string[] }
+  | PopupForm;
 
 /**
  * The line above a list's rows: the dominant outcome's glyph, then the text. A glyph whose plain form IS the status's word (`ok`, colour off) is
@@ -152,12 +208,242 @@ export interface PopupBody {
 }
 
 export interface PopupBodyState {
-  /** The highlighted row of a list (an index into its rows). */
+  /** The highlighted row of a list (an index into the rows its filter leaves), or the chosen option of a form's radio group. */
   readonly selected: number;
   /** The first line of a report that is shown. */
   readonly offset: number;
   /** The filter's text, when the step has a filter line (`undefined` ⇒ no filter line). */
   readonly filter?: string | undefined;
+  /** The chosen option of a form's tabs (absent ⇒ the first). */
+  readonly tab?: number | undefined;
+}
+
+/**
+ * The rows of a list a filter leaves: the rows whose label or detail contains it, case folded, or every row with no filter typed. The ONE
+ * filter of a list: the key fold reads it (the highlighted row is an index into what it leaves) and the body draws what it leaves.
+ */
+export function filterListRows(
+  rows: readonly PopupListRow[],
+  filter: string | undefined,
+): readonly PopupListRow[] {
+  const query = (filter ?? '').trim().toLowerCase();
+  if (query.length === 0) return rows;
+  return rows.filter(
+    (row) =>
+      row.label.toLowerCase().includes(query) ||
+      (row.detail?.toLowerCase().includes(query) ?? false),
+  );
+}
+
+/** The columns a row is counted at when a caller gives none: the inner width of a standard popup at the floor (80 columns). */
+const FLOOR_INNER_WIDTH = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
+
+/** The effect of `row` as its rows of `width` columns: none for a row that has no effect (or a heading). */
+function effectRows(row: PopupListRow | undefined, width: number): readonly string[] {
+  if (row?.effect === undefined || row.section === true) return [];
+  return wrapRows(popupText(row.effect), width);
+}
+
+/** The rows the effect paragraph keeps under a list of `rows` at `width`: the longest effect's, or 0 when no row has one. */
+function effectRoom(rows: readonly PopupListRow[], width: number): number {
+  return rows.reduce((room, row) => Math.max(room, effectRows(row, width).length), 0);
+}
+
+/**
+ * The paragraph under a list: a blank row, then the highlighted row's effect, padded with blank rows to the room of the longest effect of the
+ * list (counted over EVERY row, the ones a filter hides included, so neither the highlight nor the filter makes the frame jump). Nothing for a
+ * list none of whose rows has an effect.
+ */
+function effectBlock(
+  rows: readonly PopupListRow[],
+  highlighted: PopupListRow | undefined,
+  width: number,
+): SheetLine[] {
+  const room = effectRoom(rows, width);
+  if (room === 0) return [];
+  const shown = effectRows(highlighted, width).map((text) => bodyLine('message', text, width));
+  while (shown.length < room) shown.push(bodyLine('text', '', width));
+  return [bodyLine('text', '', width), ...shown];
+}
+
+/** The index of `field`'s option `id`, else of its `initial` option, else the first: where a field opens and where it stays when it is rebuilt. */
+export function formOptionIndex(field: PopupFormField | undefined, id?: string): number {
+  if (field === undefined) return 0;
+  const at = (wanted: string | undefined): number =>
+    wanted === undefined ? -1 : field.options.findIndex((option) => option.id === wanted);
+  const kept = at(id);
+  if (kept >= 0) return kept;
+  return Math.max(0, at(field.initial));
+}
+
+/** `index` kept inside a field of `count` options (0 for a field with none). */
+function clampOption(index: number | undefined, count: number): number {
+  if (count <= 0) return 0;
+  return Math.max(0, Math.min(Math.trunc(index ?? 0), count - 1));
+}
+
+/** The warning a form draws now: the chosen radio option's own, else the form's. */
+function formWarning(form: PopupForm, radio: number): string | undefined {
+  return (
+    form.radio?.options[clampOption(radio, form.radio.options.length)]?.warning ?? form.warning
+  );
+}
+
+/** `text` as the warning's rows of `width` columns: the warning glyph, then the sentence, its later rows under the sentence's first word. */
+function warningRows(text: string, width: number): readonly string[] {
+  const lead = `${glyph('warning')} `;
+  const hang = ' '.repeat(displayWidth(lead));
+  return wrapRows(popupText(text), Math.max(1, width - displayWidth(lead))).map(
+    (row, index) => `${index === 0 ? lead : hang}${row}`,
+  );
+}
+
+/** The rows the warning keeps: the longest of the form's own and every radio option's, so moving the choice never makes the frame jump. */
+function warningRoom(form: PopupForm, width: number): number {
+  const candidates = [form.warning, ...(form.radio?.options.map((option) => option.warning) ?? [])];
+  return candidates.reduce(
+    (room, text) => (text === undefined ? room : Math.max(room, warningRows(text, width).length)),
+    0,
+  );
+}
+
+/** `text` padded with spaces to `width` display columns (it is not cut). */
+function padTo(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
+}
+
+/** A line cut to `width`, its spans cut with it (a span past the cut is dropped, one across it shortened). */
+function clippedLine(
+  kind: SheetLine['kind'],
+  text: string,
+  spans: SheetSpan[],
+  width: number,
+): SheetLine {
+  const clipped = clipLine(text, width);
+  return { kind, text: clipped, spans: [...clampSpans(spans, clipped.length)] };
+}
+
+/**
+ * The tabs of a form as one row: each option's label, the chosen one led by the selection glyph and drawn as the selected item of the row
+ * (bold and inverse, ADR-0145 §5: the glyph is not the only carrier). When the row is wider than `width` the options farthest from the chosen
+ * one are left out first, and a side that lost one ends in the ellipsis, so the chosen option is always on the row.
+ */
+function tabsLine(field: PopupFormField, chosen: number, width: number): SheetLine {
+  const parts = field.options.map(
+    (option, index) => `${index === chosen ? glyph('selection') : ' '} ${popupText(option.label)}`,
+  );
+  const ellipsis = '…';
+  const build = (from: number, to: number): { text: string; spans: SheetSpan[] } => {
+    let text = from > 0 ? ` ${ellipsis} ` : ' ';
+    const spans: SheetSpan[] = [];
+    for (let index = from; index < to; index += 1) {
+      if (index > from) text += '  ';
+      const part = parts[index] ?? '';
+      if (index === chosen)
+        spans.push({
+          from: text.length,
+          to: text.length + part.length,
+          role: 'strong',
+          selected: true,
+        });
+      text += part;
+    }
+    if (to < parts.length) text += `  ${ellipsis}`;
+    return { text, spans };
+  };
+  let from = 0;
+  let to = parts.length;
+  let line = build(from, to);
+  // Leave out the option farthest from the chosen one until the row fits, never the chosen one itself.
+  while (displayWidth(line.text) > width && to - from > 1) {
+    if (chosen - from >= to - 1 - chosen) from += 1;
+    else to -= 1;
+    line = build(from, to);
+  }
+  return clippedLine('row', line.text, line.spans, width);
+}
+
+/**
+ * A radio group's rows: `(•) This chat   switches the model now; …`, the chosen option's mark and label strong, every detail dim, the labels
+ * padded to the longest so the details stand in one column. The mark is the table's bullet in parentheses (`(*)` with colour off).
+ */
+function radioLines(field: PopupFormField, chosen: number, width: number): SheetLine[] {
+  const labelWidth = field.options.reduce(
+    (widest, option) => Math.max(widest, displayWidth(popupText(option.label))),
+    0,
+  );
+  return field.options.map((option, index) => {
+    const head = `(${index === chosen ? glyph('bullet') : ' '}) ${padTo(popupText(option.label), labelWidth)}`;
+    const detail = option.detail === undefined ? '' : popupText(option.detail);
+    const text = detail.length === 0 ? head.trimEnd() : `${head}   ${detail}`;
+    const spans: SheetSpan[] = [];
+    if (index === chosen) spans.push({ from: 0, to: head.trimEnd().length, role: 'strong' });
+    if (detail.length > 0) spans.push({ from: head.length + 3, to: text.length, role: 'dim' });
+    return clippedLine('row', text, spans, width);
+  });
+}
+
+/** How a form is laid out: its blocks with a blank row between each two (`spacious`), or one under the other (`compact`). */
+export type FormLayout = 'spacious' | 'compact';
+
+/**
+ * The rows of a form at `width` in `layout`, with the tab and the radio option `state` chose: its summary, its tabs (heading and row), its
+ * radio group (heading and rows) and its warning (padded to the room of the longest it can show). The ONE layout of a form: the rows the
+ * geometry is asked for and the rows drawn are counted by it, so the two cannot disagree.
+ */
+export function formLines(
+  form: PopupForm,
+  state: Pick<PopupBodyState, 'selected' | 'tab'>,
+  width: number,
+  layout: FormLayout,
+): SheetLine[] {
+  const blocks: SheetLine[][] = [];
+  if (form.summary !== undefined) blocks.push([bodyLine('row', popupText(form.summary), width)]);
+  const tabs = form.tabs;
+  if (tabs !== undefined)
+    blocks.push([
+      bodyLine('text', popupText(tabs.label), width),
+      tabsLine(tabs, clampOption(state.tab, tabs.options.length), width),
+    ]);
+  const radio = form.radio;
+  const chosen = clampOption(state.selected, radio?.options.length ?? 0);
+  if (radio !== undefined)
+    blocks.push([
+      bodyLine('text', popupText(radio.label), width),
+      ...radioLines(radio, chosen, width),
+    ]);
+  const room = warningRoom(form, width);
+  if (room > 0) {
+    const warning = formWarning(form, chosen);
+    const rows = (warning === undefined ? [] : warningRows(warning, width)).map((text) =>
+      bodyLine('notice', text, width),
+    );
+    while (rows.length < room) rows.push(bodyLine('text', '', width));
+    blocks.push(rows);
+  }
+  const blank = (): SheetLine => bodyLine('text', '', width);
+  return blocks.flatMap((block, index) =>
+    layout === 'spacious' && index > 0 ? [blank(), ...block] : block,
+  );
+}
+
+/** The rows a form takes at `width` in `layout` (the same for every choice: its warning's room is the longest it can show). */
+export function formRowCount(form: PopupForm, width: number, layout: FormLayout): number {
+  return formLines(form, { selected: 0, tab: 0 }, width, layout).length;
+}
+
+/**
+ * Whether a form is WHOLLY on a page of `pageRows` rows of `innerWidth` columns, in its compact layout at least: a form is never windowed, so
+ * one that is not whole offers no `Enter` (the legend names none and the host takes none), as a confirmation line cut short offers no
+ * answer. The host's rule and the legend's are this one function.
+ */
+export function formFits(content: PopupContent, pageRows: number, innerWidth: number): boolean {
+  return content.kind === 'form' && formRowCount(content, innerWidth, 'compact') <= pageRows;
+}
+
+/** The layout a form is drawn in on a page of `rows`: spacious when it fits, else compact. */
+function formLayoutFor(form: PopupForm, width: number, rows: number): FormLayout {
+  return formRowCount(form, width, 'spacious') <= rows ? 'spacious' : 'compact';
 }
 
 /**
@@ -189,9 +475,11 @@ function stateRows(
 
 /**
  * How many body rows `content` would like: what the geometry is asked for. A list or a report asks for every row it has, or `maxListRows`
- * (a block in the flow windows a list to ten rows, `INLINE_LIST_MAX_ROWS`), so the block is never padded with rows its list cannot use. An
- * `empty` or `error` state asks for the rows its two sentences wrap to at `innerWidth` (the geometry's, from `popupInnerWidth`); without one it
- * asks for one row each, and the body cuts what does not fit with the ellipsis.
+ * (a block in the flow windows a list to ten rows, `INLINE_LIST_MAX_ROWS`), so the block is never padded with rows its list cannot use; a list
+ * whose rows have an effect adds its paragraph (a blank row and the room of the longest effect at `innerWidth`). An `empty` or `error` state
+ * asks for the rows its two sentences wrap to at `innerWidth` (the geometry's, from `popupInnerWidth`); without one it asks for one row each,
+ * and the body cuts what does not fit with the ellipsis. A form is never windowed: it asks for its spacious layout where that is within
+ * `maxListRows` (inline, the ten rows of the page), else for its compact one (which the geometry gives it whole up to its tallest body).
  */
 export function naturalBodyRows(
   content: PopupContent,
@@ -209,14 +497,55 @@ export function naturalBodyRows(
       const { what, next } = stateRows(content, innerWidth);
       return filterRows + what.length + next.length;
     }
-    case 'list':
+    case 'list': {
+      const room = effectRoom(content.rows, innerWidth ?? FLOOR_INNER_WIDTH);
       return (
         filterRows +
         (content.heading === undefined ? 0 : 1) +
-        Math.min(maxListRows, Math.max(1, content.rows.length))
+        Math.min(maxListRows, Math.max(1, content.rows.length)) +
+        (room === 0 ? 0 : 1 + room)
       );
+    }
     case 'report':
       return filterRows + Math.min(maxListRows, Math.max(1, content.lines.length));
+    case 'form': {
+      const width = innerWidth ?? FLOOR_INNER_WIDTH;
+      const spacious = formRowCount(content, width, 'spacious');
+      return (
+        filterRows + (spacious <= maxListRows ? spacious : formRowCount(content, width, 'compact'))
+      );
+    }
+  }
+}
+
+/**
+ * The rows of the page a step's body is drawn in, in `geometry`: a report's page ({@link reportPageRows}), a form's whole body, or the window
+ * a list draws its rows in (below its filter line and its heading, above its effect paragraph, and at most the list window). What a page
+ * moves by and what a confirmation line or a form must fit whole to be answered: the slot binds it, and the legend is judged on it.
+ */
+export function bodyPageRows(
+  content: PopupContent,
+  hasFilter: boolean,
+  geometry: Pick<PopupBoxGeometry, 'bodyRows' | 'listRows' | 'innerWidth'>,
+): number {
+  const filterRows = hasFilter ? 1 : 0;
+  switch (content.kind) {
+    case 'report':
+      return reportPageRows(geometry, hasFilter);
+    case 'form':
+      return Math.max(1, geometry.bodyRows - filterRows);
+    case 'list': {
+      const room = effectRoom(content.rows, geometry.innerWidth);
+      const above = filterRows + (content.heading === undefined ? 0 : 1);
+      return Math.min(
+        geometry.listRows,
+        Math.max(1, geometry.bodyRows - above - (room === 0 ? 0 : 1 + room)),
+      );
+    }
+    case 'loading':
+    case 'empty':
+    case 'error':
+      return geometry.listRows;
   }
 }
 
@@ -402,9 +731,16 @@ export function popupBody(
     case 'list': {
       if (content.heading !== undefined)
         lines.push(bodyLine('message', headingText(content.heading), width));
-      const left = Math.max(1, geometry.bodyRows - lines.length);
+      // The rows the filter leaves (the highlighted row is an index into them), and under them the highlighted row's effect.
+      const shown = filterListRows(content.rows, state.filter);
       lines.push(
-        ...listLines(content.rows, state.selected, Math.min(left, geometry.listRows), width),
+        ...listLines(
+          shown,
+          state.selected,
+          bodyPageRows(content, state.filter !== undefined, geometry),
+          width,
+        ),
+        ...effectBlock(content.rows, shown[state.selected], width),
       );
       break;
     }
@@ -418,8 +754,30 @@ export function popupBody(
         ),
       );
       break;
+    case 'form':
+      lines.push(...formBody(content, state, room, width));
+      break;
   }
   return { lines: lines.slice(0, geometry.bodyRows) };
+}
+
+/**
+ * A form in a body of `rows` rows: spacious when it fits, else compact; and a form that does not fit even then is drawn cut, its last row a
+ * `▼ N more` marker (it offers no `Enter` then: {@link formFits}).
+ */
+function formBody(
+  form: PopupForm,
+  state: Pick<PopupBodyState, 'selected' | 'tab'>,
+  rows: number,
+  width: number,
+): SheetLine[] {
+  const drawn = formLines(form, state, width, formLayoutFor(form, width, rows));
+  if (drawn.length <= rows) return drawn;
+  const kept = drawn.slice(0, Math.max(0, rows - 1));
+  return [
+    ...kept,
+    bodyLine('marker', `  ${glyph('moreBelow')} ${String(drawn.length - kept.length)} more`, width),
+  ];
 }
 
 /** The frame's parts besides its body: the title and origin of its top edge, its steps, and its legend. */

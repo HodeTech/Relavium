@@ -58,7 +58,7 @@ describe('the stand-alone chat’s facts (chatPopupRefusal)', () => {
     expect(refusal({}, {}, true)).toBe('armed');
   });
 
-  it.each(['palette', 'search', 'mention', 'modelPicker', 'effortPicker', 'chatSheet'] as const)(
+  it.each(['palette', 'search', 'mention', 'modelPicker', 'chatSheet'] as const)(
     'an open %s is another overlay',
     (overlay) => {
       expect(refusal({ [overlay]: true })).toBe('overlay-open');

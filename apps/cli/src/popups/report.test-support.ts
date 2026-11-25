@@ -167,6 +167,8 @@ export function reportRig(options: ReportRigOptions = {}) {
       case 'empty':
       case 'error':
         return `${shown.what}\n${shown.next}`;
+      case 'form':
+        return [shown.summary ?? '', shown.warning ?? ''].join('\n');
     }
   };
   return {

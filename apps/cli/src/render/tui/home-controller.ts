@@ -20,12 +20,6 @@ import { ConfigWriteRefusedError } from '../../config/write.js';
 import { createActivePoll, type ActivePoll } from '../../history/active-poll.js';
 import type { ActiveRead } from '../../history/active-source.js';
 import type { ChangeToken } from '../../history/change-probe.js';
-import {
-  canControlEffort,
-  foldEffortPickerKey,
-  initialEffortPickerState,
-  type EffortPickerState,
-} from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
 import { permissionsChatSheet, permissionsSheetOf, type ChatSheetState } from './chat-sheet.js';
@@ -65,6 +59,7 @@ import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import type { DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
 import type { ParsedReportLine, ReportsPort } from '../../popups/report-port.js';
+import type { SettingsKind, SettingsPort } from '../../popups/settings-port.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
   agentStartNotice,
@@ -236,6 +231,13 @@ export interface HomeChatSession {
    */
   readonly reports?: ReportsPort;
   /**
+   * What this chat's settings popups read and apply ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §3, §6; MVP-11 step 5): today `/effort` (the tiers of the bound model, the tier in force and the session's setter), and the announcement the
+   * line handler routes to the Home's channel. A typed or palette-selected bare command whose member can open opens the popup over this chat
+   * through {@link HomeControllerDeps.openSettings}, before the line reaches the chat's dispatch. Absent ⇒ the command is dispatched, as before.
+   */
+  readonly settings?: SettingsPort;
+  /**
    * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
    * §8): its session's probes, its read-only MCP report and its owner. A typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup
    * over this chat through {@link HomeControllerDeps.openDoctor}, before the line reaches the chat's dispatch. Absent ⇒ the command is dispatched
@@ -316,13 +318,9 @@ export interface HomeControllerState {
    *  action); a keyboard-owning overlay like the palette. Opened from the Home palette's `/models`; on selection it
    *  writes the next session's default (ADR-0063), never rebinding the live session. Mutually exclusive with the palette. */
   readonly modelPicker: ModelPickerState | undefined;
-  /** The open standalone `/effort` overlay (ADR-0066 §6) — `undefined` ⇒ closed. CHAT-scoped (a live in-Home chat
-   *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
-   *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
-  readonly effortPicker: EffortPickerState | undefined;
   /** The open docked sheet of a live in-Home chat — `undefined` ⇒ closed. ONE slot for every sheet a chat has, a union by kind
    *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists). A
-   *  keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
+   *  keyboard-owning overlay like `/models`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
    *  sheets cannot be open at once. The bare Home's `/permissions` is not this: it is the Permissions tab of the tab host, a kind of
    *  {@link HomeControllerState.screen} (ADR-0140 §3). */
   readonly chatSheet: ChatSheetState | undefined;
@@ -370,7 +368,6 @@ export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
     search: state.search !== undefined,
     mention: state.mention !== undefined,
     modelPicker: state.modelPicker !== undefined,
-    effortPicker: state.effortPicker !== undefined,
     chatSheet: state.chatSheet !== undefined,
     screen: state.screen !== undefined,
     exitGuard: state.exitGuard !== undefined,
@@ -742,6 +739,15 @@ export interface HomeControllerDeps {
       }) => void)
     | undefined;
   /**
+   * Open one of the settings popups ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §3, §6; MVP-11 step 5: `/effort` today) over the chat in front, on the Home's popup host, with the chat's {@link HomeChatSession.settings}.
+   * The controller only routes (`popup-route.ts`), clears the editor and calls this, so nothing reaches the Home's notice or the transcript.
+   * Absent ⇒ a chat's bare settings lines are dispatched, as before.
+   */
+  readonly openSettings?:
+    | ((request: { readonly command: SettingsKind; readonly chat: SettingsPort }) => void)
+    | undefined;
+  /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
    */
@@ -1040,7 +1046,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     notice: undefined,
     noticeRevision: 0,
     modelPicker: undefined,
-    effortPicker: undefined,
     chatSheet: undefined,
     interruptArmed: false,
     hostedRun: undefined,
@@ -1866,7 +1871,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
-          effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
           chatSheet: undefined, // and the chat's docked sheet (`/permissions`): it is gone with the chat, and with a reseat or a `/clear`
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
@@ -1931,7 +1935,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined,
           mention: undefined,
           modelPicker: undefined,
-          effortPicker: undefined,
           chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
@@ -2012,7 +2015,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined,
           mention: undefined,
           modelPicker: undefined,
-          effortPicker: undefined,
           chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
@@ -2436,7 +2438,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         search: undefined,
         mention: undefined,
         modelPicker: undefined,
-        effortPicker: undefined,
         chatSheet: undefined,
         shellBusy: false,
         shellCommand: undefined,
@@ -2799,7 +2800,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       search: undefined,
       mention: undefined,
       modelPicker: undefined,
-      effortPicker: undefined,
       chatSheet: undefined,
       historyEntries: history.entries,
     });
@@ -3282,53 +3282,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // ---- The in-Home `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) -------------------
-  // Whether `/effort` should open the overlay: a live chat with the setter wired AND a reasoning-capable bound model.
-  // A non-reasoning model returns false, so the surface falls through to the `/effort` notice (parity with ChatApp).
-  const canOpenEffortPicker = (active: HomeChatSession): boolean =>
-    canControlEffort(active.store.getSnapshot().state.model, active.onSetEffort !== undefined);
-  // Open on the LIVE bound model + the LIVE store tier (so it opens on the currently-bound effort). Callers gate on
-  // `canOpenEffortPicker`, so the model is present here (the guard is defensive).
-  const openEffortPicker = (active: HomeChatSession): void => {
-    const snap = active.store.getSnapshot();
-    if (snap.state.model === undefined) return;
-    set({ effortPicker: initialEffortPickerState(snap.state.model, snap.reasoningEffort) });
-  };
-  // The open effort overlay owns every key (mirrors routeModelPickerKey). Accept applies the tier via the session's
-  // per-turn setter (no reseat); a re-pick of the same tier is a gentle no-op with visible store feedback.
-  const routeEffortPickerKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
-    const open = state.effortPicker;
-    if (open === undefined) return false;
-    const step = foldEffortPickerKey(input, key, open);
-    switch (step.kind) {
-      case 'close':
-        set({ effortPicker: undefined });
-        break;
-      case 'accept': {
-        set({ effortPicker: undefined });
-        const label = effortRowLabel(
-          active.store.getSnapshot().state.model ?? '',
-          step.effort,
-        ).label;
-        if (step.effort === open.current) {
-          active.store.note(`Already at reasoning effort ${label}.`);
-        } else {
-          active.onSetEffort?.(step.effort);
-          active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-        }
-        break;
-      }
-      case 'state':
-        set({ effortPicker: step.state });
-        break;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-    return true;
-  };
-
   // The Home's REPL context (no live session), the one the bare Home's typed registry words and its palette rows run over
   // ({@link answerLandingWord}). Capabilities for the commands that have NO `home` placement (cancel, export, cost, effort, thinking, details,
   // compact, trim, scrollback, edit, copy: a chat's) are inert noops, unreachable from the bare Home's list, which the context's shape
@@ -3728,11 +3681,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
    *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
    * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
-   * - `/doctor` (and `/doctor --deep`, ADR-0148 §8) and `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` (§10) open their
-   *   popup, where the session holds its port, as the one routing says (`popup-route.ts`): the popup is opened before the line is a submit, so
-   *   the open gate never takes the line for a turn in flight. These are not exact matches: white space around the words is ignored.
-   * - `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the informational notice; a
-   *   non-reasoning model falls through to the slash dispatch (the ctx handler's "no controllable tier" notice).
+   * - `/doctor` (and `/doctor --deep`, ADR-0148 §8), `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help` (§10) and the bare
+   *   settings (`/effort` on a model that has a tier to choose: §3, §6) open their popup, where the session holds its port, as the one routing
+   *   says (`popup-route.ts`): the popup is opened before the line is a submit, so the open gate never takes the line for a turn in flight. These
+   *   are not exact matches: white space around the words is ignored. A setting with an argument (`/effort high`) is not a popup: it goes to
+   *   the chat's dispatch, which applies it.
    */
   const overlayCommandFor = (
     active: HomeChatSession,
@@ -3741,12 +3694,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (trimmed === '/models' && deps.reseatChat !== undefined) return openModelPicker;
     if (trimmed === '/permissions' && active.permissions !== undefined)
       return () => openPermissionsSheet(active);
-    if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
     // `/doctor` (and `--deep`) and the reports open their popup over this chat (ADR-0148 §8, §10) before the line is a submit, so the open gate
     // never sees it as a turn; any other form goes to the chat's dispatch, which says what is wrong with it.
     const route = routePopupLine(trimmed, {
       doctor: deps.openDoctor !== undefined && active.doctor !== undefined,
       reports: deps.openReport === undefined ? undefined : active.reports,
+      settings: deps.openSettings === undefined ? undefined : active.settings,
     });
     return route === undefined ? undefined : () => openPopupOverChat(active, route);
   };
@@ -3758,6 +3711,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const openPopupOverChat = (active: HomeChatSession, route: PopupRoute): void => {
     if (route.kind === 'doctor') {
       if (active.doctor !== undefined) deps.openDoctor?.({ deep: route.deep, chat: active.doctor });
+      return;
+    }
+    if (route.kind === 'settings') {
+      if (active.settings !== undefined)
+        deps.openSettings?.({ command: route.command, chat: active.settings });
       return;
     }
     if (active.reports !== undefined)
@@ -3870,7 +3828,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Where the person is. An open card is not a context of its own here: it implies a running turn, and the host settles it (an
   // approval as a rejection, before the abort) in the store before the key reaches the controller.
   const interruptContext = (active: HomeChatSession | undefined): InterruptContext => {
-    const overlay = interruptContextFrom(overlayFlags(), active !== undefined);
+    const overlay = interruptContextFrom(overlayFlags());
     if (overlay !== undefined) return overlay;
     if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
     const busy =
@@ -4129,8 +4087,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * - the `/` palette, before the mode dispatch, so it overlays Home/chat input;
    * - the `/models` picker (2.5.G S7), opened from the bare-Home palette (next-session default, ADR-0063) OR a live in-Home chat (a typed
    *   or palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches;
-   * - the `/effort` overlay (ADR-0066 §6), chat-scoped, so it always has a live session; the guard keeps `routeEffortPickerKey`'s `active`
-   *   non-null (a stale overlay with no session falls through, never expected);
    * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
    *   withdraws.
    *
@@ -4146,16 +4102,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (!state.submitBusy) routeModelPickerKey(input, key);
       return true;
     }
-    if (state.effortPicker !== undefined && state.session !== undefined) {
-      routeEffortPickerKey(state.session, input, key);
-      return true;
-    }
     return state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key);
   };
 
   // The open-overlay + mode key router — extracted from `handleKey` so its bracketed-paste handling stays within the
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
-  // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
+  // time): the `/` palette → the `/models` picker → the docked sheet → the live chat → else the bare Home.
   const dispatchKey = (input: string, key: HomeKeyEvent): void => {
     // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
     const focusDropped = focusJustDropped;

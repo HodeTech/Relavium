@@ -1,11 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { REASONING_EFFORTS } from '@relavium/shared';
-
 import { AttachmentBar } from './attachment-bar.js';
-import { foldEffortPickerKey, type EffortPickerState } from './effort-picker.js';
-import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import {
   INITIAL_REVERSE_SEARCH,
   foldReverseSearchKey,
@@ -111,44 +107,6 @@ describe('the @ completion legend', () => {
       path: 'a.md',
     });
     expect(foldMentionKey('', { escape: true }, state)).toEqual({ kind: 'close', restore: '@' });
-  });
-});
-
-describe('the /effort overlay legend', () => {
-  const picker: EffortPickerState = {
-    tiers: [...REASONING_EFFORTS],
-    selected: 1,
-    current: undefined,
-    model: 'deepseek-v4-flash',
-  };
-
-  it('lists ↑/↓, Enter and Esc, and the fold answers each (Esc closes: the session keeps its effort)', () => {
-    const view = render(
-      <EffortTierList
-        tiers={picker.tiers}
-        model={picker.model}
-        selected={picker.selected}
-        current={picker.current}
-        footer={EFFORT_OVERLAY_FOOTER}
-        color={false}
-      />,
-    );
-    const legend = rowsOf(view.lastFrame()).find((row) => row.includes('apply')) ?? '';
-    expect(legend).toBe('↑/↓ select · Enter apply · Esc close');
-    expect(listedKeys(legend)).toEqual(['↑/↓', 'Enter', 'Esc']);
-    expect(foldEffortPickerKey('', { downArrow: true }, picker)).toEqual({
-      kind: 'state',
-      state: { ...picker, selected: 2 },
-    });
-    expect(foldEffortPickerKey('', { upArrow: true }, picker)).toEqual({
-      kind: 'state',
-      state: { ...picker, selected: 0 },
-    });
-    expect(foldEffortPickerKey('', { return: true }, picker)).toEqual({
-      kind: 'accept',
-      effort: REASONING_EFFORTS[1],
-    });
-    expect(foldEffortPickerKey('', { escape: true }, picker).kind).toBe('close');
   });
 });
 

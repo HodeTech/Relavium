@@ -37,12 +37,12 @@ import type { NativePromptSnapshot } from '../render/tui/native-prompt-channel.j
 import { SheetLinesView } from '../render/tui/permissions-sheet-view.js';
 import type { SheetLine } from '../render/tui/sheet-frame.js';
 import {
+  bodyPageRows,
   naturalBodyRows,
   popupBody,
   popupFrameLines,
   popupNoticeLegend,
   popupNoticeLines,
-  reportPageRows,
   type PopupFrameParts,
 } from './frame-model.js';
 import {
@@ -148,14 +148,16 @@ export interface FramePage {
 }
 
 /**
- * The page `frame`'s current step is drawn in, in `geometry`: its rows, a report's page (`reportPageRows`, the very rows `popupBody` draws it
- * in) else the list window, and the inner width every row is cut to; one row of no column when no frame fits (nothing is drawn).
+ * The page `frame`'s current step is drawn in, in `geometry` (`bodyPageRows`, the very rows `popupBody` draws it in): a report's page, a
+ * form's whole body, else the window a list draws its rows in, and the inner width every row is cut to; one row of no column when no frame fits
+ * (nothing is drawn).
  *
  * A report's own page is not the list window in two ways. It is as short as the report when the report is shorter than the window (the body
  * asks for no more rows than it has): that never changes what fits (such a report fits both) nor how far it scrolls (it does not scroll). And
  * it is a row shorter than the window when the step's filter line takes a body row the window still counts (a 17-line report under a filter
  * line on a 17-row body is drawn cut, `▼ 2 more`): there the window would offer an answer for a line that is not whole, so the page is the
- * report's own.
+ * report's own. A list's page is its window under its filter line and its heading and above its effect paragraph, so a page moves by the rows
+ * it draws.
  */
 export function framePage(
   frame: PopupFrame | undefined,
@@ -164,10 +166,7 @@ export function framePage(
   if (frame === undefined || geometry?.fits !== true) return { rows: 1, innerWidth: 0 };
   const { spec, state } = currentStep(frame);
   return {
-    rows:
-      state.content.kind === 'report'
-        ? reportPageRows(geometry, spec.filter === true)
-        : geometry.listRows,
+    rows: bodyPageRows(state.content, spec.filter === true, geometry),
     innerWidth: geometry.innerWidth,
   };
 }
@@ -275,9 +274,10 @@ function HostPopup(
     steps: rail.names,
     stepIndex: rail.index,
     done: rail.done,
-    // The legend is judged on the page this frame draws (a report that fits names no scroll; a line cut short or with a row cut names no answer).
+    // The legend is judged on the page this frame draws (a report that fits names no scroll; a line cut short or with a row cut, and a form
+    // that is not whole, name no answer).
     legend: withGlyphForm(!color, () =>
-      popupLegend(frame, reportPageRows(geometry, spec.filter === true), geometry.innerWidth),
+      popupLegend(frame, pageRef.current.rows, geometry.innerWidth),
     ),
     // The host's live notification, in the legend row while the popup covers the hint row.
     notice: snapshot.notice,

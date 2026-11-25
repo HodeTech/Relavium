@@ -97,13 +97,11 @@ import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
-import type { EffortPickerState } from './effort-picker.js';
 import type { ChatSheetState } from './chat-sheet.js';
 import { ChatSheetView } from './chat-sheet-view.js';
 import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
 import { helpSheetLines } from './help-sheet.js';
-import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
@@ -208,7 +206,6 @@ function ChatRegion(
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
-    effortPicker: EffortPickerState | undefined;
     chatSheet: ChatSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
@@ -350,18 +347,6 @@ function ChatRegion(
           nowMs={nowMs}
           providerName={providerDisplayName}
           scope="this-chat"
-        />
-      )}
-      {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
-      {props.effortPicker !== undefined && (
-        <EffortTierList
-          tiers={props.effortPicker.tiers}
-          model={props.effortPicker.model}
-          selected={props.effortPicker.selected}
-          current={props.effortPicker.current}
-          labelSuffix={props.effortPicker.model}
-          footer={EFFORT_OVERLAY_FOOTER}
-          color={color}
         />
       )}
       {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) — with the other overlays. */}
@@ -760,7 +745,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
   // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
   // viewport, so those fall straight through. Gated on NO keyboard-owning overlay (palette / search / mention /
-  // model-picker / effort-picker) — mirroring ChatApp's after-overlays ordering, so an overlay that
+  // model-picker / a popup) — mirroring ChatApp's after-overlays ordering, so an overlay that
   // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
   // no force-follow is needed (parity with `ChatApp`).
   const noOverlay = !scrollKeysBlocked(flags);
@@ -1128,7 +1113,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             search={state.search}
             mention={state.mention}
             modelPicker={state.modelPicker}
-            effortPicker={state.effortPicker}
             chatSheet={state.chatSheet}
             now={props.nowMs}
             cols={size.cols}

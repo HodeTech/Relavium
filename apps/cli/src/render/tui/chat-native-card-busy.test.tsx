@@ -179,10 +179,10 @@ describe('a turn that really runs still says how to stop it', () => {
 });
 
 describe('the commands that open a sheet or a picker of the chat itself', () => {
-  // `/models`, `/effort` and `/permissions` are opened by the chat before it submits anything, so the chat is never "submitting"
+  // `/models`, `/effort` (a popup now) and `/permissions` are opened by the chat before it submits anything, so the chat is never "submitting"
   // behind them: whatever Esc does there (it closes the list), the screen must not also say that it stops a turn. (`/agent` is a report popup now.)
   const OWN_SURFACES = CHAT_SURFACES.filter((entry) =>
-    ['model-picker', 'effort-picker', 'sheet-permissions'].some((name) =>
+    ['model-picker', 'settings-effort', 'sheet-permissions'].some((name) =>
       entry.id.endsWith(`.${name}`),
     ),
   );

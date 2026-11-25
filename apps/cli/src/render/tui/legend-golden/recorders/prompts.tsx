@@ -4,7 +4,7 @@ import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReactElement } from 'react';
 
 import { providerDisplayName } from '../../../../engine/providers.js';
-import { EFFORT_OVERLAY_FOOTER, EffortTierList } from '../../effort-tier-list.js';
+import { EffortTierList } from '../../effort-tier-list.js';
 import {
   EFFORT_STEP_FOOTER,
   ModelPickerView,
@@ -24,7 +24,7 @@ import { selectLegend } from '../../native-select-window.js';
 
 /**
  * The recorders of the native prompt cards (the picker, select, text, password, busy and chord cards of `NativePromptView`), the windowed
- * select, the two input errors of the channel, the `/models` picker and the effort tier list. Every card is opened on the REAL
+ * select, the two input errors of the channel, the `/models` picker and the effort tier list of its sub-step. Every card is opened on the REAL
  * `createNativePromptChannel()` (so a snapshot is what a flow publishes), drawn by the real view with the real acknowledgement, and read
  * back as the legend rows of the frame. A snapshot a flow only reaches after an asynchronous read (a picker's results, its empty list,
  * its "could not be read" error) is the channel's own picker snapshot with those fields set by hand; that is said where it is done.
@@ -510,14 +510,13 @@ const modelPickerView: Recorder = () => {
   return out;
 };
 
-/** The footer line each of the three hosts of the tier list passes it, drawn by the real list under the tiers. */
+/**
+ * The footer line the one host of the tier list passes it (the `/models` effort sub-step; the stand-alone `/effort` overlay is retired, `/effort`
+ * is a popup: `settings-popups` in `popups.tsx`), drawn by the real list under the tiers.
+ */
 const effortTierList: Recorder = () => {
   const out: Record<string, readonly string[]> = {};
-  const callers = [
-    ['chat-ink overlay', EFFORT_OVERLAY_FOOTER],
-    ['home-app overlay', EFFORT_OVERLAY_FOOTER],
-    ['model-picker sub-step', EFFORT_STEP_FOOTER],
-  ] as const;
+  const callers = [['model-picker sub-step', EFFORT_STEP_FOOTER]] as const;
   for (const [caller, footer] of callers) {
     Object.assign(
       out,
@@ -540,16 +539,6 @@ const effortTierList: Recorder = () => {
   }
   return out;
 };
-
-/** The standalone `/effort` overlay's footer in a stand-alone chat: an inline literal of the chat host, passed whole. */
-const chatEffortOverlay: Recorder = () => ({
-  'footer (source literal)': EFFORT_OVERLAY_FOOTER,
-});
-
-/** The standalone `/effort` overlay's footer in a chat the Home hosts: an inline literal of the Home host, passed whole. */
-const homeEffortOverlay: Recorder = () => ({
-  'footer (source literal)': EFFORT_OVERLAY_FOOTER,
-});
 
 export const PROMPTS_PRODUCERS: readonly Producer[] = [
   {
@@ -586,19 +575,7 @@ export const PROMPTS_PRODUCERS: readonly Producer[] = [
     id: 'effort-tier-list',
     file: 'render/tui/effort-tier-list.tsx',
     describe:
-      'The tier list draws the footer its caller passes (chat overlay, Home overlay, model-picker sub-step) as its last row.',
-  },
-  {
-    id: 'chat-effort-overlay',
-    file: 'render/tui/chat-ink.tsx',
-    describe:
-      'The footer the chat host passes the standalone /effort overlay (a source literal, passed on whole to the tier list).',
-  },
-  {
-    id: 'home-effort-overlay',
-    file: 'render/tui/home-app.tsx',
-    describe:
-      'The footer the Home host passes the standalone /effort overlay of a hosted chat (a source literal, passed on whole).',
+      'The tier list draws the footer its caller passes (the model-picker sub-step) as its last row.',
   },
 ];
 
@@ -609,6 +586,4 @@ export const PROMPTS_RECORDERS = {
   'native-prompt-channel': nativePromptChannel,
   'model-picker-view': modelPickerView,
   'effort-tier-list': effortTierList,
-  'chat-effort-overlay': chatEffortOverlay,
-  'home-effort-overlay': homeEffortOverlay,
 } as const satisfies Readonly<Record<string, Recorder>>;

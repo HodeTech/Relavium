@@ -9,7 +9,8 @@
  *   ([ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md); the mapping contract lives
  *   in [agent-session-spec.md](../../../../docs/reference/contracts/agent-session-spec.md) §"Export to
  *   workflow" §"Precise mapping"): one `agent` node per assistant turn, `input → turn-1 → … → output`
- *   edges, the bound agent inline, and the **full transcript** under `metadata.relaviumExport`.
+ *   edges, the bound agent inline, and the **full transcript** under `metadata.relaviumExport` (its record rows and question
+ *   records excepted: they stay in `history.db`).
  *
  * Both are deterministic (no wall-clock / randomness) and platform-free — the host (CLI `relavium
  * chat-export`, the desktop "Export to Canvas") loads the session via the `@relavium/db` `SessionStore`
@@ -139,6 +140,16 @@ function workflowIdFor(record: AgentSessionRecord): string {
 }
 
 /**
+ * Whether the export carries the row at all ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §6):
+ * a RECORD row (an effective mode change, a released estimate in micro-cents) is a fact about the session, not part of the conversation,
+ * and like a question record it is not provenance of the workflow; a workflow file is meant to be committed and shared, so a person's mode
+ * history and a money figure stay in `history.db`. Every other row is exported.
+ */
+function exportedRow(message: SessionMessage): boolean {
+  return message.record === undefined;
+}
+
+/**
  * The message as the export carries it (ADR-0133): a tool row's stored `ask` record — what an `ask_user` card asked and what the
  * person answered — is conversation content of a kind an export never carries (like a tool's output, it is not provenance of the
  * workflow, and a workflow file is meant to be committed and shared). The result part is rebuilt from an explicit allow-list of the
@@ -226,7 +237,7 @@ export function sessionToWorkflow(
       ...(record.title === undefined ? {} : { title: record.title }),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      messages: ordered.map(withoutQuestionRecords),
+      messages: ordered.filter(exportedRow).map(withoutQuestionRecords),
     },
   };
 

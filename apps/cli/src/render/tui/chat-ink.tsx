@@ -52,14 +52,7 @@ import {
 import { unavailableNotice } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import { providerDisplayName } from '../../engine/providers.js';
-import {
-  canControlEffort,
-  foldEffortPickerKey,
-  initialEffortPickerState,
-  type EffortPickerState,
-} from './effort-picker.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
-import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
 import {
@@ -116,6 +109,7 @@ import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-chann
 import { openDoctor, type DoctorPort } from '../../popups/doctor-port.js';
 import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
 import { openReport, type ReportsPort } from '../../popups/report-port.js';
+import { openSettings, type SettingsPort } from '../../popups/settings-port.js';
 import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
 import { popupRefusal } from '../../popups/popup-refusal.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
@@ -331,6 +325,19 @@ interface ChatAppProps {
    * `ctx.reports`.
    */
   readonly reports?: ReportsPort | undefined;
+  /**
+   * What this chat's settings popups read and apply ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §3, §6; MVP-11 step 5): today `/effort`. A typed or palette-selected bare command whose member can open opens the popup instead of
+   * dispatching, before the line is counted as a submit; a command with its value (`/effort high`) dispatches and applies it. Absent ⇒ the
+   * command is dispatched, as before. `| undefined` so the createElement passthrough forwards an absent `ctx.settings`.
+   */
+  readonly settings?: SettingsPort | undefined;
+  /**
+   * Bind the session's announcements (its typed settings, its mode control and its settings popups) to THIS chat's notification channel while
+   * it is mounted, and unbind them when it unmounts (`ChatLineHandler.setAnnouncer`): a notification with no popup as its source, so it
+   * outlives the popup that applied a setting. Absent ⇒ nothing is bound (a driver or a test without a session handler).
+   */
+  readonly setAnnouncer?: ((announce: ((text: string) => void) | undefined) => void) | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -953,6 +960,19 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     },
     [ownPopups, ownNotifications],
   );
+  // The session's announcements (its typed settings, its mode control and its settings popups) are THIS chat's own notifications while it is
+  // mounted (ADR-0148 §2, §6): raised with no popup as their source, so a setting's word outlives the popup that applied it, and never written
+  // into the transcript. Unbound when the chat unmounts (a `/clear` or a reseat mounts the next chat, which binds its own).
+  const setAnnouncer = props.setAnnouncer;
+  useLayoutEffect(() => {
+    if (setAnnouncer === undefined || notifications === undefined) return;
+    setAnnouncer((text) => {
+      notifications.notify(text);
+    });
+    return () => {
+      setAnnouncer(undefined);
+    };
+  }, [setAnnouncer, notifications]);
   const popupSnapshot = useSyncExternalStore(
     popups?.subscribe ?? subscribeNoPrompt,
     popups?.getSnapshot ?? closedPopupsSnapshot,
@@ -1113,15 +1133,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setModelPicker(next);
   };
   const pickerEpochRef = useRef(0);
-  // The standalone `/effort` overlay (ADR-0066 §6) — a keyboard-owning submode like `/models`, ref-shadowed so a
-  // coalesced stdin chunk sees a just-applied open/close/accept. Opened only on a reasoning-capable bound model.
-  const [effortPicker, setEffortPicker] = useState<EffortPickerState | undefined>(undefined);
-  const effortPickerRef = useRef<EffortPickerState | undefined>(undefined);
-  const applyEffortPicker = (next: EffortPickerState | undefined): void => {
-    effortPickerRef.current = next;
-    setEffortPicker(next);
-  };
-  // The chat's docked sheet (ADR-0137 §2 `/permissions`) — ONE slot, a keyboard-owning submode like `/effort`,
+  // The chat's docked sheet (ADR-0137 §2 `/permissions`) — ONE slot, a keyboard-owning submode like `/models`,
   // ref-shadowed so a coalesced stdin chunk sees a just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can
   // arrive while it is open, and holding one value, so two sheets cannot be open at once.
   const [chatSheet, setChatSheet] = useState<ChatSheetState | undefined>(undefined);
@@ -1140,7 +1152,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       search: unknown;
       mention: unknown;
       modelPicker: unknown;
-      effortPicker: unknown;
       chatSheet: unknown;
     }>,
     prompt: NativePromptSnapshot,
@@ -1150,7 +1161,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     search: open.search !== undefined,
     mention: open.mention !== undefined,
     modelPicker: open.modelPicker !== undefined,
-    effortPicker: open.effortPicker !== undefined,
     chatSheet: open.chatSheet !== undefined,
     screen: false,
     exitGuard: false,
@@ -1170,7 +1180,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         search: searchRef.current,
         mention: mentionRef.current,
         modelPicker: modelPickerRef.current,
-        effortPicker: effortPickerRef.current,
         chatSheet: chatSheetRef.current,
       },
       props.modePrompt?.ui.getSnapshot() ?? NO_PROMPT,
@@ -1183,7 +1192,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     submitBusy: submitBusyRef.current,
   });
   const renderedOverlays = overlayFlagsFrom(
-    { palette, search, mention, modelPicker, effortPicker, chatSheet },
+    { palette, search, mention, modelPicker, chatSheet },
     nativeSnapshot,
     popupSnapshot,
   );
@@ -1548,45 +1557,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
-  // ---- The standalone `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) ----------------
-  // Open on the LIVE bound model + the LIVE store tier (so it opens on the currently-bound effort). The caller
-  // (submit) gates this on a reasoning-capable model + a wired setter, so opening here is unconditional.
-  const openEffortPicker = (): void => {
-    const snap = props.store.getSnapshot();
-    if (snap.state.model === undefined) return; // defensive — submit only opens on a bound reasoning-capable model
-    applyEffortPicker(initialEffortPickerState(snap.state.model, snap.reasoningEffort));
-  };
-  // The open effort overlay owns every key (mirrors routeModelPickerKey). Accept applies the tier via the per-turn
-  // setter (no reseat); a re-pick of the same tier is a gentle no-op with visible store feedback.
-  const routeEffortPickerKey = (char: string, key: ModelPickerKey): void => {
-    const open = effortPickerRef.current;
-    if (open === undefined) return;
-    const step = foldEffortPickerKey(char, key, open);
-    switch (step.kind) {
-      case 'close':
-        applyEffortPicker(undefined);
-        return;
-      case 'accept': {
-        applyEffortPicker(undefined);
-        const label = effortRowLabel(open.model, step.effort).label; // a budget model's `medium` reads "on"
-        if (step.effort === open.current) {
-          props.store.note(`Already at reasoning effort ${label}.`);
-        } else {
-          props.onSetEffort?.(step.effort);
-          props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-        }
-        return;
-      }
-      case 'state':
-        applyEffortPicker(step.state);
-        return;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-  };
-
   // ---- The docked sheet: `/permissions` (ADR-0137 §2) --------------------------------------------
   /** Whether a sheet may open now: an idle prompt, with no turn running and no card pending (a card would compete for the keyboard). */
   const sheetMayOpen = (): boolean => {
@@ -1687,6 +1657,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (route.kind === 'doctor') {
       if (props.doctor !== undefined)
         opening = openDoctor({ host, port: props.doctor, deep: route.deep, origin: 'chat' });
+    } else if (route.kind === 'settings') {
+      if (props.settings !== undefined)
+        opening = openSettings({
+          host,
+          port: props.settings,
+          command: route.command,
+          origin: 'chat',
+        });
     } else if (props.reports !== undefined) {
       opening = openReport({
         host,
@@ -1711,30 +1689,24 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openModelPicker();
       return;
     }
-    // A typed (or palette-selected) bare `/effort` opens the interactive tier overlay (ADR-0066 §6) instead of the
-    // informational notice — but ONLY when the setter is wired AND the bound model is reasoning-capable; a
-    // non-reasoning model falls through to the dispatch, whose ctx handler prints the "no controllable tier" notice.
-    // `/effort <tier>` (with an arg) is NOT intercepted (exact match) — it dispatches and sets the tier directly.
-    if (
-      message.trim() === '/effort' &&
-      canControlEffort(props.store.getSnapshot().state.model, props.onSetEffort !== undefined)
-    ) {
-      openEffortPicker();
-      return;
-    }
     // A typed (or palette-selected) bare `/permissions` opens the sheet (ADR-0137 §2) instead of dispatching, where the port is wired.
     // `/permissions <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
     if (props.permissions !== undefined && message.trim() === '/permissions') {
       openPermissionsSheet();
       return;
     }
-    // `/doctor` (and `--deep`, ADR-0148 §8), `/agent`, `/cost` (and `--release`), `/workflows` and `/help` (§10) open their popup here, BEFORE
-    // the submit is marked in flight: the popup host's open gate reads a submit in flight as a turn, and this line is not one. Any other form
-    // (`/doctor now`, `/cost --force`) dispatches and is rejected there.
+    // `/doctor` (and `--deep`, ADR-0148 §8), `/agent`, `/cost` (and `--release`), `/workflows` and `/help` (§10) and the bare settings (`/effort`
+    // on a model with a tier to choose, §3 and §6) open their popup here, BEFORE the submit is marked in flight: the popup host's open gate reads
+    // a submit in flight as a turn, and this line is not one. Any other form (`/doctor now`, `/cost --force`) dispatches and is rejected there,
+    // and a setting with its value (`/effort high`) dispatches and applies it.
     const route =
       popups === undefined
         ? undefined
-        : routePopupLine(message, { doctor: props.doctor !== undefined, reports: props.reports });
+        : routePopupLine(message, {
+            doctor: props.doctor !== undefined,
+            reports: props.reports,
+            settings: props.settings,
+          });
     if (route !== undefined && popups !== undefined) {
       openPopupRoute(popups, route);
       return;
@@ -1903,7 +1875,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // of the same chunk just changed. An open card is `card`; the details view closes inside the store and never reaches here.
   const interruptContext = (cardStopped: boolean): InterruptContext => {
     if (cardStopped) return { kind: 'card' };
-    const overlay = interruptContextFrom(liveOverlays(), true); // a chat is always on screen here
+    const overlay = interruptContextFrom(liveOverlays());
     if (overlay !== undefined) return overlay;
     const busy =
       props.store.getSnapshot().state.status === 'running' ||
@@ -2035,12 +2007,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
     if (modelPickerRef.current !== undefined) {
       routeModelPickerKey(char, key);
-      return;
-    }
-    // The open `/effort` overlay owns every key (ADR-0066 §6) — mutually exclusive with the other submodes (it only
-    // opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied open/close/accept.
-    if (effortPickerRef.current !== undefined) {
-      routeEffortPickerKey(char, key);
       return;
     }
     // The open docked sheet owns every key. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C`
@@ -2507,18 +2473,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
               scope="this-chat"
             />
           )}
-          {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
-          {effortPicker !== undefined && (
-            <EffortTierList
-              tiers={effortPicker.tiers}
-              model={effortPicker.model}
-              selected={effortPicker.selected}
-              current={effortPicker.current}
-              labelSuffix={effortPicker.model}
-              footer={EFFORT_OVERLAY_FOOTER}
-              color={color}
-            />
-          )}
           {/* The docked sheet — `/permissions` (ADR-0137 §2) — here with the other overlays; the transcript stays above it. */}
           {chatSheet !== undefined && (
             <ChatSheetView
@@ -2807,6 +2761,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           modelPicker: ctx.modelPicker,
           permissions: ctx.permissions,
           reports: ctx.reports,
+          // The settings popups (`/effort` today; ADR-0148 §3, §6), and where their announcements and the typed settings' go: this chat's
+          // notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print their text.
+          settings: ctx.settings,
+          setAnnouncer: ctx.setAnnouncer,
           // `/doctor` opens its popup over this chat (ADR-0148 §8); the plain and `--json` drivers have none and print the text report.
           doctor: ctx.doctor,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed

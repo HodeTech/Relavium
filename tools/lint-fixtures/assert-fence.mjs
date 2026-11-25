@@ -82,6 +82,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/render/notation.ts',
   'apps/cli/src/render/notice-surface.ts',
   'apps/cli/src/render/surface.ts',
+  'apps/cli/src/chat/mode-effects.ts',
   'apps/cli/src/onboarding/setup-notes.ts',
   'apps/cli/src/popups/geometry.ts',
   'apps/cli/src/popups/popup-refusal.ts',
@@ -98,6 +99,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/popup-work.ts',
   'apps/cli/src/popups/doctor-port.ts',
   'apps/cli/src/popups/report-port.ts',
+  'apps/cli/src/popups/settings-port.ts',
   DATA_MODULE,
 ];
 

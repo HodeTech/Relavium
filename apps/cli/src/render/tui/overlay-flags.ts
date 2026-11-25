@@ -15,7 +15,7 @@
  * pinned by `overlay-flags.test.ts`. Changing a cell is a behaviour change and belongs to its own increment.
  *
  * Which flag is set by whom:
- * - the six submodes (`palette` .. `chatSheet`) and the four cards (`approval` .. `checkpoint`) are set by both hosts;
+ * - the five submodes (`palette` .. `chatSheet`) and the four cards (`approval` .. `checkpoint`) are set by both hosts;
  * - `screen`, `exitGuard` and `nativeActionBusy` exist only on the Home (the stand-alone chat holds them `false`);
  * - `nativePrompt`, `popup` and `replacesBody` are the HOST's (the native prompt channel and the popup host are what only a host sees): the Home
  *   controller holds `nativePrompt` and `replacesBody` `false` and `popup` from its `popupOpen` port, `home-app.tsx` and `chat-ink.tsx` set the
@@ -40,8 +40,6 @@ export interface OverlayFlags {
   readonly mention: boolean;
   /** The `/models` picker (the bare Home's next-session default, or a chat's reseat). */
   readonly modelPicker: boolean;
-  /** The `/effort` tier overlay (a chat). */
-  readonly effortPicker: boolean;
   /** The chat's docked sheet: `/permissions`. */
   readonly chatSheet: boolean;
   /** A screen is in front of the landing: the run view, a gate card, the tab host or the help sheet (the Home only). */
@@ -76,7 +74,6 @@ export const NO_OVERLAYS: OverlayFlags = {
   search: false,
   mention: false,
   modelPicker: false,
-  effortPicker: false,
   chatSheet: false,
   screen: false,
   exitGuard: false,
@@ -122,7 +119,7 @@ type Gate =
   | 'occupiesRows'
   | 'revokesCustody';
 
-/** What the six submodes share. `effortPicker`'s `interrupt` is conditional: see {@link interruptContextFrom}. */
+/** What the five submodes share. */
 const SUBMODE: readonly Gate[] = [
   'screenSlot',
   'scrollKeys',
@@ -151,16 +148,15 @@ const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
  * | 4 | `pointer` | the cards close it, but `approval` does not: it is always paired with `review` |
  * | 5 | `scrollKeys` | the submodes close it, the cards do not: their own host answers every key |
  * | 6 | `mouseCapture` | only a native prompt and a busy native action release it; an open submode does not (toggling reporting would be churn) |
- * | 7 | `interrupt` | the exit card and the cards are not interrupt gates (routed first); `effortPicker` is one only while a chat is live |
+ * | 7 | `interrupt` | the exit card and the cards are not interrupt gates (routed first) |
  * | 8 | `landingPromptHidden`, `pageNotice` | of the submodes only the palette and the model picker, the two that open on the landing |
- * | 9 | paste (`pasteFlagsFrom`) | read for the six submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
+ * | 9 | paste (`pasteFlagsFrom`) | read for the five submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
  */
 const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   palette: [...SUBMODE, ...ON_THE_LANDING],
   search: SUBMODE,
   mention: SUBMODE,
   modelPicker: [...SUBMODE, ...ON_THE_LANDING],
-  effortPicker: SUBMODE,
   chatSheet: SUBMODE,
   // A screen replaces the slot rather than being refused by it (`openHelp` checks it on its own), and it is never open in a chat.
   screen: ['stripPause', 'pageNotice'],
@@ -242,7 +238,6 @@ export type OverlayPasteFlags = Pick<
   | 'searchOpen'
   | 'mentionOpen'
   | 'modelPickerOpen'
-  | 'effortPickerOpen'
   | 'chatSheetOpen'
   | 'approvalPending'
 >;
@@ -258,7 +253,6 @@ export function pasteFlagsFrom(flags: OverlayFlags): OverlayPasteFlags {
     searchOpen: flags.search,
     mentionOpen: flags.mention,
     modelPickerOpen: flags.modelPicker,
-    effortPickerOpen: flags.effortPicker,
     chatSheetOpen: flags.chatSheet,
     approvalPending: flags.approval || flags.review,
   };
@@ -283,16 +277,11 @@ export function mouseCapturedFrom(flags: OverlayFlags): boolean {
   return !closes(flags, 'mouseCapture');
 }
 
-/**
- * The interrupt context an open overlay gives, or `undefined` when none does. `chatLive` is whether a chat is on screen: the `/effort`
- * overlay is chat-scoped, and one left open with no chat (never expected) is not an overlay the keymap closes.
- */
+/** The interrupt context an open overlay gives, or `undefined` when none does. */
 export function interruptContextFrom(
   flags: OverlayFlags,
-  chatLive: boolean,
 ): Extract<InterruptContext, { readonly kind: 'overlay' }> | undefined {
-  const seen = chatLive ? flags : { ...flags, effortPicker: false };
-  return closes(seen, 'interrupt') ? { kind: 'overlay' } : undefined;
+  return closes(flags, 'interrupt') ? { kind: 'overlay' } : undefined;
 }
 
 /** Whether the strip's idle refresh is paused by an overlay (the caller adds the mode and the terminal size, `strip-pause.ts`). */

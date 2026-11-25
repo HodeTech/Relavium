@@ -1,8 +1,8 @@
 import {
+  bodyPageRows,
   naturalBodyRows,
   popupBody,
   popupFrameLines,
-  reportPageRows,
   type PopupOrigin,
 } from '../../../popups/frame-model.js';
 import { INLINE_LIST_MAX_ROWS, popupGeometry, popupInnerWidth } from '../../../popups/geometry.js';
@@ -120,7 +120,11 @@ export function popupBoxOf(
         steps: rail.names,
         stepIndex: rail.index,
         done: rail.done,
-        legend: popupLegend(frame, reportPageRows(geometry, state.filter !== undefined)),
+        legend: popupLegend(
+          frame,
+          bodyPageRows(state.content, state.filter !== undefined, geometry),
+          geometry.innerWidth,
+        ),
         notice,
       },
       popupBody(state.content, state, geometry),

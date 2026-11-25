@@ -40,6 +40,14 @@ import {
   reportsPortFor,
   type ReportState,
 } from './report-fixture.js';
+import {
+  driveSettings,
+  settingsPopupBox,
+  settingsPortFor,
+  SETTINGS_LANDMARKS,
+  SETTINGS_LEGEND_ROW,
+  type SettingsState,
+} from './settings-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
@@ -118,26 +126,22 @@ interface Ports {
   readonly permissions?: PermissionsPort;
   readonly mentionReader?: MentionReader;
   readonly models?: boolean;
-  readonly effort?: boolean;
   readonly seedModel?: boolean;
 }
 
 function setupWith(ports: Ports): ChatSetup {
-  const effort = ports.effort === true;
   return {
-    ...(ports.seedModel === true || effort ? { seed: { model: MODEL, transcript: [] } } : {}),
+    ...(ports.seedModel === true ? { seed: { model: MODEL, transcript: [] } } : {}),
     standalone: {
       ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
       ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
       ...(ports.models === true ? { modelPicker: standaloneModelsPort } : {}),
-      ...(effort ? { onSetEffort: () => {} } : {}),
     },
     hosted: {
       ...(ports.models === true ? { models: homeModelsPort } : {}),
       session: {
         ...(ports.permissions === undefined ? {} : { permissions: ports.permissions }),
         ...(ports.mentionReader === undefined ? {} : { mentionReader: ports.mentionReader }),
-        ...(effort ? { onSetEffort: () => {} } : {}),
       },
     },
   };
@@ -374,6 +378,42 @@ function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefini
   };
 }
 
+/** The row each settings surface opens highlighted on (the tier in force; the effect list's `auto`); the form has no highlighted row. */
+const SETTINGS_SELECTED_ROW: Readonly<Partial<Record<SettingsState, string>>> = {
+  effort: 'medium',
+  effect: 'auto',
+};
+
+/**
+ * A chat's settings popup in one state: the short exchange behind it, and `/effort` typed and routed by the host (the product popup), or a popup
+ * of the test layer with a body the settings popups use (a form; a list whose rows state their effect) opened on the host's popup host.
+ */
+function chatSettingsSurface(state: SettingsState, title: string): ChatSurfaceDefinition {
+  const selected = SETTINGS_SELECTED_ROW[state];
+  return {
+    name: `settings-${state}`,
+    title,
+    exitKey: 'Esc',
+    landmark: SETTINGS_LANDMARKS[state],
+    legendRow: SETTINGS_LEGEND_ROW[state],
+    ...(selected === undefined ? {} : { selectedRow: selected }),
+    belowFloor: /too small for this popup/iu,
+    popup: settingsPopupBox,
+    setup: () => ({
+      seed: SHORT_CONVERSATION,
+      settings: settingsPortFor('standalone-chat'),
+    }),
+    notes:
+      state === 'effort'
+        ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /effort, through the chat host’s routing'
+        : 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the test layer opens the popup on the host’s popup host',
+    open: async (m) => {
+      recordBaseline(m);
+      await driveSettings(m, (line) => m.typeLine(line), state, 'chat');
+    },
+  };
+}
+
 export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   chatDoctorSurface('checks', 'The /doctor popup over the chat: the quick tier’s checks'),
   chatDoctorSurface('line', 'The /doctor popup over the chat: the deep tier’s confirmation line'),
@@ -405,6 +445,15 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     'The /workflows popup over the chat: the catalog could not be listed',
   ),
   chatReportSurface('help', 'The /help popup over the chat: its commands and keys'),
+  chatSettingsSurface('effort', 'The /effort popup over the chat: the tiers of the bound model'),
+  chatSettingsSurface(
+    'form',
+    'A form popup over the chat (the test layer’s): tabs, a radio group and a warning',
+  ),
+  chatSettingsSurface(
+    'effect',
+    'A list popup over the chat (the test layer’s) whose highlighted row states its effect',
+  ),
   {
     name: 'popup',
     title: 'A popup over the chat (the test layer’s report popup)',
@@ -479,16 +528,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     belowFloor: 'renders',
     setup: setupWith({ models: true, seedModel: true }),
     open: typeLineAndWait('/models', 'Claude Sonnet 4.5'),
-  },
-  {
-    name: 'effort-picker',
-    title: 'The /effort picker',
-    exitKey: 'Esc',
-    landmark: 'Reasoning effort',
-    selectedRow: 'on · ',
-    belowFloor: 'renders',
-    setup: setupWith({ effort: true }),
-    open: typeLineAndWait('/effort', 'Reasoning effort'),
   },
   {
     name: 'sheet-permissions',

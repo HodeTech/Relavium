@@ -8,6 +8,7 @@ import {
 import {
   createModelCatalogStore,
   type Db,
+  type SessionRecordSlot,
   type SessionStore,
   type SessionUsageStore,
   type SessionUsageReceipt,
@@ -18,6 +19,7 @@ import {
   type AgentSessionRecord,
   type SessionContext,
   type SessionMessage,
+  type SessionRecord,
   type SessionStatus,
   type SessionInterruption,
   type SessionToolHistoryEntry,
@@ -145,6 +147,24 @@ export interface SessionPersister {
     readonly model: string;
     readonly estimateMicrocents: number;
   }): Promise<void>;
+  /**
+   * Append ONE content-free **record row** ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §6) at this persister's next sequence number, and say whether it landed. The caller decides what a refusal means (a mode change that
+   * cannot be recorded is not applied).
+   *
+   * Deliberately NOT through the durability latch: a record that could not be written is reported by the `false` it returns, and the
+   * session keeps its egress (the latch exists for data this process cannot rebuild, and a refused mode toggle is not that). The sequence
+   * advances only after the row was written; a record row is never a real message or a turn boundary, so a later compaction maps its
+   * boundary exactly as it did without it. `false` too while the persister is not started or already closed.
+   */
+  appendRecord(record: SessionRecord): boolean;
+  /**
+   * Reserve the slot the next record row takes and hand it to `write`, a store call that inserts that row INSIDE its own transaction (the
+   * `/cost` release, which records the amount it cleared atomically with clearing it). The slot is adopted (the next turn moves past it)
+   * only when `write` returned and `landed` says the row was inserted; a throw propagates and adopts nothing. Throws, writing nothing,
+   * while the persister is not started or already closed: a record the session owes is refused rather than dropped.
+   */
+  withRecordSlot<T>(write: (slot: SessionRecordSlot) => T, landed: (result: T) => boolean): T;
   /** Unsubscribe from the stream (REPL teardown). The persisted session remains resumable. */
   close(): void;
 }
@@ -249,6 +269,21 @@ export function createSessionPersister(
       const keptStart = sequences.findIndex((sequence) => sequence > boundary);
       sequences.splice(0, keptStart < 0 ? sequences.length : keptStart);
     }
+  };
+  /**
+   * The slot a record row (ADR-0148 §6) takes: this persister's next sequence number, a fresh id and the clock. Pure: nothing moves until
+   * {@link adoptRecordSlot} runs after the write. Every other row this persister writes reads `sequenceNumber` when it STAGES (a turn at
+   * its completion, a marker at its event), so a record written between two turns, or while one is running, takes the number that turn
+   * would have taken and the turn stages after it: one sequence owner, synchronous writes, no collision.
+   */
+  const nextRecordSlot = (): SessionRecordSlot => ({
+    id: deps.uuid(),
+    sequenceNumber,
+    timestamp: iso(),
+  });
+  /** Move past a record row that LANDED. Never into `realMessageSeqs` or `turnBoundarySeqs`: it is neither a real message nor a turn. */
+  const adoptRecordSlot = (slot: SessionRecordSlot): void => {
+    sequenceNumber = Math.max(sequenceNumber, slot.sequenceNumber + 1);
   };
   // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
   // session hydrates the existing title in start() so a later message never overwrites it.
@@ -695,6 +730,42 @@ export function createSessionPersister(
         });
       });
       await Promise.resolve();
+    },
+    appendRecord(recorded: SessionRecord): boolean {
+      if (!started || closed) return false;
+      const slot = nextRecordSlot();
+      try {
+        // ONE row, in ONE `BEGIN IMMEDIATE` through `withSessionUsageWrite` (the ADR-0104 triggers count every `session_messages` insert;
+        // the same transaction acknowledges the revision they bumped). No session row is flushed: a record changes no total and no status.
+        deps.store.writeTurn({
+          messages: [
+            {
+              message: {
+                id: slot.id,
+                sessionId: deps.sessionId,
+                sequenceNumber: slot.sequenceNumber,
+                role: 'system',
+                content: [],
+                record: recorded,
+                timestamp: slot.timestamp,
+              },
+            },
+          ],
+        });
+      } catch {
+        // NOT `persistDurably`: no latch, no listener-error notice. The caller is told by the `false` and words the refusal itself; the
+        // transaction rolled back, so the sequence is still free and nothing in memory moved.
+        return false;
+      }
+      adoptRecordSlot(slot);
+      return true;
+    },
+    withRecordSlot<T>(write: (slot: SessionRecordSlot) => T, landed: (result: T) => boolean): T {
+      if (!started || closed) throw new Error('session persistence is unavailable');
+      const slot = nextRecordSlot();
+      const result = write(slot);
+      if (landed(result)) adoptRecordSlot(slot);
+      return result;
     },
     close(): void {
       closed = true;

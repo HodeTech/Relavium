@@ -1842,6 +1842,73 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('ADR-0148 §3, §6: the in-Home chat is wired to the /effort popup through its own line handler, and its announcements reach the Home’s channel, never the transcript', async () => {
+    // The wired-but-dead field: a Home session built without `settings`, or a handler whose announcer the Home never bound, passes every
+    // controller test that hands it a fake session. This drives the REAL `startChat` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    const popups = props.popups;
+    const notifications = props.notifications;
+    if (popups === undefined || notifications === undefined)
+      throw new Error('the Home was rendered without its popup host and channel');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    const session = props.controller.getSnapshot().session;
+    expect(session?.settings?.surface, 'the session carries the port of the Home’s chat').toBe(
+      'home-chat',
+    );
+    const store = session?.store;
+    if (store === undefined) throw new Error('no chat store');
+    const transcript = (): number => store.getSnapshot().state.transcript.length;
+    const before = transcript();
+
+    // A typed value applies through the dispatch and announces on the Home's channel; the transcript is untouched.
+    props.controller.handlePaste('/effort high');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(store.getSnapshot().reasoningEffort).toBe('high'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(
+      () =>
+        expect(notifications.getSnapshot().current?.text).toBe(
+          'Reasoning effort: high · applies to the next message',
+        ),
+      { timeout: WAIT_MS },
+    );
+    expect(transcript()).toBe(before);
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+
+    // The bare command opens the popup on the Home's host (the code is loaded on first use).
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    props.controller.handlePaste('/effort');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('effort'), {
+      timeout: WAIT_MS,
+    });
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
+    expect(transcript()).toBe(before);
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('ADR-0145 §7: the chat the Home hosts prints its own commands in /help and in the unknown-slash hint, the rows its palette shows', async () => {
     // Wired through the REAL `startChat`: the line handler is built with the `home-chat` surface only where the Home's chat is built, and a
     // handler built with the default would print a stand-alone chat's list (`/exit` reading "End the chat session.", no `/resume`).

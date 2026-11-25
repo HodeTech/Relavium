@@ -15,6 +15,11 @@ import {
   createNotificationChannel,
   type NotificationChannel,
 } from '../../../popups/notifications.js';
+import {
+  openSettings,
+  type SettingsKind,
+  type SettingsPort,
+} from '../../../popups/settings-port.js';
 import { openDoctor, type DoctorPort } from '../../../popups/doctor-port.js';
 import {
   openReport,
@@ -95,6 +100,11 @@ export interface HomeSetup {
    * wires it (`openReport`) for the chat it hosts, whose session carries the port. Absent ⇒ those commands are dispatched to the chat.
    */
   readonly reports?: ReportsPort | undefined;
+  /**
+   * Given, the controller opens the settings popups (`/effort` today; ADR-0148 §3, §6) on the Home's popup host as `driveHome` wires it
+   * (`openSettings`) for the chat it hosts, whose session carries the port. Absent ⇒ those commands are dispatched to the chat.
+   */
+  readonly settings?: SettingsPort | undefined;
 }
 
 export type NativePromptChannel = ReturnType<typeof createNativePromptChannel>;
@@ -165,6 +175,7 @@ export function mountHome(
   });
   const doctor = setup.doctor;
   const reports = setup.reports;
+  const settings = setup.settings;
   let rendererFlush: NoticeFlush | undefined;
   const context: HomeContext = {
     channel,
@@ -225,6 +236,19 @@ export function mountHome(
             readonly turnInFlight: () => boolean;
           }) => {
             void openReport({ host: popups, port: chat, line, origin: 'chat', turnInFlight });
+          },
+        }),
+    ...(settings === undefined
+      ? {}
+      : {
+          openSettings: ({
+            command,
+            chat,
+          }: {
+            readonly command: SettingsKind;
+            readonly chat: SettingsPort;
+          }) => {
+            void openSettings({ host: popups, port: chat, command, origin: 'chat' });
           },
         }),
     onExit: () => {},

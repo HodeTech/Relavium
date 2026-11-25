@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { AgentSnapshotSchema } from './agent.js';
 import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
+import { CHAT_MODES } from './constants.js';
 import { SessionContextSchema, SessionInterruptionSchema, StopReasonSchema } from './run-event.js';
 import {
   SessionContentPartSchema,
@@ -42,6 +43,40 @@ export type SessionMessageRole = z.infer<typeof SessionMessageRoleSchema>;
 /** ISO-8601 with a required UTC `Z` or numeric offset (matches the run-event envelope's `timestamp`). */
 const isoTimestamp = z.string().datetime({ offset: true });
 
+/** The chat modes a record names: the one closed list (`constants.ts`), never `config.ts`'s schema (which imports this module's graph). */
+const RecordedChatModeSchema = z.enum(CHAT_MODES);
+
+/**
+ * What a **record row** records ([ADR-0148](../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §6):
+ * a content-free fact about the session that is not part of the conversation. A closed set of kinds, each with closed fields:
+ *
+ * - `mode_change`: the effective chat mode of a live, interactive session changed from `from` to `to` (never equal). Every effective change is
+ *   recorded, not only the widening ones, so the record of a mode has its end as well as its start.
+ * - `cost_release`: the person released the session's held conservative estimates ([ADR-0074](../../../docs/decisions/0074-durable-conservative-budget-commitments.md)
+ *   §1); `microcents` is the durable amount the release cleared, read inside the release's own transaction.
+ *
+ * Strict at every level: an unknown kind or an extra field is refused, never stripped.
+ */
+export const SessionRecordSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('mode_change'),
+      from: RecordedChatModeSchema,
+      to: RecordedChatModeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('cost_release'),
+      microcents: nonNegativeInt,
+    })
+    .strict(),
+]);
+export type SessionRecord = z.infer<typeof SessionRecordSchema>;
+/** The closed set of record kinds, derived from the schema itself (the `session_messages.record_kind` CHECK is written from it). */
+export const SESSION_RECORD_KINDS: readonly SessionRecord['kind'][] =
+  SessionRecordSchema.options.map((option) => option.shape.kind.value);
+
 /**
  * One **append-only** transcript message (agent-session-spec.md §"Session messages"). `content` is the
  * session-only content union — structural tools, handle-only media, signature-less reasoning. Never edited
@@ -75,10 +110,37 @@ export const SessionMessageSchema = z
      * stored in the `interruption_reason`/`interruption_code` columns. Never together with `compaction`.
      */
     interruption: SessionInterruptionSchema.optional(),
+    /**
+     * Present ONLY on a **record row** (`role: 'system'`, empty `content`, ADR-0148 §6): a content-free fact about the session —
+     * an effective mode change, or a released estimate — stored in the `record_*` columns. Never together with `compaction` or
+     * `interruption`. The one history projection skips it (a system row that is not an interruption), so it is never drawn, never
+     * sent to a model and never part of a resumed context; it is read back only through the session store.
+     */
+    record: SessionRecordSchema.optional(),
     timestamp: isoTimestamp,
   })
   .strict()
   .superRefine((message, ctx) => {
+    if (message.record !== undefined) {
+      if (message.role !== 'system') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'a record belongs to a system row' });
+      }
+      if (message.compaction !== undefined || message.interruption !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'a record row is not a boundary marker or an interruption',
+        });
+      }
+      if (message.content.length > 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'a record row carries no content' });
+      }
+      if (message.record.kind === 'mode_change' && message.record.from === message.record.to) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'a mode change names two different modes',
+        });
+      }
+    }
     if (message.compaction !== undefined && message.role !== 'system') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

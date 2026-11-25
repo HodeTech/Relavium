@@ -17,7 +17,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { pasteIsEditable, type PasteEditableFlags } from './chat-input.js';
 import { createChatStore } from './chat-store.js';
 import { createHomeController, homeOverlayFlags, type HomeChatSession } from './home-controller.js';
-import { initialEffortPickerState } from './effort-picker.js';
 import {
   activePollPausedByOverlay,
   cardFlagsFrom,
@@ -92,7 +91,7 @@ const OPEN: Gates = {
   custodyRevoked: false,
 };
 
-/** What the six submodes share: the palette and the model picker add the landing's two gates. */
+/** What the five submodes share: the palette and the model picker add the landing's two gates. */
 const SUBMODE: Gates = {
   ...OPEN,
   screenSlot: true,
@@ -125,7 +124,6 @@ const EXPECTED = {
   search: SUBMODE,
   mention: SUBMODE,
   modelPicker: { ...SUBMODE, landingPromptHidden: true, noticePaging: true },
-  effortPicker: SUBMODE,
   chatSheet: SUBMODE,
   screen: { ...OPEN, stripPause: true, noticePaging: true },
   exitGuard: { ...OPEN, screenSlot: true, stripPause: true, activePoll: true, noticePaging: true },
@@ -175,7 +173,7 @@ function observed(flags: OverlayFlags): Gates {
     scrollKeys: scrollKeysBlocked(flags),
     pointer: pointerBlocked(flags),
     mouseReleased: !mouseCapturedFrom(flags),
-    interrupt: interruptContextFrom(flags, true)?.kind === 'overlay',
+    interrupt: interruptContextFrom(flags)?.kind === 'overlay',
     stripPause: stripRefreshPaused({ mode: 'home', ...flags, terminal: LANDING }),
     activePoll: activePollPausedByOverlay(flags),
     promptHidden: promptHidden(flags),
@@ -283,7 +281,6 @@ describe('the paste half of the record feeds the shared paste gate', () => {
       searchOpen: false,
       mentionOpen: false,
       modelPickerOpen: false,
-      effortPickerOpen: false,
       chatSheetOpen: false,
       approvalPending: false,
     });
@@ -292,9 +289,6 @@ describe('the paste half of the record feeds the shared paste gate', () => {
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, mention: true })).toMatchObject({ mentionOpen: true });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, modelPicker: true })).toMatchObject({
       modelPickerOpen: true,
-    });
-    expect(pasteFlagsFrom({ ...NO_OVERLAYS, effortPicker: true })).toMatchObject({
-      effortPickerOpen: true,
     });
     expect(pasteFlagsFrom({ ...NO_OVERLAYS, chatSheet: true })).toMatchObject({
       chatSheetOpen: true,
@@ -314,7 +308,6 @@ describe('the paste half of the record feeds the shared paste gate', () => {
       [
         'approvalPending',
         'chatSheetOpen',
-        'effortPickerOpen',
         'mentionOpen',
         'modelPickerOpen',
         'paletteOpen',
@@ -326,16 +319,9 @@ describe('the paste half of the record feeds the shared paste gate', () => {
 
 describe('the interrupt context of an overlay', () => {
   it('is the overlay kind for each submode, and nothing else gives it one', () => {
-    for (const kind of ['palette', 'search', 'mention', 'modelPicker', 'chatSheet'] as const) {
-      expect(interruptContextFrom(only(kind), true)).toEqual({ kind: 'overlay' });
-      expect(interruptContextFrom(only(kind), false)).toEqual({ kind: 'overlay' });
-    }
-    expect(interruptContextFrom(NO_OVERLAYS, true)).toBeUndefined();
-  });
-
-  it('counts the chat-scoped effort overlay only while a chat is on screen (a stale one is not an overlay the keymap closes)', () => {
-    expect(interruptContextFrom(only('effortPicker'), true)).toEqual({ kind: 'overlay' });
-    expect(interruptContextFrom(only('effortPicker'), false)).toBeUndefined();
+    for (const kind of ['palette', 'search', 'mention', 'modelPicker', 'chatSheet'] as const)
+      expect(interruptContextFrom(only(kind))).toEqual({ kind: 'overlay' });
+    expect(interruptContextFrom(NO_OVERLAYS)).toBeUndefined();
   });
 });
 
@@ -449,7 +435,6 @@ describe("the Home's own record is built from its state in one place", () => {
     ['search', { search: INITIAL_REVERSE_SEARCH }],
     ['mention', { mention: { dir: '', filter: '', candidates: [], selected: 0, loading: false } }],
     ['modelPicker', { modelPicker: MODEL_PICKER }],
-    ['effortPicker', { effortPicker: initialEffortPickerState('claude-sonnet-4-5', undefined) }],
     [
       'chatSheet',
       {

@@ -1621,18 +1621,8 @@
     "scope=this-chat phase=effort columns=100 colour=on [1]": "⟦dim: ↑/↓ select · Enter apply · Esc back⟧"
   },
   "effort-tier-list": {
-    "caller=chat-ink overlay colour=off [1]": "↑/↓ select · Enter apply · Esc close",
-    "caller=chat-ink overlay colour=on [1]": "⟦dim: ↑/↓ select · Enter apply · Esc close⟧",
-    "caller=home-app overlay colour=off [1]": "↑/↓ select · Enter apply · Esc close",
-    "caller=home-app overlay colour=on [1]": "⟦dim: ↑/↓ select · Enter apply · Esc close⟧",
     "caller=model-picker sub-step colour=off [1]": "↑/↓ select · Enter apply · Esc back",
     "caller=model-picker sub-step colour=on [1]": "⟦dim: ↑/↓ select · Enter apply · Esc back⟧"
-  },
-  "chat-effort-overlay": {
-    "footer (source literal)": "↑/↓ select · Enter apply · Esc close"
-  },
-  "home-effort-overlay": {
-    "footer (source literal)": "↑/↓ select · Enter apply · Esc close"
   },
   "run-launch-busy": {
     "launching=false active=none": "(no sentence: the form opens)",
@@ -1833,5 +1823,31 @@
     "surface=home-chat colour=on [2]": "                 [Ctrl+T] to toggle).",
     "surface=home-chat colour=on [3]": "                 session; [d] withdraws one.",
     "surface=home-chat colour=on [4]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "effort-popup": {
+    "model=graded current=medium colour=off [1]": " ↑/↓ select · Enter apply · Esc close",
+    "model=graded current=medium colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "model=graded current=none colour=off [1]": " ↑/↓ select · Enter apply · Esc close",
+    "model=graded current=none colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "model=budget current=on colour=off [1]": " ↑/↓ select · Enter apply · Esc close",
+    "model=budget current=on colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "model=no-tier colour=off [1]": " Esc close",
+    "model=no-tier colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "popup-form": {
+    "step=second fields=tabs+radio colour=off [1]": " ←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back",
+    "step=second fields=tabs+radio colour=on [1]": " ⟦bold: ←/→⟧⟦dim:  effort · ⟧⟦bold: ↑/↓⟧⟦dim:  scope · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
+    "step=second fields=radio colour=off [1]": " ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back",
+    "step=second fields=radio colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scope · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
+    "step=second fields=tabs colour=off [1]": " ←/→ effort · Enter apply · [Ctrl+C] close · Esc back",
+    "step=second fields=tabs colour=on [1]": " ⟦bold: ←/→⟧⟦dim:  effort · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
+    "step=first fields=tabs+radio colour=off [1]": " ←/→ effort · ↑/↓ scope · Enter apply · Esc close",
+    "step=first fields=tabs+radio colour=on [1]": " ⟦bold: ←/→⟧⟦dim:  effort · ⟧⟦bold: ↑/↓⟧⟦dim:  scope · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "popup-effect": {
+    "highlighted=with-effect colour=off [1]": " ↑/↓ select · Enter apply · Esc close",
+    "highlighted=with-effect colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "highlighted=without-effect colour=off [1]": " ↑/↓ select · Enter apply · Esc close",
+    "highlighted=without-effect colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: Esc⟧⟦dim:  close⟧"
   }
 }

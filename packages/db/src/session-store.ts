@@ -268,7 +268,35 @@ export function toSessionMessageRow(
     // ADR-0119: NULL for every row but an interruption row; the closed reason (+ the closed code for 'failed').
     interruptionReason: m.interruption?.reason ?? null,
     interruptionCode: m.interruption?.code ?? null,
+    // ADR-0148 §6: NULL for every row but a record row; the closed kind and the fields of that kind, each in its own column.
+    recordKind: m.record?.kind ?? null,
+    recordFrom: m.record?.kind === 'mode_change' ? m.record.from : null,
+    recordTo: m.record?.kind === 'mode_change' ? m.record.to : null,
+    recordMicrocents: m.record?.kind === 'cost_release' ? m.record.microcents : null,
     createdAt: isoToEpochMs(m.timestamp),
+  };
+}
+
+/**
+ * The record of a row as the strict schema will judge it (ADR-0148 §6): every record column that holds a value is carried, so a value the
+ * kind does not own (an amount on a mode change, a mode on a release) is REFUSED by the strict schema rather than dropped on read. A row with
+ * fields and no kind is refused here: it is the one half-set shape that would otherwise vanish without a signal.
+ */
+function recordOf(
+  row: Pick<SessionMessageRow, 'recordKind' | 'recordFrom' | 'recordTo' | 'recordMicrocents'>,
+): { readonly record?: Record<string, unknown> } {
+  if (row.recordKind === null) {
+    if (row.recordFrom !== null || row.recordTo !== null || row.recordMicrocents !== null)
+      throw new SessionMessageBoundaryError('message_invalid');
+    return {};
+  }
+  return {
+    record: {
+      kind: row.recordKind,
+      ...(row.recordFrom === null ? {} : { from: row.recordFrom }),
+      ...(row.recordTo === null ? {} : { to: row.recordTo }),
+      ...(row.recordMicrocents === null ? {} : { microcents: row.recordMicrocents }),
+    },
   };
 }
 
@@ -305,6 +333,8 @@ export function fromSessionMessageRow(
             ...(row.interruptionCode === null ? {} : { code: row.interruptionCode }),
           },
         }),
+    // ADR-0148 §6: re-validated by the schema below (closed kinds, closed modes, a non-negative integer, a system row with no content).
+    ...recordOf(row),
     timestamp: epochMsToIso(row.createdAt),
   };
   const message = validateSessionMessage(candidate);
@@ -410,6 +440,18 @@ export interface SessionCostRow {
   readonly isLegacy: boolean;
 }
 
+/**
+ * Where a record row written inside another store transaction goes (ADR-0148 §6): its id, its `sequenceNumber` and its timestamp. The
+ * sequence is reserved by the session's ONE sequence owner (the CLI persister) and not computed here: a row numbered by anyone else
+ * collides with that owner's next turn on the `(session_id, sequence_number)` unique index.
+ */
+export interface SessionRecordSlot {
+  readonly id: string;
+  readonly sequenceNumber: number;
+  /** ISO-8601, as every {@link SessionMessage.timestamp}. */
+  readonly timestamp: string;
+}
+
 /** One atomic turn write: the messages to append (in order) plus the session row to flush. */
 export interface SessionTurnWrite {
   /** Transcript rows to append, in ascending `sequenceNumber` order. May be empty (a row-less flush). */
@@ -476,8 +518,16 @@ export interface SessionStore {
    *
    * Zeroes the per-model `session_costs` holds AND the `agent_sessions` aggregate in one transaction, and
    * returns the amount released (0 when nothing was held).
+   *
+   * With a `recordSlot` (ADR-0148 §6) the SAME transaction appends the release's content-free record row at that slot, naming the amount
+   * it cleared — only when that amount is above zero (a release of nothing records nothing). The slot comes from the session's single
+   * sequence owner, which adopts it only after this returns a positive amount; a row that cannot be inserted rolls the release back.
    */
-  releaseSessionConservativeCommitments: (sessionId: string, ts: number) => number;
+  releaseSessionConservativeCommitments: (
+    sessionId: string,
+    ts: number,
+    recordSlot?: SessionRecordSlot,
+  ) => number;
   /** The per-model money attribution of a session, ordered by spend (descending). Empty — never `null` — when the
    *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
    *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
@@ -595,6 +645,12 @@ export function createSessionStore(db: Db): SessionStore {
         compactionDroppedThroughSequence: sessionMessages.compactionDroppedThroughSequence,
         interruptionReason: sessionMessages.interruptionReason,
         interruptionCode: sessionMessages.interruptionCode,
+        // ADR-0148 §6. Named here or read back as absent: this is an EXPLICIT column list (a newer column an older list does not name
+        // is not read at all, which is how an older binary reads a record row: as an inert system row).
+        recordKind: sessionMessages.recordKind,
+        recordFrom: sessionMessages.recordFrom,
+        recordTo: sessionMessages.recordTo,
+        recordMicrocents: sessionMessages.recordMicrocents,
         createdAt: sessionMessages.createdAt,
       })
       .from(sessionMessages)
@@ -828,7 +884,7 @@ export function createSessionStore(db: Db): SessionStore {
       });
     },
 
-    releaseSessionConservativeCommitments: (sessionId, ts) =>
+    releaseSessionConservativeCommitments: (sessionId, ts, recordSlot) =>
       // ADR-0074 §1's escape hatch, made DURABLE (#W15-3). Clearing only the in-memory governor meant a
       // released commitment came straight back on the next `chat-resume`, because §4 seeds the resumed
       // governor from these columns — so the "deliberate user decision" survived exactly as long as the
@@ -842,7 +898,23 @@ export function createSessionStore(db: Db): SessionStore {
       // number that was actually cleared rather than a re-read that a concurrent commitment could have moved.
       withSessionUsageWrite(db, [sessionId], (tx) => {
         const released = loadSession(sessionId, tx)?.totalConservativeMicrocents ?? 0;
-        if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op
+        if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op, and record nothing
+        // ADR-0148 §6: the release's content-free record row, in THIS transaction, naming the amount read above. A row that cannot be
+        // inserted (a taken sequence, a refused shape) throws, and the release rolls back with it: a release is never without its record.
+        if (recordSlot !== undefined)
+          tx.insert(sessionMessages)
+            .values(
+              toSessionMessageRow({
+                id: recordSlot.id,
+                sessionId,
+                sequenceNumber: recordSlot.sequenceNumber,
+                role: 'system',
+                content: [],
+                record: { kind: 'cost_release', microcents: released },
+                timestamp: recordSlot.timestamp,
+              }),
+            )
+            .run();
         tx.update(sessionCosts)
           .set({ conservativeMicrocents: 0, updatedAt: ts })
           .where(eq(sessionCosts.sessionId, sessionId))

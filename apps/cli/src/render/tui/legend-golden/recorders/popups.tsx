@@ -4,12 +4,12 @@ import { label, type Producer, type Recorder, type StateRows } from '../golden.j
 import { withGlyphForm } from '../../glyphs.js';
 import type { NativePromptSnapshot } from '../../native-prompt-channel.js';
 import {
+  bodyPageRows,
   naturalBodyRows,
   popupBody,
   popupFrameLines,
   popupNoticeLegend,
   popupNoticeLines,
-  reportPageRows,
   type PopupContent,
 } from '../../../../popups/frame-model.js';
 import { popupGeometry, popupInnerWidth } from '../../../../popups/geometry.js';
@@ -63,6 +63,10 @@ import {
   WORKFLOWS_LOADING_CONTENT,
 } from '../../../../popups/workflows-popup.js';
 import { CHAT_KEYS } from '../../chat-keys.js';
+import { effortTiersFor } from '../../../../chat/effort-notice.js';
+import { effortContent, effortInitialRow, effortSpec } from '../../../../popups/effort-popup.js';
+import type { PopupForm } from '../../../../popups/frame-model.js';
+import type { ReasoningEffort } from '@relavium/shared';
 
 const check = (
   id: string,
@@ -130,6 +134,24 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     describe:
       'the /help popup in a chat (ADR-0148 §10): the commands of the chat’s palette and the chat’s keys as one scrollable report',
   },
+  {
+    id: 'effort-popup',
+    file: 'popups/effort-popup.ts',
+    describe:
+      'the /effort popup in a chat (ADR-0148 §3, §6): the tiers of a graded and of a budget model with the one in force marked, and a model with no tier',
+  },
+  {
+    id: 'popup-form',
+    file: 'popups/frame-model.ts',
+    describe:
+      'a form step of a popup (ADR-0148 §1; the /models second step): `←/→` for its tabs and `↑/↓` for its radio group, each named only with a choice to make, then `Enter apply`',
+  },
+  {
+    id: 'popup-effect',
+    file: 'popups/frame-model.ts',
+    describe:
+      'a list step whose rows state their effect (ADR-0148 §3; the /mode first step): the highlighted row’s effect under the list, the room of the longest kept',
+  },
 ];
 
 const LIST: PopupContent = {
@@ -181,7 +203,12 @@ export function frameRows(
         steps: rail.names,
         stepIndex: rail.index,
         legend:
-          legendParts ?? popupLegend(frame, reportPageRows(geometry, body.filter !== undefined)),
+          legendParts ??
+          popupLegend(
+            frame,
+            bodyPageRows(state.content, body.filter !== undefined, geometry),
+            geometry.innerWidth,
+          ),
       },
       popupBody(state.content, body, geometry),
       geometry,
@@ -582,6 +609,107 @@ const recordHelp: Recorder = (): StateRows => {
   return states;
 };
 
+/** The `/effort` popup on a graded model (every tier a row) and a budget model (`off` and `on`), and a model with no tier to choose. */
+const recordEffort: Recorder = (): StateRows => {
+  const frameOf = (model: string, current: ReasoningEffort | undefined): PopupFrame => {
+    const tiers = effortTiersFor(model);
+    return openFrame(
+      effortSpec(
+        'chat',
+        effortContent(model, tiers, current),
+        effortInitialRow(model, tiers, current),
+      ),
+      1,
+    );
+  };
+  return {
+    ...frameStates(
+      label({ model: 'graded', current: 'medium' }),
+      frameOf('claude-sonnet-4-6', 'medium'),
+    ),
+    ...frameStates(
+      label({ model: 'graded', current: 'none' }),
+      frameOf('claude-sonnet-4-6', undefined),
+    ),
+    ...frameStates(
+      label({ model: 'budget', current: 'on' }),
+      frameOf('claude-sonnet-4-5', 'medium'),
+    ),
+    ...frameStates(label({ model: 'no-tier' }), frameOf('gpt-4o', undefined)),
+  };
+};
+
+/** The form of the `/models` second step, as a step after the first: with both fields, each alone, and as the first step (its `Esc close`). */
+const recordForm: Recorder = (): StateRows => {
+  const form: PopupForm = {
+    kind: 'form',
+    summary: 'gpt-5  400k context · $1.25 / $10 per M · openai',
+    tabs: {
+      label: 'Reasoning effort',
+      verb: 'effort',
+      initial: 'medium',
+      options: ['low', 'medium', 'high'].map((id) => ({ id, label: id })),
+    },
+    radio: {
+      label: 'Apply to',
+      verb: 'scope',
+      initial: 'chat',
+      options: [
+        {
+          id: 'chat',
+          label: 'This chat',
+          detail: 'switches the model now; the conversation stays',
+          warning:
+            'This chat moves from Anthropic to OpenAI. Your messages and short tool receipts are sent to OpenAI.',
+        },
+        { id: 'new', label: 'New chats', detail: 'saves it as your default; this chat stays' },
+      ],
+    },
+  };
+  const later = (content: PopupForm): PopupFrame => ({
+    ...openFrame(
+      spec([
+        step({ name: 'Model' }),
+        step({ name: 'Effort & scope', content, enter: 'apply', legendKeep: ['Enter'] }),
+      ]),
+      1,
+    ),
+    stepIndex: 1,
+  });
+  return {
+    ...frameStates(label({ step: 'second', fields: 'tabs+radio' }), later(form)),
+    ...frameStates(label({ step: 'second', fields: 'radio' }), later({ ...form, tabs: undefined })),
+    ...frameStates(label({ step: 'second', fields: 'tabs' }), later({ ...form, radio: undefined })),
+    ...frameStates(
+      label({ step: 'first', fields: 'tabs+radio' }),
+      openFrame(spec([step({ content: form, enter: 'apply' })]), 1),
+    ),
+  };
+};
+
+/** A list whose rows state their effect: the highlighted row's effect under the list, and a highlighted row with none (the room kept blank). */
+const recordEffect: Recorder = (): StateRows => {
+  const rows: PopupContent = {
+    kind: 'list',
+    rows: [
+      { id: 'ask', label: 'ask', detail: 'asks before every effect' },
+      {
+        id: 'auto',
+        label: 'auto',
+        detail: 'approves granted actions',
+        effect:
+          'Granted actions are approved without asking; a command still asks unless you remembered or approved it.',
+      },
+    ],
+  };
+  const on = (row: string): PopupFrame =>
+    openFrame(spec([step({ content: rows, enter: 'apply', initialRow: row })]), 1);
+  return {
+    ...frameStates(label({ highlighted: 'with-effect' }), on('auto')),
+    ...frameStates(label({ highlighted: 'without-effect' }), on('ask')),
+  };
+};
+
 export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'popup-frame-legend': recordFrameLegend,
   'popup-native-legend': recordNativeLegend,
@@ -591,4 +719,7 @@ export const POPUP_RECORDERS: Readonly<Record<string, Recorder>> = {
   'cost-popup': recordCost,
   'workflows-popup': recordWorkflows,
   'help-popup': recordHelp,
+  'effort-popup': recordEffort,
+  'popup-form': recordForm,
+  'popup-effect': recordEffect,
 };

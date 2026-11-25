@@ -47,7 +47,6 @@ afterEach(cleanup);
 const OVERLAYS = [
   'palette',
   'model-picker',
-  'effort-picker',
   'mention',
   'reverse-search',
   'sheet-permissions',

@@ -103,6 +103,7 @@ import {
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
 import { openReport } from '../popups/report-port.js';
+import { openSettings } from '../popups/settings-port.js';
 import { createNotificationChannel } from '../popups/notifications.js';
 import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
@@ -1152,6 +1153,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onSetEffort,
           permissions,
           reports,
+          settings,
+          setAnnouncer,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1189,6 +1192,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               }),
           },
         );
+        // The session's announcements (its typed settings, its mode control and its settings popups) are the Home's own notifications
+        // (ADR-0148 §2, §6): raised with no popup as their source, so a setting's word outlives the popup that applied it, and never written
+        // into the transcript or the Home's notice. Unbound when this chat is torn down.
+        setAnnouncer((text) => {
+          notifications.notify(text);
+        });
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
           built.handle.subscribe(
@@ -1238,6 +1247,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               };
         let torn = false;
         const teardown = async (): Promise<void> => {
+          setAnnouncer(undefined);
           if (ownedTeardown !== undefined) return ownedTeardown();
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
           torn = true;
@@ -1328,6 +1338,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   // `[c] copy` rides the Home's one clipboard closure, as `/copy` and the doctor's `[c]` do.
                   clipboard,
                   plainGlyphs: !deps.global.color,
+                },
+              }),
+          // ADR-0148 §3, §6: the settings popups (`/effort` today) open over THIS session, applying through its own setter and announcing on
+          // the Home's channel.
+          ...(settings === undefined
+            ? {}
+            : {
+                settings: {
+                  ...settings,
+                  surface: 'home-chat' as const,
+                  ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
                 },
               }),
           // ADR-0148 §8: `/doctor` opens the popup over this chat, with THIS session's read-only MCP report and owner.
@@ -2143,6 +2164,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           openOnHome((host) =>
             openReport({ host, port: chat, line, origin: 'chat', turnInFlight }),
           );
+        },
+        // The settings popups (`/effort` today; ADR-0148 §3, §6) open on the Home's host over the chat in front, with its port.
+        openSettings: ({ command, chat }) => {
+          openOnHome((host) => openSettings({ host, port: chat, command, origin: 'chat' }));
         },
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,

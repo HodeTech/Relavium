@@ -24,6 +24,7 @@ import {
 } from '../../../popups/notifications.js';
 import type { DoctorPort } from '../../../popups/doctor-port.js';
 import type { ReportsPort } from '../../../popups/report-port.js';
+import type { SettingsPort } from '../../../popups/settings-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import { mountInk, type InkMount, type MountOptions } from './mount.js';
@@ -61,6 +62,11 @@ export interface ChatSetup {
    * chat's session field (with the Home wired to open them).
    */
   readonly reports?: ReportsPort | undefined;
+  /**
+   * The chat's settings popups' port (`/effort` today; ADR-0148 §3, §6): the stand-alone chat's prop, or the Home-hosted chat's session field
+   * (with the Home wired to open them).
+   */
+  readonly settings?: SettingsPort | undefined;
 }
 
 /** A mounted chat, whichever host owns it. */
@@ -135,6 +141,7 @@ export function mountStandaloneChat(
       notifications={notifications}
       {...(setup.doctor === undefined ? {} : { doctor: setup.doctor })}
       {...(setup.reports === undefined ? {} : { reports: setup.reports })}
+      {...(setup.settings === undefined ? {} : { settings: setup.settings })}
       {...setup.standalone}
     />,
     variant,
@@ -184,6 +191,7 @@ export async function mountHostedChat(
     ...(setup.nativePrompt === true ? { nativePrompt: true } : {}),
     ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
     ...(setup.reports === undefined ? {} : { reports: setup.reports }),
+    ...(setup.settings === undefined ? {} : { settings: setup.settings }),
   };
   const homeDeps = homeSetup?.deps;
   const submitted: string[] = [];
@@ -213,6 +221,7 @@ export async function mountHostedChat(
           teardown: () => Promise.resolve(),
           ...(setup.doctor === undefined ? {} : { doctor: setup.doctor }),
           ...(setup.reports === undefined ? {} : { reports: setup.reports }),
+          ...(setup.settings === undefined ? {} : { settings: setup.settings }),
           ...hosted?.session,
         };
       },

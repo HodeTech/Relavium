@@ -7,7 +7,6 @@ import { type ReasoningEffort } from '@relavium/shared';
 import { effortRowLabel, projectEffortToRow } from '../../chat/effort-notice.js';
 import { sanitizeInline } from './chat-projection.js';
 import { blankStatusCell, statusCellOf } from './glyphs.js';
-import { exitKey, legend } from './legend.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   SelectableNote,
@@ -17,11 +16,10 @@ import {
 } from './selectable-text.js';
 
 /**
- * The shared reasoning-effort tier list (ADR-0066/0071) — the per-model picker body used by BOTH the `/models`
- * effort sub-step ({@link model-picker-view.tsx}'s `EffortSubList`, reached after choosing a reasoning model on a
- * reseat surface) and the standalone `/effort` overlay ({@link effort-picker.ts}). One canonical presentation so the
- * two entry points can never drift: each tier + its one-line hint, the highlighted row in cyan, and a `✓` on the
- * session's currently-bound effort. The header suffix (a provider-controlled model name) is sanitized at this display
+ * The reasoning-effort tier list (ADR-0066/0071) — the per-model picker body of the `/models` effort sub-step
+ * ({@link model-picker-view.tsx}'s `EffortSubList`, reached after choosing a reasoning model on a reseat surface): each
+ * tier + its one-line hint, the highlighted row in cyan, and a `✓` on the session's currently-bound effort. (The
+ * stand-alone `/effort` overlay that shared it is retired: `/effort` is a popup, `popups/effort-popup.ts`.) The header suffix (a provider-controlled model name) is sanitized at this display
  * boundary, exactly as the model rows are — a crafted name can neither forge a row nor inject a terminal escape.
  *
  * PURE: it owns no `useInput`; the surface routes keys to the fold and re-renders this from the resulting state.
@@ -42,22 +40,10 @@ export interface EffortTierListProps {
   /** A trailing context label after the "Reasoning effort" header (e.g. the bound model's name) — sanitized here;
    *  `undefined` ⇒ no suffix. */
   readonly labelSuffix?: string | undefined;
-  /** The nav-hint footer — differs by entry point ("Esc back" in the model sub-step vs "Esc close" standalone: {@link EFFORT_OVERLAY_FOOTER}). */
+  /** The nav-hint footer its caller passes (the model sub-step's `Esc back`). */
   readonly footer: string;
   readonly color: boolean;
 }
-
-/**
- * The footer of the standalone `/effort` overlay, which both hosts (the chat's and the Home's) pass whole (ADR-0145 §2 and §3): `Esc` closes
- * the list and the session's effort is as it was (the close class), unlike the model sub-step's `Esc back`.
- */
-export const EFFORT_OVERLAY_FOOTER = legend(
-  [
-    { keys: '↑/↓', verb: 'select' },
-    { keys: 'Enter', verb: 'apply' },
-  ],
-  exitKey.close(),
-);
 
 export function EffortTierList(props: Readonly<EffortTierListProps>): ReactElement {
   const { tiers, model, selected, current, labelSuffix, footer, color } = props;
