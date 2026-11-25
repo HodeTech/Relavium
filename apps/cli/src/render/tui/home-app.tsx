@@ -5,6 +5,16 @@ import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import type { DisplayPathRoots } from '../notation.js';
 import { NativePromptView } from './native-prompt-view.js';
+import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
+import { nativeFramed } from '../../popups/native-popup-body.js';
+import type { NotificationChannel, NotificationSnapshot } from '../../popups/notifications.js';
+import {
+  createPopupAcknowledgement,
+  type PopupAcknowledgement,
+} from '../../popups/popup-acknowledgement.js';
+import type { PopupHost, PopupHostSnapshot, PopupRefusal } from '../../popups/popup-host.js';
+import { PopupSlot } from '../../popups/popup-slot.js';
+import type { PopupPlacement } from '../../popups/geometry.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   createNativePromptAcknowledgement,
@@ -47,11 +57,13 @@ import {
   NO_OVERLAYS,
   noticePagingBlocked,
   occupiesRows,
+  overlayOwnsKeyboard,
   pointerBlocked,
   promptHidden,
   scrollKeysBlocked,
   type OverlayFlags,
 } from './overlay-flags.js';
+import { currentStep } from '../../popups/popup-reducer.js';
 import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
 import { exitKey, keyToken, legend } from './legend.js';
@@ -111,6 +123,14 @@ import { providerDisplayName } from '../../engine/providers.js';
 
 export interface RootAppProps {
   readonly nativePrompt?: NativePromptUi;
+  /**
+   * The Home's popup host ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2): this
+   * root routes keys and pastes to it while a popup is open, draws its popup in the one overlay slot (the last child of the root), measures it,
+   * closes it unanswered when a sheet arrives, and resets a card's evidence when one opens over it. Absent ⇒ no popup ever opens.
+   */
+  readonly popups?: PopupHost | undefined;
+  /** The Home's one notification channel: drawn on the hint row of the landing and of the chat, held while a decision is on screen. */
+  readonly notifications?: NotificationChannel | undefined;
   /** Synchronous native teardown seal, including mouse and paste routes before controller dispatch. */
   readonly inputEnabled?: () => boolean;
   /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
@@ -206,6 +226,8 @@ function ChatRegion(
     copied: boolean;
     /** Reserve bounded screen space for the active native card without unmounting Static. */
     promptHeight?: number | undefined;
+    /** The notification the hint row shows in place of the hint (the Home's one channel), or `undefined`. */
+    notification?: string | undefined;
   }>,
 ): ReactElement {
   // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
@@ -269,6 +291,7 @@ function ChatRegion(
         interruptArmed={props.interruptArmed}
         copied={props.copied}
         paletteOpen={promptHidden(props.overlays)}
+        notification={props.notification}
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
       <ToolReviewHost
@@ -373,12 +396,46 @@ export function routeKeyThroughCards(
 }
 
 /**
- * The Home host's record of what owns the keyboard: the controller's, with the native prompt channel's `active` on top (the channel is the
- * HOST's; the controller never sees it). One builder for the render's snapshot and for the live read of a handler.
+ * The Home host's record of what owns the keyboard: the controller's, with the native prompt channel's and the popup host's on top (both are
+ * the HOST's; the controller never sees the channel and reads only whether a popup is open). One builder for the render's snapshot and for the
+ * live read of a handler. Who owns the keys and whether the body's rows are taken are two facts (ADR-0148 §2): a native card, a framed block
+ * inline and an inline popup take the rows (`replacesBody`); a popup or a framed prompt in the overlay keeps the body drawn behind it.
  */
-function hostOverlayFlags(state: HomeControllerState, nativePromptActive: boolean): OverlayFlags {
-  return { ...homeOverlayFlags(state), nativePrompt: nativePromptActive };
+export function hostOverlayFlags(
+  state: HomeControllerState,
+  prompt: NativePromptSnapshot,
+  popup: PopupHostSnapshot,
+  placement: PopupPlacement,
+): OverlayFlags {
+  return {
+    ...homeOverlayFlags(state),
+    nativePrompt: prompt.active,
+    popup: popup.open,
+    replacesBody:
+      nativeTakesRows(prompt, placement) || (popup.open && popup.placement === 'replace'),
+  };
 }
+
+/** Whether the channel's prompt takes the body's rows: a card always, a prompt drawn as a popup only as a block in the flow (inline). */
+function nativeTakesRows(prompt: NativePromptSnapshot, placement: PopupPlacement): boolean {
+  return prompt.active && (!nativeFramed(prompt) || placement === 'replace');
+}
+
+/** Whether the channel's prompt is a CARD (drawn by `NativePromptView`), not a prompt drawn in the popup frame. */
+function nativeCardShown(prompt: NativePromptSnapshot): boolean {
+  return prompt.active && !nativeFramed(prompt);
+}
+
+const CLOSED_POPUPS: PopupHostSnapshot = {
+  open: false,
+  depth: 0,
+  placement: 'overlay',
+  frame: undefined,
+};
+const closedPopups = (): PopupHostSnapshot => CLOSED_POPUPS;
+const noPopupSubscribe = (): (() => void) => () => {};
+const NO_NOTIFICATION: NotificationSnapshot = { current: undefined, queued: 0, held: false };
+const noNotification = (): NotificationSnapshot => NO_NOTIFICATION;
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
@@ -401,11 +458,15 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   getSizeRef.current = getSize;
   const propsRef = useRef(props);
   propsRef.current = props;
-  /** What owns the keyboard NOW: the controller's state and the prompt channel, read at the call (a handler, a custody check), never a render's. */
+  /** Where a popup is drawn on this renderer: over the body in the alternate screen, in its place inline (ADR-0148 §4). */
+  const placement: PopupPlacement = props.alternateScreen === true ? 'overlay' : 'replace';
+  /** What owns the keyboard NOW: the controller's state, the prompt channel and the popup host, read at the call (a handler, a custody check), never a render's. */
   const liveOverlays = (): OverlayFlags =>
     hostOverlayFlags(
       controller.getSnapshot(),
-      propsRef.current.nativePrompt?.getSnapshot().active === true,
+      propsRef.current.nativePrompt?.getSnapshot() ?? emptyPrompt,
+      propsRef.current.popups?.getSnapshot() ?? CLOSED_POPUPS,
+      placement,
     );
   const [nativeAcknowledgement] = useState(() =>
     props.nativePrompt === undefined
@@ -427,8 +488,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     props.nativePrompt?.subscribe ?? emptyPromptSubscribe,
     props.nativePrompt?.getSnapshot ?? emptyPromptSnapshot,
   );
+  const popupSnapshot = useSyncExternalStore(
+    props.popups?.subscribe ?? noPopupSubscribe,
+    props.popups?.getSnapshot ?? closedPopups,
+  );
+  const notification = useSyncExternalStore(
+    props.notifications?.subscribe ?? noPopupSubscribe,
+    props.notifications?.getSnapshot ?? noNotification,
+  );
   /** What owned the keyboard at this render: every render-time gate below asks it, and the prompt's rows are `prompt`'s own. */
-  const flags = hostOverlayFlags(state, prompt.active);
+  const flags = hostOverlayFlags(state, prompt, popupSnapshot, placement);
   const [acknowledgement] = useState(() =>
     createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
   );
@@ -504,6 +573,80 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       cardFrame.dispose();
     };
   }, [controller, cardFrame]);
+  // ---- The popup (ADR-0148 §2) ----------------------------------------------------------------------------------------------------
+  // Its measured-frame evidence: the popup's content node, exactly the geometry's, measured and flushed. A popup holds custody only while no
+  // native prompt (a card or a sheet) is over it, the terminal is ours and the Home takes input.
+  const [popupAcknowledgement] = useState<PopupAcknowledgement<PopupHostSnapshot> | undefined>(
+    () => {
+      const popups = props.popups;
+      if (popups === undefined) return undefined;
+      return createPopupAcknowledgement<PopupHostSnapshot>({
+        current: popups.getSnapshot,
+        getSize: () => getSizeRef.current(),
+        hasCustody: () =>
+          propsRef.current.inputEnabled?.() !== false &&
+          propsRef.current.suspendPort?.isSuspended() !== true &&
+          propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+          stdout.writable !== false &&
+          !stdout.destroyed &&
+          !stdout.writableEnded,
+        shown: (snapshot) => popups.shown(snapshot),
+      });
+    },
+  );
+  useEffect(() => {
+    const popups = props.popups;
+    if (popups === undefined || popupAcknowledgement === undefined) return;
+    popups.bindVisibility(popupAcknowledgement.visible);
+    // The opening rules (ADR-0148 §2): no turn running, no card or sheet open, no two-step armed, nothing else owning the keyboard.
+    popups.bindOpenGate(() =>
+      homePopupRefusal(controller.getSnapshot(), propsRef.current.nativePrompt?.getSnapshot()),
+    );
+    // A popup that opens over a card (only a race can do it) resets the card's acknowledgement and dwell origin: the card is measured again on
+    // a new frame before anything on it counts. Synchronous, in the popup host's own publication.
+    const stopRevoking = revokeCardCustodyOnPopup(popups, () => {
+      homeFrame.invalidate();
+      cardFrame.invalidate();
+      nativeAcknowledgement?.invalidate();
+      controller.getSnapshot().session?.store.invalidateToolReview();
+    });
+    // A sheet that ARRIVES over a popup wins: the popup closes unanswered (ADR-0148 §2). Each source is watched for a sheet that was not
+    // there before: a card of the live chat, a native card, the exit guard, a gate card.
+    const stopWatching = watchSheetArrival(controller, propsRef.current.nativePrompt, popups);
+    return () => {
+      stopWatching();
+      stopRevoking();
+      popups.bindOpenGate(undefined);
+      popups.bindVisibility(undefined);
+      popupAcknowledgement.dispose();
+    };
+  }, [controller, popupAcknowledgement, homeFrame, cardFrame, nativeAcknowledgement, props.popups]);
+  // The notification channel is held while a decision is on screen or the hint row is not drawn, so it never paints over a card's rows and a
+  // notification nobody could see is not spent. Followed from every source, not from this root's renders: a chat's card comes and goes in the
+  // chat store, which this root does not re-render for.
+  useEffect(() => {
+    const notifications = props.notifications;
+    if (notifications === undefined) return;
+    const sync = (): void => {
+      notifications.hold(
+        notificationHeld(
+          controller.getSnapshot(),
+          propsRef.current.nativePrompt?.getSnapshot() ?? emptyPrompt,
+          propsRef.current.popups?.getSnapshot() ?? CLOSED_POPUPS,
+          liveOverlays(),
+          getSizeRef.current(),
+        ),
+      );
+    };
+    const popups = props.popups;
+    return watchHomeSources(
+      controller,
+      props.nativePrompt,
+      popups === undefined ? [] : [popups.subscribe],
+      sync,
+    );
+    // `size` re-runs it on a resize: the hint row is not drawn below the floor.
+  }, [controller, props.notifications, props.nativePrompt, props.popups, size.cols, size.rows]);
   const [noticeWindow, setNoticeWindow] = useState({
     revision: state.noticeRevision,
     cols: size.cols,
@@ -567,12 +710,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     () =>
       subscribeResize(() => {
         nativeAcknowledgement?.invalidate();
+        popupAcknowledgement?.invalidate();
         homeFrame.invalidate();
         cardFrame.invalidate();
         controller.getSnapshot().session?.store.invalidateToolReview();
-        setSize(getSize());
+        const next = getSize();
+        // A step that holds a chord or a secret is not left pending behind the notice below the floor (ADR-0148 §4).
+        propsRef.current.popups?.resized(next.cols, next.rows);
+        setSize(next);
       }),
-    [subscribeResize, getSize, nativeAcknowledgement, cardFrame],
+    [subscribeResize, getSize, nativeAcknowledgement, popupAcknowledgement, cardFrame],
   );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
@@ -740,6 +887,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         ...NO_OVERLAYS,
         ...cardFlagsFrom(controller.getSnapshot().session?.store.getSnapshot()),
         nativePrompt: props.nativePrompt?.getSnapshot().active === true,
+        popup: props.popups?.getSnapshot().open === true,
       })
     ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
@@ -826,6 +974,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       controller.getSnapshot().session?.store.invalidateToolReview();
       homeFrame.invalidate();
       cardFrame.invalidate();
+      popupAcknowledgement?.invalidate();
       props.onSuspend?.();
       return;
     }
@@ -850,6 +999,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;
+    // An open popup owns every key (ADR-0148 §2): this root is the one reader and routes them to it, as it routes them to a card. A mouse
+    // report is consumed first so its bytes can never type into the popup.
+    if (props.popups?.getSnapshot().open === true) {
+      if (consumeMouseReport(input)) return;
+      props.popups.input(input, key);
+      return;
+    }
     if (consumeMouseReport(input)) return;
     if (routeKeyThroughCards(controller, controller.getSnapshot().session?.store, input, key))
       return;
@@ -882,6 +1038,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;
+    // A paste goes into a popup's text field or nowhere: never to the composer behind it.
+    if (props.popups?.getSnapshot().open === true) {
+      props.popups.paste(text);
+      return;
+    }
     const live = getSizeRef.current();
     if (controller.getSnapshot().mode !== 'chat' && !homeFitsTerminal(live.cols, live.rows)) return;
     controller.handlePaste(text);
@@ -896,6 +1057,25 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     props.onRendererReady?.(flushVisible);
   }, [flushVisible, props.onRendererReady]);
 
+  // The one overlay slot (ADR-0148 §2): the LAST child of the root in every branch, and the only absolutely positioned node of the CLI.
+  const slot = (
+    <PopupSlot
+      host={props.popups}
+      acknowledgement={popupAcknowledgement}
+      native={
+        nativeAcknowledgement === undefined
+          ? undefined
+          : { snapshot: prompt, acknowledgement: nativeAcknowledgement }
+      }
+      placement={placement}
+      size={size}
+      color={color}
+      flush={() => app.waitUntilRenderFlush()}
+    />
+  );
+  // In the overlay the root must be as tall as the screen less a row, so the absolutely positioned popup lies inside it.
+  const overlayOpen =
+    placement === 'overlay' && (popupSnapshot.open || (prompt.active && nativeFramed(prompt)));
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
       <>
@@ -943,6 +1123,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           attachments={state.attachments}
           copied={copied}
           promptHeight={chatPromptHeight(flags, prompt, size)}
+          notification={notification.current?.text}
         />
         {nativeAcknowledgement && (
           <NativePromptView
@@ -952,6 +1133,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             size={size}
           />
         )}
+        {slot}
       </>
     );
   }
@@ -994,6 +1176,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             size={size}
           />
         )}
+        {slot}
       </LoadingEcho>
     );
   }
@@ -1001,9 +1184,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box
       flexDirection="column"
       width={layoutColumns(size.cols)}
-      {...(occupiesRows(flags)
+      {...(occupiesRows(flags) && nativeCardShown(prompt)
         ? { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' }
-        : {})}
+        : overlayOpen
+          ? { minHeight: Math.max(1, size.rows - 1) }
+          : {})}
     >
       {nativeAcknowledgement && (
         <NativePromptView
@@ -1071,6 +1256,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           interruptArmed={state.interruptArmed}
           hostedRun={state.hostedRun}
           exitGuard={state.exitGuard}
+          notification={notification.current?.text}
         />
       )}
       {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
@@ -1083,6 +1269,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           scope="next-chat"
         />
       )}
+      {slot}
     </Box>
   );
 }
@@ -1147,6 +1334,144 @@ function GateCardScreenView(
   );
 }
 
+/**
+ * Why a popup may not open on the Home now ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2), or `undefined` when it may: a chat is being built; a card of the live chat is open; a sheet (a native card, the exit guard, a gate card)
+ * is; a turn, a submit, a `!` command or a native action runs; the interrupt keymap is armed (a two-step); or something else owns the keyboard
+ * (a palette, a picker, a sheet, a screen). The popup host asks this at every open and says the reason in one notification.
+ */
+export function homePopupRefusal(
+  state: HomeControllerState,
+  native: NativePromptSnapshot | undefined,
+): PopupRefusal | undefined {
+  if (state.mode === 'loading') return 'starting';
+  const store = state.session?.store.getSnapshot();
+  const cards = cardFlagsFrom(store);
+  if (cards.approval || cards.review || cards.question || cards.checkpoint) return 'card-open';
+  if (
+    native?.active === true ||
+    state.exitGuard !== undefined ||
+    state.screen?.kind === 'gate-card'
+  )
+    return 'sheet-open';
+  if (
+    store?.state.status === 'running' ||
+    state.submitBusy ||
+    state.shellBusy ||
+    state.nativeActionBusy
+  )
+    return 'turn-running';
+  if (state.interruptArmed) return 'armed';
+  if (overlayOwnsKeyboard(homeOverlayFlags(state))) return 'overlay-open';
+  return undefined;
+}
+
+/** Which kinds of sheet are on the Home now: a card of the live chat, a native card, the exit guard, a gate card. */
+interface SheetsPresent {
+  readonly card: boolean;
+  readonly native: boolean;
+  readonly exitGuard: boolean;
+  readonly gateCard: boolean;
+}
+
+function sheetsPresent(
+  state: HomeControllerState,
+  native: NativePromptSnapshot | undefined,
+): SheetsPresent {
+  const cards = cardFlagsFrom(state.session?.store.getSnapshot());
+  return {
+    card: cards.approval || cards.question || cards.checkpoint,
+    native: native?.active === true,
+    exitGuard: state.exitGuard !== undefined,
+    gateCard: state.screen?.kind === 'gate-card',
+  };
+}
+
+/**
+ * Watch every source of a sheet on the Home (the controller, the live chat's store, the native prompt channel) and close the open popup
+ * unanswered when a sheet ARRIVES (one that was not there a moment before): the sheet wins and nothing is restored (ADR-0148 §2). A popup the
+ * person opened over a card that was already there (a race the open gate refuses) is not closed by it: that card's custody is revoked and its
+ * evidence reset instead (`revokeCardCustodyOnPopup`). Returns the unsubscribe.
+ */
+export function watchSheetArrival(
+  controller: Pick<HomeController, 'getSnapshot' | 'subscribe'>,
+  native: Pick<NativePromptUi, 'getSnapshot' | 'subscribe'> | undefined,
+  popups: Pick<PopupHost, 'getSnapshot' | 'sheetArrived'>,
+): () => void {
+  let before = sheetsPresent(controller.getSnapshot(), native?.getSnapshot());
+  return watchHomeSources(controller, native, [], () => {
+    const now = sheetsPresent(controller.getSnapshot(), native?.getSnapshot());
+    const arrived =
+      (now.card && !before.card) ||
+      (now.native && !before.native) ||
+      (now.exitGuard && !before.exitGuard) ||
+      (now.gateCard && !before.gateCard);
+    before = now;
+    if (arrived && popups.getSnapshot().open) popups.sheetArrived();
+  });
+}
+
+/**
+ * Call `onChange` whenever anything that decides a sheet or the hint row on the Home may have changed: the controller, the live chat's store
+ * (followed across a new session), the native prompt channel and any other source given. Called once at the start too. The Home's root does not
+ * re-render on a chat store's change (the chat region does), so a fact read from the store is followed here, never from a render. Returns the
+ * unsubscribe.
+ */
+export function watchHomeSources(
+  controller: Pick<HomeController, 'getSnapshot' | 'subscribe'>,
+  native: Pick<NativePromptUi, 'subscribe'> | undefined,
+  others: readonly ((listener: () => void) => () => void)[],
+  onChange: () => void,
+): () => void {
+  let watched: ChatStoreController | undefined;
+  let unwatchStore: (() => void) | undefined;
+  const check = (): void => {
+    const store = controller.getSnapshot().session?.store;
+    if (store !== watched) {
+      unwatchStore?.();
+      watched = store;
+      unwatchStore = store?.subscribe(check);
+    }
+    onChange();
+  };
+  check();
+  const stops = [
+    controller.subscribe(check),
+    ...(native === undefined ? [] : [native.subscribe(check)]),
+  ];
+  for (const subscribe of others) stops.push(subscribe(check));
+  return () => {
+    for (const stop of stops) stop();
+    unwatchStore?.();
+  };
+}
+
+/**
+ * Whether the Home's notifications are held now: a decision is on screen (a card, a native prompt, the exit guard, a screen in the slot, a
+ * popup step that holds a chord or a secret), or the hint row they draw on is not drawn (a block in the flow, below the floor, a chat that is
+ * busy or has a submode open).
+ */
+function notificationHeld(
+  state: HomeControllerState,
+  prompt: NativePromptSnapshot,
+  popup: PopupHostSnapshot,
+  flags: OverlayFlags,
+  size: { readonly cols: number; readonly rows: number },
+): boolean {
+  const cards = cardFlagsFrom(state.session?.store.getSnapshot());
+  if (cards.approval || cards.review || cards.question || cards.checkpoint) return true;
+  if (prompt.active || state.exitGuard !== undefined || state.screen !== undefined) return true;
+  if (popup.frame !== undefined && currentStep(popup.frame).spec.holds !== undefined) return true;
+  if (flags.replacesBody || state.mode === 'loading' || !homeFitsTerminal(size.cols, size.rows))
+    return true;
+  if (state.mode === 'home') return landingPromptHidden(flags);
+  const busy =
+    state.session?.store.getSnapshot().state.status === 'running' ||
+    state.submitBusy ||
+    state.shellBusy;
+  return busy || promptHidden(flags);
+}
+
 const emptyPromptSnapshot = (): import('./native-prompt-channel.js').NativePromptSnapshot =>
   emptyPrompt;
 const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
@@ -1175,6 +1500,8 @@ function chatViewportRows(
   size: NativeSize,
 ): number {
   if (!occupiesRows(flags)) return size.rows;
+  // A popup's block takes the whole live region: the viewport keeps one row.
+  if (!nativeCardShown(prompt)) return 1;
   return nativePromptFits(size) ? Math.max(1, size.rows - promptRows(prompt, size.cols)) : 1;
 }
 
@@ -1185,6 +1512,8 @@ function chatPromptHeight(
   size: NativeSize,
 ): number | undefined {
   if (!occupiesRows(flags)) return undefined;
+  // A popup's block (inline) is the whole live region, so the region above it keeps no rows: the whole stays at most `rows − 1` (ADR-0148 §4).
+  if (!nativeCardShown(prompt)) return 0;
   return nativePromptFits(size) ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2) : 0;
 }
 

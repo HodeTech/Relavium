@@ -10,6 +10,57 @@ import {
 } from './measured-frame-acknowledgement.js';
 export { reviewTerminalFits as nativePromptFits } from './measured-frame-acknowledgement.js';
 
+/**
+ * The fields of a snapshot that are NOT part of what the person was shown as one card, each with the reason. Every other field of
+ * {@link NativePromptSnapshot} is identity ({@link sameNativePromptFrame}): a change to it is a new card that must be measured, flushed and
+ * dwelt on again before anything on it counts ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2). `native-prompt-identity.test.ts` enumerates the snapshot's keys against this list and the comparison, so a field added without a
+ * decision fails there. The clock and any spinner are not fields at all (ADR-0147 §2).
+ */
+export const NATIVE_PROMPT_IDENTITY_EXCLUDED: Readonly<
+  Partial<Record<keyof NativePromptSnapshot, string>>
+> = {
+  display:
+    'what is typed into the open field: the card stays the card the person is typing into, and a keystroke must not restart its dwell (a secret would never be answerable)',
+};
+
+/**
+ * Whether two snapshots are the same card as far as the measured-frame proof goes: every field but the ones of
+ * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps, exit label, placement and depth). The
+ * lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
+ */
+export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSnapshot): boolean {
+  return (
+    a.active === b.active &&
+    a.kind === b.kind &&
+    a.picker === b.picker &&
+    a.message === b.message &&
+    a.note === b.note &&
+    a.options === b.options &&
+    a.selected === b.selected &&
+    a.error === b.error &&
+    a.escape === b.escape &&
+    a.details === b.details &&
+    samePopupDescriptor(a.popup, b.popup)
+  );
+}
+
+function samePopupDescriptor(
+  a: NativePromptSnapshot['popup'],
+  b: NativePromptSnapshot['popup'],
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.placement === b.placement &&
+    a.title === b.title &&
+    a.origin === b.origin &&
+    a.stepIndex === b.stepIndex &&
+    a.stepCount === b.stepCount &&
+    a.exitLabel === b.exitLabel &&
+    a.depth === b.depth
+  );
+}
+
 /** Evidence is bound to one exact card, geometry and committed/actually flushed Ink frame. */
 export function createNativePromptAcknowledgement(
   ui: NativePromptUi,
@@ -47,16 +98,7 @@ export function createNativePromptAcknowledgement(
     notify();
   };
   const invalidate = (): void => invalidateCard(false);
-  const sameCard = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
-    a.active === b.active &&
-    a.kind === b.kind &&
-    a.message === b.message &&
-    a.note === b.note &&
-    a.options === b.options &&
-    a.selected === b.selected &&
-    a.error === b.error &&
-    a.escape === b.escape &&
-    a.details === b.details;
+  const sameCard = sameNativePromptFrame;
   const samePickerPrompt = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
     a.active &&
     b.active &&

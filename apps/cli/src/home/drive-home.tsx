@@ -101,6 +101,8 @@ import {
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { createNotificationChannel } from '../popups/notifications.js';
+import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
@@ -364,6 +366,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // exit guard (the controller). What one answered, the next is locked against, so a key held through an answer cannot answer the next card.
   const chordHistory = createChordHistory();
   const nativePrompt = createNativePromptChannel({ history: chordHistory });
+  // The Home's one notification channel and its popup host (ADR-0148 §2): the popup host is built once the renderer is known (a popup is an
+  // overlay in the alternate screen and a block in the flow inline), on the SAME chord history, which the chat stores share too, so a key
+  // typed into a popup is seen by the guards of any card that opens next.
+  const notifications = createNotificationChannel();
+  let popups: PopupHost | undefined;
   let lastSavedSessionId: string | undefined;
   let finalSetupNote: string | undefined;
   const promptFlow = {
@@ -1345,6 +1352,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           deps.global.color,
           undefined,
           transcriptBoundFor(altScreenActive),
+          { history: chordHistory },
         );
         // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
         // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
@@ -1622,6 +1630,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               ...(initialRestore ? { initialRestore: true } : {}),
             },
             transcriptBoundFor(altScreenActive),
+            { history: chordHistory },
           );
           // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
           // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
@@ -2057,6 +2066,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         plainGlyphs: !deps.global.color,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
+        popupOpen: () => popups?.getSnapshot().open === true,
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,
         history,
@@ -2229,6 +2239,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
+      popups = createPopupHost({
+        history: chordHistory,
+        notifications,
+        placement: alternateScreen ? 'overlay' : 'replace',
+      });
       // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
       mouseActive = resolveMouseMode({
         renderMode,
@@ -2295,7 +2310,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         return (
           state.mode === 'home' &&
           state.input.text === '' &&
-          !overlayOwnsKeyboard(homeOverlayFlags(state))
+          !overlayOwnsKeyboard({
+            ...homeOverlayFlags(state),
+            popup: popups?.getSnapshot().open === true,
+          })
         );
       };
       /** The setup's failure is the Home's: recorded on its owner and rejecting the Home, as every other setup error does. */
@@ -2359,6 +2377,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       };
       const props: RootAppProps = {
         nativePrompt: nativePrompt.ui,
+        popups,
+        notifications,
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
@@ -2519,6 +2539,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       if (runHost?.abandoned !== true) closeDb();
     }
     nativePrompt.ui.dispose();
+    popups?.dispose();
+    notifications.dispose();
     ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
     if (
       lastSavedSessionId !== undefined &&

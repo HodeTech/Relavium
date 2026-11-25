@@ -1,3 +1,4 @@
+import type { DOMElement } from 'ink';
 import stringWidth from 'string-width';
 
 import type { Variant } from './variants.js';
@@ -21,7 +22,17 @@ export type PropertyId =
   /** Not one of the five: the surface's own landmark (or, below the floor, its notice) is on screen, so a frame that never opened cannot pass. */
   | 'surface-shown'
   /** Not one of the five: the surface's own legend row is on ONE row of the frame, whole, so a layout that merges or overwrites it cannot pass. */
-  | 'legend-row';
+  | 'legend-row'
+  /**
+   * Not one of the five (ADR-0148 §2): the tree holds an absolutely positioned node only while a popup is open, exactly one, and it is the one
+   * overlay slot, the last child of every node up to the root, so nothing can be drawn after it (z-order is tree order).
+   */
+  | 'overlay-layer'
+  /**
+   * Not one of the five (ADR-0148 §2, §4): a popup in the overlay draws exactly its own rows in its box (nothing over them) and changes no cell
+   * outside its box; a popup in the flow is the live region and nothing else.
+   */
+  | 'popup-box';
 
 export interface Violation {
   readonly property: PropertyId;
@@ -237,6 +248,116 @@ export function checkLegendRow(observation: Observation, row: string): Violation
           message: `the legend row "${row}" is not on a row of the frame by itself, whole`,
         },
       ];
+}
+
+/**
+ * Every element of the tree under `root` that is positioned absolutely, but the renderer's own `<Static>` region (Ink lays out the lines it
+ * prints to the scrollback in an absolutely positioned box of its own, marked `internal_static`, outside the live frame).
+ */
+export function absoluteNodes(root: DOMElement): DOMElement[] {
+  const found: DOMElement[] = [];
+  const visit = (node: DOMElement): void => {
+    if (node.internal_static === true) return;
+    if (node.style.position === 'absolute') found.push(node);
+    for (const child of node.childNodes) if (child.nodeName !== '#text') visit(child);
+  };
+  visit(root);
+  return found;
+}
+
+/** Whether `node` is the last child of its parent, and its parent of its own, all the way up to the root. */
+function lastAllTheWayUp(node: DOMElement, root: DOMElement): boolean {
+  for (let current = node; current !== root; ) {
+    const parent = current.parentNode;
+    if (parent === undefined) return false;
+    if (parent.childNodes.at(-1) !== current) return false;
+    current = parent;
+  }
+  return true;
+}
+
+/**
+ * (8) The overlay layer (ADR-0148 §2): with no popup open the tree positions nothing absolutely; with one open it positions exactly one node,
+ * and that node is the last child of everything above it, so no later sibling can be drawn over the popup. `root` absent (a mount without the
+ * probe) ⇒ not asserted.
+ */
+export function checkOverlayLayer(root: DOMElement | undefined, popup: boolean): Violation[] {
+  if (root === undefined) return [];
+  const absolute = absoluteNodes(root);
+  const expected = popup ? 1 : 0;
+  if (absolute.length !== expected)
+    return [
+      {
+        property: 'overlay-layer',
+        message: `${String(absolute.length)} absolutely positioned node(s) in the tree, expected ${String(expected)}`,
+      },
+    ];
+  const slot = absolute[0];
+  if (slot !== undefined && !lastAllTheWayUp(slot, root))
+    return [
+      {
+        property: 'overlay-layer',
+        message:
+          'the absolutely positioned node is not the last child of the root: a later sibling can be drawn over it',
+      },
+    ];
+  return [];
+}
+
+/** Where a popup is drawn and what its rows are, from the one geometry function and the frame model. */
+export interface PopupBox {
+  readonly placement: 'overlay' | 'replace';
+  readonly top: number;
+  readonly left: number;
+  readonly width: number;
+  readonly height: number;
+  readonly rows: readonly string[];
+}
+
+/**
+ * (9) The popup's box (ADR-0148 §2, §4): in the overlay, the drawn frame holds exactly the popup's own rows in its box (the occlusion check the
+ * bounds check cannot make) and every cell outside the box is the cell of the frame it was opened over; in the flow, the live region is the
+ * popup's rows and nothing else. Rows are compared with their trailing spaces trimmed, as the renderer writes them.
+ */
+export function checkPopupBox(
+  observation: Observation,
+  before: readonly string[],
+  box: PopupBox,
+): Violation[] {
+  const problems: string[] = [];
+  const lines = observation.lines;
+  const cells = (row: string | undefined): string[] => Array.from(row ?? '');
+  if (box.placement === 'replace') {
+    const drawn = lines.map((line) => line.trimEnd());
+    const want = box.rows.map((row) => row.trimEnd());
+    if (drawn.join('\n') !== want.join('\n'))
+      problems.push('the live region is not exactly the popup’s rows');
+  } else {
+    box.rows.forEach((row, index) => {
+      const drawn = cells(lines[box.top + index])
+        .slice(box.left, box.left + box.width)
+        .join('')
+        .trimEnd();
+      if (drawn !== row.trimEnd())
+        problems.push(`row ${String(index + 1)} of the popup is not its own: "${preview(drawn)}"`);
+    });
+    const height = Math.max(before.length, lines.length);
+    for (let row = 0; row < height; row += 1) {
+      const was = cells(before[row]);
+      const now = cells(lines[row]);
+      const inside = row >= box.top && row < box.top + box.height;
+      for (let column = 0; column < Math.max(was.length, now.length); column += 1) {
+        if (inside && column >= box.left && column < box.left + box.width) continue;
+        if ((was[column] ?? ' ') !== (now[column] ?? ' ')) {
+          problems.push(
+            `the cell ${String(row + 1)}:${String(column + 1)} outside the popup changed`,
+          );
+          break;
+        }
+      }
+    }
+  }
+  return problems.map((message) => ({ property: 'popup-box', message }));
 }
 
 /** (5) With colour off the raw bytes carry no colour SGR (bold, dim, inverse and underline are allowed). */

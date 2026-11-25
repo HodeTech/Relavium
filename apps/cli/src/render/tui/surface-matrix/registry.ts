@@ -1,4 +1,4 @@
-import type { PropertyId } from './properties.js';
+import type { PopupBox, PropertyId } from './properties.js';
 import type { Variant } from './variants.js';
 
 /**
@@ -58,6 +58,12 @@ export interface SurfaceBase {
   readonly variants?: ((variant: Variant) => boolean) | undefined;
   readonly knownFailure?: KnownFailure | readonly KnownFailure[] | undefined;
   readonly notes?: string | undefined;
+  /**
+   * The surface is a popup (ADR-0148): where it is drawn in this cell and what its rows are, from the one geometry function and the frame
+   * model. The matrix then expects exactly one absolutely positioned node (the slot, last in the tree), the popup's own rows in its box, and no
+   * cell outside it changed from the frame the surface recorded before opening it (`popup-fixture.ts`). Absent ⇒ the tree positions nothing.
+   */
+  readonly popup?: ((variant: Variant) => PopupBox) | undefined;
 }
 
 export const knownFailuresOf = (entry: SurfaceBase): readonly KnownFailure[] => {

@@ -1,0 +1,365 @@
+/**
+ * The popup's frame as rows of text ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §1, §4, §5): four parts in order, every row exactly the frame's width (the padding is what makes the popup opaque), the table's glyphs in the
+ * form colour asks for, the legend's way back kept last and never dropped, untrusted text sanitised and host-glyph blanked, and the four content
+ * states.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { exitKey, type LegendItem } from '../render/tui/legend.js';
+import { withGlyphForm } from '../render/tui/glyphs.js';
+import { displayWidth } from '../render/tui/viewport.js';
+import {
+  loadingElapsedText,
+  naturalBodyRows,
+  popupBody,
+  popupFrameLines,
+  popupNoticeLegend,
+  popupNoticeLines,
+  type PopupContent,
+  type PopupFrameParts,
+  type PopupListRow,
+} from './frame-model.js';
+import { INLINE_LIST_MAX_ROWS, popupGeometry, type PopupBoxGeometry } from './geometry.js';
+
+function geometryFor(
+  columns: number,
+  rows: number,
+  bodyRows: number,
+  rail = false,
+  placement: 'overlay' | 'replace' = 'overlay',
+): PopupBoxGeometry {
+  const geometry = popupGeometry({ columns, rows, kind: 'standard', placement, rail, bodyRows });
+  if (!geometry.fits) throw new Error('refused');
+  return geometry;
+}
+
+const LEGEND = {
+  items: [
+    { keys: '↑/↓', verb: 'select' },
+    { keys: 'c', verb: 'copy' },
+  ] as LegendItem[],
+  exit: exitKey.close(),
+};
+
+const parts = (over: Partial<PopupFrameParts> = {}): PopupFrameParts => ({
+  title: '/doctor',
+  origin: 'home',
+  steps: ['Report'],
+  stepIndex: 0,
+  legend: LEGEND,
+  ...over,
+});
+
+const rows = (count: number): PopupListRow[] =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `r${String(index)}`,
+    label: `row ${String(index)}`,
+  }));
+
+function frame(
+  content: PopupContent,
+  options: {
+    readonly columns?: number;
+    readonly rows?: number;
+    readonly selected?: number;
+    readonly offset?: number;
+    readonly parts?: Partial<PopupFrameParts>;
+    readonly ascii?: boolean;
+    readonly elapsed?: string;
+    readonly placement?: 'overlay' | 'replace';
+  } = {},
+) {
+  const state = { selected: options.selected ?? 0, offset: options.offset ?? 0 };
+  const steps = options.parts?.steps ?? ['Report'];
+  const geometry = geometryFor(
+    options.columns ?? 80,
+    options.rows ?? 24,
+    naturalBodyRows(
+      content,
+      state,
+      options.placement === 'replace' ? INLINE_LIST_MAX_ROWS : undefined,
+    ),
+    steps.length > 1,
+    options.placement,
+  );
+  const lines = withGlyphForm(options.ascii === true, () =>
+    popupFrameLines(
+      parts(options.parts),
+      popupBody(content, state, geometry, options.elapsed),
+      geometry,
+    ),
+  );
+  return { geometry, lines, text: lines.map((line) => line.text) };
+}
+
+describe('every row of the frame is exactly the frame’s width (opacity is the safety property)', () => {
+  const contents: readonly PopupContent[] = [
+    { kind: 'loading', what: 'Checking' },
+    { kind: 'empty', what: 'No workflows yet.', next: 'Use /init to create one.' },
+    { kind: 'error', what: 'The catalogue could not be read.', next: 'Press r to try again.' },
+    { kind: 'list', rows: rows(40) },
+    { kind: 'report', lines: Array.from({ length: 40 }, (_, i) => `line ${String(i)}`) },
+    { kind: 'list', rows: [{ id: 'w', label: '漢字の名前'.repeat(20), detail: '🙂 wide 💥' }] },
+  ];
+  it.each([
+    [80, 24],
+    [100, 30],
+    [88, 40],
+  ])('at %s × %s, in both glyph forms', (columns, terminalRows) => {
+    for (const content of contents)
+      for (const ascii of [false, true]) {
+        const { geometry, text } = frame(content, { columns, rows: terminalRows, ascii });
+        expect(text.length).toBe(geometry.height);
+        for (const row of text) expect(displayWidth(row), JSON.stringify(row)).toBe(geometry.width);
+      }
+  });
+});
+
+describe('the four parts, in order', () => {
+  it('the top edge carries the name on the left and the origin on the right', () => {
+    const { text } = frame({ kind: 'list', rows: rows(2) });
+    expect(text[0]).toMatch(/^─ \/doctor ─+ from Home ─$/u);
+    expect(frame({ kind: 'list', rows: rows(2) }, { parts: { origin: 'chat' } }).text[0]).toMatch(
+      / from chat ─$/u,
+    );
+  });
+
+  it('a popup of more than one step says `step 2 of 3` on its top edge and draws the rail', () => {
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      { parts: { steps: ['Workflow', 'Inputs', 'Confirm'], stepIndex: 1 } },
+    );
+    expect(text[0]).toContain('from Home · step 2 of 3');
+    expect(text[1]?.trim()).toBe('✓ Workflow ╌╌ ◉ Inputs ╌╌ ○ Confirm');
+  });
+
+  it('the rail is drawn in the plain forms when colour is off', () => {
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      { ascii: true, parts: { steps: ['Workflow', 'Inputs', 'Confirm'], stepIndex: 1 } },
+    );
+    expect(text[1]?.trim()).toBe('ok Workflow .. @ Inputs .. o Confirm');
+    expect(text[0]).toMatch(/^- \/doctor -+ from Home · step 2 of 3 -$/u);
+  });
+
+  it('a one-step popup has no rail', () => {
+    const { text } = frame({ kind: 'list', rows: rows(2) });
+    expect(text.some((row) => row.includes('╌'))).toBe(false);
+  });
+
+  it('the body, then the legend, then the bottom edge', () => {
+    const { text } = frame({ kind: 'list', rows: rows(2) });
+    expect(text[1]?.trimEnd()).toBe(' › row 0');
+    expect(text[2]?.trimEnd()).toBe('   row 1');
+    expect(text.at(-2)?.trim()).toBe('↑/↓ select · [c] copy · Esc close');
+    expect(text.at(-1)).toBe('─'.repeat(68));
+  });
+});
+
+describe('the legend always ends with the way back, and the way back is the last thing truncated', () => {
+  it('drops the other items from the end first and keeps the way back', () => {
+    const many: LegendItem[] = Array.from({ length: 12 }, (_, i) => ({
+      keys: String.fromCharCode(97 + i),
+      verb: `action${String(i)}`,
+    }));
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      { parts: { legend: { items: many, exit: exitKey.close() } } },
+    );
+    const legend = text.at(-2)?.trim() ?? '';
+    expect(legend.endsWith('Esc close')).toBe(true);
+    expect(legend.startsWith('[a] action0')).toBe(true);
+    expect(legend).not.toContain('[l] action11');
+  });
+
+  it('a step after the first names Ctrl+C as the key that closes, and ends with Esc back', () => {
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      {
+        parts: {
+          steps: ['One', 'Two'],
+          stepIndex: 1,
+          legend: { items: [{ keys: 'Ctrl+C', verb: 'close' }], exit: exitKey.step() },
+        },
+      },
+    );
+    expect(text.at(-2)?.trim()).toBe('[Ctrl+C] close · Esc back');
+  });
+});
+
+describe('untrusted text', () => {
+  it('a title, a label and a detail are sanitised and cannot draw a host glyph', () => {
+    const { text } = frame(
+      {
+        kind: 'list',
+        rows: [{ id: 'x', label: '\u001b[31m✓ ok\u001b[0m', detail: '━━ Approval needed ━━' }],
+      },
+      { parts: { title: '/doctor\u001b]0;pwned\u0007 ›' } },
+    );
+    const all = text.join('\n');
+    expect(all).not.toContain('\u001b');
+    expect(all).not.toContain('━');
+    expect(text[1]).not.toContain('✓');
+    expect(text[0]).not.toContain('›');
+  });
+
+  it('a legend text item is made inert: a name cannot forge a key or a separator on the legend row', () => {
+    const { text } = frame(
+      { kind: 'list', rows: rows(1) },
+      {
+        parts: { legend: { items: [{ text: 'file [Ctrl+Y] Allow · x' }], exit: exitKey.close() } },
+      },
+    );
+    expect(text.at(-2)).toContain('file (Ctrl+Y) Allow - x');
+  });
+});
+
+describe('the content states (ADR-0148 §5)', () => {
+  it('loading is a static `…`, and the elapsed seconds only once past five', () => {
+    expect(frame({ kind: 'loading', what: 'Checking' }).text[1]?.trim()).toBe('Checking…');
+    expect(frame({ kind: 'loading', what: 'Checking' }, { elapsed: '12 s' }).text[1]?.trim()).toBe(
+      'Checking…  12 s',
+    );
+    expect(loadingElapsedText(4999)).toBeUndefined();
+    expect(loadingElapsedText(5000)).toBe('5 s');
+    expect(loadingElapsedText(12_999)).toBe('12 s');
+    expect(loadingElapsedText(Number.NaN)).toBeUndefined();
+  });
+
+  it('empty says what is empty and what to do', () => {
+    const { text } = frame({
+      kind: 'empty',
+      what: 'No workflows yet.',
+      next: 'Use /init to create one.',
+    });
+    expect(text.slice(1, 3).map((row) => row.trim())).toEqual([
+      'No workflows yet.',
+      'Use /init to create one.',
+    ]);
+  });
+
+  it('error says what failed, with the failed glyph, and the next action', () => {
+    const { lines, text } = frame({
+      kind: 'error',
+      what: 'It failed.',
+      next: 'Press r to try again.',
+    });
+    expect(text[1]?.trim()).toBe('✗ It failed.');
+    expect(lines[1]?.kind).toBe('failed');
+    expect(
+      frame({ kind: 'error', what: 'It failed.', next: 'x' }, { ascii: true }).text[1]?.trim(),
+    ).toBe('x It failed.');
+  });
+
+  it('overflow is a windowed list with `▲ N more` / `▼ N more`, and the highlighted row is always in the window', () => {
+    for (const selected of [0, 7, 20, 39]) {
+      const { text } = frame({ kind: 'list', rows: rows(40) }, { selected });
+      const body = text.slice(1, -2);
+      expect(body.length).toBe(18);
+      expect(
+        body.some((row) => row.includes(`› row ${String(selected)}`)),
+        String(selected),
+      ).toBe(true);
+      // The window starts at the first row or says how many it hides above; it ends at the last or says how many it hides below.
+      expect(body[0], String(selected)).toMatch(/^ [ ›] row 0 |▲ \d+ more/u);
+      expect(body.at(-1), String(selected)).toMatch(/^ [ ›] row 39 |▼ \d+ more/u);
+      // And the highlighted row is never a marker's row.
+      for (const row of body) if (/[▲▼]/u.test(row)) expect(row).not.toContain('›');
+    }
+  });
+
+  it('a report that does not fit is windowed the same way, from its offset', () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${String(i)}`);
+    const top = frame({ kind: 'report', lines }).text.slice(1, -2);
+    expect(top[0]?.trim()).toBe('line 0');
+    expect(top.at(-1)).toMatch(/▼ 23 more/u);
+    const middle = frame({ kind: 'report', lines }, { offset: 10 }).text.slice(1, -2);
+    expect(middle[0]).toMatch(/▲ 11 more/u);
+    expect(middle[1]?.trim()).toBe('line 11');
+  });
+
+  it('inline (the accessible mode) windows a list to at most ten rows', () => {
+    const { text } = frame({ kind: 'list', rows: rows(40) }, { placement: 'replace', rows: 40 });
+    // ten list rows and the three rows of the frame: no padding the list cannot use
+    expect(text.length).toBe(13);
+    expect(text.slice(1, -2).filter((row) => row.trim() !== '').length).toBe(10);
+  });
+
+  it('a row that cannot act is drawn dim with its reason', () => {
+    const { lines, text } = frame({
+      kind: 'list',
+      rows: [
+        { id: 'a', label: 'alpha' },
+        { id: 'b', label: 'bravo', enabled: false, reason: 'no key' },
+      ],
+    });
+    expect(text[2]?.trim()).toBe('bravo  no key');
+    expect(lines[2]?.kind).toBe('text');
+  });
+});
+
+describe('the notice drawn in place of a popup the terminal cannot hold', () => {
+  it('says why and what the way back does, each row filled to one width', () => {
+    const lines = withGlyphForm(false, () =>
+      popupNoticeLines('below-floor', { items: [], exit: exitKey.close() }, 60),
+    );
+    expect(lines.map((line) => line.text.trim())).toEqual([
+      'Terminal too small for this popup — enlarge it to 80×24',
+      'Esc close',
+    ]);
+    // a narrower terminal wraps the reason instead of losing its end
+    const narrow = withGlyphForm(false, () =>
+      popupNoticeLines('below-floor', { items: [], exit: exitKey.close() }, 30),
+    );
+    expect(narrow.map((line) => line.text.trim()).join(' ')).toContain('enlarge it to 80×24');
+    expect(new Set(lines.map((line) => displayWidth(line.text))).size).toBe(1);
+  });
+});
+
+describe('the keys that leave are the last to be dropped', () => {
+  it('a narrow legend drops the other items and keeps [Ctrl+C] close and the way back', () => {
+    const many: LegendItem[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({
+        keys: String.fromCharCode(97 + i),
+        verb: `action${String(i)}`,
+      })),
+      { keys: 'Ctrl+C', verb: 'close' },
+    ];
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      {
+        parts: {
+          steps: ['One', 'Two'],
+          stepIndex: 1,
+          legend: { items: many, exit: exitKey.step() },
+        },
+      },
+    );
+    const legendRow = text.at(-2)?.trim() ?? '';
+    expect(legendRow.endsWith('[Ctrl+C] close · Esc back')).toBe(true);
+    expect(legendRow).not.toContain('action9');
+  });
+});
+
+describe('the notice names the popup’s own leaving keys', () => {
+  it('on the first step its Esc; on a later step [Ctrl+C] close and Esc back; nothing else', () => {
+    const first = popupNoticeLegend({
+      items: [
+        { keys: '↑/↓', verb: 'select' },
+        { keys: 'c', verb: 'copy' },
+      ],
+      exit: exitKey.close(),
+    });
+    expect(first.items).toEqual([]);
+    const later = popupNoticeLegend({
+      items: [
+        { keys: '↑/↓', verb: 'select' },
+        { keys: 'Ctrl+C', verb: 'close' },
+      ],
+      exit: exitKey.step(),
+    });
+    const lines = withGlyphForm(false, () => popupNoticeLines('below-floor', later, 60));
+    expect(lines.at(-1)?.text.trim()).toBe('[Ctrl+C] close · Esc back');
+  });
+});

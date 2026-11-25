@@ -5,7 +5,10 @@ import type { NoticeFlush } from '../../engine/effect-retention.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import type { NativePromptUi } from './native-prompt-channel.js';
 import { NativePromptView } from './native-prompt-view.js';
-import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
+import {
+  createNativePromptAcknowledgement,
+  type NativePromptAcknowledgement,
+} from './native-prompt-acknowledgement.js';
 
 /** One input owner for native cards before chat or inside its idle prompt. Lifecycle belongs to its caller. */
 export function NativePromptHost({
@@ -17,8 +20,14 @@ export function NativePromptHost({
   ownsSuspendAttachment = true,
   onRendererReady,
   onRendererError,
+  acknowledgement: given,
 }: Readonly<{
   ui: NativePromptUi;
+  /**
+   * The acknowledgement, when the enclosing host holds it (a stand-alone chat shares it with the overlay slot, which draws a prompt a flow set
+   * as a popup: ADR-0148 §2). The host then owns its lifetime; absent ⇒ this host makes and disposes its own.
+   */
+  acknowledgement?: NativePromptAcknowledgement | undefined;
   color: boolean;
   inputEnabled?: () => boolean;
   onSuspend?: () => void;
@@ -36,18 +45,21 @@ export function NativePromptHost({
     rows: stdout.rows,
   });
   const [size, setSize] = useState(getSize);
-  const [acknowledgement] = useState(() =>
-    createNativePromptAcknowledgement(
-      ui,
-      getSize,
-      () =>
-        inputEnabled?.() !== false &&
-        suspendPort?.isSuspended() !== true &&
-        stdout.writable !== false &&
-        !stdout.destroyed &&
-        !stdout.writableEnded,
-    ),
+  const [acknowledgement] = useState(
+    () =>
+      given ??
+      createNativePromptAcknowledgement(
+        ui,
+        getSize,
+        () =>
+          inputEnabled?.() !== false &&
+          suspendPort?.isSuspended() !== true &&
+          stdout.writable !== false &&
+          !stdout.destroyed &&
+          !stdout.writableEnded,
+      ),
   );
+  const owned = given === undefined;
   useEffect(() => {
     const resized = (): void => {
       acknowledgement.invalidate();
@@ -56,9 +68,9 @@ export function NativePromptHost({
     stdout.on('resize', resized);
     return () => {
       stdout.removeListener('resize', resized);
-      acknowledgement.dispose();
+      if (owned) acknowledgement.dispose();
     };
-  }, [stdout, acknowledgement]);
+  }, [stdout, acknowledgement, owned]);
   useEffect(() => {
     if (suspendPort === undefined || !ownsSuspendAttachment) return;
     suspendPort.attach((callback) => app.suspendTerminal(callback));

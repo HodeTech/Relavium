@@ -8,6 +8,7 @@ import {
   type NativePromptAcknowledgement,
 } from './native-prompt-acknowledgement.js';
 import { dimProps } from './projection.js';
+import { nativeFramed } from '../../popups/native-popup-body.js';
 import { PromptEditor } from './prompt-view.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
@@ -111,12 +112,14 @@ export function NativePromptView({
   }>();
   const blocked =
     overflow?.snapshot === snapshot && overflow.cols === size.cols && overflow.rows === size.rows;
+  // A prompt a flow set as a popup is drawn in the popup frame by the host's overlay slot (ADR-0148 §2), which measures it there.
+  const framed = nativeFramed(snapshot);
   useLayoutEffect(() => {
-    if (!snapshot.active || !nativePromptFits(size) || blocked) return;
+    if (!snapshot.active || framed || !nativePromptFits(size) || blocked) return;
     if (!acknowledgement.commit(snapshot, ref.current, () => app.waitUntilRenderFlush()))
       setOverflow({ snapshot, cols: size.cols, rows: size.rows });
   });
-  if (!snapshot.active) return null;
+  if (!snapshot.active || framed) return null;
   // `Esc` ends the flow unless the prompt was opened to step back; `Ctrl+C` always leaves it.
   if (!nativePromptFits(size))
     return <Text>{refusal(snapshot, 'Terminal too small — resize to at least 80×24')}</Text>;

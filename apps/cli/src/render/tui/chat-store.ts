@@ -30,6 +30,7 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import { createChordHistory, type ChordHistory } from './chord-guard.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -183,6 +184,11 @@ export interface ChatStoreController extends ChatStore {
   openDetails: () => void;
   closeDetails: () => void;
   invalidateToolReview: () => void;
+  /**
+   * The key history the store's guards read (the previous key, the last foreign key, the last resolution): the one given in
+   * {@link ChatStoreOptions.history}, or its own. A popup host of the same terminal host stamps it too (ADR-0148 §2: one key history per host).
+   */
+  readonly keyHistory: ChordHistory;
   bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
   bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
   acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
@@ -283,6 +289,12 @@ export interface ChatStoreOptions {
    * `0` — or `confirmAlways: false` — switches one off).
    */
   readonly approvalGuard?: ApprovalGuard;
+  /**
+   * The terminal host's ONE key history (`createChordHistory`), shared with its popup host and, on the Home, its chord cards
+   * ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2): a key typed into a popup
+   * or answered on another card is seen by this store's guards. Absent ⇒ the store keeps one of its own.
+   */
+  readonly history?: ChordHistory;
 }
 
 /**
@@ -351,9 +363,9 @@ export function createChatStore(
   const approvalGuard = resolveApprovalGuard(options?.approvalGuard);
   let acknowledgedReview: ToolReviewState | undefined;
   let acknowledgedAt = 0;
-  let lastKeyAt = Number.NEGATIVE_INFINITY;
-  let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
-  let lastResolvedAt = Number.NEGATIVE_INFINITY;
+  // The host's ONE key history (ADR-0148 §2): the previous key, the last foreign key and the last resolution, shared with the popup host and,
+  // on the Home, with the chord cards, so a key typed into a popup is seen by the guards of a card that opens next. Its own when none is given.
+  const keyHistory: ChordHistory = options?.history ?? createChordHistory();
   // The session-wide grant is a two-step answer: the review the first `Ctrl+G` was pressed on and when. ENTER confirms it.
   // `scope` is which answer it asks: the session-wide `Ctrl+G`, or `Ctrl+O` (remember this command for this project).
   let alwaysAsk:
@@ -542,6 +554,7 @@ export function createChatStore(
   };
 
   return {
+    keyHistory,
     applyToolLiveEvent: (event) => {
       if (sealed) return;
       state = reduceToolLiveEvent(state, event);
@@ -651,8 +664,8 @@ export function createChatStore(
       // The single choke point: the host routes EVERY key here first, including the ones the composer then drops while a
       // turn runs and the ones a card swallows, so "the previous key" is the person's real previous key.
       const now = performance.now();
-      const previousKeyAt = lastKeyAt;
-      lastKeyAt = now;
+      const previousKeyAt = keyHistory.previousKeyAt;
+      keyHistory.previousKeyAt = now;
       // An open question card owns the keyboard (ADR-0132 §3): the stop keys abort the turn, a choosing key is applied only
       // once the card's exact frame has been acknowledged visible, and every other key is consumed.
       if (question !== undefined) {
@@ -661,7 +674,7 @@ export function createChatStore(
         // key typed before its frame settled — is a person at the keyboard, and the governed call the model made right after
         // the question opens its card a few milliseconds later: a key typed into the question is not an answer to THAT card
         // (PR #99 security sitting H3). Only the stop keys are exempt: they leave the turn, they do not type.
-        if (action.kind !== 'stop') lastForeignKeyAt = now;
+        if (action.kind !== 'stop') keyHistory.lastForeignKeyAt = now;
         switch (action.kind) {
           case 'stop':
             return 'abort';
@@ -674,11 +687,11 @@ export function createChatStore(
           case 'submit':
             // The key that answered the question is held, double-tapped or repeated onto the card that follows it: a
             // key-resolved question starts the same lockout a key-resolved card does.
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleQuestionWith(action.answer);
             break;
           case 'skip':
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleQuestionWith({ kind: 'skipped' });
             break;
           case 'none':
@@ -692,7 +705,7 @@ export function createChatStore(
       if (checkpoint !== undefined) {
         const action = reduceCheckpointKey(input, key);
         if (action.kind === 'stop' || action.kind === 'interrupt') {
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleCheckpointWith('stop');
           return action.kind === 'interrupt' ? 'stop-answered' : 'handled';
         }
@@ -701,27 +714,30 @@ export function createChatStore(
             now,
             shownAt: checkpointShownAt,
             previousKeyAt,
-            lastForeignKeyAt,
-            lastResolvedAt,
+            lastForeignKeyAt: keyHistory.lastForeignKeyAt,
+            lastResolvedAt: keyHistory.lastResolvedAt,
           });
           // It also has to be on screen right now: custody lost (Ctrl-Z, a closed output) makes the frame unseen again.
           if (refusal === undefined && checkpointVisible?.() === true) {
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleCheckpointWith('continue');
             return 'handled';
           }
           // A held key goes on being held: an affirmative key inside the lockout restarts it, as at an approval card.
-          if (approvalGuard.lockoutMs > 0 && now - lastResolvedAt < approvalGuard.lockoutMs)
-            lastResolvedAt = now;
+          if (
+            approvalGuard.lockoutMs > 0 &&
+            now - keyHistory.lastResolvedAt < approvalGuard.lockoutMs
+          )
+            keyHistory.lastResolvedAt = now;
           return 'handled';
         }
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
         return 'handled';
       }
       if (review === undefined) {
         // No card exists: the composer owns this key and drops it while a turn runs. That is a person typing the next
         // instruction — a foreign key, evidence that a `Ctrl+Y` or `Ctrl+G` in the next second and a half is not an answer (G1).
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
         return undefined;
       }
       const calls = [...toolDisplays.values()];
@@ -739,7 +755,7 @@ export function createChatStore(
         rememberOffered,
       );
       // What the guard compares THIS key against is what happened before it.
-      const priorForeignKeyAt = lastForeignKeyAt;
+      const priorForeignKeyAt = keyHistory.lastForeignKeyAt;
       // The session-wide grant's question — raised by a first `Ctrl+G` that passed every guard — is answered by ENTER and by no
       // other key (PR #99 security sitting H1: a second `a` was typing or a held key whatever the gap between them; the chord keeps that rule). It must
       // be on the same review, no older than the window and no younger than the minimum, and the card must still accept an
@@ -771,7 +787,7 @@ export function createChatStore(
           shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
           previousKeyAt,
           lastForeignKeyAt: priorForeignKeyAt,
-          lastResolvedAt,
+          lastResolvedAt: keyHistory.lastResolvedAt,
         }) === undefined;
       if (
         !confirmed &&
@@ -796,7 +812,7 @@ export function createChatStore(
                 rememberOffered,
               ).kind === 'none')))
       )
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
       // A held key goes on being held: an affirmative key that arrives inside the lockout restarts it, so the key must be
       // RELEASED for the whole window before the next card can be answered (PR #99 security sitting H2: a slow auto-repeat
       // used to slip past the window that counted from the resolving key only). Not only a refused answer: a repeat that lands
@@ -804,9 +820,9 @@ export function createChatStore(
       if (
         isAffirmativeReviewKey(review, input, key) &&
         approvalGuard.lockoutMs > 0 &&
-        now - lastResolvedAt < approvalGuard.lockoutMs
+        now - keyHistory.lastResolvedAt < approvalGuard.lockoutMs
       )
-        lastResolvedAt = now;
+        keyHistory.lastResolvedAt = now;
       // The question ends at the next key that is not its confirming Enter — typing, a held `Ctrl+G`, an early Enter, anything.
       if (!confirmed && alwaysAsk !== undefined) {
         alwaysAsk = undefined;
@@ -818,7 +834,7 @@ export function createChatStore(
         if (action.kind !== 'abort') flush();
       }
       if (confirmed) {
-        lastResolvedAt = now;
+        keyHistory.lastResolvedAt = now;
         settleApproval?.({ outcome: 'approve', scope: asked.scope });
         flush();
         return 'handled';
@@ -849,13 +865,13 @@ export function createChatStore(
           // promise and drops the store's own abort listener, so the abort that follows cannot turn it into a cancellation; the
           // turn then stops at its next boundary without another model call. A bare `Esc` and a `Ctrl+C` take the same path.
           if (settleApproval !== undefined) {
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleApproval({ outcome: 'reject' });
             flush();
           }
           return 'abort';
         case 'deny':
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleApproval?.(
             denialAnswer(
               action.reason,
@@ -874,7 +890,7 @@ export function createChatStore(
             shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
             previousKeyAt,
             lastForeignKeyAt: priorForeignKeyAt,
-            lastResolvedAt,
+            lastResolvedAt: keyHistory.lastResolvedAt,
           });
           if (refusal !== undefined) {
             refuse(refusal);
@@ -887,7 +903,7 @@ export function createChatStore(
             flush();
             break;
           }
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleApproval?.({ outcome: 'approve', scope: action.scope });
           flush();
           break;

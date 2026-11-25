@@ -35,6 +35,7 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['mention', 'the @-mention file completion'],
   ['reverse-search', 'the Ctrl+R reverse search'],
   ['reasoning-panel', 'the expanded reasoning panel'],
+  ['popup', 'a popup: the test layer’s minimal report popup in the one overlay slot (ADR-0148)'],
 ];
 
 export const PRODUCT_SURFACES: readonly ProductSurface[] = [
@@ -85,6 +86,11 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.resume-picker', 'the /resume picker'),
   row('home.run-launch', 'the /run picker, form and confirmation'),
   row('home.first-run-setup', 'the first-run setup that opens itself'),
+  // The popup (ADR-0148): the frame every user-started report, setting and flow will wear, opened by the test layer until a command is one.
+  row(
+    'home.popup',
+    'a popup: the test layer’s minimal report popup in the one overlay slot (ADR-0148)',
+  ),
   // The chat, in both of its hosts.
   ...(['chat', 'standalone-chat'] as const).flatMap((host) =>
     CHAT_ROWS.map(([name, title]) =>

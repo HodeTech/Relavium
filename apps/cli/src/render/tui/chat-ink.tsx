@@ -110,11 +110,31 @@ import {
   holdsCustody,
   interruptContextFrom,
   occupiesRows,
+  overlayOwnsKeyboard,
   pasteFlagsFrom,
   pointerBlocked,
   promptHidden,
   type OverlayFlags,
 } from './overlay-flags.js';
+import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
+import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
+import { revokeCardCustodyOnPopup } from '../../popups/custody.js';
+import type { PopupPlacement } from '../../popups/geometry.js';
+import { nativeFramed } from '../../popups/native-popup-body.js';
+import {
+  createNotificationChannel,
+  type NotificationChannel,
+  type NotificationSnapshot,
+} from '../../popups/notifications.js';
+import { createPopupAcknowledgement } from '../../popups/popup-acknowledgement.js';
+import {
+  createPopupHost,
+  type PopupHost,
+  type PopupHostSnapshot,
+  type PopupRefusal,
+} from '../../popups/popup-host.js';
+import { currentStep } from '../../popups/popup-reducer.js';
+import { PopupSlot } from '../../popups/popup-slot.js';
 import {
   foldMentionKey,
   mentionOpensAt,
@@ -324,6 +344,14 @@ interface ChatAppProps {
   readonly clipboard?: ClipboardWriter | undefined;
   /** Explicit masked review copy; independent of mouse selection preferences. */
   readonly reviewClipboard?: ClipboardWriter | undefined;
+  /**
+   * The chat's popup host ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2): this
+   * root routes keys and pastes to it while a popup is open and draws it in the one overlay slot. Absent ⇒ the chat builds its own, on the
+   * store's key history (one key history per host).
+   */
+  readonly popups?: PopupHost | undefined;
+  /** The chat's one notification channel, drawn on the hint row. Absent ⇒ the chat builds its own. */
+  readonly notifications?: NotificationChannel | undefined;
 }
 
 interface ChatViewProps {
@@ -369,6 +397,11 @@ interface ChatViewProps {
   readonly columns?: number | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the session, and the idle hint says so. */
   readonly interruptArmed?: boolean | undefined;
+  /**
+   * The one notification of the host's channel (`popups/notifications.ts`), drawn on the hint row in place of the idle hint for its few seconds
+   * (ADR-0148 §2). Never appended to the transcript: a notification leaves nothing behind.
+   */
+  readonly notification?: string | undefined;
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
    *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
@@ -725,7 +758,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {idleHint(props.interruptArmed === true, editor.text.length === 0)}
+          {props.notification ?? idleHint(props.interruptArmed === true, editor.text.length === 0)}
         </Text>
       )}
 
@@ -777,7 +810,80 @@ function useRawTerminalColumns(): number | undefined {
 }
 
 const subscribeNoPrompt = (): (() => void) => () => undefined;
+const NO_PROMPT: NativePromptSnapshot = {
+  active: false,
+  kind: 'idle',
+  message: '',
+  note: '',
+  options: [],
+  selected: 0,
+  display: '',
+  error: '',
+  escape: 'cancel',
+  details: [],
+};
+const noPrompt = (): NativePromptSnapshot => NO_PROMPT;
+const CLOSED_POPUPS: PopupHostSnapshot = {
+  open: false,
+  depth: 0,
+  placement: 'overlay',
+  frame: undefined,
+};
+const closedPopupsSnapshot = (): PopupHostSnapshot => CLOSED_POPUPS;
+const NO_NOTIFICATION: NotificationSnapshot = { current: undefined, queued: 0, held: false };
+const noNotificationSnapshot = (): NotificationSnapshot => NO_NOTIFICATION;
 
+/**
+ * Watch a stand-alone chat's sources of a sheet (its store's cards, its native prompt channel) and close the open popup unanswered when a sheet
+ * ARRIVES (ADR-0148 §2: the sheet wins, nothing is restored). A card that was already there when a popup opened (a race the open gate refuses)
+ * does not close it: its custody is revoked and its evidence reset instead. Returns the unsubscribe.
+ */
+export function watchChatSheetArrival(
+  store: Pick<ChatStoreController, 'getSnapshot' | 'subscribe'>,
+  native: Pick<NativePromptUi, 'getSnapshot' | 'subscribe'> | undefined,
+  popups: Pick<PopupHost, 'getSnapshot' | 'sheetArrived'>,
+): () => void {
+  const present = (): { readonly card: boolean; readonly native: boolean } => {
+    const cards = cardFlagsFrom(store.getSnapshot());
+    return {
+      card: cards.approval || cards.question || cards.checkpoint,
+      native: native?.getSnapshot().active === true,
+    };
+  };
+  let before = present();
+  const check = (): void => {
+    const now = present();
+    const arrived = (now.card && !before.card) || (now.native && !before.native);
+    before = now;
+    if (arrived && popups.getSnapshot().open) popups.sheetArrived();
+  };
+  const stopStore = store.subscribe(check);
+  const stopNative = native?.subscribe(check);
+  return () => {
+    stopStore();
+    stopNative?.();
+  };
+}
+
+/**
+ * Why a popup may not open in a stand-alone chat now (ADR-0148 §2), or `undefined`: a card is open, a native card is, a turn, a submit or a
+ * `!` command runs, the interrupt keymap is armed, or another overlay owns the keyboard.
+ */
+export function chatPopupRefusal(facts: {
+  readonly overlays: OverlayFlags;
+  readonly turnRunning: boolean;
+  readonly busy: boolean;
+  readonly interruptArmed: boolean;
+}): PopupRefusal | undefined {
+  const { overlays } = facts;
+  if (overlays.approval || overlays.review || overlays.question || overlays.checkpoint)
+    return 'card-open';
+  if (overlays.nativePrompt) return 'sheet-open';
+  if (facts.turnRunning || facts.busy) return 'turn-running';
+  if (facts.interruptArmed) return 'armed';
+  if (overlayOwnsKeyboard(overlays)) return 'overlay-open';
+  return undefined;
+}
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {
@@ -786,10 +892,44 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       clipboardFeedbackMounted.current = false;
     };
   }, []);
-  const nativeActive = useSyncExternalStore(
+  const nativeSnapshot = useSyncExternalStore(
     props.modePrompt?.ui.subscribe ?? subscribeNoPrompt,
-    () => props.modePrompt?.ui.getSnapshot().active === true,
+    props.modePrompt?.ui.getSnapshot ?? noPrompt,
   );
+  const nativeActive = nativeSnapshot.active;
+  /** Where a popup is drawn on this renderer: over the chat in the alternate screen, in its place inline (ADR-0148 §4). */
+  const placement: PopupPlacement = props.alternateScreen === true ? 'overlay' : 'replace';
+  // One notification channel and one popup host per chat, on the store's key history (ADR-0148 §2), unless the driver gave them.
+  const [ownNotifications] = useState<NotificationChannel | undefined>(() =>
+    props.notifications === undefined ? createNotificationChannel() : undefined,
+  );
+  const notifications = props.notifications ?? ownNotifications;
+  const [ownPopups] = useState<PopupHost | undefined>(() =>
+    props.popups === undefined
+      ? createPopupHost({ history: props.store.keyHistory, notifications, placement })
+      : undefined,
+  );
+  const popups: PopupHost | undefined = props.popups ?? ownPopups;
+  useEffect(
+    () => () => {
+      ownPopups?.dispose();
+      ownNotifications?.dispose();
+    },
+    [ownPopups, ownNotifications],
+  );
+  const popupSnapshot = useSyncExternalStore(
+    popups?.subscribe ?? subscribeNoPrompt,
+    popups?.getSnapshot ?? closedPopupsSnapshot,
+  );
+  const notification = useSyncExternalStore(
+    notifications?.subscribe ?? subscribeNoPrompt,
+    notifications?.getSnapshot ?? noNotificationSnapshot,
+  );
+  /** A popup is open and no native prompt is over it: this root's reader routes its keys (the native prompt has its own reader). */
+  const popupReads = (): boolean =>
+    props.inputEnabled?.() !== false &&
+    popups?.getSnapshot().open === true &&
+    props.modePrompt?.ui.getSnapshot().active !== true;
   const acceptsInput = (): boolean =>
     props.inputEnabled?.() !== false && holdsCustody(liveOverlays());
   const storeRef = useRef(props.store);
@@ -967,7 +1107,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       effortPicker: unknown;
       chatSheet: unknown;
     }>,
-    nativePrompt: boolean,
+    prompt: NativePromptSnapshot,
+    popup: PopupHostSnapshot,
   ): OverlayFlags => ({
     palette: open.palette !== undefined,
     search: open.search !== undefined,
@@ -977,7 +1118,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     chatSheet: open.chatSheet !== undefined,
     screen: false,
     exitGuard: false,
-    nativePrompt,
+    nativePrompt: prompt.active,
+    popup: popup.open,
+    // A native card takes the chat's rows (it is drawn in its place); a prompt drawn as a popup, and a popup, only as a block in the flow.
+    replacesBody:
+      (prompt.active && (!nativeFramed(prompt) || placement === 'replace')) ||
+      (popup.open && popup.placement === 'replace'),
     nativeActionBusy: false,
     ...cardFlagsFrom(props.store.getSnapshot()),
   });
@@ -991,12 +1137,72 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         effortPicker: effortPickerRef.current,
         chatSheet: chatSheetRef.current,
       },
-      props.modePrompt?.ui.getSnapshot().active === true,
+      props.modePrompt?.ui.getSnapshot() ?? NO_PROMPT,
+      popups?.getSnapshot() ?? closedPopupsSnapshot(),
     );
   const renderedOverlays = overlayFlagsFrom(
     { palette, search, mention, modelPicker, effortPicker, chatSheet },
-    nativeActive,
+    nativeSnapshot,
+    popupSnapshot,
   );
+  // ---- The popup (ADR-0148 §2) ----------------------------------------------------------------------------------------------------
+  const { stdout } = useStdout();
+  const terminalSize = (): { cols: number; rows: number } => ({
+    cols: stdout.columns,
+    rows: stdout.rows,
+  });
+  const terminalOwned = (): boolean =>
+    props.inputEnabled?.() !== false &&
+    props.suspendPort?.isSuspended() !== true &&
+    stdout.writable !== false &&
+    !stdout.destroyed &&
+    !stdout.writableEnded;
+  // The native prompt's acknowledgement, held here so the card (its own reader's view) and a prompt drawn as a popup (the slot) share it.
+  const [nativeAcknowledgement] = useState(() =>
+    props.modePrompt === undefined
+      ? undefined
+      : createNativePromptAcknowledgement(props.modePrompt.ui, terminalSize, terminalOwned),
+  );
+  // The popup's evidence: its content node, exactly the geometry's, measured and flushed while no native prompt is over it.
+  const [popupAcknowledgement] = useState(() =>
+    popups === undefined
+      ? undefined
+      : createPopupAcknowledgement<PopupHostSnapshot>({
+          current: popups.getSnapshot,
+          getSize: terminalSize,
+          hasCustody: () => terminalOwned() && props.modePrompt?.ui.getSnapshot().active !== true,
+          shown: (snapshot) => popups.shown(snapshot),
+        }),
+  );
+  useEffect(() => {
+    if (popups === undefined || popupAcknowledgement === undefined) return;
+    popups.bindVisibility(popupAcknowledgement.visible);
+    // The opening rules (ADR-0148 §2), read now: no card, no native card, no turn or submit, nothing armed, no other overlay.
+    popups.bindOpenGate(() =>
+      chatPopupRefusal({
+        overlays: liveOverlays(),
+        turnRunning: props.store.getSnapshot().state.status === 'running',
+        busy: shellBusyRef.current || submitBusyRef.current,
+        interruptArmed: interruptRef.current.armedAt !== undefined,
+      }),
+    );
+    // A popup that opens over a card (a race) resets the card's acknowledgement and dwell origin, synchronously.
+    const stopRevoking = revokeCardCustodyOnPopup(popups, () => {
+      props.store.invalidateToolReview();
+      nativeAcknowledgement?.invalidate();
+    });
+    // A sheet that ARRIVES over a popup wins: the popup closes unanswered.
+    const stopWatching = watchChatSheetArrival(props.store, props.modePrompt?.ui, popups);
+    return () => {
+      stopWatching();
+      stopRevoking();
+      popups.bindOpenGate(undefined);
+      popups.bindVisibility(undefined);
+      popupAcknowledgement.dispose();
+    };
+    // `liveOverlays` reads refs and the store at the call; the subscriptions are bound once per host.
+  }, [popups, popupAcknowledgement, nativeAcknowledgement, props.store, props.modePrompt]);
+  useEffect(() => () => nativeAcknowledgement?.dispose(), [nativeAcknowledgement]);
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -1507,6 +1713,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
   usePaste((text) => {
+    // A paste goes into a popup's text field or nowhere: never to the composer behind it.
+    if (popupReads()) {
+      popups?.paste(text);
+      return;
+    }
     if (!acceptsInput()) return;
     if (!activationReady.current) return;
     const pasted = text.replace(/\r\n?/g, '\n');
@@ -1683,7 +1894,29 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
+  /**
+   * One key while a popup is open (ADR-0148 §2): this root is the chat's one reader and routes it to the popup host, as it routes a key to a card.
+   * Job control still wins, and a mouse report is consumed so its bytes never type into the popup.
+   */
+  const routePopupKey = (
+    char: string,
+    key: Parameters<NonNullable<PopupHost['input']>>[1],
+  ): void => {
+    if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
+      props.store.invalidateToolReview();
+      popupAcknowledgement?.invalidate();
+      props.onSuspend?.();
+      return;
+    }
+    if (props.alternateScreen === true && mouseReaderRef.current.read(char).kind !== 'none') return;
+    popups?.input(char, key);
+  };
+
   useInput((char, key) => {
+    if (popupReads()) {
+      routePopupKey(char, key);
+      return;
+    }
     if (!acceptsInput()) return;
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
@@ -2057,6 +2290,28 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   useEffect(() => {
     applySelection(undefined);
   }, [windowSize.columns]);
+  // A resize voids the popup's measured frame, and below the floor a step that holds a chord or a secret closes unanswered (ADR-0148 §4).
+  useEffect(() => {
+    popupAcknowledgement?.invalidate();
+    popups?.resized(windowSize.columns, windowSize.rows);
+  }, [windowSize.columns, windowSize.rows, popupAcknowledgement, popups]);
+  // The notification channel is held while a decision is on screen or the hint row is not drawn (ADR-0148 §2).
+  const notificationsHeld =
+    renderedOverlays.approval ||
+    renderedOverlays.review ||
+    renderedOverlays.question ||
+    renderedOverlays.checkpoint ||
+    renderedOverlays.nativePrompt ||
+    renderedOverlays.replacesBody ||
+    (popupSnapshot.frame !== undefined &&
+      currentStep(popupSnapshot.frame).spec.holds !== undefined) ||
+    running ||
+    shellBusy ||
+    submitBusy ||
+    promptHidden(renderedOverlays);
+  useEffect(() => {
+    notifications?.hold(notificationsHeld);
+  }, [notifications, notificationsHeld]);
   // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
   // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
   // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Absent ⇒ the inline
@@ -2076,11 +2331,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         }
       : undefined;
 
+  const flushPopup = (): Promise<void> => app.waitUntilRenderFlush();
   return (
     <>
-      {occupiesRows(renderedOverlays) && props.modePrompt !== undefined && (
+      {nativeActive && props.modePrompt !== undefined && (
         <NativePromptHost
           ui={props.modePrompt.ui}
+          acknowledgement={nativeAcknowledgement}
           color={color}
           {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
           suspendPort={props.suspendPort}
@@ -2127,6 +2384,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           interruptArmed={interruptArmed}
           copied={copied}
           paletteOpen={promptHidden(renderedOverlays)}
+          notification={notification.current?.text}
         />
         {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
             overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
@@ -2196,6 +2454,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           />
         )}
       </Box>
+      {/* The one overlay slot (ADR-0148 §2): the last child of the root, and the only absolutely positioned node of the CLI. */}
+      <PopupSlot
+        host={popups}
+        acknowledgement={popupAcknowledgement}
+        native={
+          nativeAcknowledgement === undefined
+            ? undefined
+            : { snapshot: nativeSnapshot, acknowledgement: nativeAcknowledgement }
+        }
+        placement={placement}
+        size={{ cols: windowSize.columns, rows: windowSize.rows }}
+        color={color}
+        flush={flushPopup}
+      />
     </>
   );
 }

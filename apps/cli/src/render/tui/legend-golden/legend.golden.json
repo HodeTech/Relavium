@@ -1711,5 +1711,49 @@
   },
   "agent-run-stdin-note": {
     "stderr line (source literal)": "reading the prompt from stdin — finish with [Ctrl+D] ([Ctrl+Z], Enter on Windows); for an interactive session run `relavium`"
+  },
+  "popup-frame-legend": {
+    "step=list enter=apply control=c colour=off [1]": " ↑/↓ select · Enter apply · [c] copy · Esc close",
+    "step=list enter=apply control=c colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: [c]⟧⟦dim:  copy · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=first-of-two colour=off [1]": " ↑/↓ select · Esc close",
+    "step=first-of-two colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=second-of-two colour=off [1]": " ↑/↓ select · Enter apply · [Ctrl+C] close · Esc back",
+    "step=second-of-two colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  apply · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
+    "filter=typed colour=off [1]": " ↑/↓ select · [Ctrl+C] close · Esc clear the filter",
+    "filter=typed colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  clear the filter⟧",
+    "content=loading colour=off [1]": " Esc cancel",
+    "content=loading colour=on [1]": " ⟦bold: Esc⟧⟦dim:  cancel⟧",
+    "content=report colour=off [1]": " ↑/↓ scroll · Esc close",
+    "content=report colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  scroll · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "content=empty colour=off [1]": " Esc close",
+    "content=empty colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧"
+  },
+  "popup-native-legend": {
+    "kind=select escape=cancel colour=off [1]": " ↑/↓ select · Enter choose · Esc close",
+    "kind=select escape=cancel colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  choose · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=select escape=back colour=off [1]": " ↑/↓ select · Enter choose · Esc back · [Ctrl+C] close",
+    "kind=select escape=back colour=on [1]": " ⟦bold: ↑/↓⟧⟦dim:  select · ⟧⟦bold: Enter⟧⟦dim:  choose · ⟧⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close⟧",
+    "kind=text escape=cancel colour=off [1]": " Enter continue · Esc close",
+    "kind=text escape=cancel colour=on [1]": " ⟦bold: Enter⟧⟦dim:  continue · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=text escape=back colour=off [1]": " Enter continue · Esc back · [Ctrl+C] close",
+    "kind=text escape=back colour=on [1]": " ⟦bold: Enter⟧⟦dim:  continue · ⟧⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close⟧",
+    "kind=password escape=cancel colour=off [1]": " Enter continue · Esc close",
+    "kind=password escape=cancel colour=on [1]": " ⟦bold: Enter⟧⟦dim:  continue · ⟧⟦bold: Esc⟧⟦dim:  close⟧",
+    "kind=password escape=back colour=off [1]": " Enter continue · Esc back · [Ctrl+C] close",
+    "kind=password escape=back colour=on [1]": " ⟦bold: Enter⟧⟦dim:  continue · ⟧⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold: [Ctrl+C]⟧⟦dim:  close⟧",
+    "kind=busy escape=cancel colour=off [1]": " Esc cancels it",
+    "kind=busy escape=cancel colour=on [1]": " ⟦bold,yellow: Esc⟧⟦dim:  cancels it⟧",
+    "kind=busy escape=back colour=off [1]": " Esc back · [Ctrl+C] cancels it",
+    "kind=busy escape=back colour=on [1]": " ⟦bold: Esc⟧⟦dim:  back · ⟧⟦bold,yellow: [Ctrl+C]⟧⟦dim:  cancels it⟧"
+  },
+  "popup-notice": {
+    "step=first-step reason=below-floor colour=off [1]": " Esc close",
+    "step=first-step reason=below-floor colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=first-step reason=no-room colour=off [1]": " Esc close",
+    "step=first-step reason=no-room colour=on [1]": " ⟦bold: Esc⟧⟦dim:  close⟧",
+    "step=later-step reason=below-floor colour=off [1]": " [Ctrl+C] close · Esc back",
+    "step=later-step reason=below-floor colour=on [1]": " ⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧",
+    "step=later-step reason=no-room colour=off [1]": " [Ctrl+C] close · Esc back",
+    "step=later-step reason=no-room colour=on [1]": " ⟦bold: [Ctrl+C]⟧⟦dim:  close · ⟧⟦bold: Esc⟧⟦dim:  back⟧"
   }
 }

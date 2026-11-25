@@ -30,6 +30,13 @@ import {
   parkedRunSetup,
 } from './home-fixtures.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
+import {
+  recordBaseline,
+  TEST_POPUP_LEGEND_ROW,
+  TEST_POPUP_TITLE,
+  testPopupBox,
+  testReportPopup,
+} from './popup-fixture.js';
 import type { HomeSurface } from './surface-types.js';
 
 /**
@@ -137,6 +144,22 @@ const SUBJECT: ConsentSubject = {
 };
 
 export const HOME_SURFACES: readonly HomeSurface[] = [
+  {
+    host: 'home',
+    id: 'home.popup',
+    title: 'A popup over the landing (the test layer’s report popup)',
+    exitKey: 'Esc',
+    landmark: TEST_POPUP_TITLE,
+    selectedRow: 'alpha check',
+    legendRow: TEST_POPUP_LEGEND_ROW,
+    belowFloor: /too small for this popup/iu,
+    popup: testPopupBox('home'),
+    open: async (m) => {
+      recordBaseline(m);
+      m.popups.openForUser(testReportPopup('home'));
+      await settleOn(m, TEST_POPUP_TITLE);
+    },
+  },
   {
     host: 'home',
     id: 'home.empty-keyed',

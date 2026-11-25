@@ -1,4 +1,4 @@
-import { render, type Instance } from 'ink';
+import { Box, render, type DOMElement, type Instance } from 'ink';
 import type { ReactElement } from 'react';
 
 import { settleFrames } from '../harness-util.js';
@@ -32,6 +32,8 @@ export interface InkMount {
   rerender: (tree: ReactElement) => void;
   /** Change the terminal's size and tell Ink, as a resize does. */
   resize: (cols: number, rows: number) => void;
+  /** Ink's root node of the mounted tree (through a zero-size probe drawn first), for a property that reads the tree's layers. */
+  root: () => DOMElement | undefined;
   unmount: () => void;
 }
 
@@ -50,7 +52,21 @@ export function mountInk(
 ): InkMount {
   const stdout = new FakeStdout(variant.size.cols, variant.size.rows, options.tamper);
   const stdin = new OwnedTtyInput();
-  const instance: Instance = render(tree, {
+  // A zero-size box drawn FIRST, so the tree's own last child stays last: its parent is Ink's root, which the overlay property walks.
+  let probe: DOMElement | null = null;
+  const probed = (body: ReactElement): ReactElement => (
+    <>
+      <Box
+        ref={(node) => {
+          probe = node;
+        }}
+        width={0}
+        height={0}
+      />
+      {body}
+    </>
+  );
+  const instance: Instance = render(probed(tree), {
     stdout,
     stdin,
     exitOnCtrlC: false,
@@ -87,11 +103,12 @@ export function mountInk(
     },
     until,
     rerender: (next) => {
-      instance.rerender(next);
+      instance.rerender(probed(next));
     },
     resize: (cols, rows) => {
       stdout.resize(cols, rows);
     },
+    root: () => probe?.parentNode,
     unmount: () => {
       if (unmounted) return;
       unmounted = true;

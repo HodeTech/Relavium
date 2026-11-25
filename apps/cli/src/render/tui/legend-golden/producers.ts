@@ -8,6 +8,7 @@ import { INPUT_PRODUCERS } from './recorders/inputs.js';
 import { PROMPTS_PRODUCERS } from './recorders/prompts.js';
 import { SHEETS_PRODUCERS } from './recorders/sheets.js';
 import { TAB_HOST_PRODUCERS } from './recorders/tab-host.js';
+import { POPUP_PRODUCERS } from './recorders/popups.js';
 
 /**
  * Every producer of a key legend, a hint line, a footer hint or a sentence that names a key
@@ -25,4 +26,5 @@ export const PRODUCERS: readonly Producer[] = [
   ...SHEETS_PRODUCERS,
   ...PROMPTS_PRODUCERS,
   ...HOME_HOST_PRODUCERS,
+  ...POPUP_PRODUCERS,
 ];

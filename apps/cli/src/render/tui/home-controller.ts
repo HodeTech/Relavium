@@ -355,7 +355,8 @@ export interface HomeControllerState {
  * The Home's record of what owns the keyboard, built ONCE from its own state ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §2): every gate of the controller (the screen slot, the paste gate, the interrupt context, the strip's and the Active tab's pauses) and
  * of its host (`home-app.tsx`) asks `overlay-flags.ts` about this record instead of listing the overlays again. The cards are the live
- * chat store's, read now. `nativePrompt` is `false` here: the prompt channel is the HOST's, which sets it on top of this record.
+ * chat store's, read now. `nativePrompt`, `popup` and `replacesBody` are `false` here: the prompt channel and the popup host are the HOST's,
+ * which sets them on top of this record (the controller's own gates add `popup` from its `popupOpen` port).
  */
 export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
   return {
@@ -368,6 +369,8 @@ export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
     screen: state.screen !== undefined,
     exitGuard: state.exitGuard !== undefined,
     nativePrompt: false,
+    popup: false,
+    replacesBody: false,
     nativeActionBusy: state.nativeActionBusy,
     ...cardFlagsFrom(state.session?.store.getSnapshot()),
   };
@@ -690,6 +693,12 @@ export interface HomeControllerDeps {
    * cannot answer the next card on auto-repeat. Default: one of its own, which the consent card (built elsewhere) then does not share.
    */
   readonly chordHistory?: ChordHistory | undefined;
+  /**
+   * Whether a popup of the Home's popup host is open ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §2). The popup host is the HOST's; the controller reads only this fact, so its own gates (the screen slot, the strip's and the Active tab's
+   * pauses, the interrupt context) derive from the one record with the popup in it. Absent ⇒ no popup is ever open.
+   */
+  readonly popupOpen?: (() => boolean) | undefined;
   /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
@@ -1099,7 +1108,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const chatRunning = (): boolean =>
     state.mode === 'chat' && state.session?.store.getSnapshot().state.status === 'running';
   /** The record of what owns the keyboard right now (`overlay-flags.ts`): every gate below asks it, never the state's fields one by one. */
-  const overlayFlags = (): OverlayFlags => homeOverlayFlags(state);
+  const overlayFlags = (): OverlayFlags => ({
+    ...homeOverlayFlags(state),
+    popup: deps.popupOpen?.() === true,
+  });
   /** Whether a native bracketed paste (ink 7 `usePaste`) may append to the prompt buffer — only when the main
    *  Home/chat prompt is the active editable target: no build/turn/`!`-shell/submit in flight, no keyboard-owning
    *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`), and

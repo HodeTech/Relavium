@@ -17,8 +17,14 @@
  * Which flag is set by whom:
  * - the six submodes (`palette` .. `chatSheet`) and the four cards (`approval` .. `checkpoint`) are set by both hosts;
  * - `screen`, `exitGuard` and `nativeActionBusy` exist only on the Home (the stand-alone chat holds them `false`);
- * - `nativePrompt` is the native prompt channel's, which only a HOST sees: the Home controller holds it `false`, `home-app.tsx` and
- *   `chat-ink.tsx` set it from the channel's snapshot.
+ * - `nativePrompt`, `popup` and `replacesBody` are the HOST's (the native prompt channel and the popup host are what only a host sees): the Home
+ *   controller holds `nativePrompt` and `replacesBody` `false` and `popup` from its `popupOpen` port, `home-app.tsx` and `chat-ink.tsx` set the
+ *   three from the channel's and the popup host's snapshots.
+ *
+ * **Owning the keyboard is not taking the rows** (ADR-0148 §2). A native card and a popup own every key, but only a body that is drawn IN PLACE
+ * of the landing or the chat takes their rows: a card, a flow not yet converted, and an inline popup (the `replace` placement). A popup in the
+ * alternate screen is drawn in the overlay slot over a body that stays drawn (the `overlay` placement). So the two meanings `prompt.active` used
+ * to carry are two flags: `nativePrompt` and `popup` say who owns the keys, `replacesBody` says that the rows are taken.
  */
 
 import type { PasteEditableFlags } from './chat-input.js';
@@ -42,8 +48,16 @@ export interface OverlayFlags {
   readonly screen: boolean;
   /** The exit-guard card (the Home only). */
   readonly exitGuard: boolean;
-  /** A native prompt card or form holds the screen (the prompt channel's `active`). */
+  /** A native prompt card or form owns the keyboard (the prompt channel's `active`), in whichever placement it is drawn. */
   readonly nativePrompt: boolean;
+  /** A popup of the popup host is open ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)). */
+  readonly popup: boolean;
+  /**
+   * A native card or a popup is drawn IN PLACE of the body (the `replace` placement: a card, a flow not yet converted, an inline popup): the
+   * landing is not drawn, the transcript shrinks and the stand-alone chat is `display: none`. Never set alone: `nativePrompt` or `popup` owns the
+   * keys whenever it is set.
+   */
+  readonly replacesBody: boolean;
   /** A native action is in flight and every key is dropped (the Home only). */
   readonly nativeActionBusy: boolean;
   /** A per-tool approval is pending (the chat store's). */
@@ -67,6 +81,8 @@ export const NO_OVERLAYS: OverlayFlags = {
   screen: false,
   exitGuard: false,
   nativePrompt: false,
+  popup: false,
+  replacesBody: false,
   nativeActionBusy: false,
   approval: false,
   review: false,
@@ -88,7 +104,9 @@ export const NO_OVERLAYS: OverlayFlags = {
  * - `landingPromptHidden` — the landing draws no prompt (`HomeView`'s `paletteOpen`).
  * - `pageNotice` — `PgUp`/`PgDn` do not page the landing's notice.
  * - `occupiesRows` — the flag's own body takes the screen's rows: the landing and the chat are not drawn (or are shrunk) under it.
- * - `revokesCustody` — the approval's custody (the measured-frame evidence of the Home, a gate card and a review) is not held.
+ * - `revokesCustody` — the approval's custody (the measured-frame evidence of the Home, a gate card and a review) is not held. A host that
+ *   sees it revoked by a popup also resets the cards' acknowledgement and dwell origin (`popups/custody.ts`): a card that regains custody is
+ *   acknowledged again on a new frame, never answerable at once on the frame it had before.
  */
 type Gate =
   | 'screenSlot'
@@ -148,7 +166,21 @@ const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   screen: ['stripPause', 'pageNotice'],
   // The slot checks the card on its own today; the table says the same thing once.
   exitGuard: ['screenSlot', 'stripPause', 'activePoll', 'pageNotice'],
-  nativePrompt: ['scrollKeys', 'pointer', 'mouseCapture', 'occupiesRows', 'revokesCustody'],
+  // Rows are `replacesBody`'s: a native prompt drawn as a popup in the overlay keeps the body drawn behind it.
+  nativePrompt: ['scrollKeys', 'pointer', 'mouseCapture', 'revokesCustody'],
+  // A popup owns every key and keeps the body drawn (its prompt and hint stay, dimmed behind it later); a card under it loses custody. It does
+  // not release the mouse (toggling reporting for a transient state is churn, and a report is consumed by the pointer gate).
+  popup: [
+    'screenSlot',
+    'scrollKeys',
+    'pointer',
+    'interrupt',
+    'stripPause',
+    'activePoll',
+    'pageNotice',
+    'revokesCustody',
+  ],
+  replacesBody: ['occupiesRows'],
   // The slot's callers check the busy flag themselves (three of five), so it is not a slot gate here.
   nativeActionBusy: ['scrollKeys', 'pointer', 'mouseCapture', 'stripPause', 'activePoll'],
   approval: [],
@@ -292,7 +324,7 @@ export function occupiesRows(flags: OverlayFlags): boolean {
   return closes(flags, 'occupiesRows');
 }
 
-/** Whether the host holds the keyboard custody an approval's measured frame needs: not while a native prompt covers the screen. */
+/** Whether the host holds the keyboard custody an approval's measured frame needs: not while a native prompt or a popup owns the keyboard. */
 export function holdsCustody(flags: OverlayFlags): boolean {
   return !closes(flags, 'revokesCustody');
 }

@@ -18,6 +18,11 @@ import {
   type NativePromptChannel,
 } from './home-host.js';
 import { createNativePromptChannel } from '../native-prompt-channel.js';
+import {
+  createNotificationChannel,
+  type NotificationChannel,
+} from '../../../popups/notifications.js';
+import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import { mountInk, type InkMount, type MountOptions } from './mount.js';
 import type { Variant } from './variants.js';
 
@@ -51,6 +56,10 @@ export interface ChatSetup {
 /** A mounted chat, whichever host owns it. */
 export interface ChatMount extends InkMount {
   readonly host: 'chat' | 'standalone-chat';
+  /** The host's popup host: the Home's, or the stand-alone chat's (on its store's key history). */
+  readonly popups: PopupHost;
+  /** The host's notification channel. */
+  readonly notifications: NotificationChannel;
   /** The native prompt channel, when the setup asked for one. */
   readonly channel: NativePromptChannel | undefined;
   /** Register something to close when the cell ends (a temporary directory a real flow was pointed at). */
@@ -79,7 +88,17 @@ export function mountStandaloneChat(
   const store = createChatStore(variant.color, setup.seed, boundOf(variant));
   setup.prepare?.(store);
   const submitted: string[] = [];
-  const channel = setup.nativePrompt === true ? createNativePromptChannel() : undefined;
+  // As the chat host makes them: the native channel, the popups and the store share the store's ONE key history (ADR-0148 §2).
+  const channel =
+    setup.nativePrompt === true
+      ? createNativePromptChannel({ history: store.keyHistory })
+      : undefined;
+  const notifications = createNotificationChannel();
+  const popups = createPopupHost({
+    history: store.keyHistory,
+    notifications,
+    placement: variant.renderer === 'alt' ? 'overlay' : 'replace',
+  });
   const cleanups: (() => void)[] = [];
   const mount = mountInk(
     <ChatApp
@@ -96,6 +115,8 @@ export function mountStandaloneChat(
       onModeChange={() => {}}
       alternateScreen={variant.renderer === 'alt'}
       {...(channel === undefined ? {} : { modePrompt: { ui: channel.ui, ready: () => {} } })}
+      popups={popups}
+      notifications={notifications}
       {...setup.standalone}
     />,
     variant,
@@ -106,12 +127,16 @@ export function mountStandaloneChat(
     unmount: () => {
       mount.unmount();
       channel?.ui.dispose();
+      popups.dispose();
+      notifications.dispose();
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
     defer: (cleanup) => {
       cleanups.push(cleanup);
     },
     channel,
+    popups,
+    notifications,
     host: 'standalone-chat',
     store,
     submitted,

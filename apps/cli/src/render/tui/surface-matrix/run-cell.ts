@@ -1,4 +1,9 @@
+import type { DOMElement } from 'ink';
+
+import { baselineOf } from './popup-fixture.js';
 import {
+  checkOverlayLayer,
+  checkPopupBox,
   checkProperties,
   type Observation,
   type PropertyId,
@@ -23,6 +28,8 @@ export interface Observable {
   readonly variant: Variant;
   frame: () => string[];
   raw: () => string;
+  /** Ink's root node, for the overlay-layer property; absent ⇒ not asserted. */
+  root?: () => DOMElement | undefined;
 }
 
 const matches = (text: string, pattern: string | RegExp): boolean =>
@@ -42,6 +49,20 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
     selectedRow: below ? undefined : entry.selectedRow,
     legendRow: below ? undefined : entry.legendRow,
   });
+  // The overlay layer holds the popup's slot and nothing else, in every cell of every surface (ADR-0148 §2): a popup in the alternate screen
+  // is the one absolutely positioned node (its notice too, below the floor); inline it is a block in the flow and nothing is absolute.
+  violations.push(
+    ...checkOverlayLayer(mount.root?.(), entry.popup !== undefined && variant.renderer === 'alt'),
+  );
+  if (entry.popup !== undefined && !below) {
+    const before = baselineOf(mount);
+    if (before === undefined)
+      violations.push({
+        property: 'popup-box',
+        message: 'the surface recorded no frame before it opened the popup',
+      });
+    else violations.push(...checkPopupBox(observation, before, entry.popup(variant)));
+  }
   if (below) {
     const expected = entry.belowFloor ?? DEFAULT_BELOW_FLOOR;
     if (!matches(text, expected)) {

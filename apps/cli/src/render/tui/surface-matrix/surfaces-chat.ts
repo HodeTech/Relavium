@@ -21,6 +21,13 @@ import {
 } from './known-failures.js';
 import type { KnownFailure, SurfaceBase } from './registry.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
+import {
+  recordBaseline,
+  TEST_POPUP_LEGEND_ROW,
+  TEST_POPUP_TITLE,
+  testPopupBox,
+  testReportPopup,
+} from './popup-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
@@ -84,6 +91,7 @@ export function chatSurfaces(definitions: readonly ChatSurfaceDefinition[]): Cha
           ...asList(definition.knownFailure?.[host]),
         ],
         notes: definition.notes,
+        popup: definition.popup,
         setup: definition.setup,
         open: definition.open,
       }),
@@ -243,6 +251,21 @@ const typeLineAndWait =
   };
 
 export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
+  {
+    name: 'popup',
+    title: 'A popup over the chat (the test layer’s report popup)',
+    exitKey: 'Esc',
+    landmark: TEST_POPUP_TITLE,
+    selectedRow: 'alpha check',
+    legendRow: TEST_POPUP_LEGEND_ROW,
+    belowFloor: /too small for this popup/iu,
+    popup: testPopupBox('chat'),
+    open: async (m) => {
+      recordBaseline(m);
+      m.popups.openForUser(testReportPopup('chat'));
+      await m.until(() => m.text().includes(TEST_POPUP_TITLE));
+    },
+  },
   {
     name: 'idle',
     title: 'The idle chat prompt',

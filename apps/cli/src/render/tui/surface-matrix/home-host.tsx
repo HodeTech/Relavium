@@ -11,6 +11,12 @@ import {
 import type { RunCardSnapshot } from '../run-card-model.js';
 import type { NoticeFlush } from '../../../engine/effect-retention.js';
 import { createNativePromptChannel } from '../native-prompt-channel.js';
+import { createChordHistory } from '../chord-guard.js';
+import {
+  createNotificationChannel,
+  type NotificationChannel,
+} from '../../../popups/notifications.js';
+import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import type { ChatStoreController } from '../chat-store.js';
 import { createChatStore } from '../chat-store.js';
 import {
@@ -71,12 +77,20 @@ export interface HomeSetup {
   readonly chatSeed?: SessionViewSeed | undefined;
   /** Called when the cell ends: closes what the setup opened (a fixture database). */
   readonly dispose?: (() => void) | undefined;
+  /** The terminal's size as the Home reads it, for a test that resizes. Default: the cell's size. */
+  readonly getSize?: (() => { cols: number; rows: number }) | undefined;
+  /** How the Home hears a resize, for a test that resizes. Default: it never does. */
+  readonly subscribeResize?: ((onResize: () => void) => () => void) | undefined;
 }
 
 export type NativePromptChannel = ReturnType<typeof createNativePromptChannel>;
 
 export interface HomeMount extends InkMount {
   readonly controller: HomeController;
+  /** The Home's popup host (as `driveHome` wires it: on the Home's one chord history, placed by the renderer). */
+  readonly popups: PopupHost;
+  /** The Home's notification channel. */
+  readonly notifications: NotificationChannel;
   /** The native prompt channel, when the setup asked for one. */
   readonly channel: NativePromptChannel | undefined;
   /** The in-Home chat's view store, when the setup gave a session. */
@@ -117,7 +131,16 @@ export function mountHome(
 ): HomeMount {
   const snapshot = setup.snapshot ?? EMPTY_SNAPSHOT;
   const homeStore: HomeStore = { read: () => snapshot };
-  const channel = setup.nativePrompt === true ? createNativePromptChannel() : undefined;
+  // One chord history for the Home, as `driveHome` makes it: the native channel, the controller's cards, the chat store and the popups share it.
+  const chordHistory = createChordHistory();
+  const channel =
+    setup.nativePrompt === true ? createNativePromptChannel({ history: chordHistory }) : undefined;
+  const notifications = createNotificationChannel();
+  const popups = createPopupHost({
+    history: chordHistory,
+    notifications,
+    placement: variant.renderer === 'alt' ? 'overlay' : 'replace',
+  });
   let rendererFlush: NoticeFlush | undefined;
   const context: HomeContext = {
     channel,
@@ -131,6 +154,7 @@ export function mountHome(
           variant.color,
           setup.chatSeed,
           variant.renderer === 'alt' ? FULLSCREEN_TRANSCRIPT_BOUND : INLINE_TRANSCRIPT_BOUND,
+          { history: chordHistory },
         );
   const session = setup.session;
   const real = createHomeController({
@@ -144,6 +168,8 @@ export function mountHome(
         : () => Promise.resolve(session(chatStore)),
     homeStore,
     schedule: () => () => {},
+    chordHistory,
+    popupOpen: () => popups.getSnapshot().open,
     onExit: () => {},
     onError: (cause) => {
       throw cause;
@@ -170,10 +196,12 @@ export function mountHome(
       controller={controller}
       nowMs={() => 0}
       color={variant.color}
-      getSize={() => variant.size}
-      subscribeResize={() => () => {}}
+      getSize={setup.getSize ?? (() => variant.size)}
+      subscribeResize={setup.subscribeResize ?? (() => () => {})}
       {...(variant.renderer === 'alt' ? { alternateScreen: true } : {})}
       {...(channel === undefined ? {} : { nativePrompt: channel.ui })}
+      popups={popups}
+      notifications={notifications}
       {...setup.props}
       onRendererReady={(flush) => {
         rendererFlush = flush;
@@ -192,9 +220,13 @@ export function mountHome(
     unmount: () => {
       mount.unmount();
       channel?.ui.dispose();
+      popups.dispose();
+      notifications.dispose();
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
     controller,
+    popups,
+    notifications,
     channel,
     chatStore,
     text: () => mount.frame().join('\n'),

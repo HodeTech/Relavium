@@ -59,6 +59,25 @@ export interface NativePromptOption {
   readonly label: string;
   readonly hint?: string;
 }
+/**
+ * A flow that is a POPUP rather than a card ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2): the channel is one of the popup frame's two body drivers, and this optional descriptor is all it gains (it is NOT grown into the popup
+ * host). It carries what the frame draws around the channel's prompt: the command's name and origin on the top edge, `step 2 of 3` and the
+ * rail, and what `Esc` says. A flow that sets none keeps the card it always was (the `replace` placement). Used by the flows of unit 6; this
+ * part only plumbs it, draws it and pins it in the measured-frame identity.
+ */
+export interface NativePopupDescriptor {
+  /** Where the flow asks to be drawn. The host draws `replace` inline whatever was asked (the inline renderer cannot overlay). */
+  readonly placement: 'overlay' | 'replace';
+  readonly title: string;
+  readonly origin: 'home' | 'chat';
+  readonly stepIndex: number;
+  readonly stepCount: number;
+  /** What the way back says on the legend (`close`, `back`). */
+  readonly exitLabel: string;
+  /** The popup stack's depth this flow is at (one: the channel holds one flow; the reducer driver owns stacking, ADR-0148 §5). */
+  readonly depth: 1 | 2;
+}
 export interface NativePromptSnapshot {
   readonly active: boolean;
   readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy' | 'picker' | 'chord';
@@ -76,6 +95,8 @@ export interface NativePromptSnapshot {
   readonly escape: NativePromptEscape;
   /** A chord card's body, one row per entry (each sanitized and drawn behind the host's gutter); empty for every other prompt. */
   readonly details: readonly string[];
+  /** The flow is a popup ({@link NativePopupDescriptor}); absent ⇒ a card. */
+  readonly popup?: NativePopupDescriptor;
 }
 export interface NativePromptUi {
   readonly subscribe: (listener: () => void) => () => void;
@@ -114,6 +135,11 @@ export interface NativePromptFlow {
   readonly begin: () => AbortSignal;
   readonly end: () => Promise<void>;
   readonly cancel: () => void;
+  /**
+   * Draw the open flow as a popup ({@link NativePopupDescriptor}), or as a card again (`undefined`). Every text is sanitized; the descriptor is
+   * part of the snapshot's identity, so a change to it is a new frame the person must be shown before anything on it counts.
+   */
+  readonly popup?: (descriptor: NativePopupDescriptor | undefined) => void;
   readonly note: (message: string, title?: string) => void;
   /** Preserve a completed publication fact even if cancellation arrived after it. */
   readonly committedNote?: (message: string, title?: string) => void;
@@ -186,6 +212,13 @@ export interface NativePromptChannelOptions {
   readonly guard?: ApprovalGuard;
   /** The Home's shared chord history (`createChordHistory`): what the other cards stamped locks this one too. Default: its own. */
   readonly history?: ChordHistory;
+}
+
+/** The snapshot drawn as a card again: every field but the popup descriptor. */
+function withoutPopup(snapshot: NativePromptSnapshot): NativePromptSnapshot {
+  const { popup, ...card } = snapshot;
+  void popup;
+  return card;
 }
 
 /** Index of the first byte that ends or cancels an edit (a return, a newline, an escape or an ETX); `-1` when there is none. */
@@ -550,6 +583,26 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (!disposed) publish(initial);
     },
     cancel,
+    popup: (descriptor) => {
+      if (!snapshot.active || disposed) return;
+      if (descriptor === undefined) {
+        if (snapshot.popup === undefined) return;
+        publish(withoutPopup(snapshot));
+        return;
+      }
+      publish({
+        ...snapshot,
+        popup: {
+          placement: descriptor.placement,
+          title: sanitizeInline(descriptor.title),
+          origin: descriptor.origin,
+          stepIndex: Math.max(0, Math.trunc(descriptor.stepIndex)),
+          stepCount: Math.max(1, Math.trunc(descriptor.stepCount)),
+          exitLabel: sanitizeInline(descriptor.exitLabel),
+          depth: descriptor.depth,
+        },
+      });
+    },
     note: (message, title) => {
       if (!snapshot.active || abort?.signal.aborted) return;
       const text = sanitizeInline(title ? `${title}: ${message}` : message);

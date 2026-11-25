@@ -124,6 +124,11 @@ interface HomeViewProps {
    * The focused row is marked `>` and is always one of the rows drawn; the hint bar says what `Enter` does on it.
    */
   readonly stripFocus?: StripFocus | undefined;
+  /**
+   * The one notification of the Home's channel (`popups/notifications.ts`), drawn on the hint row in place of the hint for its few seconds
+   * (ADR-0148 §2, ADR-0145 §1). Never written into the notice area above: a notification leaves nothing behind.
+   */
+  readonly notification?: string | undefined;
 }
 
 const NO_PARKED: readonly ParkedRunRow[] = [];
@@ -713,18 +718,19 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
               from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
               (which surfaces Ctrl+J for a newline). */}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {homeHint({
-              interruptArmed,
-              focusedRole: focusedRow?.role,
-              emptyDraft: editor.text.length === 0,
-              hasRecentSessions: snapshot.recentSessions.length > 0,
-              hasParkedRuns: parked.length > 0,
-              parkedFocusKind: focusedParked?.kind,
-              runCanBeShown,
-              keyless: props.keyless === true,
-              slashDraft,
-              columns: cols,
-            })}
+            {props.notification ??
+              homeHint({
+                interruptArmed,
+                focusedRole: focusedRow?.role,
+                emptyDraft: editor.text.length === 0,
+                hasRecentSessions: snapshot.recentSessions.length > 0,
+                hasParkedRuns: parked.length > 0,
+                parkedFocusKind: focusedParked?.kind,
+                runCanBeShown,
+                keyless: props.keyless === true,
+                slashDraft,
+                columns: cols,
+              })}
           </Text>
         </Box>
       )}

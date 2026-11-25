@@ -10,6 +10,8 @@
  *   scroll keys, ...) are the cells that differ across a row, and they are PRESERVED history, so a "tidy-up" that unifies two of them is
  *   a behaviour change this file refuses.
  */
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import { pasteIsEditable, type PasteEditableFlags } from './chat-input.js';
@@ -108,8 +110,12 @@ const SUBMODE: Gates = {
  * The cells that disagree with their neighbours, and why they are kept (the nine disagreements are the table in `overlay-flags.ts`):
  * - `screen` pauses the strip and the notice paging, but is not a slot gate (a screen REPLACES the slot) and is never open in a chat.
  * - `exitGuard` is a slot gate, a strip gate and an Active-poll gate, but not a scroll, pointer or interrupt one (it is routed first).
- * - `nativePrompt` closes the pointer, the scroll keys, the mouse capture, the rows and the custody, and does NOT pause the strip
- *   (`nativeActionBusy`, which is set with it, does).
+ * - `nativePrompt` closes the pointer, the scroll keys, the mouse capture and the custody, and does NOT pause the strip
+ *   (`nativeActionBusy`, which is set with it, does). Its rows are `replacesBody`'s (ADR-0148 §2): a prompt drawn as a popup in the overlay
+ *   keeps the body drawn behind it, so owning the keys and taking the rows are two flags.
+ * - `popup` closes what a submode closes except the prompt (the body, its prompt and its hint stay drawn behind a popup), and also the Active
+ *   poll and the notice paging, and REVOKES the custody (a card under a popup answers nothing); it keeps the mouse captured.
+ * - `replacesBody` takes the rows and nothing else: it is never set alone.
  * - `nativeActionBusy` is not a slot gate (three of the slot's five callers check it themselves).
  * - The four cards close the pointer (`approval` does not: it is always paired with `review`) and nothing else here: their own host
  *   answers every key, and `approval` and `review` close the paste through `pasteFlagsFrom` (`approvalPending`).
@@ -128,9 +134,20 @@ const EXPECTED = {
     scrollKeys: true,
     pointer: true,
     mouseReleased: true,
-    occupiesRows: true,
     custodyRevoked: true,
   },
+  popup: {
+    ...OPEN,
+    screenSlot: true,
+    scrollKeys: true,
+    pointer: true,
+    interrupt: true,
+    stripPause: true,
+    activePoll: true,
+    noticePaging: true,
+    custodyRevoked: true,
+  },
+  replacesBody: { ...OPEN, occupiesRows: true },
   nativeActionBusy: {
     ...OPEN,
     scrollKeys: true,
@@ -224,6 +241,10 @@ const DECIDED_BEFORE_PASTE: Readonly<Partial<Record<keyof OverlayFlags, string>>
     'a screen owns every key, and no paste reaches the prompt behind it (the Home drops it before the gate)',
   exitGuard: 'the exit-guard card answers a paste as a key it ignores, before the gate',
   nativePrompt: 'the native prompt channel takes the paste into its own field, before the gate',
+  popup:
+    'an open popup takes the paste into its own text field or drops it, before the gate (typed text goes only into a text field)',
+  replacesBody:
+    'never set alone: a native prompt or a popup owns the keys whenever it is set, and decides the paste before the gate',
   nativeActionBusy:
     'every key and paste is dropped while a native action is in flight, before the gate',
   question: 'an open `ask_user` question takes the paste into its own field, before the gate',
@@ -462,5 +483,124 @@ describe("the Home's own record is built from its state in one place", () => {
     made.store.answerApproval({ outcome: 'reject' });
     await pending;
     await controller.teardownActive();
+  });
+});
+
+/**
+ * "A list was missed", for the custody predicates (ADR-0148 §2): every place a host decides whether a card, the landing or a popup holds the
+ * approval's custody is written here, one row per site, with what it must read. A site that reads the record revokes custody under every flag
+ * that closes `revokesCustody` (a native prompt, a popup); the popup's own custody is the one that must NOT read the record (the popup flag
+ * would revoke the popup's own frame) and must read the native prompt instead (a native card over a popup takes the keys). A new custody site
+ * fails the count until it is written here with what it reads.
+ */
+const CUSTODY_SITES: Readonly<Record<string, readonly ('record' | 'relay' | 'popup-own')[]>> = {
+  // the chat region's three cards relay the host's `reviewCustody`; the landing's frame (the exit guard, the strip's Enter); a gate or budget
+  // card; the popup's own; the `reviewCustody` the host hands the chat region (review, question, checkpoint)
+  'render/tui/home-app.tsx': ['relay', 'relay', 'relay', 'record', 'record', 'popup-own', 'record'],
+  // the approval card, the question card, the checkpoint card; the popup's own
+  'render/tui/chat-ink.tsx': ['popup-own', 'record', 'record', 'record'],
+};
+
+/** The initializer text of every `hasCustody` / `reviewCustody` property or JSX attribute in `file`, in source order. */
+function custodySites(file: string): string[] {
+  const text = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found: string[] = [];
+  const named = (name: ts.Node): boolean =>
+    ts.isIdentifier(name) && (name.text === 'hasCustody' || name.text === 'reviewCustody');
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && named(node.name)) found.push(node.initializer.getText(sf));
+    if (ts.isJsxAttribute(node) && named(node.name) && node.initializer !== undefined)
+      found.push(node.initializer.getText(sf));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+describe('every custody predicate of the hosts derives from the record (a list was missed: custody)', () => {
+  it.each(Object.entries(CUSTODY_SITES))('%s', (file, expected) => {
+    const sites = custodySites(file);
+    expect(sites.length, `the custody sites of ${file}: write a new one into CUSTODY_SITES`).toBe(
+      expected.length,
+    );
+    sites.forEach((site, index) => {
+      if (expected[index] === 'relay')
+        expect(site, `${file} site ${String(index + 1)} relays the host's own custody`).toBe(
+          '{props.reviewCustody}',
+        );
+      else if (expected[index] === 'record')
+        expect(
+          /holdsCustody\(liveOverlays\(\)\)|acceptsInput\(\)/u.test(site),
+          `${file} site ${String(index + 1)} must read the record: ${site}`,
+        ).toBe(true);
+      else {
+        expect(site, `${file} site ${String(index + 1)} is the popup's own custody`).not.toMatch(
+          /holdsCustody|acceptsInput/u,
+        );
+        expect(
+          site,
+          `${file} site ${String(index + 1)}: a native prompt over a popup takes its custody`,
+        ).toMatch(/nativePrompt|modePrompt/u);
+      }
+    });
+  });
+
+  it('the stand-alone chat’s `acceptsInput`, which its card sites read, is the record’s custody', () => {
+    const text = readFileSync(new URL('./chat-ink.tsx', import.meta.url), 'utf8');
+    expect(text).toMatch(
+      /const acceptsInput = \(\): boolean =>\s+props\.inputEnabled\?\.\(\) !== false && holdsCustody\(liveOverlays\(\)\);/u,
+    );
+  });
+
+  it('revokes custody under a popup, a native prompt, and nothing a submode or a card sets', () => {
+    for (const kind of Object.keys(NO_OVERLAYS)) {
+      const revoked = !holdsCustody(only(kind));
+      expect(revoked, kind).toBe(kind === 'popup' || kind === 'nativePrompt');
+    }
+  });
+});
+
+/**
+ * "A list was missed", for the pause facts: the strip's refresh and the Active tab's poll are paused by the record the controller builds, and
+ * that record has the popup in it (from its `popupOpen` port), so a popup gates the five-second synchronous database poll behind it.
+ */
+describe('every pause fact derives from the record (a list was missed: pauses)', () => {
+  const controllerText = readFileSync(new URL('./home-controller.ts', import.meta.url), 'utf8');
+
+  it('the controller’s record adds the popup from its port, and every pause reads that record', () => {
+    expect(controllerText).toMatch(
+      /const overlayFlags = \(\): OverlayFlags => \(\{\s+\.\.\.homeOverlayFlags\(state\),\s+popup: deps\.popupOpen\?\.\(\) === true,\s+\}\);/u,
+    );
+    expect(controllerText).toMatch(
+      /stripRefreshPaused\(\{ mode: state\.mode, \.\.\.overlayFlags\(\), terminal \}\)/u,
+    );
+    expect(controllerText).toMatch(/activePollPausedByOverlay\(overlayFlags\(\)\)/u);
+  });
+
+  it.each(Object.keys(NO_OVERLAYS))(
+    'the strip pause facts carry %s (the whole record is required)',
+    (kind) => {
+      const facts = { mode: 'home' as const, ...only(kind), terminal: LANDING };
+      expect(Object.keys(facts)).toContain(kind);
+      expect(stripRefreshPaused(facts)).toBe(stripPausedByOverlay(only(kind)));
+    },
+  );
+
+  it('a popup the controller is told of closes its screen slot (the controller’s gates see it)', () => {
+    let open = true;
+    const controller = createHomeController({
+      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
+      startChat: () => Promise.reject(new Error('not started in this test')),
+      homeStore: { read: () => EMPTY },
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      popupOpen: () => open,
+    });
+    controller.openScreen('help');
+    expect(controller.getSnapshot().screen, 'refused under a popup').toBeUndefined();
+    open = false;
+    controller.openScreen('help');
+    expect(controller.getSnapshot().screen?.kind).toBe('help');
   });
 });
