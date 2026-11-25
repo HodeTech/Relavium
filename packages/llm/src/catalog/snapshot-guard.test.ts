@@ -116,7 +116,7 @@ describe('diffCatalog — the two ways a sync can quietly weaken a safety contro
   });
 });
 
-describe('the SHIPPED snapshot itself — 80 chat models, all priced, none of them non-chat', () => {
+describe('the SHIPPED snapshot itself — 84 chat models, all priced, none of them non-chat', () => {
   const models = Object.values(CATALOG_SNAPSHOT);
 
   it('is not empty, and every model carries a positive input AND output price', () => {
@@ -148,7 +148,9 @@ describe('the SHIPPED snapshot itself — 80 chat models, all priced, none of th
       budgetTokens: { min: 128, max: 32_768 }, // no effort axis; min:128 ⇒ `off` is IMPOSSIBLE
     });
     expect(CATALOG_SNAPSHOT['claude-haiku-4-5']?.reasoning?.effortValues).toBeUndefined(); // budget, not effort
-    expect(CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).toEqual({}); // reasons, but no controllable tier
+    // reasons, but no controllable tier (was `deepseek-reasoner` until the 2026-11-25 snapshot sync removed it;
+    // the surviving `{}` rows are Gemini's deep-research agents)
+    expect(CATALOG_SNAPSHOT['deep-research-preview-04-2026']?.reasoning).toEqual({});
   });
 
   it('preserves the max-output ceiling and context window as DISTINCT fields (they are not interchangeable)', () => {

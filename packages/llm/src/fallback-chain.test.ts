@@ -648,19 +648,20 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
   });
 
   it('skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider (CR-51)', async () => {
-    // The whole point of `CR-51`. The provider flags say OpenAI does tools — and it does; `gpt-3.5-turbo` does
-    // not, which is a fact only the per-model catalog carries. Before this the chain admitted the entry, spent a
-    // real call, and earned a 400: a free skip turned into a paid failure. The FIRST entry is the incapable one,
-    // so a passing test can only mean the chain skipped it before egress.
+    // The whole point of `CR-51`. The provider flags say Gemini does tools — and it does; the live-translate
+    // model does not, which is a fact only the per-model catalog carries. (`gpt-3.5-turbo` was the example until
+    // the 2026-11-25 snapshot sync removed it; no OpenAI row records `toolCall: false` any more.) Before this the
+    // chain admitted the entry, spent a real call, and earned a 400: a free skip turned into a paid failure. The
+    // FIRST entry is the incapable one, so a passing test can only mean the chain skipped it before egress.
     const toolReq: LlmRequest = {
       ...userReq,
       tools: [{ name: 'read_file', parameters: { type: 'object' } }],
     };
-    const incapable = makeProvider({ id: 'openai', generate: resolves('should never run') });
+    const incapable = makeProvider({ id: 'gemini', generate: resolves('should never run') });
     const capable = makeProvider({ id: 'anthropic', generate: resolves('ok') });
     const { options, trace } = makeOptions();
     const chain = new FallbackChain(
-      [entry(incapable, 'gpt-3.5-turbo'), entry(capable, 'claude-opus-4-8')],
+      [entry(incapable, 'gemini-3.5-live-translate-preview'), entry(capable, 'claude-opus-4-8')],
       options,
     );
 
@@ -671,16 +672,19 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     // …and the skip is RECORDED with its reason, never silent: a chain that quietly drops an entry is a chain
     // whose behaviour nobody can explain from the trace.
     const skip = trace.find((r) => r.outcome === 'skipped');
-    expect(skip?.model).toBe('gpt-3.5-turbo');
+    expect(skip?.model).toBe('gemini-3.5-live-translate-preview');
     expect(skip?.skipReason).toMatch(/does not accept tool definitions/);
   });
 
   it('does NOT skip that same model for a text-only request', async () => {
     // The gate is about what the request needs. Skipping a tool-incapable model for a plain text turn would
     // strand the chain on a model that could have answered — the opposite failure, equally real.
-    const incapable = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const incapable = makeProvider({ id: 'gemini', generate: resolves('ok') });
     const { options } = makeOptions();
-    const chain = new FallbackChain([entry(incapable, 'gpt-3.5-turbo')], options);
+    const chain = new FallbackChain(
+      [entry(incapable, 'gemini-3.5-live-translate-preview')],
+      options,
+    );
 
     await chain.generate(userReq);
 
@@ -769,7 +773,7 @@ describe('stripReasoningParts', () => {
 describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', () => {
   it('STRIPS a reasoning-effort tier for a fallback entry model that does not reason', () => {
     const req: LlmRequest = {
-      model: 'o1',
+      model: 'o3',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       reasoningEffort: 'high',
     };
@@ -1382,7 +1386,7 @@ describe('FallbackChain — capability skip', () => {
     const b = makeProvider({ id: 'deepseek', supports: { tools: false }, generate: resolves('x') });
     const { options } = makeOptions();
     const chain = new FallbackChain(
-      [entry(a, 'gemini-2.5-pro'), entry(b, 'deepseek-chat')],
+      [entry(a, 'gemini-2.5-pro'), entry(b, 'deepseek-v4-flash')],
       options,
     );
 
@@ -1957,7 +1961,7 @@ describe('FallbackChain.stream', () => {
     });
     const { options } = makeOptions();
     const chain = new FallbackChain(
-      [entry(a, 'gemini-2.5-pro'), entry(b, 'deepseek-chat')],
+      [entry(a, 'gemini-2.5-pro'), entry(b, 'deepseek-v4-flash')],
       options,
     );
 

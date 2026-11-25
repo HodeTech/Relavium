@@ -254,11 +254,18 @@ describe('prices: a per-million price and its digits', () => {
       expect(microcentsOfShown(`$${shown}`), `${rate} shown as ${shown}`).toBe(BigInt(rate));
       expect(shown, shown).not.toMatch(/\.\d*0$/u);
     }
-    // The label of a model whose price needs three digits keeps them (the old two-digit label showed $0.08 for $0.075).
+    // A rate with a fractional-cent digit keeps its third digit (the old two-digit label showed $0.08 for $0.075). The catalogue's
+    // input and output rates no longer need one (the picker's pair is two-digit at most), so the rates that do are read as the
+    // single-rate label of the catalogue's cached and cache-write rates ($0.075 is the cached rate of several Gemini flash rows).
+    const fractionalCent = rates
+      .filter((rate) => rate % 1_000_000 !== 0)
+      .map((rate) => formatPrice(rate));
+    expect(fractionalCent.length).toBeGreaterThan(0);
+    expect(fractionalCent).toContain('$0.075 per M');
+    for (const label of fractionalCent) expect(label).toMatch(/^\$\d+\.\d{3,} per M$/u);
     const picker = Object.values(CATALOG_SNAPSHOT).map((model) =>
       formatPricePair(model.inputPerMtokMicrocents, model.outputPerMtokMicrocents),
     );
-    expect(picker.some((label) => label.includes('$0.075'))).toBe(true);
     for (const label of picker) expect(label).toMatch(/^\$[\d.]+ \/ \$[\d.]+ per M$/u);
   });
 });

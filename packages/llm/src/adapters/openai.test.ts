@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
-import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import { catalogModel, clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
 import { catalogModelFixture as catModel } from '../conformance/fixtures/catalog.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
@@ -444,7 +444,7 @@ describe('OpenAI-compatible adapter', () => {
       fetch: () => Promise.reject(new Error('must fail fast before any egress')),
     });
     const imageReq = {
-      model: 'deepseek-reasoner',
+      model: 'deepseek-v4-flash',
       messages: [
         {
           role: 'user' as const,
@@ -603,7 +603,7 @@ describe('OpenAI-compatible adapter', () => {
       providerId: 'deepseek',
       fetch: (_i, init) => Promise.resolve(capture(init)),
     });
-    await deepseek.generate({ model: 'deepseek-chat', messages, maxTokens: 100 }, 'k');
+    await deepseek.generate({ model: 'deepseek-v4-flash', messages, maxTokens: 100 }, 'k');
     expect(sent['max_tokens']).toBe(100);
     expect('max_completion_tokens' in sent).toBe(false);
 
@@ -758,19 +758,41 @@ describe('OpenAI-compatible adapter', () => {
     // gate opened, and every tier (including `off` → `thinking: {type:'disabled'}`) went on the wire for a model
     // whose controllable tiers upstream declined to describe. `acceptedTiers` returns the empty set for `{}`, which
     // is exactly what the picker already showed the user; the wire now agrees with it.
-    let sent: Record<string, unknown> = {};
-    const deepseek = createOpenAiAdapter({
-      providerId: 'deepseek',
-      fetch: (_input, init) => {
-        sent = parseJsonBody(init);
-        return Promise.resolve(okResponse());
-      },
+    //
+    // The 2026-11-25 snapshot sync removed `deepseek-reasoner` from the shipped catalog (and no surviving DeepSeek
+    // row publishes `{}`), so the row is INSTALLED as a refreshed model — the supported way a catalog gains an id
+    // the snapshot does not carry. Without that, the id is simply un-described and the assertion below would pass
+    // for the wrong reason (no descriptor ⇒ no field); the premise pin makes that impossible.
+    installCatalogRefresh({
+      'deepseek-reasoner': catModel({
+        modelId: 'deepseek-reasoner',
+        provider: 'deepseek',
+        reasoning: {},
+      }),
     });
-    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+    try {
+      expect(catalogModel('deepseek-reasoner')?.reasoning).toEqual({}); // the premise: described, with an EMPTY descriptor
+      let sent: Record<string, unknown> = {};
+      const deepseek = createOpenAiAdapter({
+        providerId: 'deepseek',
+        fetch: (_input, init) => {
+          sent = parseJsonBody(init);
+          return Promise.resolve(okResponse());
+        },
+      });
+      const messages = [
+        { role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] },
+      ];
 
-    for (const tier of ['off', 'low', 'medium', 'high', 'max'] as const) {
-      await deepseek.generate({ model: 'deepseek-reasoner', messages, reasoningEffort: tier }, 'k');
-      expect('thinking' in sent, `deepseek-reasoner ${tier}`).toBe(false);
+      for (const tier of ['off', 'low', 'medium', 'high', 'max'] as const) {
+        await deepseek.generate(
+          { model: 'deepseek-reasoner', messages, reasoningEffort: tier },
+          'k',
+        );
+        expect('thinking' in sent, `deepseek-reasoner ${tier}`).toBe(false);
+      }
+    } finally {
+      clearCatalogRefresh();
     }
   });
 
@@ -1875,7 +1897,7 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
 
 describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)', () => {
   const REQ = {
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
@@ -1907,7 +1929,7 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
 
   it('DROPS a prior-turn reasoning part on egress — reasoning_content is output-only, replay would 400 (ADR-0030/0039)', async () => {
     // DeepSeek/Kimi `reasoning_content` is captured INBOUND (mapContent above) but is output-only: the API
-    // rejects it if echoed back in an input message, and deepseek-reasoner does not require prior reasoning
+    // rejects it if echoed back in an input message, and a DeepSeek reasoning model does not require prior reasoning
     // to continue. So a same-provider continuation must NOT replay it. This pins the drop so a future change
     // cannot start round-tripping reasoning into the request body (which would 400 the whole turn).
     let sent: Record<string, unknown> = {};
@@ -1921,7 +1943,7 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     });
     await adapter.generate(
       {
-        model: 'deepseek-reasoner',
+        model: 'deepseek-v4-pro',
         messages: [
           { role: 'user', content: [{ type: 'text', text: 'hi' }] },
           // a prior assistant turn the engine replays: the ephemeral reasoning + the visible answer
@@ -2022,7 +2044,7 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
     });
     await adapter.generate(
       {
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-flash',
         responseFormat: { type: 'json', schema: { type: 'object' }, name: 'out' },
         messages: REQ.messages,
       },
@@ -2034,7 +2056,7 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
 
 describe('OpenAI-compatible adapter — reasoning close edges', () => {
   const REQ = {
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 

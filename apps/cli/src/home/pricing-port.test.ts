@@ -180,7 +180,7 @@ const CEILING: Readonly<Record<PricingFieldId, number>> = {
 
 /** A model the catalog does not price (so a token pair is needed) or one it does (so a cached or media rate stands alone). */
 const modelFor = (field: PricingField): string =>
-  field.pairedWith === undefined ? 'gpt-4' : 'acme-custom-1';
+  field.pairedWith === undefined ? 'gpt-5-pro' : 'acme-custom-1';
 /** What a price for `field` needs beside it so that only the field under test can be at fault. */
 const beside = (field: PricingField): Partial<Record<PricingFieldId, string>> =>
   field.pairedWith === undefined ? {} : { [field.pairedWith]: '1' };
@@ -340,9 +340,9 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
         }).ok,
       ).toBe(true);
       for (const other of ['cached', 'image', 'audio', 'video'] as const) {
-        expect(shellRefusal('gpt-4', { [other]: '0.5' }), other).toBeUndefined();
+        expect(shellRefusal('gpt-5-pro', { [other]: '0.5' }), other).toBeUndefined();
         expect(
-          port.prepare(OPENAI('gpt-4'), { action: 'set', prices: { [other]: '0.5' } }).ok,
+          port.prepare(OPENAI('gpt-5-pro'), { action: 'set', prices: { [other]: '0.5' } }).ok,
           other,
         ).toBe(true);
       }
@@ -508,7 +508,7 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
       expect(shellOutput('acme-custom-1', { input: '1e-8', output: ' 0.50 ' })).toContain(
         'input $0.00000001 per M, output $0.5 per M.',
       );
-      expect(shellOutput('gpt-4', { image: '4E-2', audio: '0.0010', video: '+.5' })).toContain(
+      expect(shellOutput('gpt-5-pro', { image: '4E-2', audio: '0.0010', video: '+.5' })).toContain(
         'image $0.04 per image, audio $0.001 per second, video $0.5 per second.',
       );
       // The `--json` record carries the same stored integers.

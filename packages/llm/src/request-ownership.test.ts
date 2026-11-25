@@ -673,7 +673,7 @@ describe('internal request ownership factory (ADR-0102)', () => {
       },
     };
     const deepseek: RequestCandidate = {
-      model: 'deepseek-chat',
+      model: 'deepseek-v4-flash',
       provider: 'deepseek',
       endpoint: 'official',
     };

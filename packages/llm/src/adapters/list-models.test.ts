@@ -163,8 +163,8 @@ describe('keepOpenAiModelId / pricedModelIdsFor', () => {
     const openai = pricedModelIdsFor('openai');
     const deepseek = pricedModelIdsFor('deepseek');
     expect(openai.has('gpt-5.5')).toBe(true);
-    expect(openai.has('deepseek-chat')).toBe(false);
-    expect(deepseek.has('deepseek-chat')).toBe(true);
+    expect(openai.has('deepseek-v4-flash')).toBe(false);
+    expect(deepseek.has('deepseek-v4-flash')).toBe(true);
     expect(deepseek.has('gpt-5.5')).toBe(false);
   });
 });

@@ -53,6 +53,10 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     );
   }
   const noCatalog: WorkflowModelCatalog = () => undefined;
+  // The shipped snapshot's `requestCapabilities: { toolCall: false }` model. (`gpt-3.5-turbo` until the 2026-11-25
+  // snapshot sync removed it, together with the second such model, `gemini-omni-flash-preview`.) The fixture's
+  // agent `provider:` stays arbitrary — the check keys on the model id alone, as `claude-opus-4-8` already shows.
+  const TOOL_INCAPABLE = 'gemini-3.5-live-translate-preview';
 
   it('REFUSES at load when the model rejects tools and the node grants them', () => {
     // ADR-0071 §12 carried this catalog data but deferred gating it to "a louder signal (config-time
@@ -60,10 +64,10 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // it the only signal is a runtime pre-skip that emits no event — the quietest possible one — and on a
     // single-entry plan it surfaces partway through a run, after upstream nodes have spent real money.
     expect(() =>
-      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+      validateWorkflowWithCatalog(toolGrantingWorkflow(TOOL_INCAPABLE), noCatalog),
     ).toThrow(WorkflowValidationError);
     expect(() =>
-      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+      validateWorkflowWithCatalog(toolGrantingWorkflow(TOOL_INCAPABLE), noCatalog),
     ).toThrow(/does not accept tool definitions/);
   });
 
@@ -73,7 +77,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // swallows it — so a version that refused nothing at all still passed.
     let thrown: unknown;
     try {
-      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog);
+      validateWorkflowWithCatalog(toolGrantingWorkflow(TOOL_INCAPABLE), noCatalog);
     } catch (err) {
       thrown = err;
     }
@@ -89,7 +93,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // The check is about what the node USES, not about the model in the abstract — refusing a text-only node
     // would reject a perfectly valid workflow.
     expect(() =>
-      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo', '[]'), noCatalog),
+      validateWorkflowWithCatalog(toolGrantingWorkflow(TOOL_INCAPABLE, '[]'), noCatalog),
     ).not.toThrow();
   });
 
@@ -103,7 +107,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // The override is the other half of `node.model ?? agent.model`: a tool-capable agent model must not
     // excuse a tool-incapable node override, and vice versa.
     const overridden = parseWorkflow(
-      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: claude-opus-4-8, provider: openai, system_prompt: hi, tools: ['read_file'] }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer, model: gpt-3.5-turbo }\n  edges: []`,
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: claude-opus-4-8, provider: openai, system_prompt: hi, tools: ['read_file'] }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer, model: ${TOOL_INCAPABLE} }\n  edges: []`,
     );
     expect(() => validateWorkflowWithCatalog(overridden, noCatalog)).toThrow(
       /does not accept tool definitions/,
@@ -115,7 +119,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // seam doc promises that behaviour. Refusing this plan at load would reject a workflow the engine runs
     // correctly — a louder signal is only an improvement if it is also a TRUE one.
     const withFallback = toolGrantingWorkflow(
-      'gpt-3.5-turbo',
+      TOOL_INCAPABLE,
       "['read_file']",
       ', fallback_chain: [{ model: claude-opus-4-8, provider: anthropic, max_attempts: 1 }]',
     );
@@ -124,9 +128,11 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
 
   it('still refuses when NO entry in the plan can serve the grant', () => {
     const allIncapable = toolGrantingWorkflow(
-      'gpt-3.5-turbo',
+      TOOL_INCAPABLE,
       "['read_file']",
-      ', fallback_chain: [{ model: gemini-omni-flash-preview, provider: gemini, max_attempts: 1 }]',
+      // The snapshot carries ONE `toolCall: false` model, so the alternate is the same id — still an entry that
+      // cannot serve the grant, which is all this case needs.
+      `, fallback_chain: [{ model: ${TOOL_INCAPABLE}, provider: gemini, max_attempts: 1 }]`,
     );
     expect(() => validateWorkflowWithCatalog(allIncapable, noCatalog)).toThrow(
       /no model in this node's plan/,
@@ -150,7 +156,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
       return undefined;
     };
     expect(() =>
-      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), counting),
+      validateWorkflowWithCatalog(toolGrantingWorkflow(TOOL_INCAPABLE), counting),
     ).toThrow();
     expect(asked).toBe(0); // refused before the host lookup was needed
   });

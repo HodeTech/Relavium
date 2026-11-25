@@ -129,9 +129,9 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       // one shape that breaks the stitching was the one shape nothing exercised.
       // A CATALOG-PRICED model, deliberately: a media-only invocation on a model nothing prices for tokens is
       // now refused at write time, because the row it would create carries no usable token price and the media
-      // rate would never be applied. `gpt-4` is anchored to `openai`, the provider this suite registers.
+      // rate would never be applied. `gpt-5-pro` is anchored to `openai`, the provider this suite registers.
       const cachedPlusMedia = run({
-        model: 'gpt-4',
+        model: 'gpt-5-pro',
         provider: 'openai',
         cachedInputUsdPerMtok: 0.5,
         imageUsdPerCount: 0.04,
@@ -140,7 +140,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       expect(cachedPlusMedia.out).not.toContain('): ,'); // no leading separator
       expect(cachedPlusMedia.out).not.toContain('Mtokimage'); // no run-together clauses
 
-      const mediaOnly = run({ model: 'gpt-4', provider: 'openai', videoUsdPerSecond: 0.5 });
+      const mediaOnly = run({ model: 'gpt-5-pro', provider: 'openai', videoUsdPerSecond: 0.5 });
       expect(mediaOnly.out).toContain('(openai): video $0.5 per second.');
       expect(mediaOnly.out).not.toContain('input $');
 
@@ -156,19 +156,19 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       // following the strict-cap refusal's own instruction ("add an image rate") billed every token on that
       // model at nothing, permanently and silently: `CR-55`'s defect, reintroduced by its own remedy, on the
       // axis that carries most of the spend.
-      run({ model: 'gpt-4', provider: 'openai', imageUsdPerCount: 0.04 });
-      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      run({ model: 'gpt-5-pro', provider: 'openai', imageUsdPerCount: 0.04 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-5-pro');
       expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
       expect(listing?.tokenRatesStated).toBe(false); // …so a reader inherits the catalog's token rates
     });
 
     it('a token write DOES claim them, and a later media-only re-price preserves that claim', () => {
-      run({ ...baseArgs, model: 'gpt-4' });
-      expect(catalog.listAll().find((m) => m.modelId === 'gpt-4')?.tokenRatesStated).toBe(true);
+      run({ ...baseArgs, model: 'gpt-5-pro' });
+      expect(catalog.listAll().find((m) => m.modelId === 'gpt-5-pro')?.tokenRatesStated).toBe(true);
       // The `--cached` omission rule, applied to the flag: a media-only re-price must not demote token rates the
       // user stated earlier, or their own numbers would silently revert to the catalog's.
-      run({ model: 'gpt-4', provider: 'openai', audioUsdPerSecond: 0.001 });
-      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      run({ model: 'gpt-5-pro', provider: 'openai', audioUsdPerSecond: 0.001 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-5-pro');
       expect(listing?.tokenRatesStated).toBe(true);
       expect(listing?.inputCostPerMtokMicrocents).toBe(300_000_000);
       expect(listing?.mediaAudioCostMicrocents).toBe(100_000);

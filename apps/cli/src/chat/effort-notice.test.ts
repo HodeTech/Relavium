@@ -37,8 +37,8 @@ describe('effortRejectedNote — what the model refused, and what it would take'
   });
 
   it('degrades to the unavailable note when NOTHING is accepted — never "it takes " with an empty list', () => {
-    expect(effortRejectedNote('deepseek-reasoner', 'high', [])).toBe(
-      effortUnavailableNote('deepseek-reasoner'),
+    expect(effortRejectedNote('deep-research-preview-04-2026', 'high', [])).toBe(
+      effortUnavailableNote('deep-research-preview-04-2026'),
     );
   });
 
@@ -59,8 +59,8 @@ describe('effortRejectedNote — what the model refused, and what it would take'
 
 describe('effortUnavailableNote — the two empty lists are NOT the same sentence', () => {
   it('a model with no published knob will never have one — say so', () => {
-    // `deepseek-reasoner` ships `reasoning: {}`: it reasons, and upstream describes no controllable tier.
-    expect(effortUnavailableNote('deepseek-reasoner')).toContain(
+    // `deep-research-preview-04-2026` ships `reasoning: {}`: it reasons, and upstream describes no controllable tier.
+    expect(effortUnavailableNote('deep-research-preview-04-2026')).toContain(
       'publishes no controllable reasoning tier',
     );
   });
@@ -82,8 +82,8 @@ describe('effortUnavailableNote — the refresh it offers is the one the surface
     expect(tui).toContain('Open /models and choose "Refresh the list"');
     expect(tui).not.toMatch(/relavium models|`/u);
     // The sentence that needs no refresh is the same on both surfaces.
-    expect(effortUnavailableNote('deepseek-reasoner', 'tui')).toBe(
-      effortUnavailableNote('deepseek-reasoner'),
+    expect(effortUnavailableNote('deep-research-preview-04-2026', 'tui')).toBe(
+      effortUnavailableNote('deep-research-preview-04-2026'),
     );
   });
 

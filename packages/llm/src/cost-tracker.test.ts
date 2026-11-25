@@ -58,19 +58,19 @@ describe('priceModel', () => {
   });
 
   it('prices the current DeepSeek ids deepseek-v4-flash (default) and deepseek-v4-pro (premium)', () => {
-    // Verified 2026-07-03 against api-docs.deepseek.com/quick_start/pricing. nativeId is the exact wire string.
+    // The rates are the shipped snapshot's (models.dev, re-synced 2026-11-25). nativeId is the exact wire string.
     const flash = priceModel('deepseek-v4-flash');
     expect(flash.provider).toBe('deepseek');
     expect(flash.nativeId).toBe('deepseek-v4-flash');
-    expect(flash.inputPerMtokMicrocents).toBe(14_000_000); // $0.14/MTok
-    expect(flash.outputPerMtokMicrocents).toBe(28_000_000); // $0.28/MTok
-    expect(flash.cachedInputPerMtokMicrocents).toBe(280_000); // $0.0028/MTok cache-hit
+    expect(flash.inputPerMtokMicrocents).toBe(15_000_000); // $0.15/MTok
+    expect(flash.outputPerMtokMicrocents).toBe(60_000_000); // $0.60/MTok
+    expect(flash.cachedInputPerMtokMicrocents).toBe(300_000); // $0.003/MTok cache-hit
     const pro = priceModel('deepseek-v4-pro');
     expect(pro.provider).toBe('deepseek');
     expect(pro.nativeId).toBe('deepseek-v4-pro');
-    expect(pro.inputPerMtokMicrocents).toBe(43_500_000); // $0.435/MTok
-    expect(pro.outputPerMtokMicrocents).toBe(87_000_000); // $0.87/MTok
-    expect(pro.cachedInputPerMtokMicrocents).toBe(362_500); // $0.003625/MTok cache-hit
+    expect(pro.inputPerMtokMicrocents).toBe(66_000_000); // $0.66/MTok
+    expect(pro.outputPerMtokMicrocents).toBe(198_000_000); // $1.98/MTok
+    expect(pro.cachedInputPerMtokMicrocents).toBe(2_200_000); // $0.022/MTok cache-hit
   });
 
   it('throws a typed UnknownModelError (never a silent zero)', () => {
@@ -111,8 +111,10 @@ describe('cost', () => {
     expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(
       1_050_000,
     );
-    // deepseek-chat: 1000 in @ $0.14/MTok = 14_000µ¢; 500 out @ $0.28/MTok = 14_000µ¢
-    expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(28_000);
+    // deepseek-v4-flash: 1000 in @ $0.15/MTok = 15_000µ¢; 500 out @ $0.60/MTok = 30_000µ¢
+    expect(cost('deepseek-v4-flash', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(
+      45_000,
+    );
   });
 
   it('ignores cache-write tokens for a provider with no cache-write price (gpt-5.5)', () => {

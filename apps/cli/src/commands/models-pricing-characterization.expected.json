@@ -122,14 +122,14 @@
   "set cached input alone": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): cached $0.5 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -146,14 +146,14 @@
   "set cached input alone --json": {
     "exit": 0,
     "refusal": null,
-    "stdout": "{\"model\":\"gpt-4\",\"provider\":\"openai\",\"source\":\"user\",\"cachedInputCostPerMtokMicrocents\":50000000,\"overriddenCatalogPrice\":{\"inputCostPerMtokMicrocents\":3000000000,\"outputCostPerMtokMicrocents\":6000000000,\"cachedInputCostPerMtokMicrocents\":3000000000}}\n",
+    "stdout": "{\"model\":\"gpt-5-pro\",\"provider\":\"openai\",\"source\":\"user\",\"cachedInputCostPerMtokMicrocents\":50000000,\"overriddenCatalogPrice\":{\"inputCostPerMtokMicrocents\":1500000000,\"outputCostPerMtokMicrocents\":12000000000,\"cachedInputCostPerMtokMicrocents\":1500000000}}\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -170,14 +170,14 @@
   "set cached input to zero": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): cached $0 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -194,14 +194,14 @@
   "set an image price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -218,14 +218,14 @@
   "set an image price --json": {
     "exit": 0,
     "refusal": null,
-    "stdout": "{\"model\":\"gpt-4\",\"provider\":\"openai\",\"source\":\"user\",\"mediaImageCostMicrocents\":4000000}\n",
+    "stdout": "{\"model\":\"gpt-5-pro\",\"provider\":\"openai\",\"source\":\"user\",\"mediaImageCostMicrocents\":4000000}\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -242,14 +242,14 @@
   "set an audio price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -266,14 +266,14 @@
   "set a video price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): video $0.5 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): video $0.5 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -290,14 +290,14 @@
   "set a zero media price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): audio $0 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -314,14 +314,14 @@
   "set cached input and an image price": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5 per M, image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): cached $0.5 per M, image $0.04 per image. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -482,14 +482,14 @@
   "a media-only re-price keeps the stated token rates": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): audio $0.001 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 300000000,
@@ -554,14 +554,14 @@
   "the cached ceiling is accepted": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): cached $100000 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): cached $100000 per M. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
@@ -578,14 +578,14 @@
   "the media ceiling is accepted": {
     "exit": 0,
     "refusal": null,
-    "stdout": "Set user pricing for gpt-4 (openai): image $1000 per image, audio $1000 per second, video $1000 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stdout": "Set user pricing for gpt-5-pro (openai): image $1000 per image, audio $1000 per second, video $1000 per second. It applies to your next run/chat and survives `relavium models refresh`.\n",
     "stderr": "",
     "rows": [
       {
-        "model": "gpt-4",
+        "model": "gpt-5-pro",
         "provider": "openai",
         "source": "user",
-        "displayName": "gpt-4",
+        "displayName": "gpt-5-pro",
         "contextWindowTokens": null,
         "maxOutputTokens": null,
         "input": 0,
