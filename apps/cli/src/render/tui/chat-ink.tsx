@@ -158,9 +158,11 @@ import { chatPaletteRows, PaletteView, paletteLegend } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
 import {
   CHAT_HEADER_ROWS,
+  chatEditorRows,
   chatFrameRows,
   chatSessionTitle,
   firstUserLine,
+  hasConversation,
   headerRow,
 } from './chat-layout.js';
 import { WORDMARK, thinRule } from './home-layout.js';
@@ -177,7 +179,7 @@ import {
   type PaletteState,
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
-import { glyphOf, withGlyphForm } from './glyphs.js';
+import { GLYPHS, glyphOf, withGlyphForm } from './glyphs.js';
 import { chatStatusLine } from './chat-status.js';
 import { emphasize } from './emphasis.js';
 import {
@@ -194,6 +196,7 @@ import {
 } from './chat-projection.js';
 import { exitKey, legend, type LegendExit } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import { wrapWords } from './viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
@@ -433,6 +436,18 @@ interface ChatViewProps {
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the session, and the idle hint says so. */
   readonly interruptArmed?: boolean | undefined;
   /**
+   * The terminal's height in rows, which bounds the prompt editor ({@link promptEditorRows}) so a long draft cannot push the cursor, the rule, the
+   * status line and the hint out of the frame (OB7-M3). The full-screen frame's own `viewport.rows` is read first; this is what the inline renderer
+   * has. Absent ⇒ the editor is unbounded, as it always was.
+   */
+  readonly terminalRows?: number | undefined;
+  /**
+   * A card is docked below this view (an approval or command card, the agent's question, the continue checkpoint: {@link dockedCardOpen}). The card
+   * owns the keyboard and draws its own legend, so the hint row above it is blank: the idle hint said `[Ctrl+C] end (twice)` over a card whose own
+   * legend says `Esc / [Ctrl+C] stops the turn` (OB7-L2). The row keeps its place, so the prompt block stays {@link PROMPT_BLOCK_ROWS} rows.
+   */
+  readonly cardDocked?: boolean | undefined;
+  /**
    * The one notification of the host's channel (`popups/notifications.ts`), drawn on the hint row in place of the idle hint for its few seconds
    * (ADR-0148 §2). Never appended to the transcript: a notification leaves nothing behind.
    */
@@ -581,17 +596,25 @@ export function chatIsBusy(work: ChatWork): boolean {
 
 /**
  * The chat's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
- * §4): the wordmark (bold, in the accent) with the session title right-aligned to the width, then one blank row: {@link CHAT_HEADER_ROWS} rows.
+ * §4): the wordmark (bold, in the accent when it is the full-screen frame's first row, bold alone inline) with the session title right-aligned to the
+ * width, then one blank row: {@link CHAT_HEADER_ROWS} rows.
  * The title is already scrubbed and bounded by {@link headerRow}; with none (before the first message, inline) the wordmark stands alone.
  */
 function ChatHeaderView(
-  props: Readonly<{ title: string; columns: number; color: boolean }>,
+  props: Readonly<{ title: string; columns: number; color: boolean; accent: boolean }>,
 ): ReactElement {
   const row = headerRow(props.title, props.columns);
   return (
     <Box flexDirection="column" flexShrink={0} height={CHAT_HEADER_ROWS}>
       <Box>
-        <EmphText emphasis="bold" {...colorProps(props.color, 'cyan')} wrap="truncate-end">
+        {/* The accent is the full-screen frame's first row. The inline header scrolls into the terminal's own history among the transcript, and it
+            is bold only there in both hosts: the stand-alone chat writes it before it mounts (`emitChatHeader`, bold), so the Home's hosted chat
+            must not print the same header in a colour the stand-alone one has not (OB7-L8). */}
+        <EmphText
+          emphasis="bold"
+          {...(props.accent ? colorProps(props.color, 'cyan') : {})}
+          wrap="truncate-end"
+        >
           {row.wordmark}
         </EmphText>
         {row.title !== '' && (
@@ -629,7 +652,13 @@ function InlineScrollback(
     <Static items={[...items]}>
       {(item, index) =>
         item.role === 'introduction' ? (
-          <ChatHeaderView key={index} title="" columns={props.columns ?? 80} color={props.color} />
+          <ChatHeaderView
+            key={index}
+            title=""
+            columns={props.columns ?? 80}
+            color={props.color}
+            accent={false}
+          />
         ) : (
           <TranscriptLine
             key={index}
@@ -651,7 +680,10 @@ function paletteQueryEditor(query: string): EditorState {
   return { text, cursor: text.length };
 }
 
-/** What the empty prompt invites: a conversation has something to reply to, a new one has nothing yet. Never part of the draft, never sent. */
+/**
+ * What the empty prompt invites: a conversation has something to reply to ({@link hasConversation}: a user or an assistant entry, or the turns a
+ * reseat or a resume carried in), a new one has nothing yet. A notice is not a conversation. Never part of the draft, never sent.
+ */
 const PLACEHOLDER_REPLY = 'reply to continue';
 const PLACEHOLDER_FIRST = 'type a message';
 
@@ -705,6 +737,10 @@ interface PromptBlockProps {
   readonly palette: ChatViewProps['palette'];
   readonly notification: string | undefined;
   readonly copied: boolean;
+  /** A card is docked below the block: it draws its own legend, so the hint row is blank ({@link ChatViewProps.cardDocked}). */
+  readonly cardDocked: boolean;
+  /** The most rows the idle prompt's editor may take ({@link promptEditorRows}); `undefined` ⇒ unbounded. */
+  readonly editorRows: number | undefined;
   /** The in-flight turn, drawn where the prompt row would be while one runs. */
   readonly live: ReactElement | undefined;
 }
@@ -780,18 +816,21 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
           color={color}
           glyph={prefix}
           cursor={props.cursor}
-          placeholder={props.state.transcript.length === 0 ? PLACEHOLDER_FIRST : PLACEHOLDER_REPLY}
+          placeholder={hasConversation(props.state) ? PLACEHOLDER_REPLY : PLACEHOLDER_FIRST}
+          maxRows={props.editorRows}
+          columns={props.columns}
         />
       )}
       {rule}
-      <Text {...colorProps(color, 'gray')} wrap="truncate-end">
-        {status.text}
-      </Text>
+      {/* Not `truncate-end`: the model fits its line to the width whenever the mode and the effort can (`statusLine`'s last resort), so a row that
+          fits is drawn whole, and below the supported 80 columns, where even those words do not fit, the row WRAPS between words rather than being
+          cut by Ink inside the cost (SE7-2: a cut row drew `$12…`, an amount without its qualifier). */}
+      <Text {...colorProps(color, 'gray')}>{status.text}</Text>
       {/* The context-aware hint (2.5.C S6): at an EMPTY idle prompt the `/` palette is the command-discovery entry point and the key that
           leaves says where it leads; with a draft it is the draft's own keys; while a turn runs it is the key that ends the chat. */}
       {showsHint && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {hintFor(props)}
+          {props.cardDocked ? ' ' : hintFor(props)}
         </Text>
       )}
     </Box>
@@ -1001,7 +1040,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       {/* The header (ADR-0146 §4): the wordmark and the session title, then a blank row. Full-screen it is the first child; inline it is the
           first item of the scrollback (below), because inline has no fixed top row. */}
       {viewport !== undefined && (
-        <ChatHeaderView title={title} columns={viewport.cols} color={color} />
+        <ChatHeaderView title={title} columns={viewport.cols} color={color} accent />
       )}
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
@@ -1055,6 +1094,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         palette={props.palette}
         notification={props.notification}
         copied={props.copied === true}
+        cardDocked={props.cardDocked === true}
+        editorRows={chatEditorRows(viewport?.rows, props.terminalRows)}
         live={liveTurn}
       />
     </Box>
@@ -1109,6 +1150,18 @@ const noNotificationSnapshot = (): NotificationSnapshot => NO_NOTIFICATION;
  */
 export function composerEditor(editor: EditorState, drawing: SlotDrawing | undefined): EditorState {
   return drawing === undefined ? editor : { text: editor.text, cursor: -1 };
+}
+
+/**
+ * Whether a card docked below the chat is open (OB7-L2): an approval or command card, the agent's question, or the continue checkpoint. Each draws its
+ * own legend and owns the keyboard, so the chat's hint row above it is blank (`ChatViewProps.cardDocked`): the two legends disagreed about what `Esc`
+ * and `Ctrl+C` do. The card's full view and the details screen take the whole screen (the view is hidden then), and a popup is drawn over the view
+ * with its own legend row, so neither is among them.
+ */
+export function dockedCardOpen(
+  flags: Pick<OverlayFlags, 'approval' | 'question' | 'checkpoint'>,
+): boolean {
+  return flags.approval || flags.question || flags.checkpoint;
 }
 
 /**
@@ -2310,7 +2363,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // A resize voids the popup's measured frame, and below the floor a step that holds a chord or a secret closes unanswered (ADR-0148 §4): the
   // slot does both, from `slotProps.size`, BEFORE it commits the frame at the new size (a passive effect here ran after that commit, voided the
   // new frame's acknowledgement as it was made, and left every popup unanswerable until something re-rendered).
-  // The notification channel is held while a decision is on screen or the hint row is not drawn (ADR-0148 §2).
+  // The notification channel is held while a decision is on screen or the hint row is not drawn (ADR-0148 §2). A running turn, a `!` command and
+  // a submit in flight are NOT among them: the prompt block draws a hint row while they run (the running hint, which a notification replaces),
+  // and holding for them made a refusal raised mid-turn (a mode change, a refused popup) silent until the turn ended and stale after it (SE7-1).
   const notificationsHeld =
     renderedOverlays.approval ||
     renderedOverlays.review ||
@@ -2320,9 +2375,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     renderedOverlays.replacesBody ||
     (popupSnapshot.frame !== undefined &&
       currentStep(popupSnapshot.frame).spec.holds !== undefined) ||
-    running ||
-    shellBusy ||
-    submitBusy ||
     promptHidden(renderedOverlays);
   useEffect(() => {
     notifications?.hold(notificationsHeld);
@@ -2432,6 +2484,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
                   }
             }
             notification={hintRowNotification(notification.current?.text, drawing)}
+            cardDocked={dockedCardOpen(renderedOverlays)}
+            terminalRows={windowSize.rows}
           />
           {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
             overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
@@ -2489,6 +2543,28 @@ export function finalizeInkExit(
   return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
 }
 
+/** The width an inline intro is wrapped to when the terminal's is not known: the supported minimum. */
+const INTRO_COLUMNS_FALLBACK = 80;
+
+/**
+ * The inline intro as rows of at most `columns` display columns, broken at spaces (OB7-M2). It is written straight to the terminal before Ink mounts,
+ * so nothing wraps it but the terminal, which cuts a long sentence wherever the row ends (`…to continue it, star|t Relavium…`); the transcript's own
+ * notices are word-wrapped by the transcript layout, and so is this. Explicit newlines of the intro are kept.
+ */
+function wrapIntro(intro: string, columns: number | undefined): string {
+  const width =
+    columns !== undefined && Number.isFinite(columns) && columns >= 1
+      ? Math.floor(columns)
+      : INTRO_COLUMNS_FALLBACK;
+  // `wrapWords` keeps the whitespace a break fell on: a row does not end in it, and the next row does not begin with it
+  const rows = intro
+    .split('\n')
+    .flatMap((line) =>
+      wrapWords(line, width).map((row, index) => (index === 0 ? row.trimEnd() : row.trim())),
+    );
+  return rows.length === 0 ? intro : rows.join('\n');
+}
+
 /**
  * Where a session's INTRO goes — a resume banner (2.N), the `/clear` notice carrying `relavium chat-resume <id>`, or
  * a `/models` reseat line. The renderer decides, and getting it wrong loses the line:
@@ -2510,13 +2586,17 @@ export function emitIntro(
   ports: {
     readonly notice: (text: string, hostLead?: 'yourTurn' | 'modelSwitch') => void;
     readonly writeOut: (text: string) => void;
+    /** The terminal's width, which the inline intro is word-wrapped to (absent or not a width ⇒ {@link INTRO_COLUMNS_FALLBACK}). */
+    readonly columns?: number | undefined;
   },
 ): void {
   if (intro === undefined) return; // a fresh session has no intro
-  // The intro is the host's own sentence (a resume, a clear, a model switch): it may lead with the host's `⇄`, and with nothing else of the speaker
-  // marker's set (ADR-0145 §6): the rows of the notice are guarded, and this one glyph at the start of a line is the one thing they keep.
-  if (alternateScreen) ports.notice(intro, 'modelSwitch');
-  else ports.writeOut(`${intro}\n`);
+  // The intro is the host's own sentence (a resume, a clear, a model switch), and only the model switch leads with the host's `⇄` (ADR-0145 §6):
+  // the rows of a notice are guarded, and a lead is the one glyph they keep at the start of a line, so it is named for the notice that has it and for
+  // no other: the resume banner and the clear notice have no lead and the guard keeps nothing of them.
+  if (!alternateScreen) ports.writeOut(`${wrapIntro(intro, ports.columns)}\n`);
+  else if (intro.startsWith(GLYPHS.modelSwitch.glyph)) ports.notice(intro, 'modelSwitch');
+  else ports.notice(intro);
 }
 
 /**
@@ -2539,6 +2619,25 @@ export function emitChatHeader(
   if (alternateScreen || headerPrinted.has(owner)) return;
   headerPrinted.add(owner);
   writeOut(`${emphasize(WORDMARK, 'bold')}\n\n`);
+}
+
+/**
+ * `instance` with its `unmount` made to erase the live region first when `redriven()` says another chat follows (OB7-M2). Ink's unmount leaves
+ * the last frame in the terminal's scrollback; for a chat that ends the session that is the record of where it stopped, but a `/clear` or a reseat
+ * mounts the next chat directly under it, and the previous one's prompt block would stay above it as rows that look live and answer nothing. `clear`
+ * is Ink's own erase of what it has drawn (the `<Static>` rows already written are history and stay), and it leaves the final render of the unmount
+ * with nothing to redraw. Erasing is idempotent, so an unmount called twice is safe.
+ */
+export function eraseLiveRegionOnRedrive<
+  Instance extends { readonly clear: () => void; readonly unmount: () => void },
+>(instance: Instance, redriven: () => boolean): Instance {
+  return {
+    ...instance,
+    unmount: () => {
+      if (redriven()) instance.clear();
+      instance.unmount();
+    },
+  };
 }
 
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
@@ -2569,6 +2668,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   emitIntro(ctx.intro, alternateScreen, {
     notice: (text, hostLead) => ctx.store.notice(text, hostLead),
     writeOut: (text) => ctx.io.writeOut(text),
+    columns: ctx.io.nativeStdout?.columns,
   });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe(
@@ -2737,7 +2837,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     // Keep setup under the same cleanup ownership as render(), including a throwing startSession hook.
     ctx.workOwner?.assertAdmitting();
     ctx.startSession();
-    const mount = () =>
+    const mountNative = () =>
       render(
         createElement(ChatApp, {
           inputEnabled: () => active && !driverStopped,
@@ -2805,6 +2905,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           alternateScreen: false,
         },
       );
+    // A chat that ends to be re-driven (`/clear`, a model reseat) is followed by another over the same terminal: inline, its live region (the prompt,
+    // the rule, the status line, the hint) must not be left behind as dead rows above the next one's own (OB7-M2). The full-screen renderer has no
+    // scrollback to leave it in; a chat that ends the session leaves its last frame, as it always did.
+    const mount = (): ReturnType<typeof render> =>
+      alternateScreen
+        ? mountNative()
+        : eraseLiveRegionOnRedrive(mountNative(), () => ctx.stopReason() !== 'exit');
     instance = ownedMount === undefined ? mount() : ownedMount.acquire(mount);
     // Ink owns passive input/render failures. Observe its terminal promise rather than leave the
     // driver alive after an error boundary has unmounted the disclosure surface.

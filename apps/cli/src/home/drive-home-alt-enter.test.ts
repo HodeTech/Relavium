@@ -24,7 +24,7 @@ vi.mock('../secrets/os-keychain.js', () => ({
 }));
 
 /** A line of the Home's first frame. */
-const FIRST_FRAME = 'Welcome to Relavium.';
+const FIRST_FRAME = 'Start as an agent';
 
 /** What ink writes to enter the alternate screen on its own: the first half of {@link ENTER_ALT_SCREEN}. */
 const INK_ENTER = '\u001b[?1049h';

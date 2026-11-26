@@ -19,7 +19,7 @@ const options = {
   rows: 40,
   keyless: false,
   showBanner: false,
-  isEmpty: false,
+  onLanding: false,
   hasSessions: false,
 };
 const wrapCalls = (): number => vi.mocked(wrapWords).mock.calls.length;

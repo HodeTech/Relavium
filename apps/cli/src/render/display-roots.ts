@@ -1,4 +1,4 @@
-import { displayPath, type DisplayPathRoots } from './notation.js';
+import { directoryLabel, displayPath, type DisplayPathRoots } from './notation.js';
 
 /**
  * The roots a path is shortened against on this machine: the project directory, the operator's home, and whether the paths are
@@ -22,4 +22,18 @@ export function displayPathHere(
   platform: NodeJS.Platform = process.platform,
 ): string {
   return displayPath(path, displayRoots(cwd, home, platform));
+}
+
+/**
+ * The working directory as the status line's label (`directoryLabel`), read by THIS machine's path rules: a backslash is a separator on a Windows
+ * host and part of a name anywhere else, so a POSIX directory named `a\..\..\Library` is never labelled as another place (SE7-8). `notation.ts` reads no
+ * process state, so the platform is read here; it is a parameter (the machine's by default) so a test can read the paths from any machine.
+ */
+export function directoryLabelHere(
+  cwd: string,
+  home: string | undefined,
+  bound?: number,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return directoryLabel(cwd, home, bound, platform === 'win32' ? 'win32' : 'posix');
 }

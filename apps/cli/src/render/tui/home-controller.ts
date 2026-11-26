@@ -69,6 +69,11 @@ import {
   type HomeAgentRequest,
 } from '../../home/agent-start.js';
 import type { AgentsPort } from '../../home/agents-port.js';
+import {
+  sameStatusFacts,
+  type HomeStatusFacts,
+  type HomeStatusReader,
+} from '../../home/home-status-facts.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import type {
   HostedLaunch,
@@ -157,7 +162,22 @@ import {
   HOSTED_RUN_EXIT_GRACE_MS,
   HOSTED_RUN_POLL_MS,
 } from './tui-constants.js';
-import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
+import {
+  HOME_MIN_ROWS,
+  hostedRunIsLive,
+  homeIsEmpty,
+  type ExitGuardPhase,
+} from './home-projection.js';
+import { EXAMPLE_PROMPT, exampleIsShown } from './home-layout.js';
+import {
+  reducePageKey,
+  SLIDE_FRAME_MS,
+  SLIDE_SETTLE_BOUND_MS,
+  slideFrames,
+  type HomePage,
+  type HomeSlide,
+  type PageKey,
+} from './home-pages.js';
 import { stripRefreshPaused } from './strip-pause.js';
 import {
   activePollPausedByOverlay,
@@ -169,9 +189,9 @@ import {
 } from './overlay-flags.js';
 import { createStripBackoff } from './strip-backoff.js';
 import {
+  focusAt,
   focusFor,
   resolveFocus,
-  stepFocus,
   stripRows,
   type StripFocus,
   type StripRow,
@@ -183,7 +203,7 @@ import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
 import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
-import { keyToken } from './legend.js';
+import { keyHint, keyToken } from './legend.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
 import { looksLikeProviderKey } from '../provider-key-shape.js';
 import { sanitizeInline } from '../sanitize.js';
@@ -345,8 +365,24 @@ export interface HomeControllerState {
    * focus off it; `Enter` does what the row's kind says (a parked run's card, a failed or recent run's detail, a session's resume).
    */
   readonly stripFocus: StripFocus | undefined;
+  /**
+   * Which of the Home's two pages is in front (MVP-11 unit 7): the landing (`start`) or the work page under it (`work`). On the work page the
+   * focus is the row {@link stripFocus} names, else its docked prompt; on the landing it is the landing's prompt and no row is focused. A Home
+   * with nothing to continue is always on the landing.
+   */
+  readonly homePage: HomePage;
+  /**
+   * The slide between the pages in progress (alternate screen only, `home-pages.ts`), or `undefined` at rest. {@link homePage} is already the
+   * page it goes to; every key that arrives while it slides waits in a queue and is applied, in order, once the arrival is on screen.
+   */
+  readonly slide: HomeSlide | undefined;
   /** The Home can open a gate card (a port is wired): the run view of a parked run then offers `Enter`. */
   readonly gateCards: boolean;
+  /**
+   * What the landing's status line says (ADR-0146 §2): the facts of the next chat as the controller last read them, or `undefined` when no
+   * reader is wired. It changes only when a refresh point reads something different, so a draw repaints nothing for it.
+   */
+  readonly status?: HomeStatusFacts | undefined;
 }
 
 /**
@@ -786,6 +822,11 @@ export interface HomeControllerDeps {
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
    */
   readonly schedule?: (callback: () => void, delayMs: number) => () => void;
+  /**
+   * A change of the Home's page SLIDES (MVP-11 unit 7): the alternate screen's renderer, where the view draws a window onto the two pages. Its
+   * frames are timed by {@link schedule}. Absent or `false` (inline, or a test of the keys alone): the pages swap at once.
+   */
+  readonly slideTransitions?: boolean | undefined;
   readonly pickSession?: () => Promise<string | undefined>;
   readonly resumeChat?: (
     sessionId: string,
@@ -797,6 +838,14 @@ export interface HomeControllerDeps {
    * had to say, only then. `origin` is the surface the resume was asked on. Absent ⇒ the stages run as they are (a test's Home).
    */
   readonly resumeFrame?: (origin: 'home' | 'chat', run: () => Promise<void>) => Promise<void>;
+  /**
+   * What the Home's status line says about the next chat (ADR-0146 §2): the provider, the model, the mode, the effort and the directory a chat
+   * started now would use. Read ONCE when the controller is built and again only at the events that can change them (a provider run, a
+   * `/models` default write, a `/mode` default, a chat ending or a `/clear`), never on a draw: it may read configuration, and a draw touches no
+   * keychain and no disk. A read that throws leaves the facts the Home has. Absent ⇒ the Home has no status line (a test's Home) and nothing
+   * else changes.
+   */
+  readonly statusFacts?: HomeStatusReader | undefined;
   readonly providerSetup?: {
     readonly initialKeyless: boolean;
     /** Open the explicit provider setup. `note` is shown in the setup's own card, where a person who is looking at the setup can read it. */
@@ -808,6 +857,11 @@ export interface HomeControllerDeps {
 
 /** A key as the Home's one input owner forwards it: the landing's, the chat's and the palette's flags together. */
 export type HomeKeyEvent = HomeKey & ChatKey & PaletteKey;
+
+/** A key or a paste that arrived while the Home's pages slid (MVP-11 unit 7): applied, in order, once the arrival is on screen. */
+type QueuedInput =
+  | { readonly kind: 'key'; readonly input: string; readonly key: HomeKeyEvent }
+  | { readonly kind: 'paste'; readonly text: string };
 
 export interface HomeController {
   // Declared as function PROPERTIES (not methods) so a `useSyncExternalStore(c.subscribe, c.getSnapshot)`
@@ -871,9 +925,24 @@ export interface HomeController {
    * on mount.
    */
   readonly bindHomeFrame: (visible: ((state: HomeControllerState) => boolean) | undefined) => void;
+  /**
+   * The host's word that a frame of the Home's pages holding `state` was measured and flushed (the same evidence {@link bindHomeFrame} reads):
+   * the keys that waited while the pages slid are applied once the arrival is on screen (MVP-11 unit 7). Optional: a host without it gets them
+   * after a short bound instead.
+   */
+  readonly homeFrameShown?: (state: HomeControllerState) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
+
+/**
+ * What `Enter` on an empty prompt answers when it has nothing to open (no hosted run to show, no key to connect; ADR-0146 §1): ONE notification
+ * on the Home's channel instead of nothing, saying how to start. The key it names is written by the legend's bracket rule.
+ */
+export const EMPTY_PROMPT_ENTER_NOTICE = keyHint([
+  { text: 'Type a message to chat' },
+  { keys: '/', verb: 'commands' },
+]);
 
 /**
  * What a draft that looks like a provider key is answered with when there is no key yet (ADR-0146 §6): the draft was cleared, not kept and not
@@ -1056,6 +1125,24 @@ function legBoundary(now: RunHostSnapshot, before: RunHostSnapshot | undefined):
   return hostedRunIsLive(now) !== hostedRunIsLive(before) || now.last !== before?.last;
 }
 
+/**
+ * The status facts the reader gives now (ADR-0146 §2), or `previous` when there is no reader or the read throws (a strict configuration reload
+ * that failed: the line keeps what it said, and the failure belongs to whatever builds the next chat). The very object `previous` when nothing
+ * changed, so a re-read that finds the same facts publishes nothing and repaints nothing.
+ */
+function readStatusFacts(
+  reader: HomeStatusReader | undefined,
+  previous: HomeStatusFacts | undefined,
+): HomeStatusFacts | undefined {
+  if (reader === undefined) return previous;
+  try {
+    const next = reader.read();
+    return sameStatusFacts(next, previous) ? previous : next;
+  } catch {
+    return previous;
+  }
+}
+
 export function createHomeController(deps: HomeControllerDeps): HomeController {
   const listeners = new Set<() => void>();
   // The strip's change token as it is BEFORE the first read of the strip (the state below reads it), so the idle tick compares with a
@@ -1091,7 +1178,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     screen: undefined,
     parkedRuns: readParkedRows(deps.gateCards, NO_PARKED),
     stripFocus: undefined,
+    homePage: 'start',
+    slide: undefined,
     gateCards: deps.gateCards !== undefined,
+    status: readStatusFacts(deps.statusFacts, undefined),
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -1107,6 +1197,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // once (the person's `Enter` was meant for that row), and any other key, and any screen that opens or closes, ends it. It is a flag of
   // the landing's key handling, not something a screen draws.
   let focusJustDropped = false;
+  // The two pages' slide (MVP-11 unit 7): the timer of its next frame, the keys and pastes that arrived while it ran (applied in order once
+  // the arrival is on screen), whether the arrival is waiting for that frame, and the bound on that wait.
+  let cancelSlideFrame: (() => void) | undefined;
+  let slideQueue: readonly QueuedInput[] = [];
+  let settlingSlide = false;
+  let cancelSettleBound: (() => void) | undefined;
   let activePollRunning = false;
   let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
@@ -1207,19 +1303,45 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
   /** The landing is what the person is looking at: the bare Home, with no screen or card in front of it. */
   const landingInFront = (): boolean => state.mode === 'home' && state.screen === undefined;
-  const set = (patch: Partial<HomeControllerState>): void => {
-    const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
-    const before = state;
-    state = { ...state, ...patch, noticeRevision };
-    // The strip's focus is the identity of a row (`strip-focus.ts`): whenever the rows are replaced it is resolved on the new ones, so it
-    // follows its row, moves to the nearest one when the row is gone, and is never left naming nothing.
-    if (!('stripFocus' in patch) && ('snapshot' in patch || 'parkedRuns' in patch)) {
+  /**
+   * The status line's facts read again, as a patch for the state change that goes with it: `{}` when they are what the Home already shows
+   * (nothing repaints for them), `{ status }` when they differ (ADR-0146 §2). Called only at the points that can change what the next chat
+   * uses, never from a draw.
+   */
+  const statusPatch = (): Partial<HomeControllerState> => {
+    const status = readStatusFacts(deps.statusFacts, state.status);
+    return status === state.status ? {} : { status };
+  };
+  /**
+   * {@link statusPatch} for a caller with no state change of its own, and only on the bare Home: while a chat is live the Home is not drawn
+   * (its end reads the facts, `endChat`), and a read of the configuration there would be one more strict reload under a running conversation.
+   */
+  const refreshStatus = (): void => {
+    if (exiting || state.mode !== 'home') return;
+    const patch = statusPatch();
+    if ('status' in patch) set(patch);
+  };
+  /**
+   * The rows were replaced (a read of the strip): the strip's focus is the identity of a row (`strip-focus.ts`), so it follows its row and is
+   * dropped when the row is gone, never left naming nothing; and with nothing left to continue there is no work page, so the Home is its landing
+   * again (a slide in progress ends on its own, and the view draws the landing meanwhile).
+   */
+  const followRows = (patch: Partial<HomeControllerState>): void => {
+    if (!('stripFocus' in patch)) {
       const stripFocus = resolveFocus(
         stripRows(state.parkedRuns, state.snapshot),
         state.stripFocus,
       );
       if (stripFocus !== state.stripFocus) state = { ...state, stripFocus };
     }
+    if (state.homePage === 'work' && homeIsEmpty(state.snapshot, state.parkedRuns))
+      state = { ...state, homePage: 'start', stripFocus: undefined };
+  };
+  const set = (patch: Partial<HomeControllerState>): void => {
+    const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
+    const before = state;
+    state = { ...state, ...patch, noticeRevision };
+    if ('snapshot' in patch || 'parkedRuns' in patch) followRows(patch);
     // A screen or a card that opens or closes ends the swallowed `Enter` (see `focusJustDropped`): the first key after the landing comes
     // back is the landing's own.
     if (before.screen !== state.screen) focusJustDropped = false;
@@ -1342,6 +1464,106 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     cancelHostedPoll = undefined;
     cancelExitGrace?.();
     cancelExitGrace = undefined;
+    // and the pages' slide: its next frame and the wait for its arrival (the keys it queued die with the Home)
+    cancelSlideFrame?.();
+    cancelSlideFrame = undefined;
+    cancelSettleBound?.();
+    cancelSettleBound = undefined;
+    slideQueue = [];
+    settlingSlide = false;
+  };
+
+  // ---- The two pages (MVP-11 unit 7) ---------------------------------------------------------------------------------------------
+  // `↓` on the landing goes down to the work page, `↑` from its first row and `Esc` on it come back (`reducePageKey`). In the alternate screen
+  // the change SLIDES: the page and the focus are the target's at once (so the keys, the hints and the measured frame are), and `slide` walks
+  // the view's window through the frames of `slideFrames`, one every `SLIDE_FRAME_MS`. Every key and paste that arrives meanwhile waits in
+  // `slideQueue` and is applied in order once the arrival is on screen (the host's `homeFrameShown`; with no host bound, at once; with a host
+  // that never says so, after `SLIDE_SETTLE_BOUND_MS`), each through the very route a live key takes. `Ctrl+C` does not wait: it ends the slide
+  // where it would arrive, applies what was queued before it, and is then handled at once (a second press there opens the exit guard over the
+  // page that has arrived). A resize ends the slide the same way, without the `Ctrl+C`.
+  /** The slide's next frame, or its arrival. */
+  const stepSlide = (): void => {
+    cancelSlideFrame = undefined;
+    const slide = state.slide;
+    if (slide === undefined) return;
+    const frames = slideFrames(terminal?.rows ?? HOME_MIN_ROWS, slide.to).length;
+    if (slide.frame + 1 >= frames - 1) {
+      arriveSlide(false);
+      return;
+    }
+    set({ slide: { to: slide.to, frame: slide.frame + 1 } });
+    cancelSlideFrame = schedule(stepSlide, SLIDE_FRAME_MS);
+  };
+  /** Turn to `to` with `patch` (the focus it lands on): slid in the alternate screen, at once inline or when there are no frames between. */
+  const turnPage = (to: HomePage, patch: Partial<HomeControllerState>): void => {
+    const frames = slideFrames(terminal?.rows ?? HOME_MIN_ROWS, to).length;
+    if (deps.slideTransitions !== true || frames < 2) {
+      set({ ...patch, homePage: to, slide: undefined });
+      return;
+    }
+    set({ ...patch, homePage: to, slide: { to, frame: 0 } });
+    cancelSlideFrame = schedule(stepSlide, SLIDE_FRAME_MS);
+  };
+  /**
+   * The slide has arrived (its last frame, a resize or a `Ctrl+C`): there is no slide, and the queue is applied once that frame is on screen, or
+   * `now` (the `Ctrl+C` that cannot wait).
+   */
+  const arriveSlide = (now: boolean): void => {
+    cancelSlideFrame?.();
+    cancelSlideFrame = undefined;
+    if (state.slide !== undefined) set({ slide: undefined });
+    if (slideQueue.length === 0) return;
+    // At once when it cannot wait or need not: no host measures frames, or the arrival is already the frame on screen.
+    if (now || homeFrameVisible === undefined || homeFrameVisible(state)) {
+      drainSlideQueue();
+      return;
+    }
+    settlingSlide = true;
+    cancelSettleBound?.();
+    cancelSettleBound = schedule(() => {
+      cancelSettleBound = undefined;
+      drainSlideQueue();
+    }, SLIDE_SETTLE_BOUND_MS);
+  };
+  /**
+   * An `Enter` from the queue on a focused row whose frame is not on screen: dropped, as the host drops a live one (`home-app.tsx`), because a
+   * row the person has not seen must not be opened.
+   */
+  const unseenRowEnter = (entry: QueuedInput): boolean =>
+    entry.kind === 'key' &&
+    entry.key.return === true &&
+    state.screen === undefined &&
+    state.stripFocus !== undefined &&
+    homeFrameVisible !== undefined &&
+    !homeFrameVisible(state);
+  /** Apply the queued keys and pastes in order. A queued key that starts another slide leaves the rest to wait for that one. */
+  const drainSlideQueue = (): void => {
+    settlingSlide = false;
+    cancelSettleBound?.();
+    cancelSettleBound = undefined;
+    let queued = slideQueue;
+    slideQueue = [];
+    while (queued.length > 0 && !exiting) {
+      if (state.slide !== undefined) {
+        slideQueue = [...queued, ...slideQueue];
+        return;
+      }
+      const [entry, ...rest] = queued;
+      queued = rest;
+      if (entry === undefined || unseenRowEnter(entry)) continue;
+      if (entry.kind === 'paste') pasteText(entry.text);
+      else routeKey(entry.input, entry.key);
+    }
+  };
+  /** Whether `input` waits for the slide (or its arrival); a `Ctrl+C` ends the slide and does not wait. */
+  const queuedForSlide = (input: QueuedInput): boolean => {
+    if (state.slide === undefined && !settlingSlide) return false;
+    if (input.kind === 'key' && isInterruptKey(input.input, input.key)) {
+      arriveSlide(true);
+      return false;
+    }
+    slideQueue = [...slideQueue, input];
+    return true;
   };
   const hostedLeg = (snapshot: RunHostSnapshot): HostedLegState => {
     if (snapshot.active !== undefined)
@@ -1901,7 +2123,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           ...parkedPatch(), // and a run it left parked, or one answered meanwhile, in the refreshed Attention rows
           keyless: deps.providerSetup?.readKeyless?.() ?? state.keyless,
+          ...statusPatch(), // a `/models` or `/mode` default saved from the chat is what the returned Home's status line says
           mode: 'home',
+          // a chat that ends returns to the landing, whichever page it was started from (MVP-11 unit 7)
+          homePage: 'start',
+          slide: undefined,
+          stripFocus: undefined,
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
@@ -2637,7 +2864,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             : undefined,
         open: () => {
           const settings = deps.openModeSettings;
-          if (settings !== undefined) openNativeAction(settings, 'Startup mode settings');
+          if (settings === undefined) return;
+          // The popup's "New chats" saves the startup default the status line names: read again when it is over, however it ended.
+          openNativeAction(async () => {
+            try {
+              await settings();
+            } finally {
+              refreshStatus();
+            }
+          }, 'Startup mode settings');
         },
       },
     ],
@@ -2867,6 +3102,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ input: emptyEditor() });
       if (openRunView()) return; // the strip's run row: `Enter` brings back the view of the run that is executing
       if (state.keyless) openProviderSetup();
+      else deps.announce?.(EMPTY_PROMPT_ENTER_NOTICE); // nothing to open: say how to start, never nothing (ADR-0146 §1)
       return;
     }
     if (managementCommand(trimmed)) return;
@@ -2994,7 +3230,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       choice,
     );
-    if (!exiting) present({ submitBusy: false });
+    // What the next chat uses may have just changed (the model and its provider, the effort tier): the status line is read again, on the bare Home only.
+    if (!exiting) present({ submitBusy: false, ...(state.mode === 'home' ? statusPatch() : {}) });
     return result;
   };
 
@@ -3164,7 +3401,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
               hasSavedSessions: state.snapshot.recentSessions.length > 0,
               turnRunning: false,
             }),
-            'down',
+            // under the landing's prompt; above the work page's docked prompt, as a chat's runs (MVP-11 unit 7)
+            state.homePage === 'work' ? 'up' : 'down',
           )
         : openPalette(
             buildPaletteEntries('home-chat', {
@@ -3794,54 +4032,67 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     openRunDetail(row.id);
   };
 
+  /** A key as the pages read it ({@link reducePageKey}): the two arrows, `Esc`, `Enter`, a key that types, or any other key. */
+  const pageKeyOf = (input: string, key: HomeKey & ChatKey): PageKey => {
+    if (key.downArrow === true) return 'down';
+    if (key.upArrow === true) return 'up';
+    if (key.escape === true) return 'escape';
+    if (key.return === true) return 'return';
+    return input.length > 0 && key.ctrl !== true && key.meta !== true ? 'types' : 'other';
+  };
+
   /**
-   * A key while a strip row is focused on the landing (`↓` at the empty prompt put it there). `↑`/`↓` move along the rows in the order the
-   * strip draws them (`↓` past the last stays on it, `↑` before the first returns to the prompt), `Enter` does what the row's kind says and
-   * `Esc` returns to the prompt. The focus names a row by its identity: a refresh that takes the row off the strip drops the focus (it never
-   * moves it onto another row). Returns whether the key was handled; any other key ends the focus and is then typed as usual.
+   * The pages' own keys (MVP-11 unit 7, `reducePageKey`): `↓` from the landing down to the work page (its first row, or its docked prompt when
+   * no row can be focused), `↑` from the first row and `Esc` anywhere on the work page back up (the draft kept), the arrows along the rows and
+   * off their ends (past the last row onto the docked prompt; from the docked prompt's first line back onto the last row), `Enter` on a row
+   * what the row's kind says, and a key that types on a row moves to the docked prompt and is typed there. The focus names a row by its
+   * identity: a refresh that takes the row off the list drops the focus (it never moves it onto another row), and `Enter` on a focus whose row
+   * is gone opens nothing and says so (ADR-0140 §6). Whether the key was handled; any other key is the prompt's.
    */
-  const routeStripFocusKey = (focus: StripFocus, key: HomeKey & ChatKey): boolean => {
+  const handlePageKey = (input: string, key: HomeKey & ChatKey): boolean => {
     const rows = stripRows(state.parkedRuns, state.snapshot);
-    const index = focusFor(rows, focus);
-    const row = index === undefined ? undefined : rows[index];
-    if (row === undefined) {
-      // Not reachable while `set` keeps the focus on the rows it is given; a focus that names a row the strip no longer lists opens
-      // nothing and says so (ADR-0140 §6), and is dropped. Any other key is typed as usual.
+    const rowIndex = focusFor(rows, state.stripFocus);
+    if (state.stripFocus !== undefined && rowIndex === undefined) {
+      // Not reachable while `set` keeps the focus on the rows it is given: a focus that names a row the list no longer has is dropped.
       if (key.return === true) {
         set({ stripFocus: undefined, notice: STRIP_ROW_GONE });
         return true;
       }
       set({ stripFocus: undefined });
-      return false;
     }
-    if (key.escape === true) {
-      set({ stripFocus: undefined });
-      return true;
+    const outcome = reducePageKey(pageKeyOf(input, key), {
+      page: state.homePage,
+      rowIndex,
+      rowCount: rows.length,
+      draft: state.input,
+      paletteOpen: state.palette !== undefined,
+      canContinue: !homeIsEmpty(state.snapshot, state.parkedRuns),
+    });
+    switch (outcome.kind) {
+      case 'pass':
+        return false;
+      case 'to-work':
+        turnPage('work', { stripFocus: outcome.focus === 'rows' ? focusAt(rows, 0) : undefined });
+        return true;
+      case 'to-start':
+        turnPage('start', { stripFocus: undefined });
+        return true;
+      case 'step-row':
+        set({ stripFocus: focusAt(rows, (rowIndex ?? 0) + outcome.delta) });
+        return true;
+      case 'to-last-row':
+        set({ stripFocus: focusAt(rows, rows.length - 1) });
+        return true;
+      case 'to-docked':
+        set({ stripFocus: undefined });
+        // `↓` past the last row is spent; a key that types is then the docked prompt's (typed, or `/` opening the palette over it).
+        return outcome.then === 'none';
+      case 'open-row': {
+        const row = rows[rowIndex ?? -1];
+        if (row !== undefined) activateStripRow(row);
+        return true;
+      }
     }
-    if (key.return === true) {
-      activateStripRow(row);
-      return true;
-    }
-    if (key.upArrow === true || key.downArrow === true) {
-      set({ stripFocus: stepFocus(rows, focus, key.upArrow === true ? -1 : 1) });
-      return true;
-    }
-    set({ stripFocus: undefined });
-    return false;
-  };
-
-  /**
-   * The strip's own keys at the landing: a focused row's (`routeStripFocusKey`), and `↓` at the empty prompt, which moves onto the first row
-   * the strip draws, across its sections in their order: the parked runs, the failed runs, the sessions, the recent runs. Whether the key
-   * was handled; any other key is the prompt's.
-   */
-  const handleStripKey = (key: HomeKey & ChatKey): boolean => {
-    if (state.stripFocus !== undefined) return routeStripFocusKey(state.stripFocus, key);
-    if (key.downArrow !== true || state.input.text.length > 0) return false;
-    const first = stepFocus(stripRows(state.parkedRuns, state.snapshot), undefined, 1);
-    if (first === undefined) return false;
-    set({ stripFocus: first });
-    return true;
   };
 
   const handleHomeKey = (input: string, key: HomeKey & ChatKey, focusDropped: boolean): void => {
@@ -3855,7 +4106,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (focusDropped && key.return === true && state.stripFocus === undefined) return;
     const action = reduceHomeKey(input, key);
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
-    if (handleStripKey(key)) return;
+    if (handlePageKey(input, key)) return;
+    // `Tab` at the landing's empty prompt fills the example in (ADR-0146 §1), where the example is on screen (the landing, nothing typed): the
+    // editor then holds the fixed example with the cursor at its end, and `Enter` sends it as any typed line. Any other `Tab` is what it was:
+    // nothing (the work page's docked prompt shows no example).
+    if (
+      key.tab === true &&
+      key.shift !== true &&
+      key.ctrl !== true &&
+      key.meta !== true &&
+      exampleIsShown(state.homePage === 'start', state.input.text)
+    ) {
+      set({ input: editorFromText(EXAMPLE_PROMPT), notice: undefined });
+      return;
+    }
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
@@ -3930,6 +4194,44 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     handleHomeKey(input, key, focusDropped);
+  };
+
+  /** A key through the Home's gates (see {@link HomeController.handleKey}): the live route, and the route a key the slide queued takes. */
+  const routeKey = (input: string, key: HomeKeyEvent): void => {
+    if (!exiting && !state.nativeActionBusy) dispatchKey(input, key);
+  };
+  /** A bracketed paste through the Home's gates (see {@link HomeController.handlePaste}). */
+  const pasteText = (text: string): void => {
+    if (exiting || state.nativeActionBusy) return;
+    disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
+    focusJustDropped = false; // and the one ignored `Enter` after a dropped focus
+    if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
+    if (state.screen !== undefined) {
+      // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
+      // soon after it is refused.
+      if (state.screen.kind === 'gate-card') state.screen.card.paste(text);
+      // The tab host drops it too, and a withdrawal's question that was waiting is dropped with it: a paste is typing (ADR-0137 §2).
+      else if (state.screen.kind === 'tab-host') {
+        const host = disarmTabHost(state.screen.host);
+        if (host !== state.screen.host) set({ screen: { kind: 'tab-host', host } });
+      }
+      return;
+    }
+    // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
+    // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
+    // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
+    // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
+    const pasted = text.replace(/\r\n?/g, '\n');
+    // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
+    if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
+    if (pasted.length === 0 || !pasteEditable()) return;
+    // An append clears a stale notice, like a typed edit.
+    history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)
+    set({
+      input: insertAtCursor(state.input, pasted),
+      notice: undefined,
+      stripFocus: undefined,
+    });
   };
 
   // ---- The strip's idle refresh (ADR-0140 §6) --------------------------------------------------------------------------------
@@ -4017,7 +4319,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     setProviderState(keyless, notice) {
       // The provider setup tells only whether a key exists now (what it did is its Done step or one notification, ADR-0148 §6); a host's other
       // notice (`noteEffectAttention`) still lands in the Home's notice area. Nothing is written into a conversation's transcript.
-      if (!exiting) set({ keyless, ...(notice === undefined ? {} : { notice }) });
+      if (!exiting)
+        set({
+          keyless,
+          ...(notice === undefined ? {} : { notice }),
+          ...(state.mode === 'home' ? statusPatch() : {}),
+        });
     },
     openProviderSetup() {
       if (!exiting) openProviderSetup();
@@ -4025,8 +4332,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     handleKey(input, key) {
       // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from
       // `useInput`), so a pasted multi-line block never arrives here char-by-char and a pasted approval token can
-      // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
-      if (!exiting && !state.nativeActionBusy) dispatchKey(input, key);
+      // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router; while the
+      // pages slide it waits in order (a `Ctrl+C` ends the slide and does not wait: MVP-11 unit 7).
+      if (exiting || state.nativeActionBusy || queuedForSlide({ kind: 'key', input, key })) return;
+      routeKey(input, key);
     },
     disarmInterrupt,
     interruptAnswered() {
@@ -4044,6 +4353,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     setTerminalSize(columns, rows) {
       terminal = { columns, rows };
+      // A resize while the pages slide ends the slide where it would arrive (MVP-11 unit 7).
+      if (state.slide !== undefined) arriveSlide(false);
     },
     openScreen,
     closeScreen,
@@ -4053,42 +4364,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     bindHomeFrame(visible) {
       homeFrameVisible = visible;
     },
+    homeFrameShown(shown) {
+      // The arrival of a slide is on screen: what waited for it is applied now (MVP-11 unit 7).
+      if (settlingSlide && shown === state && !exiting) drainSlideQueue();
+    },
     openPermissionsAsCommand() {
       if (exiting || deps.permissions === undefined) return;
       tabHostIsTheCommand = openTabHost('permissions');
       // It did not open (the port could not be read): stay in the Home, whose notice says why.
     },
     handlePaste(text) {
-      if (exiting || state.nativeActionBusy) return;
-      disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
-      focusJustDropped = false; // and the one ignored `Enter` after a dropped focus
-      if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
-      if (state.screen !== undefined) {
-        // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
-        // soon after it is refused.
-        if (state.screen.kind === 'gate-card') state.screen.card.paste(text);
-        // The tab host drops it too, and a withdrawal's question that was waiting is dropped with it: a paste is typing (ADR-0137 §2).
-        else if (state.screen.kind === 'tab-host') {
-          const host = disarmTabHost(state.screen.host);
-          if (host !== state.screen.host) set({ screen: { kind: 'tab-host', host } });
-        }
-        return;
-      }
-      // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
-      // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
-      // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
-      // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
-      const pasted = text.replace(/\r\n?/g, '\n');
-      // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
-      if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
-      if (pasted.length === 0 || !pasteEditable()) return;
-      // An append clears a stale notice, like a typed edit.
-      history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)
-      set({
-        input: insertAtCursor(state.input, pasted),
-        notice: undefined,
-        stripFocus: undefined,
-      });
+      // While the pages slide the paste waits its turn behind the keys that came before it (MVP-11 unit 7).
+      if (exiting || state.nativeActionBusy || queuedForSlide({ kind: 'paste', text })) return;
+      pasteText(text);
     },
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself

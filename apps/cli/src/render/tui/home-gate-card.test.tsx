@@ -31,6 +31,7 @@ const RUN = 'run-0001';
 const CTRL_C = '\x03';
 const CTRL_Y = '\x19';
 const DOWN = '\x1b[B';
+const UP = '\x1b[A';
 const ENTER = '\r';
 const ESC = '\x1b';
 /** Every guard layer off: the tests of the guard are `run-card-keys.test.ts`'s, and what is left here is the painted frame. */
@@ -214,14 +215,36 @@ async function answerOnceThePaintLanded(m: Mounted): Promise<void> {
   await eventually(() => m.resume.mock.calls.length > 0, 'the answer reaching the run host');
 }
 
+/**
+ * Down to the work page (MVP-11 unit 7), where the Attention rows are, and onto its docked prompt (`↓` past the last row), so no row is focused
+ * and every row says how to select it.
+ */
+async function toWorkPagePrompt(m: Mounted): Promise<void> {
+  await settleFrames();
+  m.harness.stdin.write(DOWN);
+  await eventually(() => m.controller.getSnapshot().homePage === 'work', 'the work page');
+  // past the last row: one `↓` per row the focus can stand on
+  for (let n = 0; n < 10 && m.controller.getSnapshot().stripFocus !== undefined; n += 1) {
+    m.harness.stdin.write(DOWN);
+    await settleFrames();
+  }
+  await eventually(
+    () => m.controller.getSnapshot().stripFocus === undefined && m.frame().includes('start page'),
+    'the docked prompt',
+  );
+}
+
 describe('the Attention rows', () => {
   it('a paused run of this project is one row: its id, its gate kind and the key that selects it, under the heading', async () => {
     const m = mount();
     await settleFrames();
+    // the landing counts it (MVP-11 unit 7): the rows themselves are the work page's
+    expect(m.frame()).toContain('↓ 1 needs you');
+    expect(m.frame()).not.toContain('|| run-0001');
+    await toWorkPagePrompt(m);
     const frame = m.frame();
     expect(frame).toContain('Attention required');
-    expect(frame).toContain('|| run-0001  ·  approval gate  ·  ↓ select');
-    expect(frame).toContain('↓ open a parked run');
+    expect(frame).toContain('|| run-0001  ·  approval gate  ·  ↑/↓ select');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
   });
 
@@ -231,11 +254,11 @@ describe('the Attention rows', () => {
     const frame = m.frame();
     expect(frame).not.toContain('||');
     expect(frame).not.toContain('Attention required');
-    expect(frame).not.toContain('open a parked run');
-    expect(frame).toContain('Welcome to Relavium.');
+    expect(frame).not.toContain('need');
+    expect(frame).toContain('Start as an agent'); // the empty Home's landing (ADR-0146 §1)
   });
 
-  it('`↓` at the empty prompt moves onto the row, which then names Enter, and `Esc` returns to the prompt', async () => {
+  it('`↓` at the empty prompt goes down onto the row, which then names Enter, and `Esc` goes back up to the landing', async () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(DOWN);
@@ -244,7 +267,7 @@ describe('the Attention rows', () => {
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(RUN);
     m.harness.stdin.write(ESC);
     await eventually(() => m.controller.getSnapshot().stripFocus?.id === undefined);
-    await eventually(() => m.frame().includes('↓ select'));
+    await eventually(() => m.frame().includes('↓ 1 needs you'));
     expect(m.frame()).not.toContain('Enter open');
   });
 
@@ -265,7 +288,7 @@ describe('the Attention rows', () => {
         recentRuns: [recent(RUN, 'deploy-flow'), recent('run-0002', 'nightly-flow')],
       },
     });
-    await settleFrames();
+    await toWorkPagePrompt(m);
     await eventually(() => m.frame().includes('Continue'), 'the Continue list');
     const frame = m.frame();
     expect(frame, 'the parked row, once').toContain('|| run-0001  ·  approval gate');
@@ -295,7 +318,7 @@ describe('the Attention rows', () => {
         },
       },
     });
-    await settleFrames();
+    await toWorkPagePrompt(m);
     const lines = m
       .frame()
       .split('\n')
@@ -789,42 +812,46 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
 describe('what an Attention row says of the run it names', () => {
   const UUID = '0b8f3a52-9d41-4c6e-8a07-5e2d1c9b7f64';
 
-  it('at 80×24 it names the workflow and the deadline beside the kind and the key, and the id gives way to them', async () => {
-    const m = mount({
-      size: { cols: 80, rows: 24 },
-      // The app's clock reads 0: a deadline five minutes after the epoch is five minutes away.
-      rows: [
-        {
-          runId: UUID,
-          kind: 'approval',
-          gates: 1,
-          workflow: 'deploy',
-          expiresAt: '1970-01-01T00:05:00.000Z',
-        },
-      ],
-    });
-    await settleFrames();
-    const row = m
-      .frame()
-      .split('\n')
-      .find((line) => line.includes('||'));
-    expect(row?.trimStart()).toBe(
-      '|| 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
-    );
-    m.harness.stdin.write(DOWN);
-    await eventually(
-      () => m.frame().includes('Enter open') && m.homePainted(),
-      'the focused row on screen',
-    );
-    const focused = m
-      .frame()
-      .split('\n')
-      .find((line) => line.includes('||'));
-    expect(focused?.trimStart()).toBe(
-      '> || 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
-    );
-    expect((focused ?? '').length, 'inside the 80 columns').toBeLessThanOrEqual(80);
-  });
+  // The work page is left-hung at the Home's margin (MVP-11 unit 7): at 80 columns a row has 70 for its label, so after the id the workflow
+  // gives way too; the kind, the deadline and the key never do. At 100 columns the workflow is back beside them.
+  it.each([
+    [80, '|| 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  ↑/↓ select', '> || 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  Enter open'],
+    [100, '|| 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↑/↓ select', '> || 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open'],
+  ] as const)(
+    'at %i columns it keeps the deadline beside the kind and the key, and the id and then the workflow give way',
+    async (cols, unfocused, focusedRow) => {
+      const m = mount({
+        size: { cols, rows: 24 },
+        // The app's clock reads 0: a deadline five minutes after the epoch is five minutes away.
+        rows: [
+          {
+            runId: UUID,
+            kind: 'approval',
+            gates: 1,
+            workflow: 'deploy',
+            expiresAt: '1970-01-01T00:05:00.000Z',
+          },
+        ],
+      });
+      await toWorkPagePrompt(m);
+      const row = m
+        .frame()
+        .split('\n')
+        .find((line) => line.includes('||'));
+      expect(row?.trimStart()).toBe(unfocused);
+      m.harness.stdin.write(UP);
+      await eventually(
+        () => m.frame().includes('Enter open') && m.homePainted(),
+        'the focused row on screen',
+      );
+      const focused = m
+        .frame()
+        .split('\n')
+        .find((line) => line.includes('||'));
+      expect(focused?.trimStart()).toBe(focusedRow);
+      expect((focused ?? '').length, 'inside the columns').toBeLessThanOrEqual(cols);
+    },
+  ); // prettier-ignore
 
   it('an overdue gate says `expired` in the row, with colour off too', async () => {
     const m = mount({
@@ -839,9 +866,9 @@ describe('what an Attention row says of the run it names', () => {
         },
       ],
     });
-    await settleFrames();
+    await toWorkPagePrompt(m);
     expect(m.frame()).toContain(
-      '|| run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ select',
+      '|| run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↑/↓ select',
     );
   });
 });

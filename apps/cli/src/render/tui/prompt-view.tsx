@@ -5,8 +5,11 @@ import type { ReactElement } from 'react';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import { promptRows, type PromptRow } from './prompt-cursor.js';
+import { promptWindow, type PromptWindowLine } from './prompt-window.js';
 import { emphasize } from './emphasis.js';
+import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
+import { moreAboveText, moreBelowText } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
 /**
@@ -32,6 +35,12 @@ import { displayWidth } from './viewport.js';
  * this is a LIVE editor, so the full input + the cursor must always stay visible (a `truncate-end` prompt would
  * hide the cursor once a line runs past the terminal edge, and would defeat the multi-line buffer entirely). A
  * long/many-line prompt therefore grows downward — it is the bottom element, so the strip above is unaffected.
+ *
+ * **A bound, for a host that has to keep what is below it** (OB7-M3): with `maxRows` a draft that does not fit is drawn as a window of its rows around
+ * the cursor, with a `▲ N more` / `▼ N more` marker for the rows it hides ({@link promptWindow}), so the cursor, the rule, the status line and the hint
+ * below a long paste stay on the screen. `columns` is the terminal's width, which the rows are cut to. Absent `maxRows` (the Home's prompt, the
+ * picker's filter) the editor is drawn exactly as above, and a draft that fits the bound is too. The whole draft is still in the editor's text: only
+ * the drawing is windowed, and what is sent is that text.
  */
 export function PromptEditor(
   props: Readonly<{
@@ -43,6 +52,10 @@ export function PromptEditor(
     placeholder?: string | undefined;
     /** Whether the cursor cell is drawn; absent ⇒ it is. */
     cursor?: boolean | undefined;
+    /** The most rows the editor may take, markers included; a longer draft is drawn as a window around the cursor. Absent ⇒ unbounded. */
+    maxRows?: number | undefined;
+    /** The terminal's width, which a windowed draft's rows are cut to (the lead's columns are taken off); absent ⇒ 80. Read only with `maxRows`. */
+    columns?: number | undefined;
   }>,
 ): ReactElement {
   const { editor, color } = props;
@@ -62,7 +75,20 @@ export function PromptEditor(
     );
   }
   // `-1` is before the text, so `promptRows` places the cursor on no row: the one way to draw the text without it.
-  const rows = promptRows(editor.text, showCursor ? editor.cursor : -1);
+  const cursorAt = showCursor ? editor.cursor : -1;
+  const windowed =
+    props.maxRows === undefined
+      ? undefined
+      : promptWindow(
+          editor.text,
+          cursorAt,
+          (props.columns ?? DEFAULT_COLUMNS) - displayWidth(lead),
+          props.maxRows,
+          sanitizeInline,
+        );
+  if (windowed !== undefined)
+    return <WindowedRows lines={windowed} lead={lead} hang={hang} color={color} />;
+  const rows = promptRows(editor.text, cursorAt);
   // Key each row by its line START char offset — a stable, positional id (identical lines never collide, unlike a
   // content key) that is NOT the array index React discourages for keys. The first row (offset 0) gets the prefix.
   const keyed: { readonly row: PromptRow; readonly offset: number }[] = [];
@@ -85,6 +111,45 @@ export function PromptEditor(
           </Text>
         );
       })}
+    </Box>
+  );
+}
+
+/** The width a windowed draft is cut to when its host does not say (the terminal's usual 80 columns). */
+const DEFAULT_COLUMNS = 80;
+
+/**
+ * A draft drawn as a window ({@link promptWindow}): each line is one row, a row that carries the cursor draws its cell inverse, and the marker rows
+ * stand for the rows hidden above and below, dim and indented under the lead like the rows themselves. Every segment is already scrubbed.
+ */
+function WindowedRows(
+  props: Readonly<{
+    lines: readonly PromptWindowLine[];
+    lead: string;
+    hang: string;
+    color: boolean;
+  }>,
+): ReactElement {
+  const { color } = props;
+  return (
+    <Box flexDirection="column">
+      {props.lines.map((line, position) =>
+        line.kind === 'more' ? (
+          <Text key={`more-${String(position)}`} {...dimProps(color)} wrap="truncate-end">
+            {props.hang}
+            {withGlyphForm(!color, () =>
+              line.side === 'above' ? moreAboveText(line.count) : moreBelowText(line.count),
+            )}
+          </Text>
+        ) : (
+          <Text key={`row-${String(position)}`} {...colorProps(color, 'cyan')} wrap="truncate-end">
+            {line.row.first ? props.lead : props.hang}
+            {line.row.before}
+            {line.row.at !== undefined && emphasize(line.row.at, 'inverse')}
+            {line.row.after}
+          </Text>
+        ),
+      )}
     </Box>
   );
 }

@@ -176,6 +176,8 @@ async function mountHome() {
     writeControl: () => undefined,
     exit: () => undefined,
     firstRunSetup: 'off',
+    // the keys are driven with no renderer: the Home's pages swap instead of sliding (MVP-11 unit 7)
+    pageSlide: false,
     run,
   };
   const running = driveHome(deps);

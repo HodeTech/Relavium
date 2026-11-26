@@ -6,6 +6,7 @@ import type { RunGates } from '../../home/run-gates.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { ParkedRunKind, ParkedRunRow } from './home-attention.js';
 import { createHomeController, type HomeController } from './home-controller.js';
+import { EXAMPLE_PROMPT } from './home-layout.js';
 import { HomeView } from './home-view.js';
 
 /**
@@ -115,7 +116,10 @@ function rig(options: {
   return { controller, exits };
 }
 
-/** The hint row the Home draws for a controller in `state` (the row that ends with the key that leaves, or the armed one). */
+/**
+ * The hint row the Home draws for a controller in `state` (the row that ends with the key that leaves the page: `[Ctrl+C]` on the landing, or
+ * the armed one; `Esc start page` on the work page, MVP-11 unit 7).
+ */
 function hintOf(
   controller: HomeController,
   hostedRun: RunHostSnapshot = IDLE,
@@ -123,8 +127,9 @@ function hintOf(
   keyless = false,
 ): string {
   return (
-    rowsOf(controller, hostedRun, size, keyless).findLast((row) => /\[Ctrl\+C\] exit/u.test(row)) ??
-    ''
+    rowsOf(controller, hostedRun, size, keyless).findLast((row) =>
+      /\[Ctrl\+C\] exit|Esc start page$/u.test(row),
+    ) ?? ''
   );
 }
 
@@ -138,6 +143,7 @@ function rowsOf(
   const state = controller.getSnapshot();
   const view = render(
     <HomeView
+      page={state.homePage}
       snapshot={state.snapshot}
       editor={state.input}
       nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -151,12 +157,13 @@ function rowsOf(
       stripFocus={state.stripFocus}
     />,
   );
-  const rows = (view.lastFrame() ?? '').split('\n').map((line) => line.trimEnd());
+  // The empty Home is left-hung at its margin (ADR-0146 §1), so a row is read by its words, not by the columns before them.
+  const rows = (view.lastFrame() ?? '').split('\n').map((line) => line.trim());
   view.unmount();
   return rows;
 }
 
-/** The keyless line the Home draws above the prompt, or `''` when it draws none. */
+/** The keyless line the Home draws (above the prompt, or as the empty Home's status line), or `''` when it draws none. */
 function keylessLineOf(
   controller: HomeController,
   hostedRun: RunHostSnapshot = IDLE,
@@ -175,15 +182,24 @@ const listedKeys = (row: string): string[] =>
     .filter((word) => /^(\[[^\]]+\]|Enter|Esc|↑\/↓|↓|Tab)$/u.test(word));
 
 describe('the Home hint bar at the prompt', () => {
-  it('an empty Home lists [/] and [Ctrl+C]: the first opens the palette, the second arms and the next leaves', () => {
+  it('an empty Home lists [/], Tab and [Ctrl+C]: the first opens the palette, Tab fills the example, the last arms and the next leaves', () => {
     const { controller, exits } = rig({});
     const hint = hintOf(controller);
-    expect(hint).toBe('[/] commands · type a message to chat · [Ctrl+C] exit (twice)');
-    expect(listedKeys(hint)).toEqual(['[/]', '[Ctrl+C]']);
+    expect(hint).toBe(
+      '[/] commands · type a message to chat · Tab fill the example · [Ctrl+C] exit (twice)',
+    );
+    expect(listedKeys(hint)).toEqual(['[/]', 'Tab', '[Ctrl+C]']);
     controller.handleKey('/', {});
     expect(controller.getSnapshot().palette, '/ opens the palette').toBeDefined();
     controller.handleKey('', ESC);
     expect(controller.getSnapshot().palette, 'Esc closes it again').toBeUndefined();
+    controller.handleKey('', { tab: true });
+    expect(controller.getSnapshot().input.text, 'Tab fills the example the hint names').toBe(
+      EXAMPLE_PROMPT,
+    );
+    for (let n = 0; n < EXAMPLE_PROMPT.length; n += 1)
+      controller.handleKey('', { backspace: true });
+    expect(controller.getSnapshot().input.text, 'the draft is emptied again').toBe('');
     controller.handleKey('c', CTRL_C);
     expect(controller.getSnapshot().interruptArmed, 'the first Ctrl+C arms').toBe(true);
     expect(hintOf(controller)).toBe('[Ctrl+C] exit (again)');
@@ -194,8 +210,9 @@ describe('the Home hint bar at the prompt', () => {
 
   it('a Home with sessions lists ↓ and moves onto the first session; a parked run lists ↓ and moves onto it', () => {
     const sessions = rig({ snapshot: snapshotOf({ sessions: 2 }) });
+    // The landing's indicator (MVP-11 unit 7): `↓` and what it goes down to, counted.
     expect(hintOf(sessions.controller)).toBe(
-      '[/] commands · ↓ continue · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ 2 sessions · Tab fill the example · [Ctrl+C] exit (twice)',
     );
     sessions.controller.handleKey('', DOWN);
     expect(sessions.controller.getSnapshot().stripFocus).toEqual({
@@ -204,7 +221,7 @@ describe('the Home hint bar at the prompt', () => {
     });
     const parked = rig({ parked: [parkedRow('approval')] });
     expect(hintOf(parked.controller)).toBe(
-      '[/] commands · ↓ open a parked run · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ 1 needs you · Tab fill the example · [Ctrl+C] exit (twice)',
     );
     parked.controller.handleKey('', DOWN);
     expect(parked.controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: RUN });
@@ -212,20 +229,27 @@ describe('the Home hint bar at the prompt', () => {
 
   it('at 80 columns the key that leaves is never the part that is cut: the lowest-priority item of a line that does not fit is dropped (ADR-0145 §3)', () => {
     const parked = rig({ parked: [parkedRow('approval')] });
-    // 83 columns written whole: the standing "type a message to chat" goes, the exit stays, and nothing is cut inside a word.
+    // 75 columns written whole against the 74 the margin leaves: the example's `Tab` goes, the indicator and the exit stay, nothing is cut
+    // inside a word.
     expect(hintOf(parked.controller, IDLE, { cols: 80, rows: 24 })).toBe(
-      '[/] commands \u00b7 \u2193 open a parked run \u00b7 [Ctrl+C] exit (twice)',
+      '[/] commands \u00b7 \u2193 1 needs you \u00b7 [Ctrl+C] exit (twice)',
     );
     expect(hintOf(parked.controller, IDLE, { cols: 100, rows: 30 })).toContain(
-      'type a message to chat',
+      'Tab fill the example',
     );
   });
 
-  it('a live run lists Enter first: it shows the run', () => {
+  it('a live run: its own row says Enter shows it (the hint keeps its doors), and Enter does', () => {
     const { controller } = rig({ host: EXECUTING });
     expect(hintOf(controller, EXECUTING)).toBe(
-      '[/] commands · Enter show it · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · type a message to chat · Tab fill the example · [Ctrl+C] exit (twice)',
     );
+    expect(
+      rowsOf(controller, EXECUTING, { cols: 100, rows: 30 }, false).some((row) =>
+        row.endsWith('Enter show it'),
+      ),
+      'the run row, under the status line',
+    ).toBe(true);
     controller.handleKey('', ENTER);
     expect(controller.getSnapshot().screen).toMatchObject({ kind: 'run-view', runId: RUN });
   });
@@ -319,7 +343,7 @@ describe('the keyless line promises Enter only where Enter connects', () => {
     const { controller } = rig({ snapshot: snapshotOf({ sessions: 1 }) });
     controller.handleKey('', DOWN);
     expect(hintOf(controller, IDLE, { cols: 100, rows: 30 }, true)).toBe(
-      '↑/↓ select session · Enter resume · Esc return to prompt · [Ctrl+C] exit (twice)',
+      '↑/↓ select session · Enter resume · type to chat · Esc start page',
     );
   });
 });
@@ -329,16 +353,15 @@ describe('the Home hint bar on a focused strip row', () => {
     const { controller } = rig({ snapshot: snapshotOf({ sessions: 2 }) });
     controller.handleKey('', DOWN);
     const hint = hintOf(controller);
-    expect(hint).toBe(
-      '↑/↓ select session · Enter resume · Esc return to prompt · [Ctrl+C] exit (twice)',
-    );
-    expect(listedKeys(hint)).toEqual(['↑/↓', 'Enter', 'Esc', '[Ctrl+C]']);
+    expect(hint).toBe('↑/↓ select session · Enter resume · type to chat · Esc start page');
+    expect(listedKeys(hint)).toEqual(['↑/↓', 'Enter', 'Esc']);
     controller.handleKey('', DOWN);
     expect(controller.getSnapshot().stripFocus).toEqual({ kind: 'session', id: 'session-2' });
     controller.handleKey('', UP);
     expect(controller.getSnapshot().stripFocus).toEqual({ kind: 'session', id: 'session-1' });
     controller.handleKey('', ESC);
     expect(controller.getSnapshot().stripFocus, 'Esc returns to the prompt').toBeUndefined();
+    expect(controller.getSnapshot().homePage, 'the landing’s prompt').toBe('start');
     expect(controller.getSnapshot().input.text).toBe('');
   });
 
@@ -346,9 +369,7 @@ describe('the Home hint bar on a focused strip row', () => {
     const { controller } = rig({ snapshot: snapshotOf({ runs: 2 }) });
     controller.handleKey('', DOWN);
     const hint = hintOf(controller);
-    expect(hint).toBe(
-      '↑/↓ select · Enter open the run · Esc return to prompt · [Ctrl+C] exit (twice)',
-    );
+    expect(hint).toBe('↑/↓ select · Enter open the run · type to chat · Esc start page');
     controller.handleKey('', DOWN);
     expect(controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: 'run-2' });
     controller.handleKey('', ESC);
@@ -364,7 +385,7 @@ describe('the Home hint bar on a focused strip row', () => {
       const { controller } = rig({ parked: [parkedRow(kind)] });
       controller.handleKey('', DOWN);
       expect(hintOf(controller)).toBe(
-        `↑/↓ select \u00b7 ${cue} \u00b7 Esc return to prompt \u00b7 [Ctrl+C] exit (twice)`,
+        `↑/↓ select \u00b7 ${cue} \u00b7 type to chat \u00b7 Esc start page`,
       );
       controller.handleKey('', ENTER);
       expect(controller.getSnapshot().screen?.kind).toBe('gate-card');
@@ -383,7 +404,7 @@ describe('the Home hint bar on a focused strip row', () => {
       });
       controller.handleKey('', DOWN);
       expect(hintOf(controller)).toBe(
-        `↑/↓ select \u00b7 ${cue} \u00b7 Esc return to prompt \u00b7 [Ctrl+C] exit (twice)`,
+        `↑/↓ select \u00b7 ${cue} \u00b7 type to chat \u00b7 Esc start page`,
       );
       controller.handleKey('', ENTER);
       expect(controller.getSnapshot().screen?.kind).not.toBe('gate-card');

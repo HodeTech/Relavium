@@ -44,6 +44,7 @@ import {
   chatIsBusy,
   ChatView,
   composerEditor,
+  dockedCardOpen,
   hintRowNotification,
   useCopiedToast,
 } from './chat-ink.js';
@@ -93,6 +94,7 @@ import {
   tooSmallMessage,
 } from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
+import { slideOffsetAt } from './home-pages.js';
 import { stripReach } from './strip-focus.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
@@ -317,6 +319,8 @@ function ChatRegion(
               }
         }
         notification={props.notification}
+        cardDocked={dockedCardOpen(props.overlays)}
+        terminalRows={props.reviewSize.rows}
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
       <ToolReviewHost
@@ -534,6 +538,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         stdout.writable !== false &&
         !stdout.destroyed &&
         !stdout.writableEnded,
+      // The keys that waited while the Home's pages slid are applied once the arrival is on screen (MVP-11 unit 7).
+      onAcknowledge: (snapshot) => controller.homeFrameShown?.(snapshot),
     }),
   );
   useEffect(() => () => homeFrame.dispose(), [homeFrame]);
@@ -909,10 +915,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const live = getSizeRef.current();
     // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
     // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
-    // (Only on the landing: a screen in the slot has no strip on screen to measure, and its own Enter must reach it.)
+    // (Only on the Home's pages: a screen in the slot has no list on screen to measure, and its own Enter must reach it. Not while the pages
+    // slide: the controller queues every key until the slide has arrived and that frame is on screen, and applies the same check then.)
     if (
       key.return &&
       current.screen === undefined &&
+      current.slide === undefined &&
       current.stripFocus !== undefined &&
       !homeFrame.visible(current)
     )
@@ -931,6 +939,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       previous.revision === current.noticeRevision &&
       Object.is(previous.cols, live.cols) &&
       Object.is(previous.rows, live.rows);
+    // The notice is laid out for the page in front, exactly as the view lays it out (the landing keeps the hosted run's row under its status line).
+    const onLanding =
+      current.homePage !== 'work' || homeIsEmpty(current.snapshot, current.parkedRuns);
     const layout = layoutHomeNotice({
       notice: current.notice,
       editor: current.input,
@@ -938,10 +949,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       rows: live.rows,
       keyless: current.keyless,
       showBanner: props.showBanner,
-      isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
+      onLanding,
       hasSessions: current.snapshot.recentSessions.length > 0,
       ...stripReach(current.parkedRuns, current.snapshot),
-      reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
+      reservedRows: onLanding && hostedRunLabel(current.hostedRun) !== undefined ? 1 : 0,
       page: same ? previous.page : 0,
     });
     if (layout === undefined || layout.maxPage === 0) return false;
@@ -1258,10 +1269,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             paletteOpen={landingPromptHidden(flags)}
             {...(state.palette === undefined ? {} : { palette: state.palette })}
             showBanner={props.showBanner}
+            alternateScreen={props.alternateScreen === true}
+            status={state.status}
             paths={props.paths}
             keyless={state.keyless}
             parkedRuns={state.parkedRuns}
             stripFocus={state.stripFocus}
+            page={state.homePage}
+            slideOffset={slideOffsetAt(size.rows, state.slide)}
             noticePage={noticePage}
             interruptArmed={state.interruptArmed}
             hostedRun={state.hostedRun}
@@ -1439,8 +1454,8 @@ export function watchHomeSources(
 
 /**
  * Whether the Home's notifications are held now: a decision is on screen (a card, a native prompt, the exit guard, a screen in the slot, a
- * popup step that holds a chord or a secret), or the hint row they draw on is not drawn (a block in the flow, below the floor, a chat that is
- * busy or has a submode open).
+ * popup step that holds a chord or a secret), or the hint row they draw on is not drawn (a block in the flow, below the floor, a chat that has
+ * a submode open). A chat that is busy draws it: the running hint, which a notification replaces.
  */
 function notificationHeld(
   state: HomeControllerState,
@@ -1456,11 +1471,9 @@ function notificationHeld(
   if (flags.replacesBody || state.mode === 'loading' || !homeFitsTerminal(size.cols, size.rows))
     return true;
   if (state.mode === 'home') return landingPromptHidden(flags);
-  const busy =
-    state.session?.store.getSnapshot().state.status === 'running' ||
-    state.submitBusy ||
-    state.shellBusy;
-  return busy || promptHidden(flags);
+  // A chat that is busy (a turn, a `!` command, a submit in flight) draws its hint row (the running hint), so it does not hold the channel: a
+  // refusal raised while it runs is read at once, not after the turn (SE7-1).
+  return promptHidden(flags);
 }
 
 const emptyPromptSnapshot = (): import('./native-prompt-channel.js').NativePromptSnapshot =>

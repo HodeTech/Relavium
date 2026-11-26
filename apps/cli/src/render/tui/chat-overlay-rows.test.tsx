@@ -113,7 +113,8 @@ describe.each(OVERLAY_SURFACES)('$id', (entry) => {
 
 describe('the / palette over a conversation, as observed', () => {
   const LEGEND_ROW = '↑/↓ select · Enter run · Esc close';
-  const ENTRY_ROW = /^[› ] \/[a-z]+ {2}\S/u;
+  // the names are padded to the widest in view (OB7-L8), so the words start after two spaces or more
+  const ENTRY_ROW = /^[› ] \/[a-z]+ {2,}\S/u;
 
   it.each(
     CHAT_SURFACES.filter((entry) => entry.id.endsWith('.palette')).flatMap((entry) =>
@@ -134,7 +135,7 @@ describe('the / palette over a conversation, as observed', () => {
       expect(entries.length, shown).toBeGreaterThanOrEqual(8);
       // One entry per line: a line that holds a second `/name  ` start was two rows on the same y.
       for (const line of entries) {
-        const starts = line.match(/(?:^|[›\s])\/[a-z]+ {2}/gu) ?? [];
+        const starts = line.match(/(?:^|[›\s])\/[a-z]+ {2,}/gu) ?? [];
         expect(starts, `${line}\n${shown}`).toHaveLength(1);
       }
       // The window counts what it hides: the entries drawn, and the `▲`/`▼` rows, are every entry of the list, once.

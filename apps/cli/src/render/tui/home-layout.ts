@@ -31,8 +31,100 @@ export function homeRailWidth(columns: number): number {
 /** The wordmark, letter-spaced with two spaces between letters (22 columns); the view draws it bold in the accent. */
 export const WORDMARK = 'R  E  L  A  V  I  U  M';
 
+/** The rows above the landing's prompt when the block is shown: the wordmark, a blank row, the rail, the labels and the notes. */
+export const LANDING_BLOCK_HEAD_ROWS = 5;
+
+/** The rows above the landing's prompt when the block is not shown: the one-line title (the spaced wordmark, {@link WORDMARK}). */
+export const LANDING_TITLE_ROWS = 1;
+
+/** The rows under the landing's prompt: the rule, the status line, a blank row and the hint. */
+export const LANDING_FOOT_ROWS = 4;
+
 /** The rows of the block: wordmark, blank, rail, tagline, note, blank, blank, prompt, rule, status, blank, hint. */
-export const HOME_BLOCK_ROWS = 12;
+export const HOME_BLOCK_ROWS = LANDING_BLOCK_HEAD_ROWS + 2 + 1 + LANDING_FOOT_ROWS;
+
+/**
+ * Whether the landing draws the block (wordmark, rail, taglines, notes) or only the one-line title (maintainer, 2026-11-26): the block is
+ * the EMPTY Home's, `show_banner` absent or `true` shows it and `false` shows the title instead; a Home that has something to continue draws
+ * the title whatever the setting says. The one rule: the view, the notice's room and the controller's example all ask here.
+ */
+export function showsLandingBlock(
+  configShowBanner: boolean | undefined,
+  isEmpty: boolean,
+): boolean {
+  return isEmpty && configShowBanner !== false;
+}
+
+/**
+ * Whether the prompt shows its example: the empty Home, with nothing typed. The view draws the example by this and `Tab` fills it by this,
+ * so a key never fills what is not on screen.
+ */
+export function exampleIsShown(isEmpty: boolean, draft: string): boolean {
+  return isEmpty && draft === '';
+}
+
+/** What the landing's height depends on besides the block: the prompt's rows, a notice's rows and the hosted run's row (all default to the resting case). */
+export interface LandingRowParts {
+  readonly promptRows?: number | undefined;
+  readonly noticeRows?: number | undefined;
+  readonly runRows?: number | undefined;
+}
+
+/** `value` as a whole count of at least `min`; `min` for a value that is not a number. */
+function wholeCount(value: number | undefined, min: number): number {
+  return value === undefined || !Number.isFinite(value) ? min : Math.max(min, Math.floor(value));
+}
+
+/**
+ * The blank rows between the head and the prompt when no notice is shown: two under the block, one under the one-line title. A notice
+ * takes their place and brings its own blank row above and below it, so with a notice of `n` rows the gap is `n + 2`.
+ */
+export function landingGapRows(showBlock: boolean, noticeRows = 0): number {
+  const notice = wholeCount(noticeRows, 0);
+  if (notice > 0) return notice + 2;
+  return showBlock ? 2 : 1;
+}
+
+/**
+ * The height of the landing in rows, WITHOUT its top gap: the head (the block's five rows, or the one-line title), the gap (or the notice with
+ * its two blank rows), the prompt, the four rows under it, and the hosted run's row (between the status line and the hint: MVP-11 unit 7, the
+ * study's frame 21). The ONE place that knows it: the banner's height used to be written in three places. The resting landing is
+ * {@link HOME_BLOCK_ROWS}.
+ */
+export function landingRows(showBlock: boolean, parts: LandingRowParts = {}): number {
+  return (
+    landingRowsAbovePrompt(showBlock, parts) +
+    wholeCount(parts.promptRows, 1) +
+    LANDING_FOOT_ROWS +
+    wholeCount(parts.runRows, 0)
+  );
+}
+
+/**
+ * The rows of the landing above its prompt, without the top gap: the head and the gap (or the notice with its two blank rows). What the palette
+ * is drawn below, when it takes the prompt block's place (the hosted run's row is part of that block: it stands under the status line).
+ */
+export function landingRowsAbovePrompt(showBlock: boolean, parts: LandingRowParts = {}): number {
+  const head = showBlock ? LANDING_BLOCK_HEAD_ROWS : LANDING_TITLE_ROWS;
+  return head + landingGapRows(showBlock, parts.noticeRows);
+}
+
+/**
+ * The most rows a notice may take on the landing: what the terminal's `rows − 1` leaves once the head, the hosted run's row, the notice's
+ * two blank rows, the prompt and its four rows are drawn (the landing stays one row short of the terminal, as the chat's frame does), and
+ * never fewer than two so a notice is always readable.
+ */
+export function landingNoticeRoom(
+  rows: number,
+  showBlock: boolean,
+  parts: Omit<LandingRowParts, 'noticeRows'> = {},
+): number {
+  if (!Number.isFinite(rows)) return 2;
+  return Math.max(
+    2,
+    Math.floor(rows) - 1 - (landingRows(showBlock, { ...parts, noticeRows: 1 }) - 1),
+  );
+}
 
 /**
  * The rows of blank space above the block. Inline there is none (nothing blank is pushed into the terminal's scrollback). In the alternate
@@ -45,6 +137,22 @@ export function homeTopGap(rows: number, alternateScreen: boolean): number {
   if (!alternateScreen || !Number.isFinite(rows)) return 0;
   const centred = Math.floor((rows - HOME_BLOCK_ROWS) / 2) - 3;
   return Math.max(0, Math.min(centred, Math.floor(rows) - 1 - HOME_BLOCK_ROWS));
+}
+
+/**
+ * The landing's top gap: {@link homeTopGap} for the block, and nothing for the one-line title (it sits at the top, as a Home that has
+ * something to continue does), held to what `rows − 1` leaves once the landing's own rows are drawn, so a notice, a hosted run's row or a
+ * prompt that has grown give the gap up before anything else gives way. Inline there is none.
+ */
+export function landingTopGap(
+  rows: number,
+  alternateScreen: boolean,
+  showBlock: boolean,
+  parts: LandingRowParts = {},
+): number {
+  if (!showBlock || !Number.isFinite(rows)) return 0;
+  const free = Math.floor(rows) - 1 - landingRows(showBlock, parts);
+  return Math.max(0, Math.min(homeTopGap(rows, alternateScreen), free));
 }
 
 /** One node of the rail with the words under it. `strong` is the label the view draws bold: where the user starts. */

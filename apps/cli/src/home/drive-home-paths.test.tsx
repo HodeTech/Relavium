@@ -96,6 +96,8 @@ async function withHome(use: (host: Host) => Promise<void>): Promise<void> {
       db: client.db,
       close: () => client.sqlite.close(),
     }),
+    // the test's mount draws the frames, its keys are the controller's: the Home's pages swap instead of sliding (MVP-11 unit 7)
+    pageSlide: false,
     // The real controller, session and store; the mount below is the test's, over the props the host built.
     render: (value) => {
       props = value;
@@ -231,6 +233,8 @@ it('the strip of the Home the host mounts names each session’s directory from 
     await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
     const mount = host.mount();
     try {
+      // the sessions are the work page's rows (MVP-11 unit 7): down to them
+      controller.handleKey('', { downArrow: true });
       await mount.until(() => rowsOf(mount).includes('~/other'));
       await mount.settle();
       const rows = rowsOf(mount);
@@ -292,10 +296,14 @@ it('the resume picker of the Home, in All directories, names each session’s di
         },
         { timeout: 3000, interval: 20 },
       );
+      // A row of the picker is read at its end: the popup lies over the landing (MVP-11 unit 7), whose dimmed rows stand to its left in the
+      // terminal's row (the landing's hint beside the third directory at 120×40).
       const rows = rowsOf(mount);
-      expect(rows, mount.frame().join('\n')).toContain('packages/app');
-      expect(rows).toContain('~/other');
-      expect(rows).toContain('/opt/shared/tools');
+      const listed = (dir: string): boolean =>
+        rows.some((row) => row === dir || row.endsWith(`  ${dir}`));
+      expect(listed('packages/app'), mount.frame().join('\n')).toBe(true);
+      expect(listed('~/other')).toBe(true);
+      expect(listed('/opt/shared/tools')).toBe(true);
       expect(rows.join('\n')).not.toContain(host.cwd);
       expect(rows.join('\n')).not.toContain(host.homeDir);
     } finally {

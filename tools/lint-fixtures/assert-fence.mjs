@@ -111,6 +111,8 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/render/tui/status-line.ts',
   'apps/cli/src/render/tui/chat-layout.ts',
   'apps/cli/src/render/tui/transcript-guard.ts',
+  'apps/cli/src/home/home-status-facts.ts',
+  'apps/cli/src/render/tui/home-pages.ts',
   DATA_MODULE,
 ];
 

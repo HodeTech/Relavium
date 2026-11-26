@@ -101,6 +101,7 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
   it('a strip row of the Home (the focused one)', () => {
     const frame = frameOf(
       <HomeView
+        page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
           attention: {
             gates: [],

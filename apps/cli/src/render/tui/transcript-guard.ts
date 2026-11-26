@@ -1,11 +1,12 @@
 import type { MarkdownDisplayLine, MarkdownSpan } from '../markdown/types.js';
-import { blankMarkerGlyphs, GLYPHS, glyphOf } from './glyphs.js';
+import { blankMarkerGlyphs, GLYPHS, glyphOf, speakerMarker } from './glyphs.js';
 import type { TranscriptEntry } from './session-view-model.js';
 import { wrapWords, type DisplayLine } from './viewport.js';
 
 /**
  * The interim guard of the speaker marker ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6, MVP-11 step 7a):
- * text that is not the host's cannot draw a person's turn (`›`), a tool call (`▸`) or a model switch (`⇄`) in the transcript.
+ * text that is not the host's cannot DRAW THE HOST'S OWN GLYPHS in the transcript: the person's turn (`›`), a tool call (`▸`) or a model switch (`⇄`).
+ * That is what it guarantees, and all of it: the three glyphs, exactly. It does not stop a lookalike (see "What it does not claim").
  *
  * **Why it lives at the rows.** The marker is the host's mark of who spoke, so a reply that starts a row with it would put words in the person's
  * mouth. The proper cure is a margin the model's text can never occupy (the transcript grid, a later step of this MVP); until then the glyphs are
@@ -20,6 +21,13 @@ import { wrapWords, type DisplayLine } from './viewport.js';
  * **What it does not claim.** With colour off the host draws `>` and `->`, which are ordinary characters and cannot be blanked from a reply
  * (ADR-0145 §6): the grid closes that, and nothing here pretends to. The text forms (`/edit`, `/copy`, `/scrollback`) are not guarded: their prefix
  * for the person's turn is the host's own `> `, which cannot be blanked, and blanking would only damage what a person copies.
+ *
+ * **An accepted residual, until the transcript grid (unit 9, ADR-0145 §6).** A glyph that only LOOKS like the marker is not the host's glyph and is
+ * not blanked: `˃` (U+02C3), `ᐳ` (U+1433), `❯` (U+276F), `⟩` (U+27E9), `>`, `»` and the like. A reply that starts a row with one of them, or with a
+ * strong code span (bold and cyan, the marker's own styling with colour on), can imitate the look of the person's turn, and no rule on the text can
+ * tell it from an ordinary answer: blanking `>`, `❯` or `»` at the start of a row would damage ordinary code fences and quotations
+ * (`> npm run build`). What makes the marker trustworthy is a margin the model's text can never occupy, which is the grid's; until then a row's
+ * look is not proof of who wrote it, and what protects the person is that the host's three glyphs cannot be drawn by anyone else.
  *
  * A data module: no `ink`, no `react`, no `node:` import (ADR-0145 §10).
  */
@@ -42,7 +50,7 @@ export const TEXT_FORM_YOUR_TURN = `${GLYPHS.yourTurn.ascii} `;
 export function markYourTurn(row: DisplayLine, ascii: boolean): DisplayLine {
   const lead = glyphOf('yourTurn', true);
   if (!row.text.startsWith(lead)) return row;
-  const marker = glyphOf('yourTurn', ascii);
+  const marker = speakerMarker(ascii);
   return { ...row, text: `${marker}${row.text.slice(lead.length)}`, marker };
 }
 
@@ -106,13 +114,23 @@ function guardNoticeRows(
   rows: readonly DisplayLine[],
   hostLead: 'yourTurn' | 'modelSwitch' | undefined,
   lineStarts: ReadonlySet<number> | undefined,
+  ascii: boolean,
 ): DisplayLine[] {
   const lead = hostLead === undefined ? undefined : GLYPHS[hostLead].glyph;
+  // The person's `›` is `>` with colour off, one column either way, and it is the draw that decides: a record built outside the colour setting (the
+  // one rebuilt from a resumed session) is drawn in the same form as the live one, which was built inside it. The model switch's `⇄` has a
+  // three-column ASCII form that would move the row, so it is drawn as it was built.
+  const drawn = ascii && hostLead === 'yourTurn' ? GLYPHS.yourTurn.ascii : lead;
   return rows.map((row, index) => {
-    if (lead === undefined || lineStarts?.has(index) !== true || !row.text.startsWith(lead))
+    if (
+      lead === undefined ||
+      drawn === undefined ||
+      lineStarts?.has(index) !== true ||
+      !row.text.startsWith(lead)
+    )
       return guardDisplayLine(row);
     const rest = guardDisplayLine({ ...row, text: row.text.slice(lead.length) });
-    return { ...rest, text: `${lead}${rest.text}` };
+    return { ...rest, text: `${drawn}${rest.text}` };
   });
 }
 
@@ -140,7 +158,7 @@ export function guardEntryRows(
         index === 0 ? markYourTurn(row, context.ascii) : guardDisplayLine(row),
       );
     case 'notice':
-      return guardNoticeRows(rows, entry.hostLead, context.lineStarts);
+      return guardNoticeRows(rows, entry.hostLead, context.lineStarts, context.ascii);
     case 'assistant':
       return rows.map(guardDisplayLine);
   }

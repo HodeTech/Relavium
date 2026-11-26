@@ -45,7 +45,7 @@ export function nodeSuffix(node: NodeView): string {
 
 /**
  * Shared style mapping for the same wrapped row in inline and full-screen chat. The person's turn takes no row-wide style: its words are bold
- * and its marker is the accent, both drawn by `UserRowText` (`user-row.tsx`), which both renderers use, because the marker is the host's own
+ * and its marker is the accent, both drawn by `UserRowText` (`transcript-row.tsx`), which both renderers use, because the marker is the host's own
  * mark and only the first row has one.
  */
 export function transcriptStyleProps(

@@ -1,8 +1,18 @@
 import type { EditorState } from './chat-input.js';
-import { shouldShowBanner } from './banner.js';
 import { sanitizeInline } from './chat-projection.js';
+import { homeMargin, landingNoticeRoom, showsLandingBlock } from './home-layout.js';
+import { DOCKED_CHROME_ROWS, workListRows } from './home-pages.js';
 import { keyHint } from './legend.js';
 import { displayWidth, wrapWords } from './viewport.js';
+
+/**
+ * The columns the Home's notice, its prompt and its hint are laid out in: the terminal less the left margin, on both pages (the landing and the
+ * work page are left-hung, so a row wrapped at the full width would wrap again). Both the view and the paging key ask here, so the pages they
+ * count are the pages that are drawn.
+ */
+export function homeContentColumns(cols: number): number {
+  return Number.isFinite(cols) ? Math.max(1, Math.floor(cols) - homeMargin(cols)) : cols;
+}
 
 export function homePromptRows(editor: EditorState, columns: number): number {
   return editor.text
@@ -21,7 +31,11 @@ export interface HomeNoticeOptions {
   readonly rows: number;
   readonly keyless: boolean;
   readonly showBanner: boolean | undefined;
-  readonly isEmpty: boolean;
+  /**
+   * Which page the notice is drawn on: `true` the landing (page 1: the head, the notice, the prompt block), `false` the work page (page 2: its
+   * list, the notice under it, the docked prompt block).
+   */
+  readonly onLanding: boolean;
   readonly hasSessions: boolean;
   /**
    * The strip lists an Attention row that `↓` can focus (a run parked in this directory, or a failed run): the Attention rows come first
@@ -69,15 +83,14 @@ export function boundedNotice(notice: string): string {
 }
 
 /**
- * The rows Home's Continue section takes. One Continue row needs body margin + two headings + its title/directory lines; a recent run alone
- * needs the margin, the headings and its row.
+ * The rows the work page's Continue section takes at the least: one session needs the two headings and its title and directory lines; a recent
+ * run alone needs the headings and its row. (Agents are listed only beside sessions.)
  */
 function continueSectionRows(
-  options: Pick<HomeNoticeOptions, 'hasSessions' | 'hasRecentRuns' | 'isEmpty'>,
+  options: Pick<HomeNoticeOptions, 'hasSessions' | 'hasRecentRuns'>,
 ): number {
-  if (options.hasSessions) return 5;
-  if (options.hasRecentRuns === true) return 4;
-  return options.isEmpty ? 0 : 1;
+  if (options.hasSessions) return 4;
+  return options.hasRecentRuns === true ? 3 : 0;
 }
 
 /**
@@ -130,29 +143,28 @@ function wrappedNotice(notice: string, cols: number): readonly string[] {
   return rows;
 }
 
-/** Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. */
+/**
+ * Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. On the landing
+ * (page 1) the room is what `rows − 1` leaves after the head, the notice's two blank rows, the prompt and its four rows ({@link landingNoticeRoom});
+ * on the work page (page 2) it is what the list leaves under the way back once the docked prompt block, the notice's blank row and the rows the
+ * focus can reach are counted ({@link workListRows}).
+ */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
-  const heading = shouldShowBanner({
-    configShowBanner: options.showBanner,
-    isEmpty: options.isEmpty,
-    rows: options.rows,
-  })
-    ? 4
-    : 1;
-  const continueRows = continueSectionRows(options);
-  const management = continueRows + (options.hasAttentionRuns === true ? 3 : 0);
-  const available = Math.max(
-    2,
-    options.rows -
-      heading -
-      homePromptRows(options.editor, options.cols) -
-      3 -
-      (options.keyless ? 1 : 0) -
-      (options.reservedRows ?? 0) -
-      management,
-  );
-  const all = wrappedNotice(options.notice, options.cols);
+  const width = homeContentColumns(options.cols);
+  const promptRows = homePromptRows(options.editor, width);
+  const reserved = options.reservedRows ?? 0;
+  let available: number;
+  if (options.onLanding) {
+    const showBlock = showsLandingBlock(options.showBanner, true);
+    available = Math.max(2, landingNoticeRoom(options.rows, showBlock, { promptRows }) - reserved);
+  } else {
+    const management = continueSectionRows(options) + (options.hasAttentionRuns === true ? 3 : 0);
+    // the list's rows under the docked prompt block, less the notice's own blank row, less what the list must keep and what the caller holds
+    const list = workListRows(options.rows, DOCKED_CHROME_ROWS + promptRows);
+    available = Math.max(2, list - 1 - reserved - management);
+  }
+  const all = wrappedNotice(options.notice, width);
   const overflow = all.length > available;
   const pageSize = overflow ? available - 1 : available;
   const maxPage = Math.max(0, Math.ceil(all.length / pageSize) - 1);

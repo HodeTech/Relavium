@@ -5,7 +5,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { createHomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
 import { RootApp } from './home-app.js';
-import { settleFrames, waitFor } from './harness-util.js';
+import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import { createNativePromptChannel, NATIVE_PROMPT_CANCEL } from './native-prompt-channel.js';
 
 afterEach(cleanup);
@@ -60,7 +60,9 @@ describe('a failed build at 80 columns', () => {
       frame.split('\n').filter((row) => row.includes('provider') || row.includes('source')).length,
     ).toBeGreaterThan(1);
     expect(frame).not.toContain('…');
-    for (const row of frame.split('\n')) expect(row.length, row).toBeLessThanOrEqual(80);
+    // (Measured without the bold pair the landing writes round its strong label: it is zero-width on a terminal.)
+    for (const row of withoutStyles(frame).split('\n'))
+      expect(row.length, row).toBeLessThanOrEqual(80);
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     // The message came back to the prompt.
     expect(frame).toContain('> hello there');
@@ -105,7 +107,7 @@ describe('the keyless hint bar', () => {
       'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
     );
     expect(frameOf('', false)).toContain(
-      '[/] commands · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · Tab fill the example · [Ctrl+C] exit (twice)', // 80 columns: the standing sentence is what does not fit
     );
   });
 });

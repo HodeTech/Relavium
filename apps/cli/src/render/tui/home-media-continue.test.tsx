@@ -160,9 +160,13 @@ describe('the row of a media park', () => {
   it('says it waits for media, and its focused key says it asks: not "no gate to decide", not "Enter say why"', async () => {
     const m = mount();
     await settleFrames();
-    expect(m.frame()).toContain('|| run-0001  ·  waiting for media  ·  ↓ select');
-    expect(m.frame()).not.toContain('no gate to decide');
+    // The row is the work page's (MVP-11 unit 7): down onto it, then past it onto the docked prompt, where it says how to select it.
     m.harness.stdin.write(DOWN);
+    await eventually(() => m.controller.getSnapshot().stripFocus !== undefined);
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('|| run-0001  ·  waiting for media  ·  ↑/↓ select'));
+    expect(m.frame()).not.toContain('no gate to decide');
+    m.harness.stdin.write('\x1b[A');
     await eventually(() =>
       m.frame().includes('> || run-0001  ·  waiting for media  ·  Enter ask to continue'),
     );
@@ -181,9 +185,8 @@ describe('the row of a media park', () => {
         .frame()
         .split('\n')
         .find((line) => line.includes('Enter continue it')) ?? '';
-    expect(bar).toBe(
-      '↑/↓ select · Enter continue it · Esc return to prompt · [Ctrl+C] exit (twice)',
-    );
+    // the work page's hint, at its margin (MVP-11 unit 7)
+    expect(bar.trimStart()).toBe('↑/↓ select · Enter continue it · type to chat · Esc start page');
     expect(bar.length).toBeLessThanOrEqual(80);
   });
 });

@@ -30,7 +30,7 @@ export const HOME_RUN_PRODUCERS: readonly Producer[] = [
     id: 'home-view-hint',
     file: 'render/tui/home-view.tsx',
     describe:
-      'the hint bar under the Home’s prompt (and its focused-row cues) by focus x draft x key x run x sessions x parked runs x armed, and the below-80x24 exit line',
+      'the hint bar under the Home’s prompt (and its focused-row cues) by page x focus x draft x key x run x sessions x parked runs x armed, and the below-80x24 exit line',
   },
   {
     id: 'home-attention-cue',
@@ -122,6 +122,8 @@ interface HomeCase {
   readonly focus?: StripFocus;
   readonly exitGuard?: ExitGuardPhase;
   readonly size?: { cols: number; rows: number };
+  /** The page drawn (MVP-11 unit 7): the work page for a focused row, else the landing, unless the case names one. */
+  readonly page?: 'start' | 'work';
 }
 
 const PARKED_KINDS: readonly ParkedRunKind[] = [
@@ -136,11 +138,14 @@ const PARKED_KINDS: readonly ParkedRunKind[] = [
 
 const HOME_CASES: readonly HomeCase[] = [
   { state: 'idle, nothing to continue' },
+  // The empty Home is left-hung (ADR-0146 §1): its hint has the terminal's width less the margin, so at 80 columns the standing sentence drops.
+  { state: 'idle, nothing to continue, 80x24', size: { cols: 80, rows: 24 } },
   { state: 'idle, saved sessions', sessions: true },
   { state: 'idle, a parked run', parked: [parked('approval')] },
   { state: 'idle, a draft', text: 'hello' },
   { state: 'idle, a slash draft', text: '/mod' },
   { state: 'idle, keyless', keyless: true },
+  { state: 'idle, keyless, 80x24', keyless: true, size: { cols: 80, rows: 24 } },
   { state: 'idle, keyless, a draft', keyless: true, text: 'hello' },
   { state: 'idle, keyless, a slash draft', keyless: true, text: '/mod' },
   { state: 'the first Ctrl+C is armed', armed: true },
@@ -162,6 +167,47 @@ const HOME_CASES: readonly HomeCase[] = [
       focus: { kind: 'run', id: 'run-p1' },
     }),
   ),
+  // The work page with its docked prompt focused (MVP-11 unit 7): its own hint, its way back last.
+  { state: 'the work page, the docked prompt', sessions: true, page: 'work' },
+  {
+    state: 'the work page, the docked prompt, a draft',
+    sessions: true,
+    page: 'work',
+    text: 'hello',
+  },
+  {
+    state: 'the work page, the docked prompt, a slash draft',
+    sessions: true,
+    page: 'work',
+    text: '/mod',
+  },
+  {
+    state: 'the work page, the docked prompt, keyless',
+    sessions: true,
+    page: 'work',
+    keyless: true,
+  },
+  {
+    state: 'the work page, the docked prompt, keyless, a draft',
+    sessions: true,
+    page: 'work',
+    keyless: true,
+    text: 'hello',
+  },
+  {
+    state: 'the work page, the docked prompt, a run executing',
+    sessions: true,
+    page: 'work',
+    hostedRun: EXECUTING,
+  },
+  { state: 'the work page, armed', sessions: true, page: 'work', armed: true },
+  {
+    state: 'the work page, exit guard asks',
+    sessions: true,
+    page: 'work',
+    hostedRun: EXECUTING,
+    exitGuard: 'confirm',
+  },
   { state: 'exit guard asks, a run executing', hostedRun: EXECUTING, exitGuard: 'confirm' },
   { state: 'exit guard waits for the run to stop', hostedRun: CANCELLING, exitGuard: 'stopping' },
   { state: 'below 80x24', size: { cols: 70, rows: 20 } },
@@ -174,10 +220,15 @@ const HOME_CASES: readonly HomeCase[] = [
   },
 ];
 
+/** Whether the case is drawn at a size the Home's pages are drawn at: both pages are left-hung at the margin (below 80×24, the degrade is not). */
+const isLeftHung = (item: HomeCase): boolean =>
+  item.size === undefined || (item.size.cols >= 80 && item.size.rows >= 24);
+
 const homeView = (item: HomeCase, color: boolean) => {
   const size = item.size ?? { cols: 100, rows: 30 };
   return (
     <HomeView
+      page={item.page ?? (item.focus === undefined ? 'start' : 'work')}
       snapshot={snapshotOf({ sessions: item.sessions, runs: item.runs })}
       editor={{ text: item.text ?? '', cursor: (item.text ?? '').length }}
       nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -197,11 +248,11 @@ const homeView = (item: HomeCase, color: boolean) => {
 const homeHint: Recorder = () => {
   const out: Record<string, readonly string[]> = {};
   for (const item of HOME_CASES) {
-    // The frame is drawn at the 100 columns the test renderer has; the size above is what the view lays itself out for.
-    Object.assign(
-      out,
-      legendStates(item.state, (color) => homeView(item, color), { columns: 100 }),
-    );
+    // The frame is drawn at the 100 columns the test renderer has; the size above is what the view lays itself out for. The pages' rows start
+    // at their left margin, which is layout and not wording: a row of a page is recorded from its first word.
+    const states = legendStates(item.state, (color) => homeView(item, color), { columns: 100 });
+    for (const [name, rows] of Object.entries(states))
+      out[name] = isLeftHung(item) ? rows.map((row) => row.trimStart()) : rows;
   }
   return out;
 };

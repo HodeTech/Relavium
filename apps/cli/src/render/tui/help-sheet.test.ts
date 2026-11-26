@@ -129,12 +129,13 @@ describe('which keys the sheet names', () => {
     }
   });
 
-  it('says what the Home does with a run in view, whole at 80×24: `Enter` opens it, a row is any row of the strip, and leaving asks first', () => {
+  it('says what the Home does with a run in view, whole at 80×24: `Enter` opens it, `↓` goes down to the rows, and leaving asks first', () => {
     const lines = textOf(80);
     const rowOf = (keys: string): string =>
       lines.find((line) => line.trimStart().startsWith(`${keys} `)) ?? '';
     expect(rowOf('Enter')).toContain('or open the row or the running run');
-    expect(rowOf('↓')).toContain('move onto a row of the strip');
+    // the Home is two pages (MVP-11 unit 7): `↓` goes down to the work page, whose first row it lands on
+    expect(rowOf('↓')).toContain('down to the work page and its first row');
     expect(rowOf('Ctrl+D')).toContain('asks first while a run executes');
     expect(rowOf('Ctrl+C')).toContain('asks first while a run executes');
     // No verb is cut at 80 columns: every key row carries its verb whole.

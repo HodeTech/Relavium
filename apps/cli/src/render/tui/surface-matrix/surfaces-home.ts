@@ -317,7 +317,16 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     id: 'home.empty-keyed',
     title: 'The empty Home with a provider key',
     exitKey: 'Ctrl+C',
-    landmark: 'Welcome to Relavium',
+    landmark: 'Start as an agent',
+    open: async () => {},
+  },
+  {
+    host: 'home',
+    id: 'home.empty-title',
+    title: 'The empty Home with `show_banner = false`: the one-line title instead of the block',
+    exitKey: 'Ctrl+C',
+    landmark: 'R  E  L  A  V  I  U  M',
+    setup: { props: { showBanner: false } },
     open: async () => {},
   },
   {
@@ -332,18 +341,20 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.populated-parked-run',
-    title: 'The populated Home: a parked run, a failed run, conversations and agents',
+    // MVP-11 unit 7: the landing is always the calm landing; what there is to continue is counted by its hint's indicator
+    title:
+      'The populated Home’s landing: its indicator counts a parked run, a failed run and conversations',
     exitKey: 'Ctrl+C',
-    landmark: 'Attention',
+    landmark: '2 need you',
     setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
     open: async () => {},
   },
   {
     host: 'home',
     id: 'home.strip-focus',
-    title: 'The populated Home with a strip row focused (the ↓ flow)',
+    title: 'The work page with a row focused (the ↓ flow)',
     exitKey: 'Esc',
-    landmark: 'Esc return to prompt',
+    landmark: 'Esc start page',
     selectedRow: 'ship-it  ·  failed',
     setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
     open: async (m) => {
@@ -355,9 +366,9 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.strip-focus-parked',
-    title: 'The populated Home with the parked run focused (the ↓ flow on an Attention row)',
+    title: 'The work page with the parked run focused (the ↓ flow on an Attention row)',
     exitKey: 'Esc',
-    landmark: 'Esc return to prompt',
+    landmark: 'Esc start page',
     selectedRow: 'run-0001  ·  ship-it',
     setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
     open: async (m) => {
@@ -366,6 +377,41 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       await m.until(
         () => m.controller.getSnapshot().stripFocus?.id !== undefined && m.homePainted(),
       );
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.work-prompt',
+    title: 'The work page with its docked prompt focused (`↓` past the last row)',
+    exitKey: 'Esc',
+    landmark: 'type a message, or / for commands',
+    setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined);
+      for (let n = 0; n < 8 && m.controller.getSnapshot().stripFocus !== undefined; n += 1) {
+        m.key(KEYS.down);
+        await m.settle();
+      }
+      await m.until(() => m.controller.getSnapshot().stripFocus === undefined && m.homePainted());
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.work-palette',
+    title: 'The / palette on the work page: above the docked prompt, as a chat’s',
+    exitKey: 'Esc',
+    landmark: 'select · Enter run',
+    legendRow: PALETTE_LEGEND_ROW,
+    selectedRow: '/resume',
+    setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined);
+      m.key('/'); // a key that types on a row moves to the docked prompt, where `/` opens the palette
+      await m.until(() => m.controller.getSnapshot().palette !== undefined);
     },
   },
   {

@@ -10,6 +10,8 @@ import { withGlyphForm } from './glyphs.js';
 import { paletteGapCount, paletteLines, paletteRowBudget } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 import { SelectableNote, SelectableText, selectionMarker } from './selectable-text.js';
+import { keepStart } from './status-line.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the palette's rows ({@link PaletteList.rows}), the very list
@@ -74,20 +76,40 @@ export function chatPaletteRows(terminalRows: number, list: Pick<PaletteList, 'r
   );
 }
 
+/**
+ * The widest the name column is drawn, the slash included (OB7-L8). A name wider than this is cut with the host's ellipsis, so one long name never
+ * pushes every description of the list away from the margin. The longest name a command has today is `/permissions`, twelve columns.
+ */
+export const PALETTE_NAME_COLUMN_MAX = 16;
+
+/** A command's name as the palette draws it: the slash and the sanitised name. */
+const nameLabel = (entry: PaletteEntry): string => `/${sanitizeInline(entry.command.name)}`;
+
+/**
+ * The width of the name column of the lines drawn now: the widest NAME of the entries in the window (a name the window hides does not widen it),
+ * by display width and never more than {@link PALETTE_NAME_COLUMN_MAX}, so the descriptions of the rows in view start in one column (OB7-L8).
+ */
+function nameColumnOf(labels: readonly string[]): number {
+  return Math.min(PALETTE_NAME_COLUMN_MAX, Math.max(0, ...labels.map(displayWidth)));
+}
+
 function EntryRow(
-  props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean }>,
+  props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean; nameColumn: number }>,
 ): ReactElement {
   const { entry, selected, color } = props;
   const words = entry.enabled
     ? sanitizeInline(entry.description)
     : `${UNAVAILABLE_PREFIX}${sanitizeInline(entry.reason ?? '')}`;
+  // the same cut as every other free text of the chat's chrome: the start kept, the host's one `…`, a wide character never split
+  const name = keepStart(nameLabel(entry), props.nameColumn);
+  const padding = ' '.repeat(Math.max(0, props.nameColumn - displayWidth(name)));
   return (
     <Text
       {...(selected ? colorProps(color, 'cyan') : entry.enabled ? {} : dimProps(color))}
       wrap="truncate-end"
     >
       <SelectableText selected={selected}>
-        {`${selectionMarker(selected, color)} /${sanitizeInline(entry.command.name)}  `}
+        {`${selectionMarker(selected, color)} ${name}${padding}  `}
       </SelectableText>
       <Text {...dimProps(color)}>
         {/* the dimmed words of the selected row are inverse with it but not bold: the two contradict, and both close with ESC[22m */}
@@ -110,21 +132,29 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
       {paletteLegend(list)}
     </Text>
   );
+  // The lines the window draws, once: the name column is the widest name among the entries IN it.
+  const lines = withGlyphForm(!color, () =>
+    paletteLines(
+      rows.length,
+      state.index,
+      props.maxRows,
+      rows.map((entry) => entry.groupStart),
+      list.layout,
+    ),
+  );
+  const nameColumn = nameColumnOf(
+    lines.flatMap((line) => {
+      const entry = line.kind === 'entry' ? rows[line.index] : undefined;
+      return entry === undefined ? [] : [nameLabel(entry)];
+    }),
+  );
   const body =
     rows.length === 0 ? (
       <Text key="none" {...dimProps(color)} wrap="truncate-end">
         no matching command
       </Text>
     ) : (
-      withGlyphForm(!color, () =>
-        paletteLines(
-          rows.length,
-          state.index,
-          props.maxRows,
-          rows.map((entry) => entry.groupStart),
-          list.layout,
-        ),
-      ).map((line, position) => {
+      lines.map((line, position) => {
         if (line.kind === 'gap') return <Text key={`gap-${String(position)}`}> </Text>;
         if (line.kind === 'marker')
           return (
@@ -140,6 +170,7 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
             entry={entry}
             selected={line.index === state.index}
             color={color}
+            nameColumn={nameColumn}
           />
         );
       })

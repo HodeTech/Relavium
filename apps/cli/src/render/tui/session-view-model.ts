@@ -186,7 +186,14 @@ export interface SessionViewState {
   readonly lastSequenceNumber?: number;
   /** Set once a `sequenceNumber` gap/anomaly is observed (the live stream is no-drop, so a gap is a defect). */
   readonly gapDetected: boolean;
+  /**
+   * The ⚠ warnings the lead row of the prompt block shows, newest last, at most {@link MAX_WARNINGS}. A warning has one of two lifetimes
+   * ({@link WarningLifetime}): by default it is about what the person has just done (an attachment cut to fit, a mention that could not be
+   * read) and is CONSUMED when the next message is sent ({@link appendUserMessage}), and one that is about the session itself stays.
+   */
   readonly warnings: readonly string[];
+  /** The warnings of {@link warnings} that outlive the next message: a session-level fact, such as an event gap, never an answer to a gesture. */
+  readonly stickyWarnings: readonly string[];
 }
 
 /** Trailing assistant token chars kept in the live region (older text scrolls out). A RENDER budget, not a content
@@ -368,6 +375,7 @@ export function initialSessionViewState(
     checkpointStopRounds: undefined,
     gapDetected: false,
     warnings: [],
+    stickyWarnings: [],
   };
 }
 
@@ -414,12 +422,32 @@ export function appendUserMessage(state: SessionViewState, text: string): Sessio
   return {
     ...state,
     transcript: appendTranscript(state.transcript, { role: 'user', text }),
+    // Sending a message is the next prompt a warning about the last gesture was waiting for (OB7-L1): it stops being drawn on the lead row, which
+    // showed `⚠ @bigfile.txt: truncated to fit…` over every later turn until the chat ended. A session-level warning stays.
+    warnings: state.warnings.filter((warning) => state.stickyWarnings.includes(warning)),
   };
 }
 
+/**
+ * How long a warning of the lead row lives (OB7-L1): `turn`, the default, until the next message is sent (a warning about an attachment, a refused
+ * mention, a command's refusal: each answers a gesture the person made before that message), or `session`, until the chat ends or the bounded list
+ * pushes it out (a fact about the session itself, which a later message does not change: an event gap, an MCP tool the build skipped).
+ */
+export type WarningLifetime = 'turn' | 'session';
+
 /** Append a UI note to the bounded warnings channel (e.g. an MCP-skipped notice). The caller sanitizes the text. */
-export function appendWarning(state: SessionViewState, message: string): SessionViewState {
-  return { ...state, warnings: pushBounded(state.warnings, message, MAX_WARNINGS) };
+export function appendWarning(
+  state: SessionViewState,
+  message: string,
+  lifetime: WarningLifetime = 'turn',
+): SessionViewState {
+  return {
+    ...state,
+    warnings: pushBounded(state.warnings, message, MAX_WARNINGS),
+    ...(lifetime === 'session'
+      ? { stickyWarnings: pushBounded(state.stickyWarnings, message, MAX_WARNINGS) }
+      : {}),
+  };
 }
 
 /**
@@ -440,6 +468,20 @@ export function appendNotice(
       state.transcript,
       hostLead === undefined ? { role: 'notice', text } : { role: 'notice', text, hostLead },
     ),
+  };
+}
+
+/**
+ * The warning lists after an event gap or an out-of-order event: an event gap is a fact about the session (a defect in what it has observed), not an
+ * answer to a gesture, so it is `session`-level and outlives the next message ({@link WarningLifetime}).
+ */
+function gapWarnings(
+  state: SessionViewState,
+  warning: string,
+): Pick<SessionViewState, 'warnings' | 'stickyWarnings'> {
+  return {
+    warnings: pushBounded(state.warnings, warning, MAX_WARNINGS),
+    stickyWarnings: pushBounded(state.stickyWarnings, warning, MAX_WARNINGS),
   };
 }
 
@@ -489,9 +531,7 @@ export function reduceSessionEvent(
     ...state,
     lastSequenceNumber: seq.lastSequenceNumber,
     gapDetected: state.gapDetected || seq.gapDetected,
-    ...(seq.warning === undefined
-      ? {}
-      : { warnings: pushBounded(state.warnings, seq.warning, MAX_WARNINGS) }),
+    ...(seq.warning === undefined ? {} : gapWarnings(state, seq.warning)),
   };
   if (!seq.apply) {
     return base;

@@ -7,7 +7,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { displayWidth } from './viewport.js';
 import { withoutStyles } from './harness-util.js';
 import { HomeView } from './home-view.js';
-import { mountHome } from './surface-matrix/home-host.js';
+import { KEYS, mountHome } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 
 /**
@@ -59,8 +59,10 @@ function homeFrame(
   cols = 100,
   rows = 30,
 ): string {
+  // The session rows are the work page's (MVP-11 unit 7).
   const view = render(
     <HomeView
+      page="work"
       snapshot={snapshot}
       editor={{ text: '', cursor: 0 }}
       nowMs={0}
@@ -131,6 +133,8 @@ describe('the Home strip’s session rows', () => {
     });
     try {
       await withRoots.settle();
+      withRoots.key(KEYS.down); // down to the work page, where the session rows are
+      await withRoots.settle();
       expect(rowsOf(withRoots.text())).toContain('. (project root)');
       expect(rowsOf(withRoots.text())).toContain('~/other');
     } finally {
@@ -138,6 +142,8 @@ describe('the Home strip’s session rows', () => {
     }
     const bare = mountHome(variant, { snapshot: snapshotOf(...DIRS) });
     try {
+      await bare.settle();
+      bare.key(KEYS.down);
       await bare.settle();
       expect(rowsOf(bare.text())).toContain('/home/me/other');
     } finally {

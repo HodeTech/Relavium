@@ -81,7 +81,7 @@ describe('a palette whose entries all fit', () => {
   const UNBOUNDED = [
     '',
     '/',
-    '› /exit  End the chat session.',
+    '› /exit    End the chat session.',
     '  /doctor  Check your setup.',
     '  /models  Switch model (opens the catalog picker).',
     LEGEND,
@@ -99,7 +99,7 @@ describe('a palette whose entries all fit', () => {
     expect(lines(SHORT, { query: '', index: 2 }, 24)).toEqual([
       '',
       '/',
-      '  /exit  End the chat session.',
+      '  /exit    End the chat session.',
       '  /doctor  Check your setup.',
       '› /models  Switch model (opens the catalog picker).',
       LEGEND,
@@ -139,7 +139,7 @@ describe('a palette with more entries than rows', () => {
       '',
       '/',
       '  ▲ 9 more',
-      '  /cmd9  Does thing 9.',
+      '  /cmd9   Does thing 9.',
       '  /cmd10  Does thing 10.',
       '  /cmd11  Does thing 11.',
       '  /cmd12  Does thing 12.',
@@ -169,7 +169,7 @@ describe('a palette with more entries than rows', () => {
     expect(lines(MANY, { query: 'thing 1', index: 0 }, 8)).toEqual([
       '',
       '/thing 1',
-      '› /cmd1  Does thing 1.',
+      '› /cmd1   Does thing 1.',
       '  /cmd10  Does thing 10.',
       '  /cmd11  Does thing 11.',
       '  /cmd12  Does thing 12.',
@@ -180,7 +180,7 @@ describe('a palette with more entries than rows', () => {
     expect(lines(MANY, { query: 'thing 1', index: 0 }, 7)).toEqual([
       '',
       '/thing 1',
-      '› /cmd1  Does thing 1.',
+      '› /cmd1   Does thing 1.',
       '  /cmd10  Does thing 10.',
       '  /cmd11  Does thing 11.',
       '  ▼ 2 more',
@@ -205,8 +205,8 @@ describe('a row that cannot act is drawn dim, with its reason in words (ADR-0145
       '',
       '/',
       '  /resume  unavailable · nothing to resume',
-      '› /run  Pick a workflow, fill in its inputs and run it after confirmation.',
-      '  /clear  unavailable · no conversation to clear',
+      '› /run     Pick a workflow, fill in its inputs and run it after confirmation.',
+      '  /clear   unavailable · no conversation to clear',
       LEGEND,
     ]);
   });
@@ -307,7 +307,7 @@ describe('in a chat the list runs away from the prompt: the first entry is besid
     expect(lines(SHORT, { query: '', index: 0 }, undefined, 'up')).toEqual([
       '  /models  Switch model (opens the catalog picker).',
       '  /doctor  Check your setup.',
-      '› /exit  End the chat session.',
+      '› /exit    End the chat session.',
     ]);
   });
 
@@ -334,7 +334,7 @@ describe('in a chat the list runs away from the prompt: the first entry is besid
       '  /cmd12  Does thing 12.',
       '  /cmd11  Does thing 11.',
       '  /cmd10  Does thing 10.',
-      '  /cmd9  Does thing 9.',
+      '  /cmd9   Does thing 9.',
       '  ▼ 9 more',
     ]);
   });

@@ -582,7 +582,11 @@ describe('the focus is the identity of a row, not its index', () => {
     expect(r.loadDetail).not.toHaveBeenCalled();
     expect(r.controller.getSnapshot().screen).toBeUndefined();
 
-    // From the prompt `↓` starts again at the first row.
+    // The focus is the work page's docked prompt now (MVP-11 unit 7): `↑` goes back onto the list at its last row, and from the landing `↓`
+    // starts again at the first row.
+    press(r.controller, UP);
+    expect(focusOf(r)?.id).toBe('s2');
+    press(r.controller, ESC);
     press(r.controller, DOWN);
     expect(focusOf(r)?.id).toBe('f1');
   });
@@ -613,7 +617,9 @@ describe('the focus is the identity of a row, not its index', () => {
 });
 
 describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
-  it('goes parked runs, failed runs, sessions, recent runs; the last row stays; ↑ from the first returns to the prompt', () => {
+  // The rows are the work page's (MVP-11 unit 7): `↓` past the last row goes onto the docked prompt under them, `↑` from there goes back onto
+  // the last row, and `↑` from the first row goes back up to the landing.
+  it('goes parked runs, failed runs, sessions, recent runs; past the last row the docked prompt; ↑ from the first returns to the landing', () => {
     const r = rig({
       snapshot: strip(['f1'], ['s1'], ['r1']),
       parked: [{ runId: 'p1', kind: 'approval', gates: 1 }],
@@ -623,11 +629,15 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
       press(r.controller, DOWN);
       walked.push(focusOf(r)?.id ?? '-');
     }
-    expect(walked).toEqual(['p1', 'f1', 's1', 'r1', 'r1']);
+    expect(walked).toEqual(['p1', 'f1', 's1', 'r1', '-']);
+    expect(r.controller.getSnapshot().homePage, 'the docked prompt').toBe('work');
+    press(r.controller, UP);
+    expect(focusOf(r)?.id, 'back onto the last row').toBe('r1');
     press(r.controller, UP, 3); // from the last row up to the first
     expect(focusOf(r)?.id).toBe('p1');
     press(r.controller, UP);
-    expect(focusOf(r), 'back at the prompt').toBeUndefined();
+    expect(focusOf(r), 'back at the landing’s prompt').toBeUndefined();
+    expect(r.controller.getSnapshot().homePage).toBe('start');
   });
 
   it('skips a run whose log could not be read: it stays a display row', () => {
@@ -641,11 +651,17 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
     expect(focusOf(r)?.id).toBe('f1');
   });
 
-  it('only starts from an empty prompt, and Esc or any other key leaves the focus', () => {
+  // MVP-11 unit 7: `↓` with a draft goes down too (the draft is the ONE draft, kept), to the FIRST row; a key that types on a row moves to the
+  // docked prompt and is typed there, after what was typed before.
+  it('starts from the landing with a draft or without one (the draft kept), and Esc or any other key leaves the focus', () => {
     const r = rig({ snapshot: strip(['f1'], ['s1']) });
     r.controller.handleKey('a', {});
     press(r.controller, DOWN);
-    expect(focusOf(r), 'a draft is not left for the rows').toBeUndefined();
+    expect(focusOf(r)?.id, 'the first row, the draft kept').toBe('f1');
+    expect(r.controller.getSnapshot().input.text).toBe('a');
+    press(r.controller, ESC);
+    expect(focusOf(r)).toBeUndefined();
+    expect(r.controller.getSnapshot().homePage).toBe('start');
     r.controller.handleKey('', { backspace: true });
 
     press(r.controller, DOWN);
@@ -656,6 +672,7 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
     r.controller.handleKey('x', {});
     expect(focusOf(r), 'a key that is typing starts typing').toBeUndefined();
     expect(r.controller.getSnapshot().input.text).toBe('x');
+    expect(r.controller.getSnapshot().homePage, 'on the docked prompt').toBe('work');
   });
 });
 

@@ -69,6 +69,7 @@ import {
   type SessionViewSeed,
   type SessionViewState,
   type TranscriptBound,
+  type WarningLifetime,
 } from './session-view-model.js';
 
 /**
@@ -211,8 +212,12 @@ export interface ChatStoreController extends ChatStore {
   apply: (event: SessionStreamHandleEvent) => void;
   /** Add the user's typed text as a transcript entry (REPL submit) — flushes immediately. */
   appendUser: (text: string) => void;
-  /** Surface a one-line note in the ⚠ warnings channel (e.g. an MCP-skipped notice) — sanitized, flushes. */
-  note: (message: string) => void;
+  /**
+   * Surface a one-line note in the ⚠ warnings channel — sanitized, flushes. By default (`turn`) it answers a gesture the person made (an attachment cut
+   * to fit, a refused mention or command) and is consumed when the next message is sent; `session` is for a fact about the session itself that a
+   * message does not change (an MCP tool the build skipped), which stays on the lead row until the chat ends ({@link WarningLifetime}).
+   */
+  note: (message: string, lifetime?: WarningLifetime) => void;
   /** Append command output (e.g. `/workflows`, `/cost`) as a notice transcript entry — control sequences
    *  stripped (newlines kept for multi-line output), flushes immediately. `hostLead` names the one glyph of the speaker marker's set that the
    *  host's own sentence leads its logical lines with (the model-switch notice's `⇄`); every other glyph of the set is blanked from the rows. */
@@ -997,8 +1002,8 @@ export function createChatStore(
       state = appendUserMessage(state, text);
       flush();
     },
-    note: (message) => {
-      state = appendWarning(state, sanitizeInline(message)); // sanitized — a config-derived note can't inject ANSI
+    note: (message, lifetime) => {
+      state = appendWarning(state, sanitizeInline(message), lifetime); // sanitized — a config-derived note can't inject ANSI
       flush();
     },
     notice: (text, hostLead) => {

@@ -47,14 +47,17 @@ const plain = (frame: string): string =>
 
 const indexes = (count: number): readonly number[] => Array.from({ length: count }, (_, n) => n);
 
+/** The strip is the work page (MVP-11 unit 7): `page` is the one the frame is drawn on, the work page unless a test asks for the landing. */
 function draw(
   snapshot: HomeSnapshot,
   parked: readonly ParkedRunRow[],
   stripFocus: StripFocus | undefined,
   size = { cols: 80, rows: 24 },
+  page: 'start' | 'work' = 'work',
 ): string {
   const view = render(
     <HomeView
+      page={page}
       snapshot={snapshot}
       editor={{ text: '', cursor: 0 }}
       nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -84,7 +87,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 0));
     expect(frame).toContain('> x wf-f1');
-    expect(frame).toContain('↑/↓ select · Enter open the run · Esc return to prompt');
+    expect(frame).toContain('↑/↓ select · Enter open the run · type to chat · Esc start page');
     expect(frame).not.toContain('Enter resume');
   });
 
@@ -97,17 +100,20 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   });
 
   it('with nothing focused, no row has a marker and the bar says how to reach the rows', () => {
-    const frame = draw(SMALL, [], undefined);
-    expect(frame).not.toContain('> ');
+    // On the landing (MVP-11 unit 7) no row is drawn at all, and the hint's indicator is the way down to them.
+    const frame = draw(SMALL, [], undefined, { cols: 80, rows: 24 }, 'start');
+    expect(frame).not.toContain('> x');
     expect(frame).not.toContain('Enter open the run');
-    expect(frame).toContain('↓ continue');
+    expect(frame).toContain('↓ 1 needs you · 1 session · 1 run');
+    // On the work page with the docked prompt focused, no row has a marker either.
+    expect(draw(SMALL, [], undefined)).not.toMatch(/^ *> (x |wf-|Conversation)/mu);
   });
 
   it('a session keeps its own words, and a parked run its own', () => {
     const parked: ParkedRunRow[] = [{ runId: 'run-p1', kind: 'approval', gates: 1 }];
     const rows = stripRows(parked, SMALL);
     expect(draw(SMALL, parked, focusAt(rows, 2))).toContain(
-      '↑/↓ select session · Enter resume · Esc return to prompt',
+      '↑/↓ select session · Enter resume · type to chat · Esc start page',
     );
     expect(draw(SMALL, parked, focusAt(rows, 0))).toContain('Enter open the gate');
   });
@@ -184,8 +190,10 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
       const frame = draw(full, parked, focusAt(rows, index));
       expect(frame, `row ${String(index)} is on screen`).toContain(lineStart(index));
       expect(frame.split('\n').length, 'the strip keeps to the terminal').toBeLessThanOrEqual(24);
-      expect(frame, 'the prompt is still there').toMatch(/^>[\s█]*$/mu);
-      expect(frame).toContain('Esc return to prompt');
+      expect(frame, 'the docked prompt is still there').toMatch(
+        /^ *> type a message, or \/ for commands$/mu,
+      );
+      expect(frame).toContain('Esc start page');
     },
   );
 });
@@ -225,6 +233,7 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     (index) => {
       const view = render(
         <HomeView
+          page="work"
           snapshot={snapshot}
           editor={{ text: '', cursor: 0 }}
           nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -333,6 +342,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
         if (row === undefined) return;
         const view = render(
           <HomeView
+            page="work"
             snapshot={snapshot}
             editor={{ text: '', cursor: 0 }}
             nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -363,7 +373,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
       rows: 24,
       keyless: false,
       showBanner: false,
-      isEmpty: false,
+      onLanding: false,
       hasSessions: false,
     } as const;
     const rowsOf = (over: object): number | undefined =>
@@ -373,7 +383,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     const recent = rowsOf({ hasRecentRuns: true });
     expect(plain).toBeDefined();
     expect((plain ?? 0) - (attention ?? 0)).toBe(3);
-    expect((plain ?? 0) - (recent ?? 0)).toBe(3); // four rows for the section, of which the plain layout already reserves one
+    expect((plain ?? 0) - (recent ?? 0)).toBe(3); // the work page's Runs section: its two headings and its row
   });
 
   it('stripReach names what the strip lists that `↓` can focus', () => {

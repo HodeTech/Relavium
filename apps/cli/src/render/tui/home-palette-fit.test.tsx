@@ -8,6 +8,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { settleFrames } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeController } from './home-controller.js';
+import { homeMargin, WORDMARK } from './home-layout.js';
 
 /**
  * The `/` palette on the bare Home never makes the landing taller than the terminal ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -44,7 +45,6 @@ const snapshotWith = (sessions: number): HomeSnapshot => ({
 });
 
 const FOOTER = '↑/↓ select · Enter run · Esc close';
-const BANNER_TOP = '+--------------------------------------------------------+';
 
 function mount(size: { cols: number; rows: number }, sessions: number, alternateScreen: boolean) {
   const onExit = vi.fn();
@@ -73,7 +73,13 @@ function mount(size: { cols: number; rows: number }, sessions: number, alternate
       {...(alternateScreen ? { alternateScreen: true } : {})}
     />,
   );
-  const frame = (): string[] => plain(harness.lastFrame() ?? '').split('\n');
+  // The landing is left-hung at its margin (ADR-0146 §1), the palette with it, whatever there is to continue: it is ALWAYS the calm landing
+  // (MVP-11 unit 7). The rows are read from their own first column, so the helpers below say what a row holds and not where the landing starts.
+  const margin = homeMargin(size.cols);
+  const frame = (): string[] =>
+    plain(harness.lastFrame() ?? '')
+      .split('\n')
+      .map((row) => (row.startsWith(' '.repeat(margin)) ? row.slice(margin) : row));
   return { controller, harness, startChat, onExit, frame, announced };
 }
 type Mounted = ReturnType<typeof mount>;
@@ -117,33 +123,44 @@ describe.each([
   ['the inline renderer', false],
   ['the full-screen renderer', true],
 ] as const)('the palette on the landing in %s', (_name, alternateScreen) => {
-  it('at 80×24 on an empty Home, with the banner, is a window of its entries and the landing is shorter than the terminal', async () => {
+  it('at 80×24 on an empty Home, with the landing, is a window of its entries and the landing is shorter than the terminal', async () => {
     const m = mount({ cols: 80, rows: 24 }, 0, alternateScreen);
     await openPalette(m);
     const frame = m.frame();
-    expect(frame[0], 'the banner is drawn').toBe(BANNER_TOP);
-    expect(frame, 'the greeting is drawn').toContain('  Welcome to Relavium.');
+    expect(frame, 'the block is drawn').toContain(WORDMARK);
+    expect(
+      frame.some((row) => row.startsWith('Start as an agent') && row.includes('Ship the workflow')),
+      'the block is drawn',
+    ).toBe(true);
     expect(frame.length, 'a frame of the whole terminal makes Ink clear it').toBeLessThanOrEqual(
       23,
     );
     expect(frame.at(-1)).toBe(FOOTER);
-    expect(markersOf(frame)).toEqual(['  v 4 more']);
+    // The head's seven rows (the wordmark, the rail and its labels and notes, and two blank rows) leave the palette 17 of the 23 rows: its
+    // chrome and 14 rows of entries, the last of them the marker. The full-screen Home gives up its top gap for them, so both renderers draw the same window.
+    expect(markersOf(frame)).toEqual(['  v 2 more']);
     expect(entriesOf(frame)).toEqual(
-      HOME_PALETTE_COMMANDS.slice(0, 11).map((command) => command.name),
+      HOME_PALETTE_COMMANDS.slice(0, 13).map((command) => command.name),
     );
     // `/` then `Enter` must never leave the application: the highlight is the first row that can act. /resume has nothing to resume, so it
     // is dim and says so in words, and the highlight is /run.
-    expect(frame, 'the dim row says why').toContain('  /resume  unavailable · nothing to resume');
+    // (the names are padded to the widest in view, `/permissions`, so the words start in one column: OB7-L8)
+    expect(
+      frame.some((row) => /^ {2}\/resume {2,}unavailable · nothing to resume/u.test(row)),
+      'the dim row says why',
+    ).toBe(true);
     expect(highlightedOf(frame)).toBe('run');
     expect(gapsOf(frame), 'no room for a gap: the entries are windowed').toBe(0);
   });
 
-  it('at 80×24 with one saved session is a window of its entries too: with /help among them the fifteen no longer fit beside the session', async () => {
+  // A Home with something to continue draws the same landing (MVP-11 unit 7): its strip is the work page's, so the palette has the same rows
+  // as on the empty Home.
+  it('at 80×24 with one saved session draws the same window as the empty Home: the session is the work page’s', async () => {
     const m = mount({ cols: 80, rows: 24 }, 1, alternateScreen);
     await openPalette(m);
     const frame = m.frame();
     expect(frame.length).toBeLessThanOrEqual(23);
-    expect(frame, 'the session is still on the landing').toContain('  Sessions');
+    expect(frame, 'the session is not on the landing').not.toContain('Sessions');
     expect(entriesOf(frame)).toEqual(
       HOME_PALETTE_COMMANDS.slice(0, 13).map((command) => command.name),
     );
@@ -155,17 +172,17 @@ describe.each([
     expect(frame.join('\n')).not.toContain('unavailable');
   });
 
-  it('at 80×24 with a strip longer than the terminal, trims the strip and not the palette below the rows it keeps', async () => {
+  it('at 80×24 with a strip longer than the terminal, draws the landing and not the strip, and the palette keeps its rows', async () => {
     const m = mount({ cols: 80, rows: 24 }, 8, alternateScreen);
     const closed = m.frame().length;
     await openPalette(m);
     const frame = m.frame();
-    expect(closed, 'the landing alone fills the terminal').toBeGreaterThan(20);
+    expect(closed, 'the landing is the calm landing, not the strip').toBeLessThanOrEqual(16);
     expect(frame.length).toBeLessThanOrEqual(23);
-    expect(entriesOf(frame).length, 'the palette keeps its half of the terminal').toBeGreaterThan(
-      6,
+    expect(entriesOf(frame)).toEqual(
+      HOME_PALETTE_COMMANDS.slice(0, 13).map((command) => command.name),
     );
-    expect(frame.some((line) => line.startsWith('    Saved conversation 0'))).toBe(true);
+    expect(frame.some((line) => line.includes('Saved conversation 0'))).toBe(false);
     expect(frame.at(-1)).toBe(FOOTER);
   });
 
@@ -187,6 +204,9 @@ describe.each([
       expect(frame.at(-1)).toBe(FOOTER);
       expect(highlightedOf(frame)).toBe(sessions === 0 ? 'run' : 'resume');
       expect(markersOf(frame).length).toBeGreaterThan(0);
+      // The report leaves the palette its budget (half the terminal: its chrome and nine rows, eight entries and a marker), never the whole
+      // of what the report could have taken.
+      if (sessions === 0) expect(entriesOf(frame).length).toBe(8);
     },
   );
 
@@ -208,11 +228,13 @@ describe.each([
 
   // All or none (MVP-11 Step 2 review, C9c): 28 and 29 rows used to draw one and two of the three blank rows, a list with one group set apart
   // and the others run together. The three are drawn when all of them fit (30 rows) and not at all otherwise.
+  // The landing above the palette is 6 rows (its seven less the palette's own first row) once the full-screen Home has given its top gap up, so
+  // the palette has `rows − 7` rows: the fifteen entries and their chrome (18) fit from 25 rows and the three gaps (21) from 28.
   it.each([
     [26, 0],
     [27, 0],
-    [28, 0],
-    [29, 0],
+    [28, 3],
+    [29, 3],
     [30, 3],
   ])(
     'at 80×%i the gaps are all or nothing, never an entry: %i of the three blank rows are drawn (the palette is asked for 21 rows, gaps first to go)',
@@ -222,17 +244,30 @@ describe.each([
       const frame = m.frame();
       expect(frame.length).toBeLessThanOrEqual(rows - 1);
       expect(gapsOf(frame)).toBe(gaps);
-      // 80×26 cannot hold the fifteen entries even with no gap: it windows them (and never draws a gap in a window).
-      if (rows === 26) {
-        expect(entriesOf(frame).length).toBeLessThan(HOME_PALETTE_COMMANDS.length);
-        expect(markersOf(frame)).toHaveLength(1);
-      } else {
-        expect(entriesOf(frame)).toEqual(HOME_PALETTE_COMMANDS.map((command) => command.name));
-        expect(markersOf(frame)).toEqual([]);
-        expect(entriesOf(frame).at(-1), 'a gap never costs /exit its row').toBe('exit');
-      }
+      expect(entriesOf(frame)).toEqual(HOME_PALETTE_COMMANDS.map((command) => command.name));
+      expect(markersOf(frame)).toEqual([]);
+      expect(entriesOf(frame).at(-1), 'a gap never costs /exit its row').toBe('exit');
     },
   );
+
+  it('the full-screen Home gives up only the top gap the palette needs: it keeps all of it where there is room (80×40) and none at 80×24', async () => {
+    if (!alternateScreen) return; // inline has no top gap
+    const wordmarkRows = async (rows: number): Promise<{ closed: number; open: number }> => {
+      const m = mount({ cols: 80, rows }, 0, true);
+      await settleFrames();
+      const closed = m.frame().findIndex((row) => row === WORDMARK);
+      await openPalette(m);
+      const open = m.frame().findIndex((row) => row === WORDMARK);
+      cleanup();
+      return { closed, open };
+    };
+    // 40 rows: room for all fifteen entries and the gap: the head stays where it was.
+    expect(await wordmarkRows(40)).toEqual({ closed: 11, open: 11 });
+    // 24 rows: the whole gap (3 rows) is the palette's.
+    expect(await wordmarkRows(24)).toEqual({ closed: 3, open: 0 });
+    // 30 rows: the palette asks for 21 rows and the head gives up 4 of its 6.
+    expect(await wordmarkRows(30)).toEqual({ closed: 6, open: 2 });
+  });
 
   it('keeps the highlighted entry in the window: ↓ sixteen times from the first row that can act, then ↑ sixteen times; the arrows skip the dim rows and stop at both ends', async () => {
     const m = mount({ cols: 80, rows: 24 }, 0, alternateScreen);
@@ -266,6 +301,12 @@ describe.each([
   it('Enter runs the highlighted entry of a window, which is one the first frame did not show', async () => {
     const m = mount({ cols: 80, rows: 24 }, 0, alternateScreen);
     await openPalette(m);
+    // A report on the landing takes rows the palette would have had: the window is the first eight entries and /help is behind the marker.
+    m.controller.setProviderState(
+      false,
+      Array.from({ length: 40 }, (_, index) => `doctor line ${String(index)}`).join('\n'),
+    );
+    await settleFrames();
     expect(entriesOf(m.frame()), 'the first frame stops before /help').not.toContain('help');
     for (let step = 0; step < REACHABLE.indexOf('help'); step += 1)
       await press(m.controller, { downArrow: true });

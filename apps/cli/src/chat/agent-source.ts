@@ -41,7 +41,9 @@ export interface ResolveChatAgentOptions {
  * table of ADR-0146 §6, which `DEFAULT_CHAT_MODEL` is Anthropic's entry of), so a zero-config chat starts on the model a first setup
  * would choose, and a user with only an OpenAI key reaches a working chat instead of an Anthropic credential failure.
  */
-export function defaultChatModel(opts: ResolveChatAgentOptions): {
+export function defaultChatModel(
+  opts: Pick<ResolveChatAgentOptions, 'defaultModel' | 'defaultProvider' | 'hasKey'>,
+): {
   readonly model: string;
   readonly provider: LlmProviderId | undefined;
 } {

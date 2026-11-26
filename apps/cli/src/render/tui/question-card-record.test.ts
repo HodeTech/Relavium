@@ -74,9 +74,12 @@ describe('the transcript entry (ADR-0132 §6)', () => {
       for (let cols = 30; cols <= 120; cols++) {
         // The entry names its lead, as both producers of the record do (`settleQuestionWith`, the restored transcript): the speaker marker's
         // row guard (ADR-0145 §6) keeps the host's `›` at the start of each of its lines and blanks it everywhere else.
+        // Colour on: the host's `›` (with colour off it draws `>`, the same one column: `question-record-glyph-form.test.ts`). The call used to leave
+        // the colour out, which reads as off, and passed only because the form of the lead was whatever the text was built with.
         const rows = wrapTranscript(
           [{ role: 'notice', text, hostLead: 'yourTurn' } as never],
           cols,
+          true,
         ).map((row) => row.text);
         expect(rows.filter((row) => row.startsWith('› ')).length).toBe(1);
         expect(rows.filter((row) => row.startsWith('  └ ')).length).toBe(1);

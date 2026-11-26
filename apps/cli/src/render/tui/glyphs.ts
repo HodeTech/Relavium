@@ -127,6 +127,14 @@ const ENTRIES = {
 
 export type GlyphRole = keyof typeof ENTRIES;
 
+/** The two forms of the person's-turn marker the host draws (`yourTurn`): the type of a transcript row's `marker`, so no other text can be one. */
+export type SpeakerMarker = (typeof ENTRIES)['yourTurn']['glyph' | 'ascii'];
+
+/** The person's-turn marker in the form asked for (`ascii` is `!color`), typed as the table spells it. */
+export function speakerMarker(ascii: boolean): SpeakerMarker {
+  return ascii ? ENTRIES.yourTurn.ascii : ENTRIES.yourTurn.glyph;
+}
+
 /** The roles that are a status, and so carry a word. */
 export type StatusGlyphRole = {
   readonly [Role in GlyphRole]: (typeof ENTRIES)[Role]['kind'] extends 'status' ? Role : never;

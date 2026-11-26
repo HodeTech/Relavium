@@ -721,13 +721,17 @@ export function formatToolCall(call: ToolCallView, display?: ToolDisplay): strin
     running: '…',
   };
   // The host's own `▸` leads the row; the tool's id and its target are not the host's (a model names the id, a path names the target), so a glyph
-  // of the speaker marker's set in either is blanked here, where the row is built: the row cannot be blanked whole (ADR-0145 §6).
-  const target = display?.target === undefined ? '' : ` → ${blankMarkerGlyphs(display.target)}`;
+  // of the speaker marker's set in either is blanked here, where the row is built: the row cannot be blanked whole (ADR-0145 §6). The target is
+  // sanitised by the store that built it; the row strips terminal controls from it again (and makes it one line) rather than trust that.
+  const target =
+    display?.target === undefined
+      ? ''
+      : ` → ${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(display.target)))}`;
   const stats =
     display?.stats === undefined
       ? ''
       : ` · +${display.stats.addedLines} -${display.stats.removedLines}`;
-  return `${glyph('toolCall')} ${blankMarkerGlyphs(sanitizeInline(call.toolId))} ${marks[outcome]}${target}${stats}`;
+  return `${glyph('toolCall')} ${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(call.toolId)))} ${marks[outcome]}${target}${stats}`;
 }
 
 function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {

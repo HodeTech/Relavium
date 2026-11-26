@@ -1,5 +1,6 @@
 import stringWidth from 'string-width';
 import type { MarkdownSpan } from '../markdown/types.js';
+import type { SpeakerMarker } from './glyphs.js';
 
 /**
  * Pure line-wrapping + windowing math for the full-screen alt-screen transcript **viewport** (2.6.F Step 4b,
@@ -41,7 +42,7 @@ export interface DisplayLine {
    * other row, a wrapped row of the same turn included. `text.startsWith(marker)` holds by construction; a renderer that finds it false draws
    * the row as plain text rather than trust a marker it cannot place.
    */
-  readonly marker?: string;
+  readonly marker?: SpeakerMarker;
 }
 
 /**

@@ -56,7 +56,7 @@ async function openPalette(
 }
 
 const isListRow = (row: string): boolean =>
-  /^(?:> |\s{2})\/[a-z]+ {2}\S/u.test(row) || /^\s*[▲▼^v] \d+ more/u.test(row);
+  /^(?:> |\s{2})\/[a-z]+ {2,}\S/u.test(row) || /^\s*[▲▼^v] \d+ more/u.test(row);
 
 describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
   describe.each([
@@ -77,7 +77,7 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
           expect(isListRow(frame[row] ?? ''), `row ${String(row)} of ${shown}`).toBe(true);
         expect(promptAt - first, `the window: ${shown}`).toBe(listLines);
         // Nothing separates the list from the prompt: the row above the prompt is the first entry, highlighted.
-        expect(frame[promptAt - 1], shown).toMatch(/^> \/models {2}/u);
+        expect(frame[promptAt - 1], shown).toMatch(/^> \/models {2,}/u);
         // The rule, then the legend as the hint row, the last row of the frame.
         expect(frame[promptAt + 1], shown).toBe('-'.repeat(cols));
         expect(frame[promptAt + 2], shown).toBe(LEGEND);

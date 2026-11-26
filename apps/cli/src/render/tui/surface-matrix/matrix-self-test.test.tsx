@@ -488,7 +488,7 @@ describe.each([
   {
     entry: HOME,
     host: 'the Home',
-    greeting: 'Welcome to Relavium.',
+    greeting: 'Start as an agent',
     exitKey: 'Ctrl+C',
     plain: ALT_80,
   },

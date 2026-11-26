@@ -79,15 +79,18 @@ function outsideTheBox(
   );
 }
 
-/** The composer's row: the last row that starts with the prompt's marker (`›`, and `>` without colour: ADR-0145 §5). */
+/**
+ * The composer's row: the last row that starts with the prompt's marker (`›`, and `>` without colour: ADR-0145 §5), after the empty Home's left
+ * margin (the landing is left-hung, ADR-0146 §1).
+ */
 function promptRow(frame: readonly string[]): number {
-  return frame.findLastIndex((row) => /^[›>] /u.test(row));
+  return frame.findLastIndex((row) => /^ *[›>] /u.test(row));
 }
 
 const inverseCells = (row: readonly ScreenCell[] | undefined): number =>
   (row ?? []).filter((cell) => cell.style.inverse).length;
 
-describe.each(HOSTS)('%s at 80×24 in the alternate screen', (_name, mount) => {
+describe.each(HOSTS)('%s at 80×24 in the alternate screen', (host, mount) => {
   it.each([false, true])(
     'the hint row does not repeat the notification around an open popup; once it closes it shows the host’s, never the popup’s (colour %s)',
     async (color) => {
@@ -140,10 +143,31 @@ describe.each(HOSTS)('%s at 80×24 in the alternate screen', (_name, mount) => {
       expect(before, 'the composer is on screen').toBeGreaterThanOrEqual(0);
       expect(inverseCells(m.cells()[before]), 'its cursor block, before').toBe(1);
       await openPopup(m);
-      const open = m.frame();
-      const row = promptRow(open);
-      expect(row, 'the composer is still drawn behind the popup').toBeGreaterThanOrEqual(0);
-      expect(inverseCells(m.cells()[row]), 'no cursor block while the popup is open').toBe(0);
+      if (host === 'the bare Home') {
+        // The empty Home's prompt is as wide as the popup's box (both are the landing's content column, ADR-0146 §1, ADR-0148 §1) and the box is
+        // centred on the rows around it, so the box covers the composer's whole row: what is checked is every cell of that row the box leaves,
+        // and that nothing is lit on a row the popup does not cover. (That the cursor is withheld while a popup draws is held by
+        // `home-landing-frames.test.tsx` on the view itself, where nothing covers it.)
+        const box = popupBoxOf(m.popupFrame(), variant);
+        expect(
+          box.top <= before && before < box.top + box.height,
+          'the box covers the composer',
+        ).toBe(true);
+        const beside = (m.cells()[before] ?? []).filter(
+          (_cell, column) => column < box.left || column >= box.left + box.width,
+        );
+        expect(inverseCells(beside), 'no cursor block beside the popup').toBe(0);
+        const lit = m
+          .cells()
+          .filter((_row, index) => index < box.top || index >= box.top + box.height)
+          .reduce((sum, row) => sum + inverseCells(row), 0);
+        expect(lit, 'nothing is lit on a row the popup does not cover').toBe(0);
+      } else {
+        const open = m.frame();
+        const row = promptRow(open);
+        expect(row, 'the composer is still drawn behind the popup').toBeGreaterThanOrEqual(0);
+        expect(inverseCells(m.cells()[row]), 'no cursor block while the popup is open').toBe(0);
+      }
       m.key(KEYS.escape);
       await closed(m);
       await m.settle();

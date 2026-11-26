@@ -90,18 +90,29 @@ const hintRow = (frame: string): string =>
   rowsOf(frame).find((line) => line.includes('[Ctrl+C] exit (twice)')) ?? '';
 
 describe('the landing hint while a leg executes', () => {
+  // The run's own row says `Enter show it` (between the status line and the hint: MVP-11 unit 7, the study's frame 21), so the hint does not say
+  // it a second time: it keeps its own doors (the indicator, or the empty Home's sentence).
   it.each([
-    ['an empty Home', EMPTY, 'type a message to chat'],
-    ['a Home with sessions', FULL, '↓ continue'],
+    // FULL lists 3 unreadable runs under Attention (of 50) and 8 sessions
+    ['a Home with sessions', FULL, '↓ 3 need you · 8 sessions', 80],
+    ['an empty Home at 100 columns', EMPTY, 'type a message to chat', 100],
   ] as const)(
-    'names `Enter show it` first, and keeps one more door open (%s)',
-    (_name, snapshot, door) => {
-      const hint = hintRow(frameOf({ snapshot, hostedRun: running() }));
-      expect(hint).toContain('Enter show it');
+    'leaves `Enter show it` to the run row, and keeps its own door (%s)',
+    (_name, snapshot, door, cols) => {
+      const frame = frameOf({ snapshot, hostedRun: running(), cols });
+      const hint = hintRow(frame).trim();
+      expect(hint).not.toContain('Enter show it');
+      expect(runRows(frame)[0]).toContain('Enter show it');
       expect(hint).toContain(door);
-      expect(hint.length, 'it fits 80 columns').toBeLessThanOrEqual(80);
+      expect(hint.length, 'it fits the terminal').toBeLessThanOrEqual(cols);
     },
   );
+
+  it('on the empty Home at 80 columns keeps the example and the exit and drops the standing sentence, whole (ADR-0145 §3)', () => {
+    const hint = hintRow(frameOf({ snapshot: EMPTY, hostedRun: running() })).trim();
+    expect(hint).toBe('[/] commands · Tab fill the example · [Ctrl+C] exit (twice)');
+    expect(hint.length, 'it fits the 74 columns after the margin').toBeLessThanOrEqual(74);
+  });
 
   it.each([
     ['no host', undefined],
@@ -208,11 +219,18 @@ describe('the exit-guard card', () => {
     expect(frame, 'no prompt hint behind the card').not.toContain('[Ctrl+C] exit (twice)');
     expect(frame, 'the notice waits behind the card').not.toContain('notice notice');
     expect(rowsOf(frame).length).toBeLessThanOrEqual(24);
+    // Measured as the terminal draws it (the title is bold, and its SGR pair takes no column): on the landing the card is left-hung at the margin.
+    const sgr = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'gu');
     for (const line of rowsOf(frame).filter((row) =>
       /Ctrl\+Y|workflow run|^\s*(?:~|#|\.\.) |cannot be resumed/u.test(row),
     ))
-      expect(line.length, line).toBeLessThanOrEqual(80);
-    expect(runRows(frame), 'the run row stays').toHaveLength(1);
+      expect(line.replace(sgr, '').length, line).toBeLessThanOrEqual(80);
+    // The card takes the place of the landing's prompt block, the run's row with it (the row stands under the status line: MVP-11 unit 7);
+    // the card names the run itself.
+    expect(
+      runRows(frame),
+      'the run row is part of the prompt block the card replaces',
+    ).toHaveLength(0);
   });
 
   it('says it is stopping once confirmed', () => {

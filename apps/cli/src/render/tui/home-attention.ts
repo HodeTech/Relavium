@@ -133,8 +133,11 @@ const FOCUSED_CUE: Readonly<Record<ParkedRunKind, LegendKey>> = {
   none: { keys: 'Enter', verb: 'say why' },
 };
 
-/** What an unfocused row names instead: `↓` moves onto it, and only the focused row can be opened. */
-const UNFOCUSED_CUE: LegendKey = { keys: '↓', verb: 'select' };
+/**
+ * What an unfocused row names instead: the arrows move onto it, and only the focused row can be opened. Both arrows: the row is on the work
+ * page (MVP-11 unit 7), where `↑` reaches the list from the docked prompt under it and the arrows walk it from a row either side.
+ */
+const UNFOCUSED_CUE: LegendKey = { keys: '↑/↓', verb: 'select' };
 
 /** One legend item as the row writes it: its key by the bracket rule, then its verb. */
 function cueText(item: LegendKey): string {

@@ -26,6 +26,7 @@ import {
   type HomeModelsPort,
 } from './home-controller.js';
 import { CHAT_HEADER_ROWS } from './chat-layout.js';
+import { WORDMARK } from './home-layout.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 
 /**
@@ -924,10 +925,12 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
 });
 
 /**
- * The branded Home banner ON SCREEN (2.6.F Step 5g). `banner.test.ts` pins the plaque itself; this pins that it
- * REPLACES the plain heading, obeys `[preferences].show_banner`, and never pushes the prompt off an 80x24 terminal.
+ * The Home's landing ON SCREEN (ADR-0146 §1, MVP-11 unit 7). `home-landing-frames.test.tsx` pins the empty Home's geometry; this pins that the
+ * block is the EMPTY Home's, that `[preferences].show_banner` obeys the maintainer's rule of 2026-11-26 (`true` and absent show the block, `false`
+ * shows the one-line spaced wordmark instead), that a Home with something to continue draws the one-line title under every setting, and that the
+ * landing never pushes the prompt off an 80x24 terminal.
  */
-describe('RootApp — the branded Home banner', () => {
+describe('RootApp — the Home landing and its title', () => {
   const BUSY: HomeSnapshot = {
     attention: { gates: [], failedRuns: [] },
     recentSessions: [
@@ -954,61 +957,77 @@ describe('RootApp — the branded Home banner', () => {
     return m.harness.lastFrame() ?? '';
   };
 
-  /** The frame's lines, trimmed — so "is the plain heading anywhere on screen" is one question, not a position. */
+  /** The frame's lines, trimmed — so "is the title a row of its own anywhere on screen" is one question, not a position. */
   const rows = (frame: string): string[] => frame.split('\n').map((l) => l.trim());
 
-  it('an EMPTY Home shows the plaque, and the plain heading is GONE (it is replaced, not stacked)', async () => {
+  it('an EMPTY Home shows the block: the spaced wordmark, the rail and its three labels and notes', async () => {
     const frame = await frameOf({});
-    expect(frame).toContain('R E L A V I U M');
-    expect(frame).toContain('Own every run.');
-    // Checking only row 0 would pass while the heading sat just BELOW the plaque (break-verified).
+    expect(rows(frame)).toContain(WORDMARK);
+    for (const text of ['Start as an agent', 'Ship the workflow', 'Own every run'])
+      expect(frame).toContain(text);
+    for (const text of ['talk to an agent', 'save it as YAML', 'every run kept'])
+      expect(frame).toContain(text);
+    // The plain heading and the plaque are gone: the title is the spaced wordmark and nothing of the old words is drawn.
     expect(rows(frame)).not.toContain('relavium');
+    expect(frame).not.toContain('Welcome to Relavium');
   });
 
-  it('a BUSY Home falls back to the plain heading — the banner auto-dismisses', async () => {
-    const frame = await frameOf({ snapshot: BUSY });
-    expect(frame).not.toContain('R E L A V I U M');
-    expect(rows(frame)).toContain('relavium');
+  // The landing is ALWAYS the calm landing (MVP-11 unit 7, maintainer 2026-11-26): a BUSY Home draws it as an empty one does (the block, or the
+  // one-line title with `show_banner = false`), and its strip is the work page's, one `↓` away.
+  it('a BUSY Home draws the landing as an empty one does — the block unless `show_banner = false` — and not its strip', async () => {
+    for (const showBanner of [undefined, true, false] as const) {
+      const frame = await frameOf({
+        snapshot: BUSY,
+        ...(showBanner === undefined ? {} : { showBanner }),
+      });
+      expect(rows(frame), `show_banner=${String(showBanner)}`).toContain(WORDMARK);
+      expect(frame.includes('Start as an agent'), `show_banner=${String(showBanner)}`).toBe(
+        showBanner !== false,
+      );
+      expect(rows(frame)).not.toContain('relavium');
+      expect(frame, 'the strip is the work page’s').not.toContain('a chat');
+    }
   });
 
-  it('`show_banner = false` hides it even on an empty Home', async () => {
+  it('`show_banner = true` and an absent setting both show the block on an empty Home', async () => {
+    for (const opts of [{ showBanner: true }, {}]) {
+      const frame = await frameOf(opts);
+      expect(frame, JSON.stringify(opts)).toContain('Start as an agent');
+    }
+  });
+
+  it('`show_banner = false` shows the one-line title INSTEAD of the block on an empty Home: no rail, the prompt, the rule and the hint stay', async () => {
     const frame = await frameOf({ showBanner: false });
-    expect(frame).not.toContain('R E L A V I U M');
+    expect(rows(frame)[0]).toBe(WORDMARK);
+    expect(frame).not.toContain('Start as an agent');
+    expect(frame).not.toContain('talk to an agent');
+    expect(frame).not.toMatch(/@\.{5}/u); // the plain-form rail
+    expect(frame).toContain('e.g. summarize the files in this folder');
+    expect(frame).toContain('[/] commands');
   });
 
-  it('`show_banner = true` brings it back on a busy Home', async () => {
-    const frame = await frameOf({ showBanner: true, snapshot: BUSY });
-    expect(frame).toContain('R E L A V I U M');
-  });
-
-  it('on an 80x24 terminal the plaque never obscures the prompt', async () => {
+  it('on an 80x24 terminal the landing never obscures the prompt and no line is wider than the terminal', async () => {
     const frame = await frameOf({ size: { cols: 80, rows: 24 } });
-    expect(frame).toContain('R E L A V I U M');
+    expect(frame).toContain('Start as an agent');
     // The prompt marker still renders, and no line wrapped past 80 columns.
-    expect(frame).toContain('>');
+    expect(frame).toContain('> e.g. summarize the files in this folder');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(23);
     for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
   });
 
-  it('renders WITHOUT a React duplicate-key error under NO_COLOR — the two ASCII borders are byte-identical', async () => {
-    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto
-    // the alt buffer, over the frame. Keying the plaque's rows by their TEXT did exactly that (whole-phase review).
+  it('renders WITHOUT a React error under NO_COLOR — the plain rail is drawn once, and nothing is keyed by its text', async () => {
+    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto the alt buffer, over the frame.
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
         color: false,
       });
       await settleFrames();
-      expect(m.harness.lastFrame() ?? '').toContain('R E L A V I U M');
+      expect(m.harness.lastFrame() ?? '').toContain(WORDMARK);
       expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
-  });
-
-  it('a FORCED banner on a busy 80x24 Home stands down rather than crowd the strip', async () => {
-    const frame = await frameOf({ showBanner: true, snapshot: BUSY, size: { cols: 80, rows: 24 } });
-    expect(frame).not.toContain('R E L A V I U M');
-    expect(frame).toContain('a chat'); // the strip the banner would have pushed away
   });
 });
 

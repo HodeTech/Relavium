@@ -109,7 +109,8 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
     async (color) => {
       const h = mount(alternate, color, true);
       try {
-        await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
+        // the landing (MVP-11 unit 7): the sessions are the work page's, the hint's indicator counts them
+        await vi.waitFor(() => expect(h.output.frames.join('')).toContain('8 sessions'));
         await h.report();
         await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('FINAL_RECOVERY_REMEDY'));
         h.input.push('\x1b[B');
@@ -145,7 +146,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
     const h = mount(alternate, false);
     try {
       h.resize(80, 24);
-      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
+      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('need you'));
       h.input.push('\x1b[B');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       // Enter arrives before React can paint the resize: admission must read actual geometry.
@@ -159,10 +160,10 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       expect(h.controller.getSnapshot().input.text).toBe('');
       h.input.push('\x1b');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBeUndefined());
+      // `Esc` went back up to the landing (MVP-11 unit 7)
+      expect(h.controller.getSnapshot().homePage).toBe('start');
       h.resize(80, 24);
-      await vi.waitFor(() =>
-        expect(h.frame('Saved conversation')).not.toContain('Terminal too small'),
-      );
+      await vi.waitFor(() => expect(h.frame('need you')).not.toContain('Terminal too small'));
       h.input.push('\x1b[B');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       h.input.push('\r');
@@ -175,7 +176,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
   it('suspends hidden palette confirmation while keeping Esc and Ctrl+C available', async () => {
     const h = mount(alternate, false);
     try {
-      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
+      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('need you'));
       h.input.push('/');
       await vi.waitFor(() => expect(h.controller.getSnapshot().palette).toBeDefined());
       h.input.push('resume');
@@ -209,11 +210,12 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
       (_, n) => `ROW-${String(n).padStart(3, '0')} ${'word '.repeat(20)}`,
     ).join('\n'),
     editor: { text: '', cursor: 0 },
-    cols: 80,
+    // 80 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
+    cols: 86,
     rows: 24,
     keyless: true,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: true,
   };
   const first = layoutHomeNotice(options);
@@ -238,7 +240,7 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
     rows: 24,
     keyless: false,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: false,
   };
 
@@ -286,11 +288,12 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
 describe('a row that continues a line starts with its word, not with the wrap’s own space (MVP-11 Step 2 review, C9b)', () => {
   const options = {
     editor: { text: '', cursor: 0 },
-    cols: 20,
+    // 20 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
+    cols: 26,
     rows: 24,
     keyless: false,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: false,
   };
   const linesOf = (notice: string): readonly string[] =>
@@ -332,7 +335,7 @@ describe('a row that continues a line starts with its word, not with the wrap’
   it('shows a glyph wider than the row as one `?` and wraps the rest of the line as it is, never cutting a surrogate pair', () => {
     const narrow = layoutHomeNotice({
       ...options,
-      cols: 1,
+      cols: 7, // one column of text
       notice: '\u{20000}\u{20000}',
     })?.lines;
     expect(narrow).toEqual(['?', '?']);
@@ -349,7 +352,7 @@ describe('a row that continues a line starts with its word, not with the wrap’
   it('fills a row by the columns its text takes, not by the code units: combining marks are zero columns wide', () => {
     // Ten letters with a combining acute are 20 code units and 10 columns: one row of ten columns, and not two of five.
     const decomposed = 'e\u0301'.repeat(10);
-    expect(layoutHomeNotice({ ...options, cols: 10, notice: decomposed })?.lines).toEqual([
+    expect(layoutHomeNotice({ ...options, cols: 16, notice: decomposed })?.lines).toEqual([
       decomposed,
     ]);
   });

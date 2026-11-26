@@ -65,7 +65,7 @@ function mount(options: { size?: { cols: number; rows: number } } = {}) {
 }
 
 describe('the exit-guard card through RootApp', () => {
-  it('Ctrl+D on the empty landing opens the card, drawn over the Home with the run row, and the prompt is not offered', async () => {
+  it('Ctrl+D on the empty landing opens the card in the place of the prompt block (the run row with it: the card names the run), and the prompt is not offered', async () => {
     const { controller, harness, onExit } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
@@ -73,7 +73,10 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('A workflow run is executing: run-0001.');
-    expect(frame).toContain('~ run-0001');
+    expect(
+      frame,
+      'the row stands under the status line, in the block the card replaces',
+    ).not.toContain('~ run-0001');
     expect(frame).not.toContain('[Ctrl+C] exit (twice)');
     expect(onExit).not.toHaveBeenCalled();
   });

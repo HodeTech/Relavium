@@ -335,7 +335,8 @@ describe('the chat status line: what goes first, one step at a time', () => {
   });
 
   it('drops the CONTEXT second, before the cost is touched (the ADR’s refinement of OD-9)', () => {
-    expect(statusLine(CHAT, 70)).toEqual({
+    // 65 columns (59 of budget) leave 9 free after both are dropped: the turns (10) do not fit back (`status-line-restore.test.ts`: at 70 they do).
+    expect(statusLine(CHAT, 65)).toEqual({
       text: 'anthropic · claude-sonnet-4-6 · ask mode · $0.0123',
       cut: ['turns', 'context'],
     });
@@ -354,17 +355,23 @@ describe('the chat status line: what goes first, one step at a time', () => {
   });
 
   it('cuts the MODEL in its middle fourth and the PROVIDER at its end fifth', () => {
-    expect(statusLine(CHAT, 40)).toEqual({
+    // 42 columns less the Home's margin of 6 are the 36 the two floors take; at 40 the old line was 36 wide in a budget of 34 (SE7-2: the
+    // last resort now drops the provider there: `status-line-last-resort.test.ts`).
+    expect(statusLine(CHAT, 42)).toEqual({
       text: 'a… · claude-so…-6 · ask mode · $0.01',
       cut: ['turns', 'context', 'cost', 'model', 'provider'],
     });
   });
 
-  it('keeps the mode and the effort whole at 60 and 50 columns', () => {
-    for (const columns of [60, 50, 40]) {
+  it('keeps the mode and the effort whole at 60 and 50 columns, and at 40 where the model and the provider are gone (SE7-2)', () => {
+    for (const columns of [60, 50]) {
       const { text } = statusLine({ ...CHAT, mode: 'auto', effort: 'high' }, columns);
       expect(text, String(columns)).toContain(' · auto mode · effort high · ');
     }
+    // 40 columns less the Home's margin are 34: the old line was 51 wide there and the view cut it; now nothing but the cost fits beside them.
+    expect(statusLine({ ...CHAT, mode: 'auto', effort: 'high' }, 40).text).toBe(
+      'auto mode · effort high · $0.01',
+    );
   });
 
   it('does not switch to a short cost that is no shorter than the full one', () => {
@@ -389,19 +396,24 @@ describe('a qualified cost never reads as a clean amount', () => {
       text: 'anthropic · claude-sonnet-4-6 · ask mode · $0.12 known; usage unverified · ctx 18% used',
       cut: ['turns'],
     });
-    expect(statusLine(QUALIFIED, 90).cut).toEqual(['turns', 'context']);
-    expect(statusLine(QUALIFIED, 70)).toEqual({
+    // 84 columns (78 of budget) leave 6 free after both are dropped, and 62 (56) leave 6 free after the short form (`status-line-restore.test.ts`:
+    // at 90 and at 70 the turns fit back).
+    expect(statusLine(QUALIFIED, 84).cut).toEqual(['turns', 'context']);
+    expect(statusLine(QUALIFIED, 62)).toEqual({
       text: 'anthropic · claude-sonnet-4-6 · ask mode · ~$0.12?',
       cut: ['turns', 'context', 'cost'],
     });
   });
 
-  it('never drops the cost and never shows its amount without a qualifier, at any width from 20 to 200', () => {
+  it('keeps the cost while it fits beside the mode and never shows its amount without a qualifier, at any width from 20 to 200', () => {
+    // The cost goes only when not even its short form fits beside the mode word: `ask mode · ~$0.12?` is 18 columns, so 24 with the margin (SE7-2).
     for (let columns = 20; columns <= 200; columns += 1) {
       const { text } = statusLine(QUALIFIED, columns);
-      expect(text.includes(QUALIFIED_FULL) || text.includes(QUALIFIED_SHORT), String(columns)).toBe(
-        true,
-      );
+      if (columns >= 24)
+        expect(
+          text.includes(QUALIFIED_FULL) || text.includes(QUALIFIED_SHORT),
+          String(columns),
+        ).toBe(true);
       expect(text, String(columns)).not.toMatch(/\$0\.12(?! known; usage unverified)(?!\?)/u);
     }
   });
@@ -415,7 +427,8 @@ describe('a qualified cost never reads as a clean amount', () => {
       const { text } = statusLine(bug, columns);
       expect(text, String(columns)).not.toMatch(/\$0\.12(?! known; usage unverified)/u);
     }
-    expect(statusLine(bug, 70).text).toBe('anthropic · claude-sonnet-4-6 · ask mode · unavailable');
+    // 62 columns (56 of budget) leave 2 free: at 70 the turns fit back beside the word (`status-line-restore.test.ts`).
+    expect(statusLine(bug, 62).text).toBe('anthropic · claude-sonnet-4-6 · ask mode · unavailable');
   });
 
   it('refuses a full form that is a bare amount too, and "free" in either form', () => {
@@ -609,7 +622,8 @@ describe('the status line at every width', () => {
       text: 'next chat: a… · claude-so…-6 · ask mode · effort high',
       cut: ['directory', 'model', 'provider'],
     });
-    expect(statusLine(CHAT, Number.NaN).text).toBe('a… · claude-so…-6 · ask mode · $0.01');
+    // A chat has a last resort the Home has not (SE7-2): with no room at all it is the mode word alone, never a line wider than its budget.
+    expect(statusLine(CHAT, Number.NaN).text).toBe('ask mode');
   });
 });
 

@@ -6,7 +6,7 @@ import { NO_USABLE_KEY_NOTICE } from '../../../../home/drive-home.js';
 import { launchBusy } from '../../../../home/run-launch.js';
 import { RESUME_ANOTHER_DIRECTORY, RESUME_RESTORING } from '../../../../home/session-picker.js';
 import { STARTING_CHAT_LINE } from '../../home-app.js';
-import { PROVIDER_KEYS_AT_THE_HOME } from '../../home-controller.js';
+import { EMPTY_PROMPT_ENTER_NOTICE, PROVIDER_KEYS_AT_THE_HOME } from '../../home-controller.js';
 import { STDIN_PROMPT_NOTE } from '../../../../commands/agent-run.js';
 import { DUMP_PROMPT, dumpToScrollback } from '../../../scrollback.js';
 import { cardStates, SIZE_100, SIZE_80, withCard } from './prompts.js';
@@ -130,6 +130,7 @@ const driveHomeSentences: Recorder = () => {
  */
 const homeControllerSentences: Recorder = () => ({
   'provider typo, in a hosted chat (source literal)': PROVIDER_KEYS_AT_THE_HOME,
+  'Enter on an empty prompt with nothing to open (source literal)': EMPTY_PROMPT_ENTER_NOTICE,
 });
 
 /** The echo line of the Home while the first chat is built: inline in the Home's app (source literal). */

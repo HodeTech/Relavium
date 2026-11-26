@@ -237,7 +237,7 @@ describe('the label', () => {
 
   it('says how to reach a row that is not focused instead of offering Enter for it', () => {
     const label = parkedRunLabel(row(), false);
-    expect(label).toBe('‖ run-0001  ·  approval gate  ·  ↓ select');
+    expect(label).toBe('‖ run-0001  ·  approval gate  ·  ↑/↓ select');
     expect(label).not.toContain('Enter');
   });
 
@@ -256,7 +256,7 @@ describe('the label', () => {
     expect(focused).not.toContain('Enter open');
     // Not focused: it says how to reach it, as every row does, and offers no Enter.
     expect(parkedRunLabel(row({ kind: 'media', gates: 0 }), false)).toBe(
-      '‖ run-0001  ·  waiting for media  ·  ↓ select',
+      '‖ run-0001  ·  waiting for media  ·  ↑/↓ select',
     );
   });
 
@@ -394,7 +394,7 @@ describe('the workflow and the deadline a row carries', () => {
         '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
       );
       expect(parkedRunLabel(parked(), false, Number.POSITIVE_INFINITY, NOW)).toBe(
-        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
+        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↑/↓ select',
       );
     });
 

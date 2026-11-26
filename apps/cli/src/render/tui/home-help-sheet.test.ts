@@ -676,11 +676,13 @@ describe('every key the sheet names does what it says on the landing', () => {
       const failed = mount({ snapshot: WITH_FAILED_RUN });
       pressAll(failed, 'rows');
       expect(failed.controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: 'failed-run' });
-      // From an empty prompt only: with something typed, `↓` moves nothing.
+      // With something typed too (MVP-11 unit 7): `↓` goes down to the work page's FIRST row, and the draft is kept.
       const typedFirst = mount({ snapshot: WITH_SESSION });
       typedFirst.controller.handleKey('a', {});
       pressAll(typedFirst, 'rows');
-      expect(typedFirst.controller.getSnapshot().stripFocus?.id).toBeUndefined();
+      expect(typedFirst.controller.getSnapshot().stripFocus?.id).toBe('saved');
+      expect(typedFirst.controller.getSnapshot().input.text).toBe('a');
+      expect(typedFirst.controller.getSnapshot().homePage).toBe('work');
     },
     back: () => {
       const home = mount({ snapshot: WITH_SESSION });
@@ -688,6 +690,7 @@ describe('every key the sheet names does what it says on the landing', () => {
       expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
       pressAll(home, 'back');
       expect(home.controller.getSnapshot().stripFocus?.id).toBeUndefined();
+      expect(home.controller.getSnapshot().homePage, 'back up to the start page').toBe('start');
       expect(home.startChat).not.toHaveBeenCalled();
     },
     eof: () => {

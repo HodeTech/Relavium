@@ -93,11 +93,6 @@ const ALLOWED: readonly Allowance[] = [
     reason: 'the header and footer of the transcript dump written to the terminal’s own scrollback',
   },
   {
-    characters: /[\u2500-\u257F]/u,
-    files: ['render/tui/banner.ts'],
-    reason: 'the banner’s box, which has its own ASCII box under colour off (ADR-0068)',
-  },
-  {
     characters: /•/u,
     files: [
       'engine/providers.ts',
@@ -266,7 +261,7 @@ describe('every symbol character of the application’s source is the table’s 
     expect(stale).toEqual([]);
   });
 
-  it('the allow-list lets a glyph of the table through only as a mask, a markdown bullet or rule, the banner and scrollback boxes, and the pencil’s lead', () => {
+  it('the allow-list lets a glyph of the table through only as a mask, a markdown bullet or rule, the scrollback box, and the pencil’s lead', () => {
     const tableHits = files
       .flatMap(hitsOf)
       .filter((hit) => TABLE_AND_RETIRED.has(hit.character) && isAllowed(hit))
@@ -278,7 +273,6 @@ describe('every symbol character of the application’s source is the table’s 
       'render/markdown/layout.ts ─',
       'render/markdown/parser.ts •',
       'render/scrollback.ts ─',
-      'render/tui/banner.ts ─',
       'render/tui/native-prompt-channel.ts •',
       'render/tui/run-view-model.ts ✎',
     ]);

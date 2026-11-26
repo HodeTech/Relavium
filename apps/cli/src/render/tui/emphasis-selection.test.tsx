@@ -174,6 +174,7 @@ describe('the Home’s strip', () => {
   const homeFrame = (color: boolean): string =>
     frameOf(
       <HomeView
+        page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
           attention: { gates: [], failedRuns: [] },
           recentSessions: [],

@@ -455,7 +455,10 @@ export function displayPath(path: string, roots: DisplayPathRoots): string {
 /** What stands for the path elements left out at the front of a label (`…/app`): one column, so a label that was cut says so. */
 export const PATH_ELLIPSIS = '…';
 
-/** Is `path` written as a Windows path: a drive letter, or a backslash anywhere. */
+/** The platform whose path rules a label is read by: a backslash is a separator on `'win32'` only (on `'posix'` it is part of a name). */
+export type PathPlatform = 'win32' | 'posix';
+
+/** Is `path` written as a Windows path: a drive letter, or a backslash anywhere. What a label is read by when its caller names no platform. */
 const looksWindows = (path: string): boolean => DRIVE_ROOT.test(path) || path.includes('\\');
 
 /** `cwd` from `~` when it is inside `home` (`~/acme-web`, and `~` for the home itself), otherwise `undefined`. */
@@ -470,7 +473,8 @@ function fromHome(cwd: string, home: string | undefined, win32: boolean): string
 /** `…/<the last name>`, for a path outside the home; `/` for a path that has no name (a filesystem root or a drive root). */
 function fromEnd(cwd: string, win32: boolean): string {
   const names =
-    parseAbsolute(cwd, win32)?.parts ?? cwd.split(/[\\/]+/u).filter((name) => name !== '');
+    parseAbsolute(cwd, win32)?.parts ??
+    cwd.split(win32 ? /[\\/]+/u : /\/+/u).filter((name) => name !== '');
   const last = names.at(-1);
   return last === undefined ? '/' : `${PATH_ELLIPSIS}/${last}`;
 }
@@ -524,16 +528,28 @@ export function cutPathLead(label: string, room: number): string {
  * `…/` (`…/app` for `/srv/app`: never absolute, and never the middle of a path the line has no room to name). The status line names the
  * directory the chat will run in, so project-relative is NOT used here (that is {@link displayPath}'s, for a path inside the project).
  *
- * Separators are `/` on every platform: a path that is written as a Windows path (a drive letter or a backslash) is read as one, its
- * backslashes are folded to `/`, its drive letter is dropped, and its names compare ignoring the case of ASCII letters only (as
- * {@link displayPath} does). A trailing separator is not part of the label, and a path with no name (`/`, `C:\`) is `/`. A path that
+ * Separators are `/` on every platform. **The platform is the CALLER's** (`platform`: `'win32'` or `'posix'`; this module reads no process state, so
+ * the host's own is `directoryLabelHere` of `display-roots.ts`): on `'win32'` the paths are Windows paths, their backslashes are folded to `/`,
+ * their drive letter is dropped, and their names compare ignoring the case of ASCII letters only (as {@link displayPath} does); on `'posix'` a
+ * backslash is part of a name (`a\..\..\Library` is ONE name, not the places it would spell on Windows), so a label never names another place than the
+ * one the chat runs in (SE7-8). With NO platform named a path is read by its shape (a drive letter or a backslash makes it a Windows path, as it was
+ * before the platform was a parameter): a caller that knows the platform must say it. A trailing separator is not part
+ * of the label, and a path with no name (`/`, `C:\` on Windows) is `/`. A path that
  * climbs (`.` or `..` among its names) is never shown as inside the home: it falls to the outside form. `bound`, in display columns,
- * cuts the label from its lead with {@link cutPathLead}. Pure: no filesystem access, no process state. Control and bidirectional
- * characters are NOT its business: the caller passes the label through the inline sanitiser (`flowLine`) before it is drawn.
+ * cuts the label from its lead with {@link cutPathLead}. Pure: no filesystem access, no process state. Control and bidirectional characters are NOT its
+ * business: the caller passes the label through the inline sanitiser (`flowLine`) before it is drawn.
  */
-export function directoryLabel(cwd: string, home: string | undefined, bound?: number): string {
+export function directoryLabel(
+  cwd: string,
+  home: string | undefined,
+  bound?: number,
+  platform?: PathPlatform,
+): string {
   if (cwd === '') return '';
-  const win32 = looksWindows(cwd) || (home !== undefined && looksWindows(home));
+  const win32 =
+    platform === undefined
+      ? looksWindows(cwd) || (home !== undefined && looksWindows(home))
+      : platform === 'win32';
   const label = fromHome(cwd, home, win32) ?? fromEnd(cwd, win32);
   return bound === undefined ? label : cutPathLead(label, bound);
 }

@@ -1,9 +1,17 @@
 import type { DisplayPathRoots } from '../render/notation.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { blankMarkerGlyphs } from '../render/tui/glyphs.js';
 import { PROJECT_ROOT_WORDS, placeForDisplay } from '../render/tui/place-label.js';
 
 /** The columns the directory of the banner may take: the banner is one line of the transcript, and the id and the agent come first. */
 const BANNER_PLACE_COLUMNS = 48;
+
+/**
+ * A stored string made safe for the banner: the inline sanitiser, then the glyphs of the speaker marker blanked (ADR-0145 §6). The inline renderer
+ * writes the banner to the terminal before Ink mounts, so it never passes the transcript's row guard, and the host's own `›`, `▸` and `⇄` must not
+ * be drawable by a session id or a directory name (the same rule as the ids of the model-switch notice).
+ */
+const safeForBanner = (text: string): string => blankMarkerGlyphs(sanitizeInline(text));
 
 /**
  * Where the resumed session lives, as the banner says it ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §8): the
@@ -12,7 +20,7 @@ const BANNER_PLACE_COLUMNS = 48;
  * command card does. The directory the person is already in is `this directory`, not `. (project root)`: a banner is a sentence.
  */
 function resumePlace(directory: string, launchRoots: DisplayPathRoots): string {
-  const place = placeForDisplay(directory, launchRoots, BANNER_PLACE_COLUMNS);
+  const place = placeForDisplay(directory, launchRoots, BANNER_PLACE_COLUMNS, safeForBanner);
   return place === PROJECT_ROOT_WORDS ? 'this directory' : place;
 }
 
@@ -31,5 +39,5 @@ export function resumeIntro(input: {
   readonly launchRoots: DisplayPathRoots;
 }): string {
   const turns = `${String(input.turns)} prior ${input.turns === 1 ? 'turn' : 'turns'}`;
-  return `Resuming session ${sanitizeInline(input.sessionId)} — ${input.agentId}, ${turns}, in ${resumePlace(input.directory, input.launchRoots)}. Type a message, or /exit to end.`;
+  return `Resuming session ${safeForBanner(input.sessionId)} — ${input.agentId}, ${turns}, in ${resumePlace(input.directory, input.launchRoots)}. Type a message, or /exit to end.`;
 }

@@ -19,8 +19,10 @@ describe('keyless Home view', () => {
         updatedAt: '2026-11-10T00:00:00.000Z',
         totalCostMicrocents: 0,
       }));
+      // The strip is the work page's (MVP-11 unit 7).
       const view = render(
         <HomeView
+          page="work"
           snapshot={{
             attention: { gates: [], failedRuns: [] },
             recentSessions: sessions,
@@ -71,7 +73,9 @@ describe('keyless Home view', () => {
     );
     const frame = view.lastFrame() ?? '';
     expect(frame).toContain('No provider key yet · Enter connect · /providers');
-    expect(frame).toContain('Enter connect a provider');
+    // At 80 columns the landing's hint keeps the indicator (three of the fifty unreadable runs are listed under Attention) and gives up the
+    // call to connect, which the status row above it says (MVP-11 unit 7).
+    expect(frame).toContain('[/] commands · ↓ 3 need you · [Ctrl+C] exit (twice)');
     expect(frame).not.toContain('↓ continue');
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     view.unmount();
@@ -99,6 +103,8 @@ describe('the Home hint bar', () => {
     const sessions = over.sessions ?? [];
     const view = render(
       <HomeView
+        // a focused row is the work page's (MVP-11 unit 7)
+        page={over.stripFocus === undefined ? 'start' : 'work'}
         snapshot={{
           attention: { gates: [], failedRuns: [] },
           recentSessions: sessions,
@@ -128,20 +134,24 @@ describe('the Home hint bar', () => {
   it('names the session picker keys while a session is being continued', () => {
     expect(
       frameOf({ sessions: [session], stripFocus: { kind: 'session', id: 'session-1' } }),
-    ).toContain('↑/↓ select session · Enter resume · Esc return to prompt · [Ctrl+C] exit (twice)');
+    ).toContain('↑/↓ select session · Enter resume · type to chat · Esc start page');
   });
 
   it('says how to send once the person is composing', () => {
     expect(frameOf({ text: 'hello', sessions: [session] })).toContain(
-      'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
+      'Enter start the chat · [Ctrl+J] newline · ↓ 1 session · [Ctrl+C] exit (twice)',
     );
   });
 
   it('offers Continue beside the palette at an empty prompt when there are sessions to continue, and does not when there are none', () => {
+    // The landing's indicator (MVP-11 unit 7): the `↓` and what it goes down to, counted.
     expect(frameOf({ sessions: [session] })).toContain(
-      '[/] commands · ↓ continue · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ 1 session · Tab fill the example · [Ctrl+C] exit (twice)',
     );
-    expect(frameOf({})).toContain('[/] commands · type a message to chat · [Ctrl+C] exit (twice)');
+    // The empty Home also names `Tab`, which fills the prompt's example in (ADR-0146 §1).
+    expect(frameOf({})).toContain(
+      '[/] commands · type a message to chat · Tab fill the example · [Ctrl+C] exit (twice)',
+    );
   });
 });
 
@@ -167,6 +177,8 @@ describe('the keyless line and the other things Enter does first', () => {
   }): string => {
     const view = render(
       <HomeView
+        // a focused parked row is the work page's (MVP-11 unit 7)
+        page={over.parkedFocus === undefined ? 'start' : 'work'}
         snapshot={{
           attention: { gates: [], failedRuns: [] },
           recentSessions: [],
@@ -196,7 +208,10 @@ describe('the keyless line and the other things Enter does first', () => {
   it('is shown with nothing else on offer for Enter, and the hint says Enter connects a provider', () => {
     const frame = frameOf({});
     expect(frame).toContain(LINE);
-    expect(frame).toContain('Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)');
+    // the parked run is counted by the landing's indicator (MVP-11 unit 7)
+    expect(frame).toContain(
+      'Enter connect a provider · [/] commands · ↓ 1 needs you · [Ctrl+C] exit (twice)',
+    );
   });
 
   it('is shown while a live run is in the view, where the hint bar says Enter shows the run first, and so does not promise that Enter connects', () => {
@@ -248,6 +263,7 @@ describe('the hint bar on a focused parked row', () => {
         cols={80}
         rows={24}
         color={false}
+        page="work"
         parkedRuns={[{ runId: 'run-0002', kind, gates: kind === 'none' ? 0 : 1 }]}
         stripFocus={{ kind: 'run', id: 'run-0002' }}
       />,
@@ -291,6 +307,7 @@ describe('the focused parked row at 80 columns', () => {
         cols={cols}
         rows={24}
         color={false}
+        page="work"
         parkedRuns={[{ runId: UUID, kind, gates: kind === 'none' ? 0 : 3 }]}
         stripFocus={{ kind: 'run', id: UUID }}
       />,

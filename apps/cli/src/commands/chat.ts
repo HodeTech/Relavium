@@ -1857,6 +1857,33 @@ function chatSurface(interactive: boolean): Surface {
   return interactive ? 'standalone-chat' : 'shell';
 }
 
+/**
+ * How a mode change refused while a turn runs is said (SE7-1): on the host's channel, where it shows at once, or, for a control with no channel,
+ * in the transcript, so the key is never silent. The words say a turn is running (`Esc stops the running turn`), which stops being true when the
+ * turn ends, so the control that raised them withdraws them then (its topic, with no text), once however many times the key was pressed: they
+ * must not stay on the hint row for the rest of their few seconds, claiming a turn that is over.
+ */
+function refuseModeChangeWhileRunning(
+  store: Pick<ChatStoreController, 'getSnapshot' | 'notice' | 'subscribe'>,
+  announce: Announce | undefined,
+): () => void {
+  let stopWatching: (() => void) | undefined;
+  return () => {
+    if (announce === undefined) {
+      store.notice(MODE_CHANGE_RUNNING_NOTICE);
+      return;
+    }
+    announce(MODE_CHANGE_RUNNING_NOTICE, 'mode');
+    if (stopWatching !== undefined) return;
+    stopWatching = store.subscribe(() => {
+      if (store.getSnapshot().state.status === 'running') return;
+      stopWatching?.();
+      stopWatching = undefined;
+      announce('', 'mode');
+    });
+  };
+}
+
 export function createChatModeControl(
   built: Pick<
     BuiltChatSession,
@@ -1924,6 +1951,7 @@ export function createChatModeControl(
       : {}),
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
+  const refuseWhileRunning = refuseModeChangeWhileRunning(store, opts.announce);
   const initialMode = interactive ? (built.startingMode?.mode ?? store.getSnapshot().mode) : 'ask';
   store.setMode(initialMode);
   applyChatMode(modeEnv, initialMode, interactive ? built.startingMode : undefined);
@@ -1967,8 +1995,7 @@ export function createChatModeControl(
       if (store.getSnapshot().state.status === 'running') {
         // OD-1 (ADR-0148 §6): a mode change leaves the status line and one transient notification, never a row of the transcript. A control
         // built with no channel says it in the transcript instead, so the key is never silent.
-        if (opts.announce === undefined) store.notice(MODE_CHANGE_RUNNING_NOTICE);
-        else opts.announce(MODE_CHANGE_RUNNING_NOTICE, 'mode');
+        refuseWhileRunning();
         return false;
       }
       const effective = interactive ? mode : 'ask';

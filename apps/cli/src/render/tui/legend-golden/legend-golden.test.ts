@@ -188,7 +188,7 @@ describe('the legend golden', () => {
       '[Ctrl+Y] Continue · [Ctrl+N] Stop here',
     );
     expect(row('home-view-hint', 'idle, nothing to continue colour=off [1]')).toBe(
-      '[/] commands · type a message to chat · [Ctrl+C] exit (twice)',
+      '[/] commands · type a message to chat · Tab fill the example · [Ctrl+C] exit (twice)',
     );
     expect(row('chat-idle-hint', 'armed=false emptyDraft=false')).toBe(
       'Enter send · [Ctrl+J] newline · [Ctrl+C] clear the draft',

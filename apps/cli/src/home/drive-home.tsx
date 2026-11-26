@@ -141,6 +141,7 @@ import {
   homeOverlayFlags,
   type HomeChatSession,
   type HomeController,
+  type HomeControllerState,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
 import { keyToken } from '../render/tui/legend.js';
@@ -181,6 +182,8 @@ import { createRunViewFeed } from '../render/tui/run-view-feed.js';
 import { readParkedRuns } from '../render/tui/home-attention.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createHomeStore } from './home-store.js';
+import type { HomeStatusReader } from './home-status-facts.js';
+import { nextChatFacts, nextChatSettings, statusDirectory } from './next-chat-facts.js';
 import { RunHost } from './run-host.js';
 import { runMediaContinue } from './media-continue.js';
 import { readRunGates } from './run-gates.js';
@@ -262,6 +265,12 @@ export interface HomeDeps {
     props: RootAppProps,
     opts: { readonly alternateScreen: boolean; readonly interactive: boolean },
   ) => Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>;
+  /**
+   * Whether a change of the Home's page slides (MVP-11 unit 7): absent or `true`, it does in the alternate screen (inline the pages always swap).
+   * `false` swaps them in the alternate screen too: for an embedding that drives the controller's keys with no renderer to show the frames
+   * between (a journey test), where the keys after a page key would otherwise wait for the slide's arrival.
+   */
+  readonly pageSlide?: boolean | undefined;
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
@@ -306,6 +315,22 @@ function boundAgentOptions(
   if (bound !== undefined) return { agent: bound.agent };
   if (resolvedAgent === undefined) return {};
   return { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
+}
+
+/**
+ * Whether the first-run setup that opens by itself may open over the Home now (ADR-0146 §6): over an empty Home and nothing else, so no chat or
+ * build, no draft in the composer, and nothing that owns the keyboard (a palette, a picker, a screen, a card, a popup, a setup the person
+ * opened). A terminal that grows while the person is already typing or in a screen must not have a popup land on that. Only over the landing
+ * (page 1), and never while the pages slide (MVP-11 unit 7): the work page's rows are a place the person went to on purpose.
+ */
+export function homeClearForFirstRun(state: HomeControllerState, popupOpen: boolean): boolean {
+  return (
+    state.mode === 'home' &&
+    state.homePage === 'start' &&
+    state.slide === undefined &&
+    state.input.text === '' &&
+    !overlayOwnsKeyboard({ ...homeOverlayFlags(state), popup: popupOpen })
+  );
 }
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
@@ -899,6 +924,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     };
 
+    // What the landing's status line says about the NEXT chat (ADR-0146 §2), from the SAME sources a new chat starts from: the effective `[chat]`
+    // block read fresh (`readEffectiveChat`'s own read, with the model this invocation chose), the startup snapshot as the fallback, the starting
+    // mode `startChat` resolves, and the Home's cached key sample (never the keychain: the controller reads this at its refresh events and never
+    // on a draw). A strict reload that fails throws, and the controller then keeps the facts it has.
+    const statusLabel = statusDirectory(deps.global.cwd, homeDir);
+    const statusFacts: HomeStatusReader = {
+      read: () => {
+        const start = startingModes.resolve(deps.global.cwd);
+        const effective = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
+        return nextChatFacts({
+          settings: nextChatSettings(effective, config.chat),
+          mode: start.startingMode.mode,
+          hasKey: (id) => keySample.some((entry) => entry.id === id && entry.usable),
+          directory: statusLabel,
+        });
+      },
+    };
+
     const closeFailedUnownedBuild = async (built: BuiltChatSession): Promise<void> => {
       try {
         built.session.cancel();
@@ -934,9 +977,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         built.workOwner?.assertAdmitting();
         ownership?.surface.work.assertAdmitting();
         // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
-        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
+        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped. It holds for the whole session (the tool stays
+        // skipped), so it is not consumed by the first message the way a turn's warning is.
         for (const tool of built.mcpSkipped) {
-          store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
+          store.note(
+            `MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`,
+            'session',
+          );
         }
         // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
         const chatDoctorProbes =
@@ -1298,12 +1345,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
         // startup); only with no fresh model (a genuinely unset default) fall back
         // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
+        // The same rule the Home's status line reads (`nextChatSettings`), so the line says what this chat is built from.
         const effectiveChat = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
-        const freshModel = effectiveChat?.defaultModel;
-        const [defaultModel, defaultProvider] =
-          freshModel !== undefined
-            ? [freshModel, effectiveChat?.defaultProvider]
-            : [config.chat.defaultModel, config.chat.defaultProvider];
+        const nextChat = nextChatSettings(effectiveChat, config.chat);
+        const { defaultModel, defaultProvider } = nextChat;
         // The Home is always a terminal with a person at it: it can always ask (ADR-0132).
         const askPort = createAskUserPort();
         askPort.bind(store);
@@ -1341,7 +1386,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               ...(bound === undefined ? {} : { fsScope: bound.context.fsScopeTier }),
               defaultModel,
               defaultProvider,
-              reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
+              reasoningEffort: nextChat.reasoningEffort,
             },
             ...(config.maxTokensEstimate === undefined
               ? {}
@@ -1983,6 +2028,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       });
       controller = createHomeController({
         plainGlyphs: !deps.global.color,
+        // The alternate screen slides between the Home's two pages; inline swaps them (MVP-11 unit 7).
+        slideTransitions: renderMode === 'alt' && deps.pageSlide !== false,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
         popupOpen: () => popups?.getSnapshot().open === true,
@@ -2140,6 +2187,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }),
         homeStore,
         models,
+        statusFacts,
         openModeSettings: () =>
           runModeSettings({
             runtime: startingModes,
@@ -2254,22 +2302,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               },
             };
       let waitingForRoom = false;
-      /**
-       * The first-run setup that opens by itself opens over an empty Home and nothing else (ADR-0146 §6): no chat or build, no draft in the
-       * composer, and nothing that owns the keyboard (a palette, a picker, a screen, a card, a setup the person opened). A terminal that
-       * grows while the person is already typing or in a screen must not have a popup land on that.
-       */
-      const homeIsClearForSetup = (): boolean => {
-        const state = actualController.getSnapshot();
-        return (
-          state.mode === 'home' &&
-          state.input.text === '' &&
-          !overlayOwnsKeyboard({
-            ...homeOverlayFlags(state),
-            popup: popups?.getSnapshot().open === true,
-          })
-        );
-      };
+      const homeIsClearForSetup = (): boolean =>
+        homeClearForFirstRun(actualController.getSnapshot(), popups?.getSnapshot().open === true);
       /** The setup's failure is the Home's: recorded on its owner and rejecting the Home, as every other setup error does. */
       const failSetup = (cause: unknown): void => {
         ownership?.surface.work.failure(cause);

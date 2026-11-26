@@ -34,8 +34,10 @@ function frameOf(
   parkedRuns: readonly ParkedRunRow[],
   options: { readonly focus?: string; readonly color?: boolean } = {},
 ): string {
+  // The Attention rows are the work page's (MVP-11 unit 7).
   const view = render(
     <HomeView
+      page="work"
       snapshot={EMPTY}
       editor={{ text: '', cursor: 0 }}
       nowMs={0}
@@ -71,8 +73,9 @@ describe('the colour of an Attention row', () => {
 
   it('draws an overdue run red and one that still has time yellow, and both say their state in words', () => {
     const frame = frameOf([OVERDUE, WAITING]);
+    // the work page is left-hung at the Home's margin, so at 80 columns the second id gives up its end (`fresh-r…`) to keep its words
     const late = lineOf(frame, 'late-run');
-    const fresh = lineOf(frame, 'fresh-run');
+    const fresh = lineOf(frame, 'fresh-r');
     expect(late).toContain(RED);
     expect(late).not.toContain(YELLOW);
     expect(late).toContain('expired');
@@ -87,20 +90,20 @@ describe('the colour of an Attention row', () => {
     // eslint-disable-next-line no-control-regex -- the assertion is that no colour code survives
     expect(frame).not.toMatch(/\u001b\[(?:3[0-7]|9[0-7])m/u);
     expect(lineOf(frame, 'late-run')).toContain('expired');
-    expect(lineOf(frame, 'fresh-run')).toContain('expires in 1h');
+    expect(lineOf(frame, 'fresh-r')).toContain('expires in 1h');
   });
 });
 
 describe('the hint bar on a focused input gate', () => {
   const hint = (frame: string): string =>
-    frame.split('\n').find((line) => line.includes('Esc return to prompt')) ?? '';
+    frame.split('\n').find((line) => line.includes('Esc start page')) ?? '';
 
   it('says `Enter` shows how to answer it, where a gate that a key answers says it opens the gate', () => {
     const input = frameOf([{ runId: 'in-run', kind: 'input', gates: 1 }], {
       focus: 'in-run',
       color: false,
     });
-    expect(hint(input)).toContain('↑/↓ select · Enter show how · Esc return to prompt');
+    expect(hint(input)).toContain('↑/↓ select · Enter show how · type to chat · Esc start page');
     expect(hint(input).length, 'it fits 80 columns').toBeLessThanOrEqual(80);
     const approval = frameOf([{ runId: 'ap-run', kind: 'approval', gates: 1 }], {
       focus: 'ap-run',

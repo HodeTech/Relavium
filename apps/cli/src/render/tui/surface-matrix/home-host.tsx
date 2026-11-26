@@ -1,3 +1,4 @@
+import type { HomeStatusReader } from '../../../home/home-status-facts.js';
 import type { HomeSnapshot, HomeStore } from '../../../home/home-store.js';
 import { RootApp, type RootAppProps } from '../home-app.js';
 import {
@@ -51,6 +52,19 @@ export const EMPTY_SNAPSHOT: HomeSnapshot = {
   recentAgents: [],
   unreadableRunIds: [],
   isEmpty: true,
+};
+
+/**
+ * What the matrix's Home reads as the facts of the next chat (ADR-0146 §2): fixed, because what a cell holds the status line to is its drawing
+ * (one row, inside the width, nothing in a colour sequence under `NO_COLOR`), not the derivation of its facts (`next-chat-facts.test.ts`).
+ */
+const MATRIX_STATUS: HomeStatusReader = {
+  read: () => ({
+    provider: 'anthropic',
+    model: 'claude-haiku-5-5',
+    mode: 'ask',
+    directory: '~/acme-web',
+  }),
 };
 
 /** What the controller's ports may need of the host they are built for. */
@@ -260,6 +274,7 @@ export function mountHome(
     announce: (text: string) => {
       notifications.notify(text);
     },
+    statusFacts: MATRIX_STATUS,
     onExit: () => {},
     onError: (cause) => {
       throw cause;

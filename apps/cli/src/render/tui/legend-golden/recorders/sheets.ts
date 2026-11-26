@@ -392,7 +392,7 @@ const homeNotice: Recorder = () => {
     rows: 24,
     keyless: false,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: false,
   } as const;
   const out: Record<string, string> = {};

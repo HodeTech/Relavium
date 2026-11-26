@@ -92,12 +92,12 @@ export const HOME_KEYS = {
   },
   rows: {
     keys: '↓',
-    verb: 'move onto a row of the strip, from an empty prompt',
+    verb: 'down to the work page and its first row',
     presses: [{ input: '', key: { downArrow: true } }],
   },
   back: {
     keys: 'Esc',
-    verb: 'back to the prompt from a row',
+    verb: 'back up to the start page from the work page',
     presses: [{ input: '', key: { escape: true } }],
   },
   eof: {

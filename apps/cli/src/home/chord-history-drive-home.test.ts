@@ -168,6 +168,8 @@ async function mountHome() {
     writeControl: () => undefined,
     exit: () => undefined,
     firstRunSetup: 'off',
+    // the keys are driven with no renderer: the Home's pages swap instead of sliding (MVP-11 unit 7)
+    pageSlide: false,
     run,
   };
   const running = driveHome(deps);
@@ -184,6 +186,9 @@ async function mountHome() {
     release: (launch: HostedLaunch = STARTED): void => releaseResume(launch),
     /** `↓` onto the parked row and `Enter`: the card of the run, as a person opens it. */
     openCard: (): void => {
+      // From the landing (MVP-11 unit 7): a card closed earlier left the Home on its work page, and `Esc` goes back up first.
+      if (props.controller.getSnapshot().homePage === 'work')
+        props.controller.handleKey('', { escape: true });
       props.controller.handleKey('', DOWN);
       props.controller.handleKey('', ENTER);
       expect(props.controller.getSnapshot().screen?.kind, 'the gate card is open').toBe(
