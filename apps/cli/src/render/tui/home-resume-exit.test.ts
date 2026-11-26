@@ -156,4 +156,43 @@ describe('a resume answered after the Home began to close does nothing', () => {
       'the open conversation: torn down by the signal, not again by the adoption',
     ).toHaveBeenCalledTimes(1);
   });
+
+  it('R2-23 the Home began to close WHILE the open conversation was being torn down for the resume: the restored one is torn down, never adopted', async () => {
+    const closing = deferred<void>();
+    const openTeardown = vi.fn(() => closing.promise);
+    const restoredTeardown = vi.fn(() => Promise.resolve());
+    const r = rig({
+      pick: Promise.resolve('s2'),
+      resume: Promise.resolve(chatSession('s2', restoredTeardown)),
+      open: chatSession('s1', openTeardown),
+    });
+    await r.toChat();
+    await r.typeResume();
+    expect(r.resumeChat).toHaveBeenCalledTimes(1);
+    expect(openTeardown, 'the open conversation is being closed for the resume').toHaveBeenCalled();
+    // The signal handler ends the Home while that close is still pending; then the close finishes.
+    const terminating = r.controller.teardownActive();
+    closing.resolve();
+    await terminating;
+    await settle();
+    expect(restoredTeardown, 'the conversation a leaving Home never adopts').toHaveBeenCalled();
+    expect(r.controller.getSnapshot().session?.sessionId).not.toBe('s2');
+  });
+});
+
+describe('what a resumed conversation starts with', () => {
+  it('R2-26 a resumed conversation starts with no recall of the lines typed in the one it replaced (the composer history is the conversation’s)', async () => {
+    const restoredTeardown = vi.fn(() => Promise.resolve());
+    const r = rig({
+      pick: Promise.resolve('s2'),
+      resume: Promise.resolve(chatSession('s2', restoredTeardown)),
+      open: chatSession('s1', () => Promise.resolve()),
+    });
+    await r.toChat(); // `hello` is sent in s1: it is the one line in the recall
+    await r.typeResume();
+    await vi.waitFor(() => expect(r.controller.getSnapshot().session?.sessionId).toBe('s2'));
+    r.controller.handleKey('', { upArrow: true });
+    await settle();
+    expect(r.controller.getSnapshot().input.text, 'nothing of s1 is recalled in s2').toBe('');
+  });
 });

@@ -21,7 +21,7 @@ import {
 import { createChordHistory } from './chord-guard.js';
 import { EXPORT_ALLOW_LABEL, EXPORT_DENY_LABEL } from './export-card.js';
 import { IMPORT_ALLOW_LABEL, IMPORT_DENY_LABEL } from './import-card.js';
-import { legend, legendSpans } from './legend.js';
+import { exitKey, legend, legendSpans } from './legend.js';
 import {
   createNativePromptChannel,
   NATIVE_PROMPT_CANCEL,
@@ -517,6 +517,20 @@ describe('the popup legend of every chord step in use, at 80 columns (inner widt
     const room = [...legend([{ keys: 'Enter', verb: 'choose', wait: true }], parts.exit)].length;
     expect(legend(fittedLegendItems(parts, room), parts.exit)).toBe(
       'Enter choose (wait) · Esc close',
+    );
+  });
+
+  it('R2-10 where only one of the two fits, the way out (`Esc back`) is kept before the waiting key: the ways out come last', () => {
+    const waiting = { keys: 'Ctrl+Y', verb: 'Start it', role: 'ok', wait: true } as const;
+    const esc = { keys: 'Esc', verb: 'back' } as const;
+    const exit = exitKey.close('Ctrl+C', 'denies');
+    const parts = { items: [waiting, esc], exit };
+    // Room for `Esc back · [Ctrl+C] denies` and nothing more: the waiting part, which is longer, goes.
+    const room = [...legend([esc], exit)].length;
+    expect(legend(fittedLegendItems(parts, room), exit)).toBe('Esc back · [Ctrl+C] denies');
+    // With room for the waiting part instead of the way out, it is the other way round (the rule is a rank, not a rule against waiting).
+    expect(legend(fittedLegendItems(parts, 200), exit)).toBe(
+      '[Ctrl+Y] Start it (wait) · Esc back · [Ctrl+C] denies',
     );
   });
 

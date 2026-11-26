@@ -61,6 +61,8 @@ const ENTER = {
   capsLock: false,
   numLock: false,
 };
+const DOWN = { ...ENTER, return: false, downArrow: true };
+const REJECTED: ProviderKeyValidation = { ok: false, reason: 'auth', detail: 'rejected' };
 const OK: ProviderKeyValidation = { ok: true, reason: 'ok', detail: 'ok' };
 const PROVIDER: ProviderId = 'anthropic';
 const NAME = KNOWN_PROVIDERS.anthropic.displayName;
@@ -118,6 +120,8 @@ async function run(options: {
   readonly wrapFlow?: (flow: Ran['flow']) => Ran['flow'];
   /** End the run as soon as the check's choices are on screen (the state is read, then the flow is stopped). */
   readonly stopAtFailedCheck?: boolean;
+  /** Answer the failed check's choices with `Save it anyway` (the key is kept without a check). */
+  readonly keepAnyway?: boolean;
 }): Promise<Ran> {
   const channel = createNativePromptChannel();
   const signal = channel.flow.begin();
@@ -176,6 +180,15 @@ async function run(options: {
   if (options.cancelDuringCheck === true) {
     await until(() => channel.ui.getSnapshot().kind === 'busy');
     channel.flow.cancel();
+  }
+  if (options.keepAnyway === true) {
+    await until(() => channel.ui.getSnapshot().kind === 'select');
+    const target = channel.ui
+      .getSnapshot()
+      .options.findIndex((option) => option.value === 'continue');
+    if (target < 0) throw new Error('the failed check offered no `Save it anyway`');
+    for (let moves = 0; moves < target; moves += 1) channel.ui.input('', DOWN);
+    channel.ui.input('\r', ENTER);
   }
   if (options.stopAtFailedCheck === true) {
     await until(() => channel.ui.getSnapshot().kind === 'select');
@@ -540,5 +553,77 @@ describe('on a card (no popup steps) the setup’s last word is its note, commit
     });
     expect(result).toEqual({ kind: 'finished', stored: true });
     expect(r.noted.some((note) => note.includes(`Pick an ${NAME} model with /models.`))).toBe(true);
+  });
+
+  it.each([
+    [
+      'the keychain write returned',
+      (flow: Ran['flow'], keychain: KeychainStore): Partial<OnboardingDeps> => ({
+        keychain: {
+          ...keychain,
+          set: (account, secret) => {
+            keychain.set(account, secret);
+            flow.cancel();
+          },
+        },
+      }),
+    ],
+    [
+      'the store’s write then refused with the flow’s own reason',
+      (
+        flow: Ran['flow'],
+        keychain: KeychainStore,
+        signal: AbortSignal,
+      ): Partial<OnboardingDeps> => ({
+        keychain,
+        store: {
+          ...providerStore(),
+          setKeychainRef: () => {
+            flow.cancel();
+            throw signal.reason;
+          },
+        },
+      }),
+    ],
+  ])(
+    'W27 a flow stopped after a key kept anyway reached the keychain (%s): the card’s last note is titled `Saved`, never `Connected` (no connection was made)',
+    async (_case, depsFor) => {
+      const r = recording();
+      const keychain = memKeychain();
+      const { result } = await run({
+        surface: 'card',
+        wrapFlow: r.wrapFlow,
+        keepAnyway: true,
+        deps: { validate: () => Promise.resolve(REJECTED) },
+        around: ({ flow, signal }) => depsFor(flow, keychain, signal),
+      });
+      expect(result).toEqual({ kind: 'finished', stored: true });
+      expect([...keychain.stored.values()], 'the key was stored').toEqual([KEY]);
+      expect(r.committed).toHaveLength(1);
+      expect(r.committed[0]?.startsWith('Saved|')).toBe(true);
+      expect(r.committed[0]).toContain(`Your ${NAME} key was stored in the OS keychain`);
+      expect(r.committed[0]).not.toContain('Connected');
+    },
+  );
+
+  it('the same stop after a CHECKED key is titled `Connected` (the title follows what was verified)', async () => {
+    const r = recording();
+    const stored = new Map<string, string>();
+    await run({
+      surface: 'card',
+      wrapFlow: r.wrapFlow,
+      around: ({ flow }) => ({
+        keychain: {
+          get: (account) => stored.get(account) ?? null,
+          set: (account, secret) => {
+            stored.set(account, secret);
+            flow.cancel();
+          },
+          delete: () => false,
+        },
+      }),
+    });
+    expect(r.committed).toHaveLength(1);
+    expect(r.committed[0]?.startsWith('Connected|')).toBe(true);
   });
 });

@@ -238,14 +238,19 @@ function journey(
     frames,
     outputs,
     stored,
-    async ready(): Promise<RootAppProps> {
+    /** The Home's props once it is mounted, before its renderer has reported ready (no first-run offer was made yet). */
+    async mounted(): Promise<RootAppProps> {
       await settled(() => expect(props).toBeDefined());
       if (props === undefined) throw new Error('missing Home mount');
+      return props;
+    },
+    async ready(): Promise<RootAppProps> {
+      const mounted = await this.mounted();
       // The Home is mounted and painted: the automatic first-run setup may open.
-      props.onRendererReady?.(async (publish) => {
+      mounted.onRendererReady?.(async (publish) => {
         await publish?.();
       });
-      return props;
+      return mounted;
     },
     async end(p: RootAppProps): Promise<void> {
       p.controller.handleKey('c', { ctrl: true });
@@ -587,6 +592,32 @@ describe('the keyless journey', () => {
     await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
     await j.end(p);
     expect(j.resizeListeners.size).toBe(0);
+  });
+
+  it('D03 a renderer that reports ready again while the offer already waits for room does not start a second wait: one resize listener, one offer', async () => {
+    const j = journey({ cols: 70, rows: 20 });
+    const p = await j.ready();
+    try {
+      await settled(() => expect(j.resizeListeners.size).toBe(1));
+      await j.ready(); // the renderer reports ready a second time (a remount): the offer is already waiting
+      expect(j.resizeListeners.size, 'still the one wait').toBe(1);
+      j.resize({ cols: 80, rows: 24 });
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      expect(j.resizeListeners.size, 'the wait ended with the offer').toBe(0);
+    } finally {
+      ui(p).input('', { ...key, escape: true });
+      await j.end(p);
+    }
+  });
+
+  it('D02 a renderer that first reports ready after the Home began to close offers nothing: below the floor it starts no wait, and no listener is left behind', async () => {
+    const j = journey({ cols: 70, rows: 20 });
+    const p = await j.mounted(); // no ready report yet: no offer was made, no wait was started
+    await j.end(p);
+    expect(j.resizeListeners.size, 'nothing waits').toBe(0);
+    await j.ready(); // the late ready of a renderer of a Home whose input is sealed
+    expect(j.resizeListeners.size, 'a closing Home starts no wait for room').toBe(0);
+    expect(ui(p).getSnapshot().active, 'and no popup opens').toBe(false);
   });
 });
 

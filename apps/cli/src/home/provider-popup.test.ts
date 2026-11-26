@@ -1013,6 +1013,43 @@ describe('the gaps the mutation review found (MVP-11 unit 6, round 1: M6)', () =
     },
   );
 
+  it('R2-12 `Esc` on the "Provider action" step of a provider that already works, in a `/providers` the person opened, returns to the list (it does not leave the setup)', async () => {
+    const keychain = memoryKeychain(false);
+    keychain.stored.set(keychainAccount('anthropic'), 'synthetic-stored-key');
+    const r = rig({ keychain });
+    const running = r.coordinator.run('explicit');
+    await r.choose('anthropic');
+    await r.until((s) => s.message === 'Provider action');
+    r.esc();
+    await r.until((s) => s.message === 'Which provider?');
+    expect(r.snapshot().popup?.stepIndex, 'the list is the first step again').toBe(0);
+    r.channel.flow.cancel();
+    expect((await running).status).toBe('cancelled');
+    r.close();
+  });
+
+  it('R2-13 the recovery after a consent that could not be saved (a config another writer changed) offers `Retry saving` first, and its "this invocation only" row is not guarded: only without `Retry saving` is it the first row', async () => {
+    const r = rig({
+      env: { OPENAI_API_KEY: 'synthetic-env-w13' },
+      beforePublish: (index, path) => {
+        if (index !== 0) return;
+        mkdirSync(join(path, '..'), { recursive: true });
+        writeFileSync(path, 'theme = "dark"\n');
+      },
+    });
+    const running = r.coordinator.run('automatic');
+    await r.choose('use');
+    await r.until((s) => s.options.some((o) => o.value === 'once'));
+    expect(r.snapshot().options.map((o) => [o.value, o.guarded === true])).toEqual([
+      ['retry', false],
+      ['once', false],
+      ['cancel', false],
+    ]);
+    r.channel.flow.cancel();
+    await running;
+    r.close();
+  });
+
   it('P42: the consent of a Home that already has a usable key names no default model (none will be chosen)', async () => {
     const r = rig({
       env: {

@@ -332,6 +332,14 @@ describe('what the provider setup reports', () => {
   describe('a way out of the environment-key consent declines the source for the process', () => {
     const ENV = { OPENAI_API_KEY: 'never-display-this' };
 
+    it('R2-22 on a card (the stand-alone chat) the first run’s consent has no step back: it asks with `Esc` leaving, as it always did', async () => {
+      const f = fixture({ answers: ['defer'], env: ENV });
+      await createProviderSetupCoordinator(f.deps).run('automatic');
+      const consent = f.selects.find((asked) => asked.message.includes('OPENAI_API_KEY'));
+      expect(consent, 'the consent was asked').toBeDefined();
+      expect(consent?.escape).toBe('cancel');
+    });
+
     it('on the first run a step back from the consent (its skip) declines it, so it is not offered again this process', async () => {
       const f = fixture({ answers: [NATIVE_PROMPT_BACK], env: ENV });
       const outcome = await createProviderSetupCoordinator(f.deps).run('automatic');
@@ -651,8 +659,19 @@ describe('what the provider setup reports', () => {
       expect(() => other.assertAdmitting(), 'the Home is closing').toThrow(CLOSING);
     });
 
-    it('a step back is NATIVE_PROMPT_BACK itself (the setup’s caller reads that symbol, never a copy)', () => {
-      expect(typeof NATIVE_PROMPT_BACK).toBe('symbol');
+    it('a step back is NATIVE_PROMPT_BACK itself (the setup’s caller reads that symbol, never a copy): a symbol that only looks like it is a way out, which declines the source', async () => {
+      const lookalike = Symbol(NATIVE_PROMPT_BACK.description);
+      expect(lookalike).not.toBe(NATIVE_PROMPT_BACK);
+      const f = fixture({
+        answers: ['openai', lookalike],
+        env: { OPENAI_API_KEY: 'never-display-this' },
+      });
+      await createProviderSetupCoordinator(f.deps).run('explicit');
+      expect(f.policy.isDeferred('openai'), 'a way out declines the source').toBe(true);
+      expect(
+        f.selects.map((asked) => asked.message),
+        'the list was not asked again: nothing stepped back',
+      ).toEqual(['Providers', expect.stringContaining('OPENAI_API_KEY') as string]);
     });
   });
 });

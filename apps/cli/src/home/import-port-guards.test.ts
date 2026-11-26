@@ -64,8 +64,11 @@ const everything = (dir: string, prefix = ''): string[] =>
     .sort();
 
 /** What the card is shown as the target for a plan whose destination is `target`: its `display` is the fallback the port may name instead. */
-function targetFor(target: string, display: string): string {
-  const projectConfigDir = join(root, '.relavium');
+function targetFor(
+  target: string,
+  display: string,
+  projectConfigDir = join(root, '.relavium'),
+): string {
   const plan: ImportPlan = {
     kind: 'agent',
     slug: 'reviewer',
@@ -97,8 +100,24 @@ describe('the Done step’s target is relative to the project’s root, or the d
     );
   });
 
-  // The root itself and the root's parent are directories that exist: the port's own occupant check refuses them before the target is named
-  // (`takenReason`), so `projectRelative`'s `rel === ''` and `rel === '..'` arms cannot be reached through `prepare`, and are not pinned here.
+  // The root itself and the root's parent are directories that exist, and the port's own occupant check refuses them before the target is named
+  // (`takenReason`). A hostile plan whose project root is a place that does not exist (nothing there to be an occupant) is the case that reaches
+  // `projectRelative`'s `rel === ''` and `rel === '..'` arms: the card then names the plan's display text, never an empty target or a bare `..`.
+  /** A project root that does not exist: a directory nobody has made, so the port finds nothing at the destination to refuse. */
+  const ghost = (): { readonly root: string; readonly configDir: string } => {
+    const ghostRoot = join(root, 'ghost', 'project');
+    return { root: ghostRoot, configDir: join(ghostRoot, '.relavium') };
+  };
+
+  it('I03 a destination that IS the project root (a root that does not exist yet) names the display text, never an empty target', () => {
+    const { root: ghostRoot, configDir } = ghost();
+    expect(targetFor(ghostRoot, 'DISPLAY-ROOT', configDir)).toBe('DISPLAY-ROOT');
+  });
+
+  it('a destination that is the root’s parent (`..`) names the display text, never a bare `..`', () => {
+    const { configDir } = ghost();
+    expect(targetFor(join(root, 'ghost'), 'DISPLAY-PARENT', configDir)).toBe('DISPLAY-PARENT');
+  });
 
   it('a sibling of the root is outside it (the relative path starts with ..${sep}): the display text is named', () => {
     const sibling = join(resolve(root, '..'), 'another-project', 'reviewer.agent.yaml');

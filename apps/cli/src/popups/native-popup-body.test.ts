@@ -329,6 +329,16 @@ describe('the Done step is one shape: a mark AND a word in both tones (ADR-0148 
     },
   );
 
+  it('R2-7 the sentence is a `done` line in the ok tone and a `failed` line in the failed tone (the colour roles), and a question stays a `message`', () => {
+    const kindOf = (snapshot: NativePromptSnapshot): string | undefined =>
+      withGlyphForm(true, () => nativePopupLayout(snapshot, PAGE).lines[0]?.kind);
+    expect(kindOf(done('ok'))).toBe('done');
+    expect(kindOf(done('failed'))).toBe('failed');
+    const { final, ...question } = done('ok');
+    void final;
+    expect(kindOf(question)).toBe('message');
+  });
+
   it('the target is drawn once under the sentence; the option carries no hint', () => {
     const rows = frame(done('ok'), false).map((row) => row.trim());
     expect(rows.filter((row) => row.includes('deploy.relavium.yaml'))).toHaveLength(1);
@@ -1012,7 +1022,7 @@ describe('the popup of one flow does not jump between its steps (the pin, the ov
     expect(nextPin(undefined, prompt(1), 'replace', SIZE, inline)).toBeUndefined();
     const overlay = draw(prompt(6));
     const pin = nextPin(undefined, prompt(6), 'overlay', SIZE, overlay);
-    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBeDefined();
+    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBe(pin);
     expect(livePin(pin, prompt(6), 'replace', SIZE)).toBeUndefined();
     expect(nextPin(pin, prompt(6), 'replace', SIZE, inline)).toBeUndefined();
   });
@@ -1020,7 +1030,7 @@ describe('the popup of one flow does not jump between its steps (the pin, the ov
   it('any resize drops the pin (it can never hold a box a smaller terminal cannot), and so does another flow', () => {
     const first = draw(prompt(6));
     const pin = nextPin(undefined, prompt(6), 'overlay', SIZE, first);
-    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBeDefined();
+    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBe(pin);
     expect(livePin(pin, prompt(6), 'overlay', { cols: 80, rows: 30 })).toBeUndefined();
     expect(livePin(pin, prompt(6), 'overlay', { cols: 100, rows: 24 })).toBeUndefined();
     const other = prompt(6, { popup: { ...BASE.popup!, title: '/import' } });
@@ -1048,6 +1058,20 @@ describe('the popup of one flow does not jump between its steps (the pin, the ov
     const moved = nextPin(pin, prompt(15), 'overlay', SIZE, tall);
     expect(moved?.top).toBe(tall.top);
     expect(moved?.top).not.toBe(first.top);
+  });
+
+  it('R2-8 a box that ends exactly on the terminal’s last row keeps the pinned row (the edge is inclusive); one row lower, the geometry centres it', () => {
+    const natural = draw(prompt(6));
+    const flush: NativePopupPin = {
+      flow: 'x',
+      cols: 80,
+      rows: 24,
+      bodyRows: 0,
+      top: SIZE.rows - natural.height,
+    };
+    expect(flush.top).not.toBe(natural.top);
+    expect(draw(prompt(6), flush).top).toBe(flush.top);
+    expect(draw(prompt(6), { ...flush, top: flush.top + 1 }).top).toBe(natural.top);
   });
 
   it('the pinned height is clamped by the terminal like any body: it can never exceed what the floor gives (21 rows at 80x24)', () => {

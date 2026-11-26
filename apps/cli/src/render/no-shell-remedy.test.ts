@@ -60,8 +60,11 @@ const SHELL_REMEDY = new RegExp(
 /** A template fragment that ends in the command name and goes on with an interpolation: `` `relavium ${command} … `` */
 const DYNAMIC_COMMAND = /(?<![\w@./~-])relavium\s+$/u;
 
-/** `/word`, a slash command named in a sentence (not a path, a fraction or a unit). */
-const SLASH_COMMAND = /(?<![\w/.~:'"$`*<-])\/([a-z][a-z-]*)(?![\w/.-])/gu;
+/**
+ * `/word`, a slash command named in a sentence (not a path, a fraction or a unit). A full stop that ends the sentence is not part of the name
+ * (`…with /models.`); a full stop that goes on into a word or a path (`/models.yaml`, `/a./b`) is, and the whole is no command.
+ */
+const SLASH_COMMAND = /(?<![\w/.~:'"$`*<-])\/([a-z][a-z-]*)(?![\w/-]|\.[\w/])/gu;
 
 /** The helpers that build a shell command line, so that a command is caught whether it is written out or built. */
 const COMMAND_BUILDERS = [
@@ -1016,6 +1019,34 @@ describe('the detector sees what it should (it is run on text it is given, not o
       "import { relaviumRunCommand } from './a.js';\nexport { relaviumRunCommand };\nconst a = relaviumRunCommand('logs', id);\n",
     );
     expect(scan.calls).toEqual([{ file: 'x.ts', line: 3, name: 'relaviumRunCommand' }]);
+  });
+});
+
+describe('the /command pattern reads every command a sentence names, the one that ends it included', () => {
+  const namesIn = (text: string): string[] =>
+    [...text.matchAll(SLASH_COMMAND)].map((match) => match[1] ?? '');
+
+  it.each([
+    ['Open the picker with /models.', ['models']],
+    ['Connect one with /providers. Then type a message.', ['providers']],
+    ['Use /models, /doctor or /export.', ['models', 'doctor', 'export']],
+    ['Press Esc, or type /exit.', ['exit']],
+    ['Nothing changed (see /doctor).', ['doctor']],
+    ['Wait… then /resume...', ['resume']],
+    ['Try /nonexistent-command.', ['nonexistent-command']],
+  ])('reads the commands of %j', (text, expected) => {
+    expect(namesIn(text)).toEqual(expected);
+  });
+
+  it.each([
+    'the file is ~/models.yaml',
+    'see /etc/hosts.',
+    'the /models.json file',
+    'at 5 MB/s.',
+    'open https://example.com/docs.',
+    'a/b and c/d.',
+  ])('does not read a path, a unit or a link as a command: %j', (text) => {
+    expect(namesIn(text)).toEqual([]);
   });
 });
 

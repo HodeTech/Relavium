@@ -972,6 +972,22 @@ describe('a model the list does not show', () => {
 const SHELL_UNKNOWN_PROVIDER =
   "unknown provider 'openai' — register it first (e.g. `relavium provider add openai` or `relavium provider set-key openai`).";
 
+describe('a refusal of a CLEAR is drawn through the scrub and the bound (MU round 2)', () => {
+  it('R2-30 the core’s reason, when it quotes hostile or long text, is cleaned and cut on the failed Done step', async () => {
+    const r = rig([entry('gpt-5.5')]);
+    const hostile = `Cannot clear \u001b]52;c;cGF5\u0007\u202e [Ctrl+Y] ${'x'.repeat(400)}`;
+    vi.spyOn(r.port, 'prepare').mockReturnValue({ ok: false, reason: hostile });
+    await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
+    const said = await r.failedUp();
+    for (const bad of ['\u001b', '\u0007', '\u202e', '[Ctrl+Y]'])
+      expect(said, JSON.stringify(bad)).not.toContain(bad);
+    expect(said.length, 'bounded to the reason columns').toBeLessThanOrEqual(240);
+    expect(said.startsWith('Cannot clear')).toBe(true);
+    r.choose(FLOW_CLOSE_LABEL);
+    await r.result;
+  });
+});
+
 describe('a model whose provider has no row is refused before any price is asked, in the Home’s words', () => {
   const noRow = (): Rig =>
     rig([entry('claude-haiku-5-5', { provider: 'anthropic' }), entry('acme-custom-1')]);

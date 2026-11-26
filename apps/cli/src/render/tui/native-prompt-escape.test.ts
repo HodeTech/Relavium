@@ -105,6 +105,19 @@ describe('escape: back', () => {
     }
   });
 
+  it('R2-4 an Esc held with Ctrl or with Alt (`key.escape` with `ctrl` or `meta` set) is no lone Esc: it leaves the flow, as every chord does', async () => {
+    for (const key of [
+      { ...none, escape: true, ctrl: true },
+      { ...none, escape: true, meta: true },
+    ]) {
+      const { ui, flow } = fixture();
+      const field = flow.text({ message: 'Name', escape: 'back' });
+      ui.input('', key);
+      expect(await field, JSON.stringify(key)).toBe(NATIVE_PROMPT_CANCEL);
+      expect(ui.signal()?.aborted, JSON.stringify(key)).toBe(true);
+    }
+  });
+
   it('the forwarded form of a lone Esc steps back too', async () => {
     const { ui, flow } = fixture();
     const field = flow.text({ message: 'Name', escape: 'back' });

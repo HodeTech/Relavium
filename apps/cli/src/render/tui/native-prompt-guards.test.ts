@@ -295,3 +295,50 @@ describe('the chord card', () => {
     expect(r.card.decide(r.stamp(), 'allow', true)).toBe('allow');
   });
 });
+
+describe('what the guards read when nothing is open, and a select that starts afresh (MU round 2)', () => {
+  it('R2-1 the chord card guard reads no lock when no chord card is open (never opened, or opened as another prompt), whatever the shared history holds', () => {
+    const clock = 50_000;
+    const history = createChordHistory();
+    const chord = createChordGuard({ now: () => clock, history });
+    const card = createChordCardGuard({ now: () => clock, chord });
+    history.lastResolvedAt = clock; // another card of the Home was just answered by a key
+    expect(card.lockedUntil(), 'never opened').toBe(Number.NEGATIVE_INFINITY);
+    card.open(true);
+    card.open(false);
+    expect(card.lockedUntil(), 'opened as another prompt').toBe(Number.NEGATIVE_INFINITY);
+    card.open(true);
+    expect(card.lockedUntil(), 'opened as a chord card').toBe(clock + APPROVAL_LOCKOUT_MS);
+  });
+
+  it('R2-2 the guarded option reads no lock when no guarded select is open, whatever the shared history holds', () => {
+    const clock = 50_000;
+    const history = createChordHistory();
+    const guarded = createGuardedSelect({ now: () => clock, history });
+    history.lastResolvedAt = clock;
+    expect(guarded.lockedUntil(), 'never opened').toBe(Number.NEGATIVE_INFINITY);
+    guarded.open(true);
+    guarded.open(false);
+    expect(guarded.lockedUntil(), 'opened as another select').toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it('R2-3 a guarded select that opens after another one starts its dwell afresh: the earlier select’s acknowledged frame does not count for it', () => {
+    let clock = 50_000;
+    const history = createChordHistory();
+    const guarded = createGuardedSelect({ now: () => clock, history });
+    const stamp = (): ChordStamp => {
+      const before: ChordStamp = { now: clock, ...history };
+      history.previousKeyAt = clock;
+      return before;
+    };
+    guarded.open(true);
+    guarded.shown(); // the first select’s frame was measured and flushed
+    clock += 60_000;
+    guarded.open(true); // a second guarded select: its own frame is not acknowledged yet
+    clock += 3 * APPROVAL_LOCKOUT_MS; // past its lockout, on a frame the host says is on screen
+    expect(guarded.decide(stamp(), true), 'no dwell has started for this select').toBe(false);
+    guarded.shown();
+    clock += APPROVAL_CONFIRM_MIN_MS + 1;
+    expect(guarded.decide(stamp(), true)).toBe(true);
+  });
+});

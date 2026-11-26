@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
 import { POPUP_SELECT_SETTLE_MS } from '../../popups/opening-guard.js';
-import { NATIVE_PROMPT_CANCEL } from './native-prompt-channel.js';
+import { NATIVE_PROMPT_BACK, NATIVE_PROMPT_CANCEL } from './native-prompt-channel.js';
 import { KEYS, mountHome, type HomeMount } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 
@@ -158,6 +158,39 @@ describe('a flow’s popup keeps its place and never shrinks (the overlay)', () 
     }
   });
 
+  it('R2-11 a step whose body does not fit its page (a notice is drawn in its place) takes no part in the pin: the step after it is the box the first step had', async () => {
+    const m = mountHome(ALT, { nativePrompt: true });
+    try {
+      await m.settle();
+      const flow = flowOn(m, ['One', 'Two', 'Three']);
+      flow.begin();
+      const first = flow.at(0).select({ message: 'STEP-ONE', options: OPTIONS });
+      const one = await boxAt(m, 'STEP-ONE');
+      await pause(PAST_THE_SETTLE_MS);
+      m.key(KEYS.enter);
+      await first;
+      // Forty rows of facts: more than any page of the terminal gives, so the step is never wholly on its page and a notice is drawn instead.
+      const second = flow.at(1).select({
+        message: 'STEP-TWO',
+        options: OPTIONS,
+        details: lines(40),
+        escape: 'back',
+      });
+      await m.until(() => m.frame().join('\n').includes('Esc back'));
+      await m.settle();
+      expect(boxOf(m.frame()), 'no popup box: the notice is drawn in its place').toBeUndefined();
+      m.key(KEYS.escape);
+      expect(await second).toBe(NATIVE_PROMPT_BACK);
+      const third = flow.at(2).select({ message: 'STEP-THREE', options: OPTIONS });
+      const last = await boxAt(m, 'STEP-THREE');
+      expect(last, 'the 21 rows of the step that was never drawn are not kept').toEqual(one);
+      flow.cancel();
+      expect(await third).toBe(NATIVE_PROMPT_CANCEL);
+      await flow.end();
+    } finally {
+      m.unmount();
+    }
+  });
   it('the flow’s next popup starts fresh: it is the size and the row its own first prompt gives it', async () => {
     const m = mountHome(ALT, { nativePrompt: true });
     try {
