@@ -171,6 +171,8 @@ function detailRead(
     readonly held?: boolean;
     readonly events?: number;
     readonly workflow?: string;
+    /** The step rows of the run (the default is one finished `build` node). */
+    readonly steps?: readonly StepSummaryRecord[];
   } = {},
 ): RunDetailRead {
   const at = new Date(T0).toISOString();
@@ -184,7 +186,7 @@ function detailRead(
     errorJson: null,
     errorByteLength: null,
   };
-  const steps: StepSummaryRecord[] = [
+  const steps: readonly StepSummaryRecord[] = over.steps ?? [
     {
       nodeId: 'build',
       nodeType: 'agent',
@@ -1044,5 +1046,78 @@ describe('a page can be short, or empty, and still not be the last (the store is
     const none = rig({ total: 0 });
     expect(none.text()).toContain('No finished run in this project yet');
     expect(none.text().split('\n').at(-1)).not.toContain('↑/↓');
+  });
+});
+
+describe('the node table of a run detail is a table: its cells line up from row to row', () => {
+  const at = new Date(T0).toISOString();
+  const step = (
+    nodeId: string,
+    over: Partial<StepSummaryRecord> & { readonly attempts?: number } = {},
+  ): StepSummaryRecord[] =>
+    Array.from({ length: over.attempts ?? 1 }, (_, index) => ({
+      nodeId,
+      nodeType: 'agent',
+      status: 'completed' as const,
+      attemptNumber: index + 1,
+      startedAt: at,
+      completedAt: at,
+      durationMs: 3100,
+      costMicrocents: 0,
+      inputTokens: 12,
+      outputTokens: 4,
+      ...over,
+    }));
+  /** Three nodes whose rows would have different cells: a long label, two attempts, a long duration, a large count, no duration at all. */
+  const steps: StepSummaryRecord[] = [
+    ...step('build'),
+    ...step('deploy_to_production', {
+      attempts: 2,
+      durationMs: 125_000,
+      inputTokens: 123_456,
+      outputTokens: 7_890,
+    }),
+    ...step('notify', { durationMs: undefined as unknown as number }),
+  ];
+  const opened = (columns: number) => {
+    const detail = detailRead({ steps });
+    const r = rig({ total: 4, detail: { kind: 'ready', detail } });
+    r.press('', DOWN);
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(1, 'failed').id, { kind: 'ready', detail });
+    const lines = r.lines(columns);
+    const from = lines.findIndex((line) => line.includes('Nodes (3)'));
+    return { lines, rows: lines.slice(from + 1, from + 4), text: lines.join('\n') };
+  };
+
+  it.each([80, 100, 120])(
+    'at %i columns every cell of a node row ends in the same column as the same cell of the next row, and the rows are as wide as the terminal',
+    (columns) => {
+      const { rows } = opened(columns);
+      expect(rows).toHaveLength(3);
+      for (const row of rows)
+        expect(displayWidth(row), row).toBeLessThanOrEqual(usableColumns(columns));
+      const ends = (pattern: RegExp): number[] =>
+        rows.map((row) => {
+          const found = pattern.exec(row);
+          if (found === null) throw new Error(`no ${String(pattern)} in ${JSON.stringify(row)}`);
+          return found.index + found[0].length;
+        });
+      // the attempt count, then the token figures, each ends where the same cell of every other row ends
+      expect(new Set(ends(/attempts?/u)).size, rows.join('\n')).toBe(1);
+      expect(new Set(ends(/↓\d[\d,]*/u)).size, rows.join('\n')).toBe(1);
+      // the last cell is on every row or on none: a short label does not buy a row a cell its neighbours had to give up
+      const withCost = rows.filter((row) => row.includes('not recorded')).length;
+      expect([0, rows.length], rows.join('\n')).toContain(withCost);
+    },
+  );
+
+  it('keeps a node that has no duration on the same columns as the rest, with a blank cell where the duration would be', () => {
+    const { rows } = opened(100);
+    const notify = rows.find((row) => row.includes('notify')) ?? '';
+    const build = rows.find((row) => row.includes('build')) ?? '';
+    expect(notify.indexOf('↑'), 'the token cell starts where the others start').toBe(
+      build.indexOf('↑'),
+    );
   });
 });

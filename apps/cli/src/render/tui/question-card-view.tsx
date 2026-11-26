@@ -13,13 +13,15 @@ import type { ChatStoreController } from './chat-store.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
 import { sanitizeInline } from './chat-projection.js';
 import { EmphText } from './emphasis-view.js';
 import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
-import { legend } from './legend.js';
+import { legend, legendRows } from './legend.js';
+import { displayWidth } from './viewport.js';
 import { QUESTION_STOP, projectQuestionCard, type QuestionRowTone } from './question-card.js';
 
 /** The colour of a row by its tone (none with colour off); the weight of a row is {@link toneEmphasis}, which colour does not switch. */
@@ -114,7 +116,12 @@ export function QuestionCardHost(
   if (!reviewTerminalFits(props.size))
     return (
       <Text>
-        {legend([{ text: 'Terminal too small — resize to at least 80×24' }], QUESTION_STOP)}
+        {legendRows(
+          [{ text: TERMINAL_TOO_SMALL_TEXT }],
+          QUESTION_STOP,
+          props.size.cols,
+          displayWidth,
+        ).join('\n')}
       </Text>
     );
   if (blocked === shown)

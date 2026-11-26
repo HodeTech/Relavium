@@ -11,6 +11,7 @@ import '../render/tui/force-color.js';
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { CHAT_HEADER_ROWS } from '../render/tui/chat-layout.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import {
   mountHostedChat,
@@ -168,9 +169,13 @@ describe.each(HOSTS)('the popup in the %s host', (host) => {
           expect(outsideUnchanged(before, after, geometry)).toEqual([]);
           expect(after.length).toBeLessThanOrEqual(variant.size.rows);
         } else {
-          // The block replaces the body: the live region is the popup's rows and nothing else, at most rows − 1 lines.
-          expect(after.map((row) => row.trimEnd())).toEqual(rows.map((row) => row.trimEnd()));
-          expect(after.length).toBeLessThanOrEqual(variant.size.rows - 1);
+          // The block replaces the body: the live region is the popup's rows and nothing else, at most rows − 1 lines. What Ink printed once
+          // through `<Static>` above it (the header the Home-hosted chat introduces itself with) is scrollback, not the live region: the host
+          // that prints it is named, so a row that is not that header cannot be taken for scrollback.
+          expect(m.staticRows()).toBe(host === 'chat' ? CHAT_HEADER_ROWS : 0);
+          const live = after.slice(m.staticRows());
+          expect(live.map((row) => row.trimEnd())).toEqual(rows.map((row) => row.trimEnd()));
+          expect(live.length).toBeLessThanOrEqual(variant.size.rows - 1);
           expect(m.raw()).not.toContain('\u001b[3J');
         }
         await closeWithEsc(m);

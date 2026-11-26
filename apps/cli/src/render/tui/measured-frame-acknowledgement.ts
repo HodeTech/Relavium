@@ -2,12 +2,20 @@ import type { DOMElement } from 'ink';
 import { measureElement } from 'ink';
 
 export type TerminalFrameSize = { readonly cols: number; readonly rows: number };
+/** The smallest terminal a card (an approval, a question, a checkpoint, a native prompt) is drawn on. */
+const CARD_FLOOR_COLS = 80;
+const CARD_FLOOR_ROWS = 24;
+/**
+ * What a card says in place of itself on a terminal below that floor: one sentence for every card, naming the size it needs, short enough that
+ * it and the keys that leave still read on the floor's own width (a longer sentence wrapped between a key and its effect).
+ */
+export const TERMINAL_TOO_SMALL_TEXT = `Terminal too small: enlarge to ${String(CARD_FLOOR_COLS)}×${String(CARD_FLOOR_ROWS)}`;
 export function reviewTerminalFits(size: TerminalFrameSize): boolean {
   return (
     Number.isSafeInteger(size.cols) &&
     Number.isSafeInteger(size.rows) &&
-    size.cols >= 80 &&
-    size.rows >= 24
+    size.cols >= CARD_FLOOR_COLS &&
+    size.rows >= CARD_FLOOR_ROWS
   );
 }
 export function fitsTerminalBounds(node: DOMElement, size: TerminalFrameSize): boolean {

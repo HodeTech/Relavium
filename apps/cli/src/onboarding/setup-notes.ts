@@ -44,6 +44,17 @@ export function keySavingText(provider: string): string {
 export const STARTER_SAVING_TEXT = 'Saving your default model…';
 
 /**
+ * What a setup says in its notice about the starter default it chose, by what the write came to. The Home's outcome (a granted source) and a
+ * stand-alone chat's own writer speak THESE sentences, so the one notice that carries both can say the fact once (the stand-alone notice drops a
+ * sentence another part of it already contains).
+ */
+export const STARTER_SAVED_NOTICE = 'Starter default saved. Project settings may override it.';
+export const STARTER_UNCONFIRMED_NOTICE =
+  'Starter default saved; crash persistence is unconfirmed. Project settings may override it.';
+export const STARTER_ONCE_NOTICE =
+  'Starter model selected for this invocation only; the default was not saved.';
+
+/**
  * The Done step's one line when a write of the setup rewrote a global config that existed before the run and was not the run's own (CO-1):
  * the rewrite's disclosure is drawn only while the write publishes, so the Done step keeps its fact. It says what that disclosure said would
  * happen; it fits one row of the popup at 80 columns (its inner width, 66).

@@ -236,7 +236,11 @@ export function restoreSessionTranscript(options: {
       });
     // ADR-0133: what the person was asked and answered, rebuilt from the stored record — where the live card left it.
     for (const ask of unit.asks ?? [])
-      entries.push(notice(stripTerminalControls(askRecordTranscriptText(ask))));
+      entries.push({
+        role: 'notice',
+        text: stripTerminalControls(askRecordTranscriptText(ask)),
+        hostLead: 'yourTurn', // the record's own rows lead with the host's `›`, as the live card's did
+      });
     if ((unit.omittedAsks ?? 0) > 0)
       entries.push(notice(`${unit.omittedAsks} more saved questions are not shown.`));
     // ADR-0119: an interrupted turn has no answer. Show its fixed dim row where the answer would be, built from the

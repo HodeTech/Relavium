@@ -62,8 +62,11 @@ export interface CheckpointCardView {
 
 const RULE_LABEL = ' Checkpoint ';
 
-/** `Esc` and `Ctrl+C` both stop the turn: the key that leaves says so. */
-export const CHECKPOINT_STOP: LegendExit = exitKey.decide('stops the turn', ['Esc', 'Ctrl+C']);
+/**
+ * `Esc` and `Ctrl+C` stop the turn at the checkpoint, the very act `[Ctrl+N] Stop here` is (ADR-0145 §4's progress family names it once):
+ * the key that leaves says it in the same words, so the card does not name one act two ways.
+ */
+export const CHECKPOINT_STOP: LegendExit = exitKey.decide('stops here', ['Esc', 'Ctrl+C']);
 
 /** Cut `text` to `width` display columns, ASCII only (the card's text is, by construction): never longer than the row. */
 function head(text: string, width: number): string {

@@ -6,8 +6,10 @@ import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
 import { formatReportedCost, formatTokens } from './format.js';
-import { glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
-import { formatDuration, formatElapsed } from '../notation.js';
+import { blankMarkerGlyphs, glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
+import { guardEntryRows, logicalLineStarts, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
+import { formatDuration, formatElapsed, formatUsd } from '../notation.js';
+import { statusLine, type StatusLine } from './status-line.js';
 import type {
   SessionViewState,
   ToolCallView,
@@ -282,9 +284,12 @@ export function errorRecoveryHint(
  * unwrapped for the `/edit` hatch (2.6.F Step 5d) — so the on-screen transcript and the one handed to `$EDITOR` can
  * never disagree about what the conversation said.
  *
- * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}`; a `notice` its text; an
- * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
- * recovery-hint line.
+ * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}` (the TEXT FORM's own prefix,
+ * {@link TEXT_FORM_YOUR_TURN}, in every form of the screen: the screen draws the host's marker over it in {@link wrapEntry},
+ * and the `/edit`, `/copy` and `/scrollback` documents keep this one); a `notice` its text; an `assistant` entry its
+ * text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional recovery-hint line.
+ * The marker glyphs of the screen's rows are guarded in {@link wrapEntry}, not here: the documents are the text forms,
+ * whose `> ` is the host's own and cannot be blanked (ADR-0145 §6).
  */
 export function entryLines(
   entry: TranscriptEntry,
@@ -312,7 +317,7 @@ export function entryLines(
     return lines;
   }
   if (entry.role === 'user') {
-    return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
+    return [{ text: `${TEXT_FORM_YOUR_TURN}${stripTerminalControls(entry.text)}`, style: 'user' }];
   }
   if (entry.role === 'notice') {
     return [{ text: stripTerminalControls(entry.text), style: 'notice' }];
@@ -356,7 +361,15 @@ function wrapEntry(
   for (const line of source.slice(offset)) {
     for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
   }
-  return wrapped;
+  // The speaker marker's guard (ADR-0145 §6), on the FINISHED rows: after the markdown layout and the wrap, so a row that starts with a marker
+  // glyph by wrapping or by layout is guarded as one that started with it in the source; the glyph and the space that replaces it are one column,
+  // so no row changes width and the row count is the one the scroll and the selection were built on. The person's own first row gets the host's
+  // marker as data.
+  const hostNotice = entry.role === 'notice' && entry.hostLead !== undefined;
+  return guardEntryRows(entry, wrapped, {
+    ascii: !color,
+    lineStarts: hostNotice ? logicalLineStarts(source[0]?.text ?? '', cols) : undefined,
+  });
 }
 
 /**
@@ -523,7 +536,9 @@ export function formatBusyLine(input: {
       dim: true,
     };
   }
-  const sanitized = stripTerminalControls(input.liveTokens);
+  // The streamed answer is the model's, and this row is drawn above the prompt among the host's own: it cannot draw a marker (ADR-0145 §6). The
+  // glyph and the space that replaces it are one column, so the tail's row estimate below is the one it was.
+  const sanitized = blankMarkerGlyphs(stripTerminalControls(input.liveTokens));
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
@@ -684,8 +699,9 @@ export function formatReasoningPanel(input: {
   if (!input.visible) {
     return { header };
   }
+  // The reasoning is the model's words in the live region: it cannot draw a marker either (ADR-0145 §6).
   const { body, tailed } = tailToRenderedRows(
-    stripTerminalControls(input.liveReasoning),
+    blankMarkerGlyphs(stripTerminalControls(input.liveReasoning)),
     input.columns,
   );
   const elided = input.liveReasoningTruncated || tailed;
@@ -707,12 +723,14 @@ export function formatToolCall(call: ToolCallView, display?: ToolDisplay): strin
     unknown: '? outcome unknown',
     running: '…',
   };
-  const target = display?.target === undefined ? '' : ` → ${display.target}`;
+  // The host's own `▸` leads the row; the tool's id and its target are not the host's (a model names the id, a path names the target), so a glyph
+  // of the speaker marker's set in either is blanked here, where the row is built: the row cannot be blanked whole (ADR-0145 §6).
+  const target = display?.target === undefined ? '' : ` → ${blankMarkerGlyphs(display.target)}`;
   const stats =
     display?.stats === undefined
       ? ''
       : ` · +${display.stats.addedLines} -${display.stats.removedLines}`;
-  return `${glyph('toolCall')} ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+  return `${glyph('toolCall')} ${blankMarkerGlyphs(sanitizeInline(call.toolId))} ${marks[outcome]}${target}${stats}`;
 }
 
 function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
@@ -729,6 +747,12 @@ function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcom
  * window). Clamped to [0, 100] so a preamble-heavy over-window turn never prints a nonsensical >100%.
  */
 function formatContextFullness(state: SessionViewState): string | undefined {
+  const pct = contextFullnessPercent(state);
+  return pct === undefined ? undefined : `${pct}% ctx`;
+}
+
+/** The figure behind {@link formatContextFullness}, 0 to 100, or `undefined` when there is none to give (no turn completed, or the window is unknown). */
+export function contextFullnessPercent(state: SessionViewState): number | undefined {
   const { lastInputTokens, contextWindowTokens } = state;
   if (
     lastInputTokens === undefined ||
@@ -737,8 +761,7 @@ function formatContextFullness(state: SessionViewState): string | undefined {
   ) {
     return undefined;
   }
-  const pct = Math.min(100, Math.max(0, Math.round((lastInputTokens / contextWindowTokens) * 100)));
-  return `${pct}% ctx`;
+  return Math.min(100, Math.max(0, Math.round((lastInputTokens / contextWindowTokens) * 100)));
 }
 
 /**
@@ -757,21 +780,62 @@ export function formatSessionFooter(state: SessionViewState): string {
 }
 
 /**
- * The footer including the active chat mode (ADR-0057) and — when set — the reasoning-effort tier (ADR-0066), each
- * always shown so neither `auto` mode nor a non-default effort is a hidden state. The effort is omitted when unset
- * (a non-reasoning model / no tier), so a plain chat's footer is unchanged.
+ * The chat's cost in the two forms its status line needs ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §2). `full` is what the old footer wrote, word for word ({@link formatReportedCost}: `$0.1235`, or `$0.1235 known; usage unverified` when the
+ * accounting could not verify the figure). `qualified` is whether any qualifier is present, which is whether the amount is only what is KNOWN.
+ * `short` is the same amount with the language's own qualifier and no reasons: `$0.1235 known`. It is the FIRST WORDS of the full form, so the
+ * short form needs no new notation and no legend of its own (`known` says the figure is the known part of a bigger unknown), a bare amount
+ * never stands for a qualified one, and the full form, which has room whenever the line does, says why. An unqualified cost is its own short form.
  */
-export function formatSessionFooterWithMode(
+export function chatCostForms(state: SessionViewState): {
+  readonly full: string;
+  readonly short: string;
+  readonly qualified: boolean;
+} {
+  const full = formatReportedCost(
+    state.cumulativeCostMicrocents,
+    state.usageCoverage,
+    state.unpricedCalls,
+  );
+  const amount = formatUsd(state.cumulativeCostMicrocents);
+  const qualified = full !== amount;
+  return { full, short: qualified ? `${amount} known` : full, qualified };
+}
+
+/**
+ * The chat's status line, as the pure model of {@link statusLine} takes it ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §2): `<provider> · <model> · <mode> mode[ · effort <e>] · <n> turns · <cost>[ · ctx <p>% used]`, ONE row in `columns` columns whatever the
+ * state (the model gives the turns, then the context, then the cost's reasons up before it cuts a model). `provider` is the lowercase provider id
+ * of the bound agent (absent where the host does not know it: the line then starts at the model). The effort reads as the picker reads it
+ * (`on` for a budget model's bound tier). `leftMargin` is where the host draws the row: 0, the chat's own left edge, until the grid lands.
+ */
+export function chatStatusLine(
   state: SessionViewState,
-  mode: ChatMode,
-  reasoningEffort?: ReasoningEffort,
-): string {
-  const base = formatSessionFooter(state);
-  const modePart = `${MODE_LABEL[mode]} mode`;
-  const withMode = base.length > 0 ? `${base} · ${modePart}` : modePart;
-  if (reasoningEffort === undefined) return withMode;
-  // A budget model's bound `medium` reads "on" here, matching the picker (ADR-0066 amendment); a graded tier reads
-  // its own name. `state.model` absent (pre-session) ⇒ the label falls back to the tier name.
-  const effortLabel = effortRowLabel(state.model ?? '', reasoningEffort).label;
-  return `${withMode} · effort: ${effortLabel}`;
+  facts: {
+    readonly mode: ChatMode;
+    readonly reasoningEffort?: ReasoningEffort | undefined;
+    readonly provider?: string | undefined;
+  },
+  columns: number,
+  leftMargin = 0,
+): StatusLine {
+  const model = state.model ?? '';
+  const context = contextFullnessPercent(state);
+  return statusLine(
+    {
+      surface: 'chat',
+      provider: facts.provider,
+      model,
+      mode: MODE_LABEL[facts.mode],
+      effort:
+        facts.reasoningEffort === undefined
+          ? undefined
+          : effortRowLabel(model, facts.reasoningEffort).label,
+      turns: state.turnCount,
+      cost: chatCostForms(state),
+      contextPercent: context,
+    },
+    columns,
+    leftMargin,
+  );
 }

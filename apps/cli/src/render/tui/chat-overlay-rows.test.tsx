@@ -43,8 +43,24 @@ const OVERLAY_SURFACES = CHAT_SURFACES.filter((entry) =>
   OVERLAYS.some((name) => entry.id.endsWith(`.${name}`)),
 );
 
-/** The chat's footer line: the row that sits directly above the overlays. */
+/** The chat's status line: the row that sits directly above the overlays that come below the conversation (the search and the mention list). */
 const isFooter = (line: string): boolean => / · \d+ turns? · /u.test(line);
+
+/** The first row of an open palette's list: an entry (`/name  words`, selected or not) or the marker for the entries the window hides. */
+const isPaletteRow = (line: string): boolean =>
+  /^(?:[›>] |\s{2})\/[a-z]+ {2}\S|^\s*[▲▼] \d+ more/u.test(line);
+
+/**
+ * The rows an overlay owns in `frame`. The `/` palette is drawn ABOVE the prompt (ADR-0146 §4): its rows are the list, the prompt row that shows
+ * the typed `/`, the rule and the hint row, from the first row of the list to the bottom of the frame, and there is no status line in it. The
+ * other two overlays come below the status line, as they always did.
+ */
+function overlayRows(entry: (typeof OVERLAY_SURFACES)[number], frame: readonly string[]): string[] {
+  const from = entry.id.endsWith('.palette')
+    ? frame.findIndex(isPaletteRow)
+    : frame.findIndex(isFooter) + 1;
+  return from <= 0 ? [] : frame.slice(from);
+}
 
 async function frameWithTranscript(
   entry: (typeof OVERLAY_SURFACES)[number],
@@ -80,15 +96,15 @@ describe.each(OVERLAY_SURFACES)('$id', (entry) => {
     async (size) => {
       const variant: Variant = { renderer: 'alt', color: true, size };
       const reference = await frameWithTranscript(entry, variant, 0);
-      const footerAt = reference.findIndex(isFooter);
-      expect(footerAt, 'the empty conversation has its footer').toBeGreaterThanOrEqual(0);
-      const overlay = reference.slice(footerAt + 1);
+      const overlay = overlayRows(entry, reference);
       expect(overlay.length, 'an overlay is open').toBeGreaterThan(0);
       for (const notices of [3, 30]) {
         const frame = await frameWithTranscript(entry, variant, notices);
         const shown = `${String(notices)} transcript rows:\n${frame.join('\n')}`;
         expect(frame.length, `the frame keeps its height\n${shown}`).toBe(reference.length);
-        expect(isFooter(frame[frame.length - overlay.length - 1] ?? ''), shown).toBe(true);
+        // Below the conversation: the search and the mention list keep the status line directly above them; the palette is its own block.
+        if (!entry.id.endsWith('.palette'))
+          expect(isFooter(frame[frame.length - overlay.length - 1] ?? ''), shown).toBe(true);
         expect(frame.slice(frame.length - overlay.length), shown).toEqual(overlay);
       }
     },
@@ -114,7 +130,8 @@ describe('the / palette over a conversation, as observed', () => {
         shown,
       ).toHaveLength(1);
       const entries = frame.filter((line) => ENTRY_ROW.test(line));
-      expect(entries.length, shown).toBeGreaterThan(8);
+      // The palette takes half the terminal with its prompt row, rule and hint row (12 rows at 24): a window of 9 lines, the marker among them.
+      expect(entries.length, shown).toBeGreaterThanOrEqual(8);
       // One entry per line: a line that holds a second `/name  ` start was two rows on the same y.
       for (const line of entries) {
         const starts = line.match(/(?:^|[›\s])\/[a-z]+ {2}/gu) ?? [];

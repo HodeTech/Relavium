@@ -264,9 +264,9 @@ describe('the rows of the keymap the table drives through the standalone chat (A
     });
     await until(() => m.frame().length > 0);
     await press(m, '/'); // the palette opens on a literal `/` at an empty prompt
-    await until(() => m.frame().includes('/export')); // the palette lists the commands
+    await until(() => m.frame().includes('/models')); // the palette lists the commands (a window of them: /models, the first, is beside the prompt)
     await press(m, CTRL_C);
-    await until(() => !m.frame().includes('/export'));
+    await until(() => !m.frame().includes('/models'));
     expect(m.frame()).not.toContain(HINT);
     await press(m, '\x12'); // Ctrl+R: the reverse search
     await press(m, CTRL_C);

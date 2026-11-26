@@ -330,6 +330,10 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/popups/export-popup.ts',
   'apps/cli/src/home/framed-flow.ts',
   'apps/cli/src/render/tui/flow-text.ts',
+  'apps/cli/src/render/tui/home-layout.ts',
+  'apps/cli/src/render/tui/status-line.ts',
+  'apps/cli/src/render/tui/chat-layout.ts',
+  'apps/cli/src/render/tui/transcript-guard.ts',
   'tools/lint-fixtures/forbidden-in-data-module.ts',
 ];
 const ENGINE_NODE_GLOBALS = [

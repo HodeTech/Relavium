@@ -17,7 +17,7 @@ import {
 } from '../../../../engine/providers.js';
 import type { Surface } from '../../../surface.js';
 import { AttachmentBar } from '../../attachment-bar.js';
-import { ChatView, idleHint } from '../../chat-ink.js';
+import { ChatView, idleHint, runningHint, type ChatHost } from '../../chat-ink.js';
 import { MODE_CHANGE_RUNNING_NOTICE, emptyEditor } from '../../chat-input.js';
 import { formatBusyLine, formatReasoningPanel, streamingAbortHint } from '../../chat-projection.js';
 import { createChatStore } from '../../chat-store.js';
@@ -42,7 +42,8 @@ export const CHAT_MISC_PRODUCERS: readonly Producer[] = [
   {
     id: 'chat-idle-hint',
     file: 'render/tui/chat-ink.tsx',
-    describe: '`idleHint(armed, emptyDraft)`: the idle prompt’s hint bar for its three states',
+    describe:
+      '`idleHint(armed, emptyDraft, host)` and `runningHint(armed, host)`: the prompt’s hint bar for its states, in the stand-alone chat and in the chat the Home hosts',
   },
   {
     id: 'chat-busy-line',
@@ -112,6 +113,8 @@ interface ChatCase {
   readonly reasoningVisible?: boolean;
   /** Characters the markdown stream was given: the answer is drawn through it, with an `…` once it holds more than it keeps live. */
   readonly streamed?: number;
+  /** The chat's host: the Home's chat (the second `Ctrl+C` goes back to the Home) or the stand-alone chat. Absent ⇒ stand-alone. */
+  readonly host?: ChatHost;
 }
 
 const CHAT_CASES: readonly ChatCase[] = [
@@ -157,6 +160,23 @@ const CHAT_CASES: readonly ChatCase[] = [
   { state: 'running, compacting the conversation', running: true, patch: { compacting: true } },
   { state: 'running, a ! command', running: true, busyCommand: 'npm test' },
   { state: 'running, display paused', running: true, suspended: true },
+  // The chat the Home hosts: the hint row names the Home (the second `Ctrl+C` goes back to it), in each state that changes the words.
+  { state: 'in the Home’s chat, idle, empty draft', host: 'home-chat' },
+  { state: 'in the Home’s chat, idle, a draft', host: 'home-chat', text: 'hello' },
+  { state: 'in the Home’s chat, idle, armed', host: 'home-chat', armed: true },
+  {
+    state: 'in the Home’s chat, running',
+    host: 'home-chat',
+    running: true,
+    patch: { turnStartedAtMs: 0 },
+  },
+  {
+    state: 'in the Home’s chat, running, armed (Interrupting)',
+    host: 'home-chat',
+    running: true,
+    armed: true,
+    patch: { turnStartedAtMs: 0 },
+  },
 ];
 
 /** A markdown stream that was given `characters` characters of an answer, as the chat's live turn holds one. */
@@ -180,6 +200,7 @@ const chatView = (item: ChatCase, color: boolean) => (
     busyCommand={item.busyCommand}
     displaySuspended={item.suspended === true}
     markdown={item.streamed === undefined ? undefined : streamOf(item.streamed)}
+    {...(item.host === undefined ? {} : { surface: item.host })}
     columns={100}
   />
 );
@@ -198,9 +219,20 @@ const chatViewHints: Recorder = () => {
 const idle: Recorder = () => {
   const out: Record<string, string> = {};
   for (const armed of [false, true]) {
-    for (const emptyDraft of [true, false])
+    for (const emptyDraft of [true, false]) {
       out[label({ armed, emptyDraft })] = idleHint(armed, emptyDraft);
+      // The Home's chat names the Home where the stand-alone chat names the end of the chat; the other keys read the same.
+      out[label({ armed, emptyDraft, host: 'home-chat' })] = idleHint(
+        armed,
+        emptyDraft,
+        'home-chat',
+      );
+    }
   }
+  // The hint row while a turn runs (`runningHint`): the same two states, in the same words, for each host.
+  for (const host of ['standalone-chat', 'home-chat'] as const)
+    for (const armed of [false, true])
+      out[label({ running: true, armed, host })] = runningHint(armed, host);
   return out;
 };
 

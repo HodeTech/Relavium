@@ -415,7 +415,7 @@ describe('cardKeyRows while the session-wide grant waits for its confirmation (G
     });
     expect(rows).toHaveLength(CARD_KEY_ROWS);
     expect(rows[0]).toBe('Press Enter to allow all file writes this session');
-    expect(rows[1]).toBe('Any other key cancels \u00b7 Esc stops the turn');
+    expect(rows[1]).toBe('any other key cancels \u00b7 Esc stops the turn');
     expect(rows.join('\n'), 'a second Ctrl+G is no longer the confirmation').not.toContain(
       'Ctrl+G',
     );

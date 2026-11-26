@@ -79,9 +79,9 @@ function outsideTheBox(
   );
 }
 
-/** The composer's row: the last row that starts with the prompt's marker. */
+/** The composer's row: the last row that starts with the prompt's marker (`›`, and `>` without colour: ADR-0145 §5). */
 function promptRow(frame: readonly string[]): number {
-  return frame.findLastIndex((row) => row.startsWith('> '));
+  return frame.findLastIndex((row) => /^[›>] /u.test(row));
 }
 
 const inverseCells = (row: readonly ScreenCell[] | undefined): number =>

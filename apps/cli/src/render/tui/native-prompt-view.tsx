@@ -9,13 +9,15 @@ import {
   type ReactElement,
 } from 'react';
 import { withGlyphForm } from './glyphs.js';
-import { keyHint, keyToken, legend, waitMark } from './legend.js';
+import { keyHint, keyToken, legend, legendRows, waitMark } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
   type NativePromptAcknowledgement,
 } from './native-prompt-acknowledgement.js';
+import { TERMINAL_TOO_SMALL_TEXT } from './measured-frame-acknowledgement.js';
 import { dimProps } from './projection.js';
+import { displayWidth } from './viewport.js';
 import {
   nativeFramed,
   nativeLegendParts,
@@ -26,7 +28,12 @@ import {
 import { PromptEditor } from './prompt-view.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
-import { SELECT_MARKER_INDENT, selectLayout, selectRowText } from './native-select-window.js';
+import {
+  SELECT_MARKER_INDENT,
+  selectLayout,
+  selectRowLines,
+  selectRowText,
+} from './native-select-window.js';
 
 /**
  * The host's gutter. EVERY row of a chord card's body starts with it, so column 0 belongs to the renderer: text the card's author wrote
@@ -162,9 +169,9 @@ function FieldRow({
 }
 
 /** A sentence in place of a card the terminal cannot show: the reason, then what the keys that leave do (ADR-0145 §3). */
-function refusal(snapshot: NativePromptSnapshot, reason: string): string {
+function refusal(snapshot: NativePromptSnapshot, reason: string, columns: number): string {
   const { before, exit } = nativeLeave(snapshot.escape === 'back', leaveEffect(snapshot));
-  return legend([{ text: reason }, ...before], exit);
+  return legendRows([{ text: reason }, ...before], exit, columns, displayWidth).join('\n');
 }
 
 export function NativePromptView({
@@ -200,9 +207,11 @@ export function NativePromptView({
   if (!snapshot.active || framed) return null;
   // `Esc` ends the flow unless the prompt was opened to step back; `Ctrl+C` always leaves it.
   if (!nativePromptFits(size))
-    return <Text>{refusal(snapshot, 'Terminal too small — resize to at least 80×24')}</Text>;
+    return <Text>{refusal(snapshot, TERMINAL_TOO_SMALL_TEXT, size.cols)}</Text>;
   if (blocked)
-    return <Text>{refusal(snapshot, 'Prompt does not fit — enlarge the terminal')}</Text>;
+    return (
+      <Text>{refusal(snapshot, 'Prompt does not fit — enlarge the terminal', size.cols)}</Text>
+    );
   // A select whose options do not all fit the terminal draws a window of them (LAUNCH-4); every other card, and a select that fits, is drawn whole.
   const selectWindow =
     snapshot.kind === 'select'
@@ -215,6 +224,14 @@ export function NativePromptView({
       {withGlyphForm(!color, () => selectRowText(snapshot, index))}
     </SelectableText>
   );
+  // A card drawn whole gives each option the rows it needs: the rows of one that wraps hang under its label, and the selected option is
+  // selected on every one of them.
+  const rowLines = (index: number): ReactElement[] =>
+    withGlyphForm(!color, () => selectRowLines(snapshot, index, size.cols)).map((line, at) => (
+      <Text key={at}>
+        <SelectableText selected={index === snapshot.selected}>{line}</SelectableText>
+      </Text>
+    ));
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       {snapshot.note !== '' && <Text wrap="wrap">{snapshot.note}</Text>}
@@ -272,7 +289,9 @@ export function NativePromptView({
       {snapshot.kind === 'select' &&
         (selectWindow === undefined
           ? snapshot.options.map((option, index) => (
-              <Text key={option.value}>{rowText(index)}</Text>
+              <Box key={option.value} flexDirection="column">
+                {rowLines(index)}
+              </Box>
             ))
           : selectWindow.lines.map((line) =>
               line.kind === 'marker' ? (

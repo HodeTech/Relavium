@@ -6,14 +6,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CommandGroup, ReplCommand } from '../../commands/repl-commands.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import type { PaletteLayout, PaletteList } from './palette-reducer.js';
-import { PaletteView } from './palette-view.js';
+import { chatPaletteRows, PaletteView, paletteLegend } from './palette-view.js';
 
 /**
  * The `/` palette as the terminal shows it ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §3; the direction, the dim rows and the group gaps are MVP-11 Step 2.2, ADR-0145 §7): the lines of a palette whose entries all fit are the
  * ones it always drew (the literals below are those lines), and a palette given fewer rows than it has entries draws a window of them, with
  * a marker for the entries it hides, the highlighted entry always in it. In a chat the list is drawn bottom-up: the first entry is beside the
- * query line, the last at the top.
+ * prompt, the last at the top.
  */
 afterEach(cleanup);
 
@@ -300,70 +300,54 @@ describe('the groups are separated by a blank row when the rows allow, and run t
   });
 });
 
-describe('in a chat the list runs away from the prompt: the first entry is beside the query line', () => {
-  it('draws the legend at the top, the entries reversed, and the query echo at the bottom', () => {
+describe('in a chat the list runs away from the prompt: the first entry is beside the prompt, and the list is all the palette draws', () => {
+  // ADR-0146 §4: the typed `/query` is the PROMPT's text and the legend is the HINT row (both drawn by the chat's prompt block), so the list is the
+  // body alone, directly above the prompt: no margin row above it, no query line and no legend line of its own.
+  it('draws the entries reversed and nothing else: no margin, no legend, no query line', () => {
     expect(lines(SHORT, { query: '', index: 0 }, undefined, 'up')).toEqual([
-      '',
-      LEGEND,
       '  /models  Switch model (opens the catalog picker).',
       '  /doctor  Check your setup.',
       '› /exit  End the chat session.',
-      '/',
     ]);
   });
 
-  it('echoes the typed query on the bottom row, where the prompt is', () => {
+  it('follows the typed query without echoing it: the query is the prompt’s text', () => {
     expect(lines(SHORT, { query: 'doc', index: 0 }, 24, 'up')).toEqual([
-      '',
-      LEGEND,
       '› /doctor  Check your setup.',
-      '/doc',
     ]);
-    expect(lines(SHORT, { query: 'zzz', index: 0 }, 24, 'up')).toEqual([
-      '',
-      NO_MATCH_LEGEND,
-      'no matching command',
-      '/zzz',
-    ]);
+    expect(lines(SHORT, { query: 'zzz', index: 0 }, 24, 'up')).toEqual(['no matching command']);
   });
 
   it('points the markers the way the hidden entries lie on the screen: ▲ for the entries beyond the top, ▼ for those toward the prompt', () => {
-    // 9 rows, entry 0 highlighted: the entries beyond the window are the LAST ones, at the top.
+    // 9 rows (the list's 6 lines and the 3 of the prompt block), entry 0 highlighted: the entries beyond the window are the LAST ones, at the top.
     expect(lines(MANY, { query: '', index: 0 }, 9, 'up')).toEqual([
-      '',
-      LEGEND,
       '  ▲ 9 more',
       '  /cmd4  Does thing 4.',
       '  /cmd3  Does thing 3.',
       '  /cmd2  Does thing 2.',
       '  /cmd1  Does thing 1.',
       '› /cmd0  Does thing 0.',
-      '/',
     ]);
     // The last entry highlighted: the entries toward the prompt (the first ones) are hidden below the window.
     expect(lines(MANY, { query: '', index: 13 }, 9, 'up')).toEqual([
-      '',
-      LEGEND,
       '› /cmd13  Does thing 13.',
       '  /cmd12  Does thing 12.',
       '  /cmd11  Does thing 11.',
       '  /cmd10  Does thing 10.',
       '  /cmd9  Does thing 9.',
       '  ▼ 9 more',
-      '/',
     ]);
   });
 
-  it('never draws more lines than the rows it was given, and keeps the highlighted entry in the window', () => {
+  it('never draws more lines than the rows it was given less the three of the prompt block, and keeps the highlighted entry in the window', () => {
     for (const maxRows of [4, 6, 9, 12, 20])
       for (const index of [0, 7, 13]) {
         const drawn = lines(MANY, { query: '', index }, maxRows, 'up');
         expect(drawn.length, `${String(maxRows)} rows, entry ${String(index)}`).toBeLessThanOrEqual(
-          Math.max(maxRows, 6),
+          Math.max(maxRows - 3, 1),
         );
-        expect(drawn[1]).toBe(LEGEND);
-        expect(drawn.at(-1)).toBe('/');
         expect(drawn.some((line) => line.startsWith(`› /cmd${String(index)}  `))).toBe(true);
+        expect(drawn.some((line) => line.includes(LEGEND))).toBe(false);
       }
   });
 
@@ -374,13 +358,23 @@ describe('in a chat the list runs away from the prompt: the first entry is besid
       entry('c', 'third', { groupStart: true }),
     ];
     expect(lines(grouped, { query: '', index: 0 }, 24, 'up')).toEqual([
-      '',
-      LEGEND,
       '  /c  third',
       '',
       '  /b  second',
       '› /a  first',
-      '/',
     ]);
+  });
+});
+
+describe('what a chat draws on its hint row while the palette is open, and the rows it keeps for it', () => {
+  it('is the palette’s legend, or only the key that closes when nothing matches', () => {
+    expect(paletteLegend(listOf(SHORT, 'up'))).toBe(LEGEND);
+    expect(paletteLegend(listOf(SHORT, 'up', 'zzz'))).toBe(NO_MATCH_LEGEND);
+  });
+
+  it('is half the terminal (with the prompt, the rule and the hint), never more than every entry asks for', () => {
+    expect(chatPaletteRows(24, listOf(MANY, 'up'))).toBe(12);
+    expect(chatPaletteRows(40, listOf(MANY, 'up'))).toBe(14 + 3);
+    expect(chatPaletteRows(24, listOf(SHORT, 'up'))).toBe(3 + 3);
   });
 });

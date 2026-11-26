@@ -29,6 +29,16 @@ export function scrubPopupText(text: string): string {
 }
 
 /**
+ * {@link scrubPopupText} of text a VIEW has already cut with its own `…` (a bounded prompt head, a long tool id): the cut is the host's mark,
+ * not the author's, and the scrub's compatibility fold would turn it into three dots, so a second scrub would draw `...` where the plain
+ * surfaces of the same view draw `…`. The text in front of the mark is scrubbed whole and the mark is put back; a text that does not end in
+ * `…` is scrubbed as it is.
+ */
+export function scrubPopupCut(text: string): string {
+  return text.endsWith('…') ? `${scrubPopupText(text.slice(0, -1))}…` : scrubPopupText(text);
+}
+
+/**
  * A row that starts with a lone `/` (a slash that stands for "or" between two words): drawn at the start of a row it reads as the start of a
  * command (`/ high / max.` under a description that ends `off / low / medium`), so no wrap leaves one there.
  */

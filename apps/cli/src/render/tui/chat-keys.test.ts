@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { nextMode } from '../../chat/chat-mode.js';
 import { CHAT_KEYS, type ChatKeyPress } from './chat-keys.js';
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
 import {
   mountHostedChat,
   mountStandaloneChat,
@@ -436,7 +437,8 @@ const CHECKS: Readonly<Record<Id, (host: Host) => Promise<void>>> = {
     });
     try {
       await m.until(() => m.text().includes('answer 39'));
-      const row = (m.text().split('\n')[1] ?? '').trimEnd();
+      // The header takes the rows above the viewport (ADR-0146 §4): the second row OF THE VIEWPORT is the one the presses are on.
+      const row = (m.text().split('\n')[CHAT_HEADER_ROWS + 1] ?? '').trimEnd();
       expect(row).toMatch(/question|answer/u);
       // Press at the start of the second row, drag past its end, release: the whole of that row is what was copied.
       for (const press of CHAT_KEYS.select.presses) {
@@ -524,7 +526,7 @@ describe('every key `/help` lists for a chat does what its verb says', () => {
       [
         'interrupt',
         'Ctrl+C',
-        'clear what you typed; on an empty prompt, press twice to end the chat',
+        'clear what you typed; on an empty prompt, press twice to end the chat (back to the Home, in a chat the Home opened)',
       ],
     ]);
   });

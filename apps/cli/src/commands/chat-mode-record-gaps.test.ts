@@ -25,6 +25,7 @@ import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { resolveConfig } from '../config/resolve.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { MODE_CHANGE_RUNNING_NOTICE } from '../render/tui/chat-input.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { captureIo } from '../test-support.js';
@@ -154,11 +155,12 @@ async function made(): Promise<Rig> {
 }
 
 describe('a typed `/mode` while a turn runs', () => {
-  it('is refused: nothing is announced (not a mode it did not enter), nothing is withdrawn, no row is written, and the mode stays', async () => {
+  it('is refused: only WHY is announced (never the mode it did not enter), nothing is withdrawn, no row is written, and the mode stays', async () => {
     const r = await made();
     r.chat.apply(TURN_STARTED);
     await r.handler.processLine('/mode plan');
-    expect(r.announced).toEqual([]);
+    // OD-1: the refusal is the host's notification (never a row of the transcript), and it is the only thing said: no `mode changed` word
+    expect(r.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
     expect(r.withdrawn).toEqual([]);
     r.chat.apply(TURN_COMPLETED);
     expect(r.chat.getSnapshot().mode).toBe('ask');

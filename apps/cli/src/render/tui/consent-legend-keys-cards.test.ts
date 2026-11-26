@@ -216,13 +216,13 @@ describe('the checkpoint card: every key its lines name does what they say (ADR-
   it('names Esc and Ctrl+C as the keys that stop the turn, and both end it', () => {
     expect(
       check(stop, {
-        'Esc / [Ctrl+C] stops the turn': () => {
+        'Esc / [Ctrl+C] stops here': () => {
           expect(reduceCheckpointKey('', ESC)).toEqual({ kind: 'stop' });
           // Ctrl+C stops too, and starts the interrupt keymap's window as well
           expect(reduceCheckpointKey('c', CTRL)).toEqual({ kind: 'interrupt' });
         },
       }),
-    ).toEqual(['Esc / [Ctrl+C] stops the turn']);
+    ).toEqual(['Esc / [Ctrl+C] stops here']);
   });
 });
 

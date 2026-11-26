@@ -529,15 +529,15 @@ describe('createChatLineHandler over a real session, store and persister: what t
     });
   });
 
-  it('while a turn runs a change is refused as before, records nothing and announces nothing', async () => {
+  it('while a turn runs a change is refused, records nothing, and the refusal is the host’s notification and no row of the transcript (OD-1)', async () => {
     const r = await made();
     r.chat.apply(TURN_STARTED);
     expect(r.handler.onModeChange('auto')).toBe(false);
-    expect(notices(r.chat)).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+    expect(notices(r.chat), 'no transcript row').toEqual([]);
     r.chat.apply(TURN_COMPLETED);
     expect(r.chat.getSnapshot().mode).toBe('ask');
     expect(modeRecords()).toEqual([]);
-    expect(r.announced).toEqual([]);
+    expect(r.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
   });
 
   it('a typed /mode confirms on the host’s channel only: its effect for auto, its name for a narrowing or a mode already in force', async () => {

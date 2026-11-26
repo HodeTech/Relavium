@@ -25,6 +25,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 
 /**
@@ -52,6 +53,15 @@ import { COPIED_TOAST_MS } from './tui-constants.js';
  */
 
 afterEach(cleanup);
+
+/**
+ * The 1-based terminal row of the in-Home chat's viewport's n-th row (1 for the first): the chat's header takes the rows above the viewport
+ * (ADR-0146 §4) and the mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
+ */
+const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+
+/** The frame below the chat's header: the first user line is the session title, drawn in the header, so what the VIEWPORT shows is read from here. */
+const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
@@ -380,8 +390,8 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const frame = (): string => harness.lastFrame() ?? '';
     await waitFor(() => frame().includes('HMSG39'));
     expect(frame()).toContain('HMSG39'); // the newest entry (tail) is shown
-    expect(frame()).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(30); // bounded to the size's rows (getSize ⇒ 30)
+    expect(belowHeader(frame())).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback (its title is in the header)
+    expect(frame().split('\n').length).toBeLessThanOrEqual(30 - 1); // bounded to the frame's rows (getSize ⇒ 30, less one)
   });
 
   it('SCROLLS the in-Home transcript: PgUp leaves the tail, PgDn resumes it (RootApp keymap path, Step 4b-2)', async () => {
@@ -580,12 +590,12 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     m.harness.stdin.write('\x1a');
     await settleFrames();
     expect(onSuspend).toHaveBeenCalledOnce();
-    m.harness.stdin.write('\x1b[<0;1;1M');
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M');
+    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
     await settleFrames();
     enabled = false;
-    m.harness.stdin.write('\x1b[<0;3;1m');
+    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
     m.harness.stdin.write(bracketed('SEALED_HOME_PASTE'));
     m.harness.stdin.write('\x1a');
     await settleFrames();
@@ -608,11 +618,11 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']);
@@ -684,15 +694,15 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
       m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
       await settleFrames();
     }
-    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(thirdRow).toMatch(/^row-\d\d$/);
     expect(thirdRow).not.toBe('row-02');
 
-    m.harness.stdin.write('\x1b[<0;1;3M'); // press the third row (an INNER row: row 1 is the edge-scroll zone)
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`); // press the third row (an INNER row: row 1 is the edge-scroll zone)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    m.harness.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`); // drag past its right edge ⇒ the whole row
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;99;3m');
+    m.harness.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
     expect(copied).toEqual([thirdRow]);
@@ -717,12 +727,12 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
 
     // No `settleFrames` between the append and the gesture: `scrollGeomRef` still says 60 lines.
     store.notice('row-60');
-    m.harness.stdin.write('\x1b[<0;1;3M');
-    m.harness.stdin.write('\x1b[<32;99;3M');
-    m.harness.stdin.write('\x1b[<0;99;3m');
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`);
+    m.harness.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`);
+    m.harness.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
-    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(copied).toEqual([thirdRow]); // the row the append pushed there, not the one that was there before
   });
 
@@ -773,16 +783,16 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press…
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press…
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // …drag…
+    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // …drag…
     await settleFrames();
 
     m.setSize({ cols: 60, rows: 30 });
     m.fireResize();
     await settleFrames();
 
-    m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
+    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // …release AFTER the resize
     await settleFrames();
     expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
   });
@@ -808,11 +818,11 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
   const copyOnce = async (m: MountedHome): Promise<void> => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
   };
 

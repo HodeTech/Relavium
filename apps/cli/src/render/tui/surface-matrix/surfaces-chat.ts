@@ -6,11 +6,6 @@ import type { MentionReader } from '../mention.js';
 import type { ChatMount, ChatSetup } from './chat-host.js';
 import { openModeFlow } from './home-flows.js';
 import { KEYS } from './home-host.js';
-import {
-  FULL_SCREEN_CHAT_FILLS_THE_TERMINAL,
-  HOSTED_CHAT_PALETTE_OVERFLOWS_INLINE,
-  STANDALONE_CHAT_PALETTE_FILLS_INLINE,
-} from './known-failures.js';
 import type { KnownFailure, SurfaceBase } from './registry.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
 import {
@@ -62,7 +57,6 @@ import {
 } from './permissions-fixture.js';
 import type { ChatSurface } from './surface-types.js';
 import type { SessionViewSeed } from '../session-view-model.js';
-import { isBelowFloor, type Variant } from './variants.js';
 
 /**
  * The chat's surfaces. A chat surface is registered once and mounted in both hosts: `chat.<name>` (the chat the Home hosts) and
@@ -75,14 +69,6 @@ export interface ChatSurfaceDefinition extends Omit<SurfaceBase, 'id' | 'knownFa
   readonly open: ChatSurface['open'];
   /** The hosts that have this surface (default both). */
   readonly hosts?: readonly ChatSurface['host'][];
-  /**
-   * Where the full-screen chat's viewport fills the terminal (its known height failure), per host: `false` for a screen that takes the
-   * whole terminal in place of the conversation (the review's full view and lists, and a native card of the stand-alone chat), which is not
-   * that viewport; a predicate for a surface that fills it in some cells only. Default: every full-screen cell.
-   */
-  readonly viewport?:
-    | boolean
-    | Partial<Record<ChatSurface['host'], boolean | ((variant: Variant) => boolean)>>;
   /** What is known to fail, per host (a failure of the Home-hosted chat is not a failure of the stand-alone one). */
   readonly knownFailure?: Partial<
     Record<ChatSurface['host'], KnownFailure | readonly KnownFailure[]>
@@ -92,18 +78,6 @@ export interface ChatSurfaceDefinition extends Omit<SurfaceBase, 'id' | 'knownFa
 const asList = (
   known: KnownFailure | readonly KnownFailure[] | undefined,
 ): readonly KnownFailure[] => (known === undefined ? [] : 'property' in known ? [known] : known);
-
-function viewportFailure(
-  viewport: ChatSurfaceDefinition['viewport'],
-  host: ChatSurface['host'],
-): readonly KnownFailure[] {
-  const here = typeof viewport === 'object' ? viewport[host] : viewport;
-  if (here === false) return [];
-  if (typeof here === 'function') {
-    return [{ ...FULL_SCREEN_CHAT_FILLS_THE_TERMINAL, where: here }];
-  }
-  return [FULL_SCREEN_CHAT_FILLS_THE_TERMINAL];
-}
 
 export function chatSurfaces(definitions: readonly ChatSurfaceDefinition[]): ChatSurface[] {
   return definitions.flatMap((definition) =>
@@ -118,10 +92,7 @@ export function chatSurfaces(definitions: readonly ChatSurfaceDefinition[]): Cha
         legendRow: definition.legendRow,
         belowFloor: definition.belowFloor,
         variants: definition.variants,
-        knownFailure: [
-          ...viewportFailure(definition.viewport, host),
-          ...asList(definition.knownFailure?.[host]),
-        ],
+        knownFailure: asList(definition.knownFailure?.[host]),
         notes: definition.notes,
         popup: definition.popup,
         setup: definition.setup,
@@ -566,7 +537,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     name: 'idle',
     title: 'The idle chat prompt',
     exitKey: 'Ctrl+C',
-    landmark: 'for commands',
+    landmark: '[/] commands',
     belowFloor: 'renders',
     open: async () => {},
   },
@@ -579,10 +550,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     selectedRow: '/models  ',
     belowFloor: 'renders',
     setup: { seed: LONG_CONVERSATION },
-    knownFailure: {
-      chat: HOSTED_CHAT_PALETTE_OVERFLOWS_INLINE,
-      'standalone-chat': STANDALONE_CHAT_PALETTE_FILLS_INLINE,
-    },
     open: async (m) => {
       m.key('/');
       await m.until(() => m.text().includes('Enter run'));
@@ -610,11 +577,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The /mode flow’s native card (the startup default)',
     exitKey: 'Esc',
     landmark: 'Choose a global startup default',
-    viewport: {
-      // The stand-alone chat's card takes the whole screen; the Home's chat keeps its prompt under the card (and says "too small" below the floor).
-      'standalone-chat': false,
-      chat: (variant) => variant.renderer === 'alt' && !isBelowFloor(variant),
-    },
     setup: { nativePrompt: true },
     open: async (m) => {
       openModeFlow(m);
@@ -672,7 +634,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   },
   {
     name: 'full-view',
-    viewport: false,
     title: 'The approval card’s full view ([v])',
     exitKey: 'Esc',
     landmark: 'Review · tool edit_file',
@@ -686,7 +647,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   },
   {
     name: 'details-list',
-    viewport: false,
     title: 'The /details list of the tool calls',
     exitKey: 'Esc',
     landmark: 'edit_file',
@@ -699,7 +659,6 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   },
   {
     name: 'details-view',
-    viewport: false,
     title: 'One tool call in the details view (Enter on the list)',
     exitKey: 'Esc',
     landmark: 'Edited src/app.ts',

@@ -18,7 +18,12 @@ import {
   sampleProviderSetup,
   type ProviderSetupOutcome,
 } from '../home/provider-setup.js';
-import { leftoverSetupNote } from '../onboarding/setup-notes.js';
+import {
+  leftoverSetupNote,
+  STARTER_ONCE_NOTICE,
+  STARTER_SAVED_NOTICE,
+  STARTER_UNCONFIRMED_NOTICE,
+} from '../onboarding/setup-notes.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -154,8 +159,8 @@ export async function runStandaloneProviderSetup(deps: {
                 const saved = await publish(runWrite(prepared), assertAdmitting);
                 defaultNotice =
                   saved.durability === 'unconfirmed'
-                    ? 'Default saved, but persistence after a crash is unconfirmed.'
-                    : 'Starter default saved. Project settings may override it.';
+                    ? STARTER_UNCONFIRMED_NOTICE
+                    : STARTER_SAVED_NOTICE;
                 return { kind: 'saved', durability: saved.durability };
               } catch (cause) {
                 assertAdmitting();
@@ -179,8 +184,8 @@ export async function runStandaloneProviderSetup(deps: {
                 if (choice === 'once') {
                   assertAdmitting();
                   ephemeralDefault = { model, provider };
-                  defaultNotice = 'Default applies to this invocation only; it was not saved.';
-                  flow.note(defaultNotice);
+                  defaultNotice = STARTER_ONCE_NOTICE;
+                  flow.note(STARTER_ONCE_NOTICE);
                   return { kind: 'ephemeral' };
                 }
                 flow.cancel();
@@ -193,16 +198,25 @@ export async function runStandaloneProviderSetup(deps: {
       return await coordinator.run('automatic');
     },
   );
-  const notice = [
-    ...new Set(
-      [result.notice, defaultNotice, finalNote].filter((part) => part !== undefined && part !== ''),
-    ),
-  ].join(' ');
+  const notice = saidOnce([result.notice, defaultNotice, finalNote]);
   if (notice !== '') {
     owner.assertAdmitting();
     await io.writeErrAcknowledged(`${notice}\n`);
   }
   return { ...result, ...(ephemeralDefault === undefined ? {} : { ephemeralDefault }) };
+}
+
+/**
+ * The parts of the notice a setup leaves behind, in order, each fact said once: an empty part and a repeat go, and so does a part that another
+ * part already contains (a granted source's outcome carries the starter default's sentence, and the writer that chose it speaks the same one).
+ */
+function saidOnce(parts: readonly (string | undefined)[]): string {
+  const said = [
+    ...new Set(parts.filter((part): part is string => part !== undefined && part !== '')),
+  ];
+  return said
+    .filter((part) => !said.some((other) => other !== part && other.includes(part)))
+    .join(' ');
 }
 
 /** Shared model precedence with Home; provider-source authority is independent. */

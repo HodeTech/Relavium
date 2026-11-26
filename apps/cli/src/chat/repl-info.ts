@@ -2,13 +2,14 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
 import { formatUsdExact } from '../render/notation.js';
 import type { Surface } from '../render/surface.js';
 import { formatReportedCost } from '../render/tui/format.js';
-import { glyph } from '../render/tui/glyphs.js';
+import { blankMarkerGlyphs, glyph } from '../render/tui/glyphs.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -175,10 +176,33 @@ export function costNotice(
   ].join('\n');
 }
 
-/** One entry of a catalog section: the slug is text a project's files hold (a file name), never written here but by the surface that draws it. */
+/**
+ * One entry of a catalog section: the slug is text a project's files hold (a file name), never written here but by the surface that draws it;
+ * so is the `reason` an invalid entry holds (what the parser said of the file: field names an author wrote).
+ */
 export interface CatalogRowParts {
   readonly slug: string;
   readonly valid: boolean;
+  readonly reason?: string;
+}
+
+/** The most characters of a parse reason a catalog row carries: a reason names fields an author wrote and can be as long as the file's error. */
+export const CATALOG_REASON_MAX = 100;
+
+/**
+ * What follows an entry's slug when the file did not parse: ` (invalid)`, with the reason the catalog already holds when there is one
+ * (` (invalid: nodes.0.agent: unknown agent)`, as `relavium list` says it). The reason goes through `scrub` WHOLE first, as the surface scrubs
+ * every string it draws, and is cut after: the cut is the host's own `…` (a second scrub would fold it into three dots).
+ */
+export function invalidMark(reason: string | undefined, scrub: (text: string) => string): string {
+  const said = reason === undefined ? '' : scrub(reason).trim();
+  if (said === '') return ' (invalid)';
+  const characters = Array.from(said);
+  const shown =
+    characters.length > CATALOG_REASON_MAX
+      ? `${characters.slice(0, CATALOG_REASON_MAX - 1).join('')}…`
+      : said;
+  return ` (invalid: ${shown})`;
 }
 
 /** One kind of the catalog: its heading (`Workflows (2):` or `Agents: none`) and its entries. */
@@ -205,7 +229,11 @@ function catalogSectionParts(
 ): CatalogSectionParts {
   return {
     heading: entries.length === 0 ? `${heading}: none` : `${heading} (${entries.length}):`,
-    entries: entries.map((entry) => ({ slug: entry.slug, valid: entry.valid })),
+    entries: entries.map((entry) => ({
+      slug: entry.slug,
+      valid: entry.valid,
+      ...(entry.valid || entry.error === undefined ? {} : { reason: entry.error }),
+    })),
   };
 }
 
@@ -235,7 +263,8 @@ export function catalogNotice(
       [
         section.heading,
         ...section.entries.map(
-          (entry) => `  ${sanitizeInline(entry.slug)}${entry.valid ? '' : ' (invalid)'}`,
+          (entry) =>
+            `  ${sanitizeInline(entry.slug)}${entry.valid ? '' : invalidMark(entry.reason, sanitizeUntrustedInline)}`,
         ),
       ].join('\n'),
     )
@@ -349,11 +378,13 @@ export function clearedNotice(surface: ClearedNoticeSurface = 'home'): string {
  *
  * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
  * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
- * into the transcript.
+ * into the transcript. For the same reason an id cannot carry a speaker-marker glyph (`›`, `▸`, `⇄`: `blankMarkerGlyphs`, ADR-0145 §6): the
+ * host's own `⇄` leads this sentence and an id must not be able to draw a second one, here or in the inline intro, which is written to the
+ * terminal and never passes the transcript's row guard.
  */
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
-    `${glyph('modelSwitch')} model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
+    `${glyph('modelSwitch')} model changed ${blankMarkerGlyphs(sanitizeInline(oldModel))} → ${blankMarkerGlyphs(sanitizeInline(newModel))} — the new model sees the text ` +
     `transcript plus content-free records of earlier tool calls (tool name and outcome), and for the question tool ` +
     `what you were asked and how you answered. Prior tool arguments and results (including files a tool read) are ` +
     `not carried; text you sent — @-attached file contents included — is.`

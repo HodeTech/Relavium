@@ -355,8 +355,9 @@ export function blankHostMarks(text: string): string {
 /**
  * `text` with the marker glyphs (`›`, `▸`, `⇄`) replaced by a space. This is what a transcript guard blanks in model text: a reply must not be
  * able to draw a person's turn, a tool call or a model switch, while a `✓`, a `●` or a rule an ordinary answer contains is left alone (blanking
- * those would damage ordinary output). It is not wired into the transcript yet: the margin that makes the speaker marker trustworthy, and the
- * interim guard on the rendered rows, are the chat step's (ADR-0145 §6).
+ * those would damage ordinary output). It is the interim guard of the speaker marker (ADR-0145 §6), applied to the FINISHED rows of the transcript
+ * and the live tail by `transcript-guard.ts` and where a row is built from words that are not the host's (`formatToolCall`, `formatBusyLine`,
+ * `formatReasoningPanel`, `modelSwitchNotice`). The margin that makes the marker trustworthy in itself is the transcript grid's, a later step.
  */
 export function blankMarkerGlyphs(text: string): string {
   return text.replace(MARKER_GLYPH_PATTERN, ' ');

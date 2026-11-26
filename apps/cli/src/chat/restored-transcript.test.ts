@@ -584,6 +584,24 @@ describe('ADR-0133 restored question records', () => {
     expect(entries[at]?.role).toBe('notice');
   });
 
+  it('names the host’s own lead on the rebuilt record (ADR-0145 §6): its `›` rows are the one thing the row guard keeps in it', () => {
+    const entries = restore(
+      turnWith([
+        { name: 'ask_user', ask: answered },
+        { name: 'ask_user', ask: skipped },
+      ]),
+    );
+    const records = entries.filter(
+      (entry) => entry.role === 'notice' && entry.text.startsWith('› '),
+    );
+    expect(records).toHaveLength(2);
+    for (const entry of records)
+      expect(entry).toMatchObject({ role: 'notice', hostLead: 'yourTurn' });
+    // …and no other notice of the restored transcript names a lead of its own.
+    for (const entry of entries.filter((e) => e.role === 'notice' && !records.includes(e)))
+      expect(entry).not.toHaveProperty('hostLead');
+  });
+
   it('rebuilds a skip as the live card words it', () => {
     const list = texts(restore(turnWith([{ name: 'ask_user', ask: skipped }])));
     expect(list).toContain("› Skipped the agent's question: Scope");

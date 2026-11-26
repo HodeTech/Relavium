@@ -10,8 +10,11 @@
  *   machine output and in the one flag that takes them.
  * - **Time**: a completed duration, a live elapsed counter, a relative age and the forward-looking counterpart.
  * - **Identifiers**: one cut for a run id on a surface that only labels it ({@link shortId}).
- * - **Paths**: project-relative, or from `~`, or as they were given ({@link displayPath}).
+ * - **Paths**: project-relative, or from `~`, or as they were given ({@link displayPath}); the working directory as one short label
+ *   ({@link directoryLabel}).
  */
+
+import { displayWidth, sliceDisplayColumns } from './tui/viewport.js';
 
 /** USD × 100,000,000: the canonical integer unit of money ([database-schema.md](../../../../docs/reference/shared-core/database-schema.md)). */
 export const MICROCENTS_PER_USD = 100_000_000;
@@ -445,4 +448,92 @@ export function displayPath(path: string, roots: DisplayPathRoots): string {
   const target = parseAbsolute(path, win32);
   if (target === undefined) return relativeForm(path, win32);
   return shortenAbsolute(target, separatorOf(path, win32), roots, win32) ?? path;
+}
+
+// ── the working directory ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** What stands for the path elements left out at the front of a label (`…/app`): one column, so a label that was cut says so. */
+export const PATH_ELLIPSIS = '…';
+
+/** Is `path` written as a Windows path: a drive letter, or a backslash anywhere. */
+const looksWindows = (path: string): boolean => DRIVE_ROOT.test(path) || path.includes('\\');
+
+/** `cwd` from `~` when it is inside `home` (`~/acme-web`, and `~` for the home itself), otherwise `undefined`. */
+function fromHome(cwd: string, home: string | undefined, win32: boolean): string | undefined {
+  const target = parseAbsolute(cwd, win32);
+  if (target === undefined) return undefined;
+  const rest = insideOf(parsedBase(home, win32), target, win32);
+  if (rest === undefined) return undefined;
+  return rest.length === 0 ? '~' : `~/${rest.join('/')}`;
+}
+
+/** `…/<the last name>`, for a path outside the home; `/` for a path that has no name (a filesystem root or a drive root). */
+function fromEnd(cwd: string, win32: boolean): string {
+  const names =
+    parseAbsolute(cwd, win32)?.parts ?? cwd.split(/[\\/]+/u).filter((name) => name !== '');
+  const last = names.at(-1);
+  return last === undefined ? '/' : `${PATH_ELLIPSIS}/${last}`;
+}
+
+/**
+ * `text` cut to at most `room` display columns from the FRONT, keeping its end behind one {@link PATH_ELLIPSIS}. Whole grapheme clusters
+ * only: a wide character that would straddle the cut is left out (so the result is never one column too wide), and a room of zero or
+ * less is the empty string.
+ */
+function keepTail(text: string, room: number): string {
+  if (room < 1) return '';
+  const total = displayWidth(text);
+  for (let kept = room - 1; kept > 0; kept -= 1) {
+    const tail = sliceDisplayColumns(text, total - kept, total);
+    if (displayWidth(tail) <= room - 1) return `${PATH_ELLIPSIS}${tail}`;
+  }
+  return PATH_ELLIPSIS;
+}
+
+/**
+ * A directory label (`~/work/clients/acme/web`, `…/app`) cut by NAMES to fit `room` display columns: the leading names become
+ * {@link PATH_ELLIPSIS} and the end, the part that tells one directory from another, stays. The longest run of trailing names that fits
+ * is kept (`…/clients/acme/web`, then `…/acme/web`, down to `…/web`) and the last name is never cut: when even `…/<last name>` is wider
+ * than `room` it is returned all the same (the floor of this cut, which is why a caller that must fit uses {@link cutPathLead}). A label
+ * that fits, or has a single name, is returned as it is. It does not sanitise: the caller sends the label through the inline sanitiser
+ * BEFORE cutting (a cut is a host-written ellipsis, which the sanitiser's compatibility fold would turn into three dots).
+ */
+export function cutPathNames(label: string, room: number): string {
+  if (displayWidth(label) <= room) return label;
+  const names = label.split('/');
+  let candidate = label;
+  for (let keep = names.length - 1; keep >= 1; keep -= 1) {
+    candidate = `${PATH_ELLIPSIS}/${names.slice(-keep).join('/')}`;
+    if (displayWidth(candidate) <= room) return candidate;
+  }
+  return candidate;
+}
+
+/**
+ * {@link cutPathNames}, and, when even `…/<last name>` does not fit, the end of the whole label by characters behind one
+ * {@link PATH_ELLIPSIS} (whole grapheme clusters, never wider than `room`); a room of zero or less is the empty string.
+ */
+export function cutPathLead(label: string, room: number): string {
+  const named = cutPathNames(label, room);
+  return displayWidth(named) <= room ? named : keepTail(label, room);
+}
+
+/**
+ * The working directory as ONE short label for the status line ([ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §2): `~/acme-web` for a path inside the operator's `home`, `~` for the home itself, and, for a path outside it, its LAST name behind
+ * `…/` (`…/app` for `/srv/app`: never absolute, and never the middle of a path the line has no room to name). The status line names the
+ * directory the chat will run in, so project-relative is NOT used here (that is {@link displayPath}'s, for a path inside the project).
+ *
+ * Separators are `/` on every platform: a path that is written as a Windows path (a drive letter or a backslash) is read as one, its
+ * backslashes are folded to `/`, its drive letter is dropped, and its names compare ignoring the case of ASCII letters only (as
+ * {@link displayPath} does). A trailing separator is not part of the label, and a path with no name (`/`, `C:\`) is `/`. A path that
+ * climbs (`.` or `..` among its names) is never shown as inside the home: it falls to the outside form. `bound`, in display columns,
+ * cuts the label from its lead with {@link cutPathLead}. Pure: no filesystem access, no process state. Control and bidirectional
+ * characters are NOT its business: the caller passes the label through the inline sanitiser (`flowLine`) before it is drawn.
+ */
+export function directoryLabel(cwd: string, home: string | undefined, bound?: number): string {
+  if (cwd === '') return '';
+  const win32 = looksWindows(cwd) || (home !== undefined && looksWindows(home));
+  const label = fromHome(cwd, home, win32) ?? fromEnd(cwd, win32);
+  return bound === undefined ? label : cutPathLead(label, bound);
 }

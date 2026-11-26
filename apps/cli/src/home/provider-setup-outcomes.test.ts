@@ -400,7 +400,7 @@ describe('what the provider setup reports', () => {
       [
         'selected for this invocation only',
         { kind: 'ephemeral' },
-        `${SAVED} Starter model selected for this invocation only.`,
+        `${SAVED} Starter model selected for this invocation only; the default was not saved.`,
       ],
       ['cancelled', { kind: 'cancelled' }, `${SAVED} Starter default was not saved.`],
       ['answered with nothing', undefined, `${SAVED} Check the starter model with /models.`],

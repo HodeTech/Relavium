@@ -23,6 +23,9 @@ import { scrubSetupText, type OnboardingDeps, type SetupPrompts } from '../onboa
 import {
   SAVED_UNCONFIRMED,
   SETUP_NEXT_STEP,
+  STARTER_ONCE_NOTICE,
+  STARTER_SAVED_NOTICE,
+  STARTER_UNCONFIRMED_NOTICE,
   setupClosedNotice,
   type SetupSurface,
 } from '../onboarding/setup-notes.js';
@@ -335,13 +338,12 @@ const STARTER_GRANT: Record<
   }
 > = {
   saved: () => ({
-    notice: 'Starter default saved. Project settings may override it.',
+    notice: STARTER_SAVED_NOTICE,
     named: true,
     lines: [SETUP_NEXT_STEP],
   }),
   unconfirmed: () => ({
-    notice:
-      'Starter default saved; crash persistence is unconfirmed. Project settings may override it.',
+    notice: STARTER_UNCONFIRMED_NOTICE,
     named: true,
     lines: [
       'The default model was saved, but persistence after a crash is unconfirmed.',
@@ -349,7 +351,7 @@ const STARTER_GRANT: Record<
     ],
   }),
   ephemeral: (model) => ({
-    notice: 'Starter model selected for this invocation only.',
+    notice: STARTER_ONCE_NOTICE,
     named: true,
     lines: [`${model} is selected for this invocation only; the default was not saved.`],
   }),

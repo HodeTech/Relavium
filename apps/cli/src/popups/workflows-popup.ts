@@ -8,7 +8,12 @@
  * reason of a fault, which can carry a project file's text. Its one control is `[c] copy`, offered with the catalog; `Esc` closes it.
  */
 
-import { catalogParts, CATALOG_EMPTY_NOTICE, NO_PROJECT_NOTICE } from '../chat/repl-info.js';
+import {
+  catalogParts,
+  CATALOG_EMPTY_NOTICE,
+  invalidMark,
+  NO_PROJECT_NOTICE,
+} from '../chat/repl-info.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { PopupSpec } from './popup-reducer.js';
 import { scrubPopupText, wrapHanging } from './popup-text.js';
@@ -53,7 +58,7 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
           ...wrapHanging(section.heading),
           ...section.entries.flatMap((entry) =>
             wrapHanging(
-              `  ${scrubPopupText(entry.slug)}${entry.valid ? '' : ' (invalid)'}`,
+              `  ${scrubPopupText(entry.slug)}${entry.valid ? '' : invalidMark(entry.reason, scrubPopupText)}`,
               undefined,
               6,
             ),

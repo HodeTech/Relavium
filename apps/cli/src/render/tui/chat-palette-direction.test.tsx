@@ -57,7 +57,7 @@ function mountChat() {
 }
 
 describe('the chat’s palette opens above the prompt, and its first row is the one beside it', () => {
-  it('draws the legend at the top and the entries bottom-up: /models beside the query line, /exit at the top', async () => {
+  it('draws the entries bottom-up with /models on the row above the prompt, the legend on the hint row and no query line of its own', async () => {
     const { h, frame, highlighted } = mountChat();
     await waitFor(() => (h.lastFrame() ?? '').length > 0);
     h.stdin.write('/');
@@ -66,21 +66,48 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     const rows = frame();
     const at = (word: string): number =>
       rows.findIndex((line) => new RegExp(`^[> ] /${word}( |$)`, 'u').test(line));
-    expect(rows.some((line) => line === '↑/↓ select · Enter run · Esc close')).toBe(true);
-    expect(
-      rows.indexOf('↑/↓ select · Enter run · Esc close'),
-      'the legend is above the list',
-    ).toBeLessThan(at('exit'));
-    // Bottom-up: the LAST entry is at the top, the FIRST (/models) is next to the query line, and the query echo is the bottom row.
-    expect(at('exit')).toBeLessThan(at('cancel'));
-    expect(at('cancel')).toBeLessThan(at('clear'));
-    expect(at('help')).toBeLessThan(at('doctor'));
-    expect(at('mode')).toBeLessThan(at('models'));
-    expect(rows.indexOf('/'), 'the query echo is under the whole list').toBeGreaterThan(
-      at('models'),
+    const legendRow = '↑/↓ select · Enter run · Esc close';
+    // ADR-0146 §4: the typed `/` is the PROMPT's text, the legend is the hint row, and the rule stays between them: no row of the palette's own
+    // carries the query, none carries the legend, and nothing (no blank row, no status line) separates the list from the prompt.
+    const promptAt = rows.findIndex((line) => /^> \/ ?$/u.test(line));
+    expect(promptAt, 'the prompt row shows the typed `/` (and the cursor cell)').toBeGreaterThan(
+      -1,
     );
+    expect(rows.filter((line) => line === legendRow)).toHaveLength(1);
+    expect(rows.indexOf(legendRow), 'the legend is the hint row, the last row of the frame').toBe(
+      rows.length - 1,
+    );
+    expect(rows[promptAt + 1], 'a thin rule between the prompt and the hint').toMatch(/^-+$/u);
+    expect(rows[promptAt + 2], 'the hint row follows the rule').toBe(legendRow);
+    expect(rows.includes('/'), 'no query line of the palette’s own').toBe(false);
+    expect(
+      rows.some((line) => / · \d+ turns? · /u.test(line)),
+      'no status line while the palette is open',
+    ).toBe(false);
+    // Bottom-up: the FIRST (/models) is next to the prompt row and the entries after it climb away from it (the window, a half of the terminal
+    // with the prompt block, hides the far end: the `▲ N more` row above the list counts what it hides).
+    expect(at('effort')).toBeLessThan(at('mode'));
+    expect(at('mode')).toBeLessThan(at('models'));
+    expect(rows.some((line) => /^\s*[▲^] \d+ more/u.test(line))).toBe(true); // `^` is the marker without colour
     expect(highlighted(), 'the default row is the first one, never /exit').toBe('models');
-    expect(at('models') + 1, '/models touches the query line').toBe(rows.indexOf('/'));
+    expect(at('models') + 1, '/models touches the prompt row').toBe(promptAt);
+  });
+
+  it('shows what is typed on the prompt row, and the list follows the query', async () => {
+    const { h, frame } = mountChat();
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+    h.stdin.write('/');
+    await waitFor(() => (h.lastFrame() ?? '').includes('Enter run'));
+    h.stdin.write('co');
+    await waitFor(() => frame().some((line) => /^> \/co ?$/u.test(line)));
+    const rows = frame();
+    const names = rows.flatMap((line) => /^[> ] \/([a-z]+) {2}/u.exec(line)?.[1] ?? []);
+    expect(names, 'the list follows the query').toContain('cost');
+    expect(names).not.toContain('exit');
+    expect(
+      rows.includes('/co'),
+      'the query is the prompt’s text, not a line of the palette’s',
+    ).toBe(false);
   });
 
   it('lists the 20 entries of a chat, /help among them, with a blank row between the groups when the rows allow', async () => {
@@ -132,8 +159,8 @@ describe('`/` then `Enter` in a chat', () => {
     await waitFor(() => highlighted() === 'exit');
     await settleFrames();
     expect(
-      frame().filter((line) => line.startsWith('> ')),
-      'one highlighted row',
+      frame().filter((line) => /^> \/[a-z]+ {2}/u.test(line)),
+      'one highlighted row (the prompt row, `> /`, is the prompt’s and not a row of the list)',
     ).toHaveLength(1);
     expect(submitted, 'the highlight alone sends nothing').toEqual([]);
     h.stdin.write('\r');

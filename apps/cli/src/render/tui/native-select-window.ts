@@ -46,6 +46,25 @@ export function selectRowText(snapshot: NativePromptSnapshot, index: number): st
   return `${index === snapshot.selected ? cursor() : GUTTER}${option.label}${hint}`;
 }
 
+/**
+ * One option as the rows it is drawn in at `columns`: the cursor or the gutter and then the label with its hint, and, where that does not fit
+ * one row, the rows after the first starting under the label, never at the left edge of the terminal. The rows are cut at a word, a word wider
+ * than a row is broken where it must be, and no row is longer than `columns`, so the card's estimate of its height and what it draws are one.
+ */
+export function selectRowLines(
+  snapshot: NativePromptSnapshot,
+  index: number,
+  columns: number,
+): readonly string[] {
+  const text = selectRowText(snapshot, index);
+  const hang = displayWidth(GUTTER);
+  const prefix = text.slice(0, hang);
+  const rows = wrapWords(text.slice(hang), Math.max(1, Math.trunc(columns) - hang)).map(
+    (row, at) => (at === 0 ? row.trimEnd() : row.trim()),
+  );
+  return rows.map((row, at) => (at === 0 ? prefix : GUTTER) + row);
+}
+
 export type SelectLine =
   | { readonly kind: 'option'; readonly index: number }
   | { readonly kind: 'marker'; readonly position: 'above' | 'below'; readonly text: string };
@@ -86,7 +105,7 @@ export function selectLayout(
   const back = snapshot.escape === 'back';
   let whole = aboveRows + rowsOf(selectLegend(back, false), columns);
   for (let index = 0; index < total; index += 1)
-    whole += rowsOf(selectRowText(snapshot, index), columns);
+    whole += selectRowLines(snapshot, index, columns).length;
   if (whole <= available) return undefined;
   const room = available - aboveRows - rowsOf(selectLegend(back, true), columns);
   if (room < 1) return undefined;

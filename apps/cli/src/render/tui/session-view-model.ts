@@ -77,7 +77,16 @@ export interface TurnSummary {
 export type TranscriptEntry =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly text: string; readonly summary?: TurnSummary }
-  | { readonly role: 'notice'; readonly text: string }
+  | {
+      readonly role: 'notice';
+      readonly text: string;
+      /**
+       * Set only by a host that builds the notice's own sentence and knows which glyph of the speaker marker's set it leads its LOGICAL lines with: the
+       * question record's `›` (the core refuses it in model text) and the model-switch notice's `⇄`. A row that begins a logical line of such a notice
+       * keeps that one glyph; every other glyph of the set is blanked from the notice, as it is from a notice that sets nothing (ADR-0145 §6).
+       */
+      readonly hostLead?: 'yourTurn' | 'modelSwitch';
+    }
   | {
       readonly role: 'tools';
       readonly text: '';
@@ -420,8 +429,18 @@ export function appendWarning(state: SessionViewState, message: string): Session
  * (keeping newlines for multi-line output) before delegating here; a direct caller must do the same.
  * (Unbounded + append-only, like every transcript entry — see {@link appendTranscript}.)
  */
-export function appendNotice(state: SessionViewState, text: string): SessionViewState {
-  return { ...state, transcript: appendTranscript(state.transcript, { role: 'notice', text }) };
+export function appendNotice(
+  state: SessionViewState,
+  text: string,
+  hostLead?: 'yourTurn' | 'modelSwitch',
+): SessionViewState {
+  return {
+    ...state,
+    transcript: appendTranscript(
+      state.transcript,
+      hostLead === undefined ? { role: 'notice', text } : { role: 'notice', text, hostLead },
+    ),
+  };
 }
 
 interface SeqDecision {

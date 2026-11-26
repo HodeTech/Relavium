@@ -12,10 +12,12 @@ import {
 import type { ChatStoreController } from './chat-store.js';
 import { CHECKPOINT_STOP, projectCheckpointCard } from './checkpoint-card.js';
 import { withGlyphForm } from './glyphs.js';
-import { legend } from './legend.js';
+import { legend, legendRows } from './legend.js';
+import { displayWidth } from './viewport.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
 import { colorProps, dimProps } from './projection.js';
 
@@ -90,10 +92,12 @@ export function CheckpointCardHost(
   if (!reviewTerminalFits(props.size))
     return (
       <Text>
-        {legend(
-          [{ text: 'Checkpoint: terminal too small — resize to at least 80×24' }],
+        {legendRows(
+          [{ text: TERMINAL_TOO_SMALL_TEXT }],
           CHECKPOINT_STOP,
-        )}
+          props.size.cols,
+          displayWidth,
+        ).join('\n')}
       </Text>
     );
   if (blocked === shown)

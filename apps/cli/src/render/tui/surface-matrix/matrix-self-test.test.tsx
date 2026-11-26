@@ -495,7 +495,7 @@ describe.each([
   {
     entry: CHAT_IDLE,
     host: 'the stand-alone chat',
-    greeting: 'for commands',
+    greeting: 'commands',
     exitKey: 'Ctrl+C',
     plain: INLINE_80,
   },

@@ -3,17 +3,20 @@ import { label, type Producer, type Recorder } from '../golden.js';
 import type { PaletteSurface } from '../../../../commands/repl-commands.js';
 import { INITIAL_REVERSE_SEARCH, reverseSearchExtendQuery } from '../../input-history.js';
 import { MentionView } from '../../mention-view.js';
+import { ChatView } from '../../chat-ink.js';
+import { createChatStore } from '../../chat-store.js';
 import { buildPaletteEntries, filterPaletteEntries } from '../../palette-entries.js';
 import type { PaletteLayout, PaletteList } from '../../palette-reducer.js';
 import { PaletteView } from '../../palette-view.js';
 import { ReverseSearchView } from '../../reverse-search-view.js';
+import { FULLSCREEN_TRANSCRIPT_BOUND } from '../../session-view-model.js';
 
 export const INPUT_PRODUCERS: readonly Producer[] = [
   {
     id: 'palette-view',
     file: 'render/tui/palette-view.tsx',
     describe:
-      'the `/` palette’s legend line, on the Home (list runs down) and in a chat (list runs up), with a match and with none',
+      'the `/` palette’s legend, on the Home (list runs down: its own legend line) and in a chat (list runs up: the hint row of the real chat view, which the list does not draw), with a match and with none',
   },
   {
     id: 'reverse-search-view',
@@ -26,6 +29,34 @@ export const INPUT_PRODUCERS: readonly Producer[] = [
     describe: 'the `@` completion’s hint under its candidates, loading, listing and empty',
   },
 ];
+
+/** The rows the open palette of a chat gets with its prompt row, rule and hint row (the chat view is drawn 100 columns wide here). */
+const CHAT_PALETTE_ROWS = 12;
+
+/**
+ * The open palette in a chat, drawn by the real chat view: the list runs up and draws no legend of its own (ADR-0146 §4), so the legend is the
+ * HINT ROW of the prompt block, which says it while the palette is open. The view is the chat's own, over a fresh store, with the typed `/query`
+ * on its prompt row, as the host draws it.
+ */
+function chatWithPalette(list: PaletteList, query: string, color: boolean) {
+  const text = `/${query}`;
+  return (
+    <ChatView
+      state={createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND).getSnapshot().state}
+      tick={0}
+      nowMs={5000}
+      color={color}
+      editor={{ text, cursor: text.length }}
+      running={false}
+      mode="ask"
+      reasoningVisible={false}
+      interruptArmed={false}
+      surface="standalone-chat"
+      palette={{ list, state: { query, index: 0 }, maxRows: CHAT_PALETTE_ROWS }}
+      columns={100}
+    />
+  );
+}
 
 /** The `/` palette: its one legend line, on both surfaces' directions, and the line it draws when no command matches. */
 const palette: Recorder = () => {
@@ -47,9 +78,16 @@ const palette: Recorder = () => {
     ] as const) {
       Object.assign(
         out,
-        legendStates(label({ surface, layout, query: kind }), (color) => (
-          <PaletteView list={listOf(query)} state={{ query, index: 0 }} color={color} />
-        )),
+        legendStates(
+          label({ surface, layout, query: kind }),
+          (color) =>
+            layout === 'up' ? (
+              chatWithPalette(listOf(query), query, color)
+            ) : (
+              <PaletteView list={listOf(query)} state={{ query, index: 0 }} color={color} />
+            ),
+          layout === 'up' ? { columns: 100 } : {},
+        ),
       );
     }
   }

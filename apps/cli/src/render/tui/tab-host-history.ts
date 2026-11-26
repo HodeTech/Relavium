@@ -969,23 +969,63 @@ interface DetailLine {
   readonly parts?: readonly string[];
   /** The raw id of the node a line of the table stands for: what `Enter` opens and `n` looks for. Never drawn. */
   readonly nodeId?: string;
+  /**
+   * The width the widest label of the node table takes, on every row of it: how many of `parts` fit is decided by that width and not by this
+   * row's own label, so every row of the table keeps the same cells and a short label cannot buy a row a cell its neighbours had to give up.
+   */
+  readonly fitLeft?: number;
 }
 
 const nodeAttempts = (row: NodeRow): string =>
   `${String(row.attemptCount)} ${row.attemptCount === 1 ? 'attempt' : 'attempts'}`;
 
-function nodeLine(row: NodeRow): DetailLine {
-  const left = `  ${statusCell(NODE_ROW_ROLE[row.status])} ${row.status.padEnd(WORD_WIDTH)} ${row.label}`;
-  const reason = row.skippedReason === undefined ? '' : `${SKIPPED}: ${row.skippedReason}`;
-  const parts = [
+/** The left of a node row: its indent, the status mark and word, and the node's label. */
+const nodeLeft = (row: NodeRow): string =>
+  `  ${statusCell(NODE_ROW_ROLE[row.status])} ${row.status.padEnd(WORD_WIDTH)} ${row.label}`;
+
+/** The cells of one node row, in the table's order: its attempts, its duration, why it was skipped, its tokens and its cost (empty where it has none). */
+function nodeCells(row: NodeRow): readonly string[] {
+  return [
     nodeAttempts(row),
     row.durationMs === undefined ? '' : formatDuration(row.durationMs),
-    reason,
+    row.skippedReason === undefined ? '' : `${SKIPPED}: ${row.skippedReason}`,
     row.tokens.text,
     row.cost.text,
-  ].filter((part) => part !== '');
-  return { kind: 'row', left, parts, nodeId: row.nodeId };
+  ];
 }
+
+/** The widest cell of each column of the table: a column no row has anything in is `0` and is not drawn. */
+function cellWidths(cells: readonly (readonly string[])[]): readonly number[] {
+  const count = Math.max(0, ...cells.map((row) => row.length));
+  return Array.from({ length: count }, (_, column) =>
+    Math.max(0, ...cells.map((row) => displayWidth(row[column] ?? ''))),
+  );
+}
+
+/** `cell` right-aligned in `width` display columns, so the cells of a column end where one another ends. */
+const alignedCell = (cell: string, width: number): string =>
+  `${' '.repeat(Math.max(0, width - displayWidth(cell)))}${cell}`;
+
+/**
+ * One row of the node table: the status, the label, and the cells, each in the width of its column (a blank where this node has none), so the
+ * table reads down its columns. `fitLeft` is the widest label's width: the cells that fit are the same for every row.
+ */
+function nodeLine(
+  row: NodeRow,
+  cells: readonly string[],
+  widths: readonly number[],
+  fitLeft: number,
+): DetailLine {
+  const left = nodeLeft(row);
+  const parts = widths.flatMap((width, column) =>
+    width === 0 ? [] : [alignedCell(cells[column] ?? '', width)],
+  );
+  return { kind: 'row', left, parts, nodeId: row.nodeId, fitLeft };
+}
+
+/** What the cells of a row are fitted beside: the table's widest label for a node row (so every row keeps the same cells), the row's own left otherwise. */
+const fitBeside = (line: DetailLine, left: string): string =>
+  line.fitLeft === undefined ? left : ' '.repeat(displayWidth(INDENT) + line.fitLeft);
 
 /** The most of `parts` (in order, two spaces apart) that fits beside `left` in `width` columns; empty when not even the first does. */
 function fitParts(left: string, parts: readonly string[], width: number): string {
@@ -1073,7 +1113,10 @@ function nodeTableLines(read: RunDetailRead): DetailLine[] {
   const { rows, unattributedRow } = read.model;
   const lines: DetailLine[] = [{ kind: 'heading', left: `Nodes (${String(rows.length)})` }];
   if (rows.length === 0) lines.push({ kind: 'text', left: `  ${NO_NODE_RECORDED}` });
-  for (const row of rows) lines.push(nodeLine(row));
+  const cells = rows.map(nodeCells);
+  const widths = cellWidths(cells);
+  const fitLeft = Math.max(0, ...rows.map((row) => displayWidth(nodeLeft(row))));
+  rows.forEach((row, at) => lines.push(nodeLine(row, cells[at] ?? [], widths, fitLeft)));
   if (unattributedRow !== undefined)
     lines.push({ kind: 'row', left: `    ${unattributedRow.label}`, right: unattributedRow.text });
   return lines;
@@ -1118,7 +1161,10 @@ function detailWindow(
     const line = lineAt(index);
     const selected = index === cursor;
     const left = `${selected ? pointer() : INDENT}${line.left}`;
-    const right = line.parts === undefined ? (line.right ?? '') : fitParts(left, line.parts, width);
+    const right =
+      line.parts === undefined
+        ? (line.right ?? '')
+        : fitParts(fitBeside(line, left), line.parts, width);
     lines.push({ kind: selected ? 'selected' : line.kind, text: flushRow(left, right, width) });
   }
   if (start > 0 && lines.length > 0) lines[0] = { kind: 'marker', text: moreAboveText(start + 1) };

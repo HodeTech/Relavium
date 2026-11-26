@@ -24,8 +24,9 @@ import type { MarkdownSpan } from '../markdown/types.js';
  * and getting it wrong corrupts the renderer.
  */
 
-/** The per-entry render style a display line inherits from its transcript entry (mirrors `TranscriptLine`'s colors:
- *  user = cyan, assistant = default, notice = dim, summary = gray, hint = yellow). */
+/** The per-entry render style a display line inherits from its transcript entry (mirrors `TranscriptLine`'s styles:
+ *  user = bold words with the host's marker in the accent on the first row, assistant = default, notice = dim,
+ *  summary = gray, hint = yellow). */
 export type LineStyle = 'user' | 'assistant' | 'notice' | 'summary' | 'hint';
 
 /** One rendered display line (already ≤ cols wide) tagged with its source entry's {@link LineStyle}. */
@@ -33,6 +34,14 @@ export interface DisplayLine {
   readonly text: string;
   readonly style: LineStyle;
   readonly spans?: readonly MarkdownSpan[];
+  /**
+   * The HOST's own speaker marker, which is the start of `text` (ADR-0145 §6): the glyph the host drew at the start of the first row of the
+   * person's turn (`›`, or `>` with colour off). It is DATA the host sets where it builds the row (`wrapEntry`); a renderer reads it and never
+   * looks for a marker in the row's text, so a reply row whose text starts with the same glyph is drawn as the plain text it is. Absent on every
+   * other row, a wrapped row of the same turn included. `text.startsWith(marker)` holds by construction; a renderer that finds it false draws
+   * the row as plain text rather than trust a marker it cannot place.
+   */
+  readonly marker?: string;
 }
 
 /**

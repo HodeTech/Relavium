@@ -13,6 +13,7 @@
  * and the glyph table holds it.
  */
 
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
 import type { HelpKey, HelpKeyEvent, HelpKeyPress } from './help-sheet.js';
 
 /**
@@ -36,15 +37,21 @@ export interface ChatKeyDefinition extends Omit<HelpKey, 'presses'> {
 }
 
 /**
+ * The 1-based terminal row of the SECOND row of the conversation viewport in the full-screen chat: the header takes the rows above the viewport
+ * ({@link CHAT_HEADER_ROWS}), so the viewport's first row is the next one and its second the one after.
+ */
+const SECOND_VIEWPORT_ROW = CHAT_HEADER_ROWS + 2;
+
+/**
  * The bytes of the mouse reports (SGR 1006) the full-screen chat reads: a wheel notch up or down, and a drag along the whole of the second row
- * of the screen (the press at its first column, the motion past its last, the release).
+ * of the conversation viewport (the press at its first column, the motion past its last, the release).
  */
 const MOUSE_REPORTS = {
   wheelUp: '\u001b[<64;10;5M',
   wheelDown: '\u001b[<65;10;5M',
-  press: '\u001b[<0;1;2M',
-  drag: '\u001b[<32;99;2M',
-  release: '\u001b[<0;99;2m',
+  press: `\u001b[<0;1;${String(SECOND_VIEWPORT_ROW)}M`,
+  drag: `\u001b[<32;99;${String(SECOND_VIEWPORT_ROW)}M`,
+  release: `\u001b[<0;99;${String(SECOND_VIEWPORT_ROW)}m`,
 } as const;
 
 export const CHAT_KEYS = {
@@ -175,7 +182,7 @@ export const CHAT_KEYS = {
   },
   interrupt: {
     keys: 'Ctrl+C',
-    verb: 'clear what you typed; on an empty prompt, press twice to end the chat',
+    verb: 'clear what you typed; on an empty prompt, press twice to end the chat (back to the Home, in a chat the Home opened)',
     presses: [{ input: 'c', key: { ctrl: true } }],
   },
 } as const satisfies Readonly<Record<string, ChatKeyDefinition>>;

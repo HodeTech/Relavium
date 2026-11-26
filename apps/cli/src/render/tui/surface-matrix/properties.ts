@@ -53,6 +53,23 @@ export interface Observation {
   readonly lines: readonly string[];
   /** Every byte written to the terminal, styling included. */
   readonly raw: string;
+  /**
+   * How many of the first `lines` Ink printed once through `<Static>` (the inline renderer's scrollback). They stay on the screen, but they are
+   * not the live frame: the height and a popup's rows are measured over {@link liveLines}. Absent ⇒ none (a mount that cannot say).
+   */
+  readonly staticRows?: number | undefined;
+}
+
+/**
+ * The rows of the live frame: the screen's lines but the first `staticRows`, which Ink printed once through `<Static>` and never redraws. A
+ * count that is not a whole number of rows in range is no count (`0`): nothing is excluded on a guess, so a surface can never hide a row of
+ * its live frame behind a bad number.
+ */
+export function liveLines(observation: Observation): readonly string[] {
+  const rows = observation.staticRows ?? 0;
+  return Number.isInteger(rows) && rows > 0 && rows <= observation.lines.length
+    ? observation.lines.slice(rows)
+    : observation.lines;
 }
 
 const ESC = String.fromCharCode(0x1b);
@@ -91,16 +108,21 @@ export function colourSequences(raw: string): string[] {
 
 const preview = (text: string): string => (text.length > 60 ? `${text.slice(0, 57)}…` : text);
 
-/** (1) The frame has at most `rows - 1` lines: a frame as tall as the terminal makes Ink clear the whole terminal and scroll. */
+/**
+ * (1) The live frame has at most `rows - 1` lines: a frame as tall as the terminal makes Ink clear the whole terminal and scroll. The rows Ink
+ * printed through `<Static>` are not the frame (Ink measures only the live region against the terminal, and they scroll into the history), so
+ * they are not counted; every other row of the screen is, whatever it says.
+ */
 export function checkHeight(observation: Observation): Violation[] {
   const budget = observation.variant.size.rows - 1;
-  const count = observation.lines.length;
+  const count = liveLines(observation).length;
+  const scrollback = observation.lines.length - count;
   return count <= budget
     ? []
     : [
         {
           property: 'height',
-          message: `${String(count)} lines on a ${String(observation.variant.size.rows)}-row terminal (at most ${String(budget)})`,
+          message: `${String(count)} lines on a ${String(observation.variant.size.rows)}-row terminal (at most ${String(budget)}${scrollback > 0 ? `; ${String(scrollback)} more row(s) are scrollback and not counted` : ''})`,
         },
       ];
 }
@@ -240,25 +262,53 @@ export function checkSelectedRow(observation: Observation, text: string): Violat
   return [...style, ...checkSelectionMarker(observation, text)];
 }
 
+/** The text of `line` in the columns `[left, left + width)`, as the popup-box property reads a row (one cell per code point). */
+const columnsOf = (line: string | undefined, left: number, width: number): string =>
+  Array.from(line ?? '')
+    .slice(left, left + width)
+    .join('');
+
 /**
  * (7) The surface's own legend row is on a row of the frame BY ITSELF, whole (`↑/↓ select · Enter run · Esc close`, and nothing else on
  * the row): a layout that squeezes a list into the legend's row, so that the two are drawn over each other, leaves an exit key and a
  * landmark on screen, and may leave the legend's words whole with another row's tail after them. Only a row that is exactly the legend
  * passes.
+ *
+ * **A popup in the alternate screen is drawn over the body, so the row is read in the popup's own box.** The popup covers part of the chat, and
+ * on a short terminal that part includes the rows of the prompt block (the prompt, the thin rule): beside the open-sided popup the dimmed
+ * backdrop legitimately shows their ends (ADR-0148 §4: the popup is centred over a body that stays drawn). Those cells are the body's and
+ * `popup-box` and `backdrop-dim` hold them to it, so the legend is asked to be alone in the BOX's columns of one of the box's rows, which is
+ * where a squeezed list, a cut or wrapped legend, or prompt text drawn over it, would show. A popup in the flow replaces the live region,
+ * so it keeps the whole-row reading, and so does every surface that is not a popup (`box` absent).
  */
 export function checkLegendRow(
   observation: Observation,
   row: string | readonly string[],
+  box?: PopupBox,
 ): Violation[] {
   // A surface whose legend depends on whether its content overflows the page (a report that scrolls inline and fits in the alternate screen)
   // names every form it may draw: one of them must be on a row by itself, whole.
   const accepted = typeof row === 'string' ? [row] : row;
+  const forms = accepted.map((form) => `"${form}"`).join(' or ');
+  if (box?.placement === 'overlay') {
+    const inBox = observation.lines
+      .slice(box.top, box.top + box.height)
+      .map((line) => columnsOf(line, box.left, box.width));
+    return inBox.some((cells) => accepted.includes(cells.trim()))
+      ? []
+      : [
+          {
+            property: 'legend-row',
+            message: `the legend row ${forms} is not on a row of the popup's box by itself, whole (columns ${String(box.left + 1)}–${String(box.left + box.width)}, rows ${String(box.top + 1)}–${String(box.top + box.height)})`,
+          },
+        ];
+  }
   return observation.lines.some((line) => accepted.includes(line.trim()))
     ? []
     : [
         {
           property: 'legend-row',
-          message: `the legend row ${accepted.map((form) => `"${form}"`).join(' or ')} is not on a row of the frame by itself, whole`,
+          message: `the legend row ${forms} is not on a row of the frame by itself, whole`,
         },
       ];
 }
@@ -329,48 +379,70 @@ export interface PopupBox {
 
 /**
  * (9) The popup's box (ADR-0148 §2, §4): in the overlay, the drawn frame holds exactly the popup's own rows in its box (the occlusion check the
- * bounds check cannot make) and every cell outside the box is the cell of the frame it was opened over; in the flow, the live region is the
- * popup's rows and nothing else. Rows are compared with their trailing spaces trimmed, as the renderer writes them.
+ * bounds check cannot make) and every cell outside the box is the cell of the frame it was opened over; in the flow, the live region (the
+ * screen's rows but the ones Ink printed through `<Static>`) is the popup's rows and nothing else. Rows are compared with their trailing spaces
+ * trimmed, as the renderer writes them.
  */
 export function checkPopupBox(
   observation: Observation,
   before: readonly string[],
   box: PopupBox,
 ): Violation[] {
+  const problems =
+    box.placement === 'replace'
+      ? replaceBoxProblems(observation, box)
+      : overlayBoxProblems(observation, before, box);
+  return problems.map((message) => ({ property: 'popup-box', message }));
+}
+
+/** A popup in the flow: the live region is the popup's rows. What Ink printed once through `<Static>` above it is history, not part of it. */
+function replaceBoxProblems(observation: Observation, box: PopupBox): string[] {
+  const drawn = liveLines(observation).map((line) => line.trimEnd());
+  const want = box.rows.map((row) => row.trimEnd());
+  return drawn.join('\n') === want.join('\n')
+    ? []
+    : ['the live region is not exactly the popup’s rows'];
+}
+
+/** The first column in which `was` and `now` differ, leaving out the box's own columns when the row is one of the box's rows. */
+function firstChangedColumn(
+  was: readonly string[],
+  now: readonly string[],
+  box: PopupBox,
+  inside: boolean,
+): number | undefined {
+  for (let column = 0; column < Math.max(was.length, now.length); column += 1) {
+    if (inside && column >= box.left && column < box.left + box.width) continue;
+    if ((was[column] ?? ' ') !== (now[column] ?? ' ')) return column;
+  }
+  return undefined;
+}
+
+/** A popup in the overlay: its own rows in its box, and every cell outside the box the cell the frame had before the popup opened. */
+function overlayBoxProblems(
+  observation: Observation,
+  before: readonly string[],
+  box: PopupBox,
+): string[] {
   const problems: string[] = [];
   const lines = observation.lines;
   const cells = (row: string | undefined): string[] => Array.from(row ?? '');
-  if (box.placement === 'replace') {
-    const drawn = lines.map((line) => line.trimEnd());
-    const want = box.rows.map((row) => row.trimEnd());
-    if (drawn.join('\n') !== want.join('\n'))
-      problems.push('the live region is not exactly the popup’s rows');
-  } else {
-    box.rows.forEach((row, index) => {
-      const drawn = cells(lines[box.top + index])
-        .slice(box.left, box.left + box.width)
-        .join('')
-        .trimEnd();
-      if (drawn !== row.trimEnd())
-        problems.push(`row ${String(index + 1)} of the popup is not its own: "${preview(drawn)}"`);
-    });
-    const height = Math.max(before.length, lines.length);
-    for (let row = 0; row < height; row += 1) {
-      const was = cells(before[row]);
-      const now = cells(lines[row]);
-      const inside = row >= box.top && row < box.top + box.height;
-      for (let column = 0; column < Math.max(was.length, now.length); column += 1) {
-        if (inside && column >= box.left && column < box.left + box.width) continue;
-        if ((was[column] ?? ' ') !== (now[column] ?? ' ')) {
-          problems.push(
-            `the cell ${String(row + 1)}:${String(column + 1)} outside the popup changed`,
-          );
-          break;
-        }
-      }
-    }
+  box.rows.forEach((row, index) => {
+    const drawn = cells(lines[box.top + index])
+      .slice(box.left, box.left + box.width)
+      .join('')
+      .trimEnd();
+    if (drawn !== row.trimEnd())
+      problems.push(`row ${String(index + 1)} of the popup is not its own: "${preview(drawn)}"`);
+  });
+  const height = Math.max(before.length, lines.length);
+  for (let row = 0; row < height; row += 1) {
+    const inside = row >= box.top && row < box.top + box.height;
+    const column = firstChangedColumn(cells(before[row]), cells(lines[row]), box, inside);
+    if (column !== undefined)
+      problems.push(`the cell ${String(row + 1)}:${String(column + 1)} outside the popup changed`);
   }
-  return problems.map((message) => ({ property: 'popup-box', message }));
+  return problems;
 }
 
 /** What `checkBackdropDim` reads: the screen's cells before the popup opened and with it open, and the popup's box. */
@@ -497,6 +569,8 @@ export interface PropertyExpectations {
    * selected row is not asserted (a surface with no selection, or below the floor).
    */
   readonly selectedRow?: string | readonly string[] | undefined;
+  /** The popup's box, when the surface is a popup: the legend row is then read in the box ({@link checkLegendRow}). */
+  readonly popupBox?: PopupBox | undefined;
 }
 
 const selectedWords = (selected: string | readonly string[] | undefined): readonly string[] =>
@@ -518,6 +592,6 @@ export function checkProperties(
     ),
     ...(expectations.legendRow === undefined
       ? []
-      : checkLegendRow(observation, expectations.legendRow)),
+      : checkLegendRow(observation, expectations.legendRow, expectations.popupBox)),
   ];
 }

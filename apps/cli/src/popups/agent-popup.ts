@@ -29,7 +29,7 @@ import type { BoundAgentView } from '../chat/bound-agent-view.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import { copyControlsFor } from './popup-copy.js';
 import type { PopupSpec } from './popup-reducer.js';
-import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js';
+import { POPUP_TEXT_COLUMNS, scrubPopupCut, scrubPopupText, wrapHanging } from './popup-text.js';
 
 /** What the popup says when the view of the agent cannot be made. */
 const AGENT_REPORT_UNREADABLE = {
@@ -46,17 +46,18 @@ function scrubbedAgentView(view: BoundAgentView): BoundAgentView {
   return {
     ...view,
     id: scrubPopupText(view.id),
-    name: view.name === undefined ? undefined : scrubPopupText(view.name),
+    name: view.name === undefined ? undefined : scrubPopupCut(view.name),
     sourceLabel: view.sourceLabel === undefined ? undefined : scrubPopupText(view.sourceLabel),
     detail: {
       ...detail,
-      model: scrubPopupText(detail.model),
-      provider: scrubPopupText(detail.provider),
-      tools: detail.tools.map(scrubPopupText),
-      promptHead: scrubPopupText(detail.promptHead),
+      // The view cut these with its own `…` (a bounded prompt head, a long tool id): the scrub keeps that mark as the one ellipsis.
+      model: scrubPopupCut(detail.model),
+      provider: scrubPopupCut(detail.provider),
+      tools: detail.tools.map(scrubPopupCut),
+      promptHead: scrubPopupCut(detail.promptHead),
       ...(detail.reasoningEffort === undefined
         ? {}
-        : { reasoningEffort: scrubPopupText(detail.reasoningEffort) }),
+        : { reasoningEffort: scrubPopupCut(detail.reasoningEffort) }),
     },
   };
 }

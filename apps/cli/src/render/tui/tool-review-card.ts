@@ -418,7 +418,7 @@ export function cardKeyLegend(input: CardKeyInput): readonly [LegendRender, Lege
           : `Press ${enter} to allow all ${input.scope} this session`,
       ),
       exitRow(
-        input.command === true ? COMMAND_CONFIRM_ITEMS : [{ text: 'Any other key cancels' }],
+        input.command === true ? COMMAND_CONFIRM_ITEMS : [{ text: 'any other key cancels' }],
         stop,
       ),
     ];

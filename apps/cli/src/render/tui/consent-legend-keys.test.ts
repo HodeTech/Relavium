@@ -38,7 +38,7 @@ import {
 
 const CTRL = { ctrl: true } as const;
 
-/** The keys a row names, in order: each stretch the builder drew in a key's role, a list (`Tab / Shift+Tab`) split into its keys. */
+/** The keys a row names, in order: each stretch the builder drew in a key's role, a list (`Esc / [Ctrl+C]`) split into its keys. */
 function keysOf(row: LegendRender): string[] {
   return rowSegments(row)
     .filter((segment) => segment.role !== 'dim')
@@ -321,8 +321,7 @@ describe('the full view navigation legend: every key it names moves, searches or
       '↑/↓',
       'PgUp/PgDn',
       'Home/End',
-      'Tab',
-      'Shift+Tab',
+      'Tab/Shift+Tab',
       '[/]',
       '[r]',
       '[p]',

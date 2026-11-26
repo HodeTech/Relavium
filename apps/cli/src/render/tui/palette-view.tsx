@@ -7,7 +7,7 @@ import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';
 import { withGlyphForm } from './glyphs.js';
-import { paletteLines } from './palette-window.js';
+import { paletteGapCount, paletteLines, paletteRowBudget } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 import { SelectableNote, SelectableText, selectionMarker } from './selectable-text.js';
 
@@ -18,9 +18,12 @@ import { SelectableNote, SelectableText, selectionMarker } from './selectable-te
  * the query echo, the command name, and its description or reason — is sanitized at the display boundary, so a crafted command name/description
  * or a pasted control sequence can never forge a row or inject an escape.
  *
- * **Direction** (ADR-0145 §7.1): the first row touches the prompt. `down` draws the legend last, under the list and its query line first;
- * `up` (a chat) draws the legend at the top, the entries reversed (the LAST entry at the top, the FIRST beside the query line) and the query
- * echo at the bottom, nearest the prompt.
+ * **Direction** (ADR-0145 §7.1): the first row touches the prompt. `down` (the Home) draws the legend last, under the list and its query line
+ * first. `up` (a chat) draws the entries reversed (the LAST entry at the top, the FIRST beside the prompt) and NOTHING ELSE: the host draws the
+ * typed `/query` on the prompt's own row (the person is typing there) and the legend on the hint row ({@link paletteLegend}), so there is no query
+ * line, no legend line and no blank row between the list and the prompt, and the list ends on the row above the prompt (ADR-0146 §4, MVP-11
+ * §4.8). `maxRows` is the same budget in both: the most rows the palette takes with what goes with it, which in a chat is the prompt row, the
+ * rule and the hint row (so a list of `maxRows − 3` lines).
  */
 export interface PaletteViewProps {
   readonly list: PaletteList;
@@ -48,6 +51,28 @@ const LEGEND = legend(
 
 /** What the legend says when nothing matches: there is no entry to select or run, so only the key that closes is named. */
 const NO_MATCH_LEGEND = legend([], exitKey.close());
+
+/**
+ * The palette's legend: what a chat draws on its hint row while the palette is open (the Home's palette draws the same words on its own legend
+ * line). One function, so the two layouts cannot say different things.
+ */
+export function paletteLegend(list: Pick<PaletteList, 'rows'>): string {
+  return list.rows.length === 0 ? NO_MATCH_LEGEND : LEGEND;
+}
+
+/**
+ * The rows a chat gives its open palette, with its prompt row, rule and hint row: half the terminal, never more than every entry (and every
+ * group gap) asks for, never fewer than the least a window with both markers needs and never the whole terminal ({@link paletteRowBudget}), so
+ * the transcript above keeps the other half in a full-screen chat and an inline frame stays far short of the terminal's height. The same budget
+ * as the landing's, which the palette-fit tests pin.
+ */
+export function chatPaletteRows(terminalRows: number, list: Pick<PaletteList, 'rows'>): number {
+  return paletteRowBudget(
+    terminalRows,
+    list.rows.length,
+    paletteGapCount(list.rows.map((entry) => entry.groupStart)),
+  );
+}
 
 function EntryRow(
   props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean }>,
@@ -80,9 +105,9 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
       {`/${sanitizeInline(state.query)}`}
     </Text>
   );
-  const legend = (
+  const legendLine = (
     <Text key="legend" {...dimProps(color)} wrap="truncate-end">
-      {rows.length === 0 ? NO_MATCH_LEGEND : LEGEND}
+      {paletteLegend(list)}
     </Text>
   );
   const body =
@@ -119,9 +144,17 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
         );
       })
     );
+  // A chat's list is the body alone, directly above the prompt: its query is the prompt's text and its legend is the hint row.
+  if (list.layout === 'up') {
+    return (
+      <Box flexDirection="column" flexShrink={0}>
+        {body}
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column" flexShrink={0} marginTop={1}>
-      {list.layout === 'down' ? [query, body, legend] : [legend, body, query]}
+      {[query, body, legendLine]}
     </Box>
   );
 }

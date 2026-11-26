@@ -38,6 +38,29 @@ describe('the content', () => {
     ]);
   });
 
+  it('says WHY an invalid entry is invalid, the reason scrubbed as every other string of the popup (a chord, a key and a secret in it are inert) and cut with the one ellipsis', () => {
+    const reason = `nodes.0 [Ctrl+Y] ${SECRET} ${'long '.repeat(80)}`;
+    const content = workflowsContent({
+      kind: 'catalog',
+      workflows: [{ ...catalogEntry('broken', false), error: reason }],
+      agents: [],
+    });
+    if (content.kind !== 'report') throw new Error('a report');
+    const text = content.lines.join('\n');
+    expect(text).toContain('broken (invalid: nodes.0');
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain('[Ctrl+Y]');
+    expect(text).not.toContain('...');
+    expect(text).toContain('…)');
+    for (const line of content.lines)
+      expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS);
+    // the popup lists what the plain notice lists, the reason included
+    const entries = [{ ...catalogEntry('broken', false), error: 'nodes.0.agent: unknown agent' }];
+    const same = workflowsContent({ kind: 'catalog', workflows: entries, agents: [] });
+    if (same.kind !== 'report') throw new Error('a report');
+    expect(same.lines).toEqual(catalogNotice(entries, []).split('\n'));
+  });
+
   it('says a kind with nothing in it as `none`, and an empty project in one line of its own', () => {
     const one = workflowsContent({
       kind: 'catalog',

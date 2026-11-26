@@ -375,6 +375,47 @@ describe('validateProviderKey', () => {
     expect(plain.reason).toBe('other'); // a non-LlmProviderError throw → other
   });
 
+  it('says a transport failure in ONE sentence for every provider, whatever words its SDK used, and keeps the words of a failure that has a status or a code', async () => {
+    const transport = (
+      provider: 'openai' | 'anthropic' | 'gemini',
+      message: string,
+      extra: { status?: number; code?: string } = {},
+    ): LlmProviderError =>
+      new LlmProviderError({
+        kind: 'transport',
+        retryable: true,
+        provider,
+        message,
+        ...extra,
+      });
+    const detailOf = async (error: LlmProviderError): Promise<string> =>
+      (
+        await validateProviderKey(
+          fakeProvider(vi.fn().mockRejectedValue(error)),
+          TEST_KEY,
+          'm-test',
+        )
+      ).detail;
+    const same = 'key test failed — could not reach the provider';
+    // two SDKs, two sets of words for the same cause: one sentence
+    expect(await detailOf(transport('openai', 'Connection error.'))).toBe(same);
+    expect(await detailOf(transport('anthropic', 'fetch failed'))).toBe(same);
+    // the cause stays a network one (continue-anyway is offered), and the sentence names no key
+    const net = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(transport('openai', 'Connection error.'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(net.reason).toBe('network');
+    // a failure that carries the provider's status or code is NOT hidden behind it
+    expect(await detailOf(transport('openai', '502 bad gateway', { status: 502 }))).toBe(
+      'key test failed — 502 bad gateway',
+    );
+    expect(await detailOf(transport('gemini', 'socket hang up', { code: 'ECONNRESET' }))).toBe(
+      'key test failed — socket hang up',
+    );
+  });
+
   it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {
     const generate = vi
       .fn()

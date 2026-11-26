@@ -8,6 +8,7 @@ import type { ClipboardOutcome } from '../clipboard.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -54,6 +55,13 @@ function render(tree: ReactElement): ReturnType<typeof renderCapture> {
 }
 
 afterEach(cleanup);
+
+/**
+ * The frame below the chat's header (ADR-0146 §4): the first user line is the session title, drawn in the header's second half, so a message
+ * that is the OLDEST entry of the conversation is on screen in the header whether or not the viewport still shows it. An assertion about what the
+ * viewport shows reads the frame from the first row under the header.
+ */
+const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
@@ -460,8 +468,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     setWindowSize(h.stdout, 80, 24); // a deterministic 24-row terminal
     await waitFor(() => frame().includes('MSG39')); // the viewport measures + windows to the tail
     expect(frame()).toContain('MSG39'); // the newest entry is shown (following the tail)
-    expect(frame()).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(24); // virtualized — bounded to the terminal rows
+    expect(belowHeader(frame())).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24 - 1); // virtualized — bounded to the frame (the terminal's rows less one)
   });
 
   it('SCROLLS the transcript: PgUp leaves the tail (pauses follow), PgDn back to the bottom resumes it (Step 4b-2)', async () => {
@@ -534,26 +542,26 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
 
     h.stdin.write('\x1b[1;5H'); // Ctrl+Home → jump to the very top (ink parses this to key.home + key.ctrl)
     await settleFrames();
-    expect(frame()).toContain('MSG0'); // the oldest entry is now at the top
+    expect(belowHeader(frame())).toContain('MSG0'); // the oldest entry is now at the top
     expect(frame()).not.toContain('MSG59'); // the tail scrolled off the bottom (following paused)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End → jump back to the tail (resume following)
     await settleFrames();
     expect(frame()).toContain('MSG59'); // back at the tail
-    expect(frame()).not.toContain('MSG0'); // the top scrolled off
+    expect(belowHeader(frame())).not.toContain('MSG0'); // the top scrolled off
   });
 
   it('re-wraps + re-bounds the viewport on a terminal RESIZE (ink 7 useWindowSize — the Step-4b-1 Opus fix)', async () => {
     const h = render(chatApp(seed(40)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
-    await waitFor(() => frame().split('\n').length === 24); // settled at 24 rows
-    // Shrink the terminal: useWindowSize re-renders → the container re-bounds + the viewport re-measures to 10 rows.
+    await waitFor(() => frame().split('\n').length === 23); // settled at the frame's 23 rows (the terminal's 24 less one)
+    // Shrink the terminal: useWindowSize re-renders → the container re-bounds + the viewport re-measures to 2 rows (9 less the header and the block).
     setWindowSize(h.stdout, 80, 10);
-    await waitFor(() => frame().split('\n').length <= 10);
-    expect(frame().split('\n').length).toBeLessThanOrEqual(10); // re-bounded to the NEW rows (was 24)
+    await waitFor(() => frame().split('\n').length <= 9);
+    expect(frame().split('\n').length).toBeLessThanOrEqual(9); // re-bounded to the NEW rows (was 23)
     expect(frame()).toContain('MSG39'); // still tail-following after the resize
-    expect(frame()).not.toContain('MSG0');
+    expect(belowHeader(frame())).not.toContain('MSG0');
   });
 
   it('RE-CLAMPS a PAUSED (non-tail) scroll offset when the terminal SHRINKS — no blank/garbled frame (Step 4b-3)', async () => {
@@ -573,11 +581,11 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     await settleFrames();
     expect(frame()).not.toContain('MSG59'); // paused, not at the tail
 
-    setWindowSize(h.stdout, 80, 8); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out
-    await waitFor(() => frame().split('\n').length <= 8);
+    setWindowSize(h.stdout, 80, 12); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out (12 − 1 − 7 = 4 viewport rows)
+    await waitFor(() => frame().split('\n').length <= 11);
     const shrunk = frame();
-    expect(shrunk.split('\n').length).toBeLessThanOrEqual(8); // re-bounded to the new rows
-    expect(shrunk).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
+    expect(shrunk.split('\n').length).toBeLessThanOrEqual(11); // re-bounded to the new rows
+    expect(belowHeader(shrunk)).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End still reaches the tail after the shrink+re-clamp
     await settleFrames();
@@ -664,8 +672,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     const h = render(chatApp(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
-    await waitFor(() => frame().includes('[/] for commands')); // the idle hint (live region) renders
-    expect(frame()).toContain('[/] for commands'); // no crash; the prompt/footer are shown below the empty viewport
+    await waitFor(() => frame().includes('[/] commands')); // the idle hint (live region) renders
+    expect(frame()).toContain('[/] commands'); // no crash; the prompt/status line are shown below the empty viewport
   });
 
   it('a SINGLE entry taller than the window shows its BOTTOM rows (tail), bounded to the terminal', async () => {
@@ -679,8 +687,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('LASTLINE'));
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
-    expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+    expect(belowHeader(frame())).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback (the title, in the header, is its first words)
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24 - 1);
   });
 
   /**
@@ -816,6 +824,12 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
  * the text the highlight covered.
  */
 describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
+  /**
+   * The 1-based terminal row of the viewport's n-th row (1 for the first): the header takes the rows above the viewport (ADR-0146 §4), and the
+   * mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
+   */
+  const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+
   /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
   const seedThree = (): ChatStoreController => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
@@ -850,11 +864,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
 
-    h.stdin.write('\x1b[<0;1;1M'); // press at terminal row 1, column 1 ⇒ line 0, column 0
+    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press at terminal row 1, column 1 ⇒ line 0, column 0
     await settleFrames();
-    h.stdin.write('\x1b[<32;3;1M'); // drag to column 3 ⇒ column 2 (inclusive)
+    h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 3 ⇒ column 2 (inclusive)
     await settleFrames();
-    h.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']); // columns 0..2 of 'AAAA'
@@ -865,11 +879,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
 
-    h.stdin.write('\x1b[<0;3;1M'); // press line 0, column 2
+    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}M`); // press line 0, column 2
     await settleFrames();
-    h.stdin.write('\x1b[<32;2;3M'); // drag to line 2 ('CCCC'), column 1
+    h.stdin.write(`\x1b[<32;2;${viewportRow(3)}M`); // drag to line 2 ('CCCC'), column 1
     await settleFrames();
-    h.stdin.write('\x1b[<0;2;3m');
+    h.stdin.write(`\x1b[<0;2;${viewportRow(3)}m`);
     await settleFrames();
 
     // First row from column 2 to its end, the middle row whole, the last row to its INCLUSIVE end column.
@@ -918,15 +932,15 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       h.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
       await settleFrames();
     }
-    const thirdRow = (h.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (h.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(thirdRow).toMatch(/^row-\d\d$/);
     expect(thirdRow).not.toBe('row-02'); // we really did scroll away from the head
 
-    h.stdin.write('\x1b[<0;1;3M'); // press the THIRD viewport row (terminal row 3)
+    h.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`); // press the THIRD viewport row (terminal row 3)
     await settleFrames();
-    h.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    h.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`); // drag past its right edge ⇒ the whole row
     await settleFrames();
-    h.stdin.write('\x1b[<0;99;3m');
+    h.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
     expect(copied).toEqual([thirdRow]); // exactly the line the user could SEE on that row
@@ -941,9 +955,9 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
 
     store.notice('DDDD'); // the ref still says 3 lines; the store says 4
-    h.stdin.write('\x1b[<0;1;4M'); // press terminal row 4 ⇒ the new line
-    h.stdin.write('\x1b[<32;4;4M');
-    h.stdin.write('\x1b[<0;4;4m');
+    h.stdin.write(`\x1b[<0;1;${viewportRow(4)}M`); // press terminal row 4 ⇒ the new line
+    h.stdin.write(`\x1b[<32;4;${viewportRow(4)}M`);
+    h.stdin.write(`\x1b[<0;4;${viewportRow(4)}m`);
     await settleFrames();
 
     expect(copied).toEqual(['DDDD']); // NOT 'CCCC' — the stale clamp would have landed one row up
@@ -960,11 +974,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(store, copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('TAIL'));
 
-    h.stdin.write('\x1b[<0;1;2M'); // press the SECOND wrapped row
+    h.stdin.write(`\x1b[<0;1;${viewportRow(2)}M`); // press the SECOND wrapped row
     await settleFrames();
-    h.stdin.write('\x1b[<32;99;2M'); // drag to its end
+    h.stdin.write(`\x1b[<32;99;${viewportRow(2)}M`); // drag to its end
     await settleFrames();
-    h.stdin.write('\x1b[<0;99;2m');
+    h.stdin.write(`\x1b[<0;99;${viewportRow(2)}m`);
     await settleFrames();
 
     expect(copied).toEqual(['TAIL']); // the continuation row, not the (nonexistent) second entry
@@ -983,11 +997,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       />,
     );
     await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
-    h.stdin.write('\x1b[<0;1;1M');
+    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
     await settleFrames();
-    h.stdin.write('\x1b[<32;3;1M');
+    h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
     await settleFrames();
-    h.stdin.write('\x1b[<0;3;1m');
+    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
     await settleFrames();
     expect(h.lastFrame()).toBeDefined();
   });
@@ -1001,11 +1015,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     /** Drive a press-drag-release that copies, and return the frame right after. */
     const copyOnce = async (h: ReturnType<typeof render>): Promise<void> => {
       await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
-      h.stdin.write('\x1b[<0;1;1M');
+      h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write('\x1b[<32;3;1M');
+      h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write('\x1b[<0;3;1m');
+      h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
       await settleFrames();
     };
 

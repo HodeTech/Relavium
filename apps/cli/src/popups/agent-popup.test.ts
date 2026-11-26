@@ -148,6 +148,20 @@ describe('the fields', () => {
     expect(lines.length).toBeGreaterThan(18);
   });
 
+  it('ends a long prompt with the ONE ellipsis, `…`, as the plain notice does: the full scrub must not fold the cut the view made into three dots', () => {
+    const view = boundAgentView(
+      definition({ system_prompt: `${'word '.repeat(120)}end` }),
+      undefined,
+    );
+    expect(view.detail.promptHead.endsWith('…'), 'the view cut it').toBe(true);
+    const popup = agentReportLines(view).join('\n');
+    const notice = agentNotice(view);
+    expect(notice).toContain('…');
+    expect(popup).toContain('…');
+    expect(popup).not.toContain('...');
+    expect(notice).not.toContain('...');
+  });
+
   it('wraps a tool id that is wider than the room onto the rows after it, so the whole id is on screen and in the copy (it is never cut with …)', () => {
     const longId = `mcp__${'a'.repeat(52)}`;
     const longer = `mcp__${'b'.repeat(120)}`;

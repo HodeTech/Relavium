@@ -116,7 +116,7 @@ describe('the /doctor port a chat driver is handed', () => {
     const deepMcp = first?.port?.probes.deepMcp;
     if (deepMcp === undefined) throw new Error('a chat’s port reports its MCP servers');
     expect(await deepMcp()).toEqual([
-      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      { id: 'mcp', label: 'MCP servers', status: 'ok', detail: 'none configured' },
     ]);
   });
 

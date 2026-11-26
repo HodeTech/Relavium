@@ -1165,7 +1165,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     columns: 140,
   };
   const GAP = ' · ';
-  const MOVE_ROW = '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab / Shift+Tab changes';
+  const MOVE_ROW = '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab/Shift+Tab changes';
   const TOOLS_ROW = '[/] search · [r] reveal masked · [p] Unicode codes · [c] copy page';
   const items = (over: Partial<NavLegendInput> = {}): readonly string[] =>
     fullNavLegend({ ...ALL, ...over }).flatMap((row) => row.split(GAP));
@@ -1174,7 +1174,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     '↑/↓ scroll',
     'PgUp/PgDn page',
     'Home/End top/end',
-    ...(flags.hasChanges ? ['Tab / Shift+Tab changes'] : []),
+    ...(flags.hasChanges ? ['Tab/Shift+Tab changes'] : []),
   ];
   /** The inspection group, likewise. */
   const toolItems = (flags: NavLegendInput): readonly string[] => [
@@ -1197,8 +1197,8 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
   });
 
   it('offers Tab only when there is a change to go to', () => {
-    expect(items({ hasChanges: false })).not.toContain('Tab / Shift+Tab changes');
-    expect(items({ hasChanges: true })).toContain('Tab / Shift+Tab changes');
+    expect(items({ hasChanges: false })).not.toContain('Tab/Shift+Tab changes');
+    expect(items({ hasChanges: true })).toContain('Tab/Shift+Tab changes');
     expect(fullNavLegend({ ...ALL, hasChanges: false })[0]).toBe(
       '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
     );
@@ -1258,7 +1258,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     );
     expect(fullNavLegend({ ...ALL, columns: 60 })).toEqual([
       '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
-      'Tab / Shift+Tab changes',
+      'Tab/Shift+Tab changes',
       '[/] search · [r] reveal masked · [p] Unicode codes',
       '[c] copy page',
     ]);
@@ -1466,7 +1466,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         }),
       ).toEqual([
         'Press Enter to allow all file writes this session',
-        'Any other key cancels · [Ctrl+C] stops the turn · Esc back',
+        'any other key cancels · [Ctrl+C] stops the turn · Esc back',
       ]);
     });
 
@@ -1751,7 +1751,7 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     });
     expect(waiting.answers).toEqual([
       'Press Enter to allow all file edits this session',
-      'Any other key cancels · [Ctrl+C] stops the turn · Esc back',
+      'any other key cancels · [Ctrl+C] stops the turn · Esc back',
     ]);
     expect(waiting.rows).toBe(fullChrome(base).rows);
   });

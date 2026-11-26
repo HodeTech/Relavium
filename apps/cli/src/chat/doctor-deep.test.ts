@@ -7,6 +7,7 @@ import { KNOWN_PROVIDER_IDS, KNOWN_PROVIDERS, type ProviderResolver } from '../e
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
+import { formatDoctorReport } from './doctor.js';
 import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
@@ -170,10 +171,30 @@ describe('buildProviderProbe', () => {
 });
 
 describe('mcpSessionChecks (read-only session status — never connects)', () => {
-  it('warns when the agent declares no MCP servers', () => {
+  it('says "none configured" as an ok row when the agent declares no MCP servers: nothing was asked of one, so nothing is wrong', () => {
     expect(mcpSessionChecks([], [])).toEqual([
-      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      { id: 'mcp', label: 'MCP servers', status: 'ok', detail: 'none configured' },
     ]);
+  });
+
+  it('a healthy deep run with no MCP server configured is headed "all checks passed", not as a warning', () => {
+    const report = formatDoctorReport({
+      checks: [
+        { id: 'keychain', label: 'OS keychain', status: 'ok', detail: 'reachable' },
+        { id: 'provider:anthropic', label: 'Anthropic', status: 'ok', detail: 'key works' },
+        ...mcpSessionChecks([], []),
+      ],
+    });
+    expect(report.split('\n')[0]).toContain('doctor: all checks passed');
+    expect(report).not.toContain('warning');
+    expect(report).toContain('MCP servers: none configured');
+  });
+
+  it('a tool the manager skipped is still a warning: the exemption is for "none configured" only', () => {
+    const report = formatDoctorReport({
+      checks: mcpSessionChecks([ref('fs')], [skip('fs', 'read', 'schema refused')]),
+    });
+    expect(report.split('\n')[0]).toContain('doctor: 1 warning(s)');
   });
 
   it('reports each declared server as connected (a live session means the fail-loud connect succeeded)', () => {

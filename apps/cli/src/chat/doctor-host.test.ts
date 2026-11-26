@@ -144,7 +144,7 @@ describe('assembleDoctorProbes', () => {
   it('reports "none configured" when the bound agent declares no MCP servers (the Home default agent)', async () => {
     const probes = assembleDoctorProbes({ noticeSurface: 'tui', cwd: '/tmp/x', resolver });
     expect(await probes.deepMcp?.()).toEqual([
-      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      { id: 'mcp', label: 'MCP servers', status: 'ok', detail: 'none configured' },
     ]);
   });
 });

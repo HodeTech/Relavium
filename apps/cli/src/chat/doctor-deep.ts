@@ -168,14 +168,15 @@ function refId(entry: McpServerRef): string {
  * Report the session's MCP status from what the build ALREADY resolved — the agent's declared `mcp_servers` (every
  * one is connected: a live session means the fail-loud connect-all succeeded) and the tools the manager dropped at
  * discovery (`mcpSkipped`). PURE — no connect, no spawn, no socket, no timeout. A skipped tool is a `warn` (it
- * explains a missing capability); no declared server is a `warn` ("none configured").
+ * explains a missing capability); no declared server is `ok` ("none configured"): nothing was asked of an MCP server, so nothing is wrong, and
+ * a healthy first deep run must not be headed as a problem for a feature the person has not set up.
  */
 export function mcpSessionChecks(
   agentMcpServers: readonly McpServerRef[],
   skipped: readonly ManagerSkippedTool[],
 ): readonly DoctorCheck[] {
   if (agentMcpServers.length === 0) {
-    return [warnCheck('mcp', 'MCP servers', 'none configured')];
+    return [okCheck('mcp', 'MCP servers', 'none configured')];
   }
   const checks: DoctorCheck[] = agentMcpServers.map((entry) => {
     const id = refId(entry);

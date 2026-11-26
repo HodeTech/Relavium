@@ -118,11 +118,10 @@ describe('idleHint — what the idle prompt tells the person to press', () => {
     expect(idleHint(true, false)).toBe('[Ctrl+C] end the session (again)');
   });
 
-  it('offers the palette and the two ways out at an empty prompt, and the submit hint once composing', () => {
-    expect(idleHint(false, true)).toBe(
-      '[/] for commands \u00b7 type /exit to end \u00b7 [Ctrl+C] end (twice)',
-    );
-    // `/exit` is a command to type, never a key: it is written plain, in a sentence that says what typing it does.
+  it('offers the palette and the key that leaves at an empty prompt, and the submit hint once composing', () => {
+    // ADR-0146 §4: the key, its verb and its destination; a stand-alone chat ends (the sentence about typing `/exit` is gone from the hint:
+    // `/exit` is a row of the palette it names).
+    expect(idleHint(false, true)).toBe('[/] commands \u00b7 [Ctrl+C] end (twice)');
     expect(idleHint(false, true)).not.toContain('[/exit]');
     expect(idleHint(false, false)).toBe(
       'Enter send \u00b7 [Ctrl+J] newline \u00b7 [Ctrl+C] clear the draft',
@@ -138,12 +137,11 @@ describe('idleHint — what the idle prompt tells the person to press', () => {
 
   it('lists only keys the prompt answers, and each does what its word says (ADR-0145 §3: a test presses every key a legend lists)', () => {
     const now = 1000;
-    // At an empty prompt: `/` opens the palette, `/exit` is a typed command of the chat's registry (named in a sentence, not a key), `Ctrl+C` twice ends the session.
+    // At an empty prompt: `/` opens the palette (whose last row, `/exit`, is a command of the chat's registry), `Ctrl+C` twice ends the session.
     expect(listedKeys(idleHint(false, true)).filter((word) => word.startsWith('['))).toEqual([
       '[/]',
       '[Ctrl+C]',
     ]);
-    expect(idleHint(false, true)).toContain('type /exit to end');
     expect(shouldOpenPalette('/', {}, false, 0)).toBe(true);
     expect(commandsOf('standalone-chat').map((command) => command.name)).toContain('exit');
     const first = pressInterrupt(DISARMED, { kind: 'prompt', hasText: false }, now);

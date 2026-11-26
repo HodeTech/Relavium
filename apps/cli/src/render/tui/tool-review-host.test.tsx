@@ -1372,6 +1372,37 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       expect(answered).toBe(true);
     });
+    // MVP-11 unit 7: below the floor the refusal is one sentence that names the size, and where the keys that leave do not fit its row the row
+    // is cut BETWEEN items: `[Ctrl+C]` is never on one terminal row and `stops the turn` on the next.
+    it('draws the refusal of a full view on a terminal below the floor with every key beside its effect, never wrapped between them', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      void f.store.requestApproval(request, true, undefined, {
+        callId: 'hint-rows',
+        preview: poemPreview(2),
+      });
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await settle();
+      f.input.push('v');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+      await settle();
+      f.resize(70, 23);
+      await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
+      const rows = (f.lastFrameWith('Terminal too small') ?? '').split('\n');
+      const at = rows.findIndex((row) => row.includes('Terminal too small: enlarge to 80×24'));
+      expect(at, 'the one sentence, naming the size').toBeGreaterThanOrEqual(0);
+      const hintRows = rows.slice(at, at + 2).map((row) => row.trimEnd());
+      for (const row of hintRows) expect(row.length, row).toBeLessThanOrEqual(70);
+      for (const [key, effect] of [
+        ['[Ctrl+N]', 'Deny'],
+        ['[Ctrl+C]', 'stops the turn'],
+        ['Esc', 'back'],
+      ] as const) {
+        const row = hintRows.find((candidate) => candidate.includes(key));
+        expect(row, `${key} is drawn`).toBeDefined();
+        expect(row, `${key} is on one row with its effect`).toContain(`${key} ${effect}`);
+      }
+    });
   });
 
   // D64 round 2, D4: Esc stops the whole turn (the card says so); the full view still said "abort". ADR-0134: the full
@@ -1935,7 +1966,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
         expect(f.lastFrameWith('Press Enter to allow all file writes this session')).toBeDefined(),
       );
       const asking = f.lastFrameWith('Press Enter to allow') ?? '';
-      expect(asking, 'the card tells what any other key does').toContain('Any other key cancels');
+      expect(asking, 'the card tells what any other key does').toContain('any other key cancels');
       expect(asking, 'and that Esc still stops the turn').toContain('Esc stops the turn');
       expect(asking).not.toContain('[Ctrl+Y] Allow');
       expect(asking, 'a second Ctrl+G is no longer the confirmation').not.toContain(
@@ -2099,7 +2130,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
       expect(
         asking[grantsAt + 1],
         'and says what any other key does, and what Esc and Ctrl+C do',
-      ).toBe('Any other key cancels \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
+      ).toBe('any other key cancels \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
       expect(asking.findIndex((row) => /^- /u.test(row))).toBe(
         before.findIndex((row) => /^- /u.test(row)),
@@ -2354,7 +2385,7 @@ describe('answer chords in the real host', () => {
             ),
           );
           const [question, other] = keyRows(f);
-          expect(other).toBe('Any other key cancels · Esc stops the turn');
+          expect(other).toBe('any other key cancels · Esc stops the turn');
           expect((question ?? '').length).toBeLessThanOrEqual(78);
           for (const row of cardRows(f)) expect(row.length).toBeLessThanOrEqual(80);
           expect(outcome()).toBeUndefined();
@@ -2375,7 +2406,7 @@ describe('answer chords in the real host', () => {
           await vi.waitFor(() =>
             expect(keyRows(f)[0]).toBe('Press Enter to allow all file writes this session'),
           );
-          expect(keyRows(f)[1]).toBe('Any other key cancels · Esc stops the turn');
+          expect(keyRows(f)[1]).toBe('any other key cancels · Esc stops the turn');
           expect(outcome(), 'the first Ctrl+G only asks').toBeUndefined();
           // Long enough for an Enter to count as the confirmation: only the bare `a` stands in its way.
           vi.advanceTimersByTime(1000);
@@ -2772,7 +2803,7 @@ describe.each(['chat', 'home'] as const)(
       // The message row is kept (blank here) under the rule, so the body's height never depends on whether there is a message.
       expect(rows[screen.rule + 1], 'the message row, kept blank').toBe('');
       expect(rows[screen.rule + 2], 'movement keys').toBe(
-        '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab / Shift+Tab changes',
+        '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab/Shift+Tab changes',
       );
       expect(rows[screen.rule + 3], 'inspection keys: no mask, no clipboard').toBe(
         '[/] search · [p] Unicode codes',

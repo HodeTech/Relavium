@@ -438,12 +438,12 @@ describe('what a surface says (ADR-0145 §7.4, §8)', () => {
     expect(description('exit', 'home-chat')).toBe('Leave this chat and go back to the Home.');
   });
 
-  it('/doctor on the Home does not advertise --deep, which the Home refuses (N5); a chat does', () => {
-    expect(description('doctor', 'home')).toBe('Check your setup.');
-    expect(description('doctor', 'standalone-chat')).toBe(
+  it('/doctor says the same on every surface, and names the deep tier the Home now opens too (one description)', () => {
+    expect(description('doctor', 'home')).toBe(
       'Check your setup; --deep also validates keys and MCP.',
     );
-    expect(description('doctor', 'home-chat')).toBe(description('doctor', 'standalone-chat'));
+    expect(description('doctor', 'standalone-chat')).toBe(description('doctor', 'home'));
+    expect(description('doctor', 'home-chat')).toBe(description('doctor', 'home'));
   });
 
   it('/pricing names no shell command', () => {

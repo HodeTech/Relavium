@@ -52,6 +52,8 @@ export interface RealModeControl {
       }
     | undefined;
   readonly workspace: string;
+  /** What the control announced on its host's notification channel (`announce`), in order: the texts, whatever their topic. */
+  readonly announced: readonly string[];
   readonly dispose: () => Promise<void>;
 }
 
@@ -66,6 +68,8 @@ export async function realModeControl(options?: {
    * when the roots depend on the workspace, which the helper creates.
    */
   readonly commandPaths?: DisplayPathRoots | ((workspace: string) => DisplayPathRoots);
+  /** `false` builds the control with NO notification channel (a host that has none); by default it has the chat handler's. */
+  readonly announce?: false;
 }): Promise<RealModeControl> {
   const workspace = mkdtempSync(join(tmpdir(), 'relavium-mode-control-'));
   const built = await buildChatSession({
@@ -81,7 +85,16 @@ export async function realModeControl(options?: {
   });
   const pushes = vi.spyOn(built.session, 'setTurnPolicy');
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+  // The host's channel, as the chat handler gives it (it always has one): a control with none says a refusal in the transcript instead.
+  const announced: string[] = [];
   const control = createChatModeControl(built, store, {
+    ...(options?.announce === false
+      ? {}
+      : {
+          announce: (text: string) => {
+            announced.push(text);
+          },
+        }),
     ...(options?.commandGrants === undefined ? {} : { commandGrants: options.commandGrants }),
     commandPaths:
       typeof options?.commandPaths === 'function'
@@ -94,6 +107,7 @@ export async function realModeControl(options?: {
     policyPushes: () => pushes.mock.calls.length,
     policy: () => pushes.mock.calls.at(-1)?.[0],
     workspace,
+    announced,
     dispose: async () => {
       built.session.cancel();
       await built.whenHostSafeToClose();

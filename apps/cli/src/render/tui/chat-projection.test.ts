@@ -9,7 +9,6 @@ import {
   formatBusyLine,
   formatReasoningPanel,
   formatSessionFooter,
-  formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
   projectDenialExplanation,
@@ -723,18 +722,6 @@ describe('chat-projection', () => {
     });
   });
 
-  describe('formatSessionFooterWithMode', () => {
-    it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
-      const state = {
-        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
-        turnCount: 2,
-      };
-      expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
-      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
-      expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
-    });
-  });
-
   describe('stripTerminalControls', () => {
     it('removes ANSI CSI + OSC escapes and bare control bytes, keeping printable text + tab/newline', () => {
       // OSC title-write, CSI color, a CR, a NUL — all stripped; the real text + \n + \t survive.
@@ -899,13 +886,15 @@ describe('chat-projection', () => {
   });
 
   describe('wrapTranscript (2.6.F Step 4b — alt-screen viewport flattening, ADR-0068 §c)', () => {
-    it('flattens a user entry to a `> `-prefixed cyan line, wrapped at cols', () => {
+    it('flattens a user entry to a `> `-prefixed line whose first row carries the host marker as data, wrapped at cols', () => {
+      // Step 7a (ADR-0145 §6): the first row of the person's turn carries the host's own marker as DATA (`marker`, here the plain `>` of the
+      // colour-off form), so a renderer never looks for it in the text; the rest of the turn is unprefixed rows, as it always was.
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
       const lines = wrapTranscript(entries, 80);
-      expect(lines).toEqual([{ text: '> hello world', style: 'user' }]);
+      expect(lines).toEqual([{ text: '> hello world', style: 'user', marker: '>' }]);
       // Full-screen wraps at words, falling back to characters for long tokens.
       expect(wrapTranscript(entries, 6)).toEqual([
-        { text: '> ', style: 'user' },
+        { text: '> ', style: 'user', marker: '>' },
         { text: 'hello ', style: 'user' },
         { text: 'world', style: 'user' },
       ]);

@@ -2034,6 +2034,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           withGlyphForm(deps.plainGlyphs === true, () =>
             modelSwitchNotice(old.store.getSnapshot().state.model ?? '(unknown)', target.modelId),
           ),
+          'modelSwitch', // the sentence leads with the host's own `⇄`
         );
         set({
           session: next,

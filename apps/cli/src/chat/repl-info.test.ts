@@ -38,6 +38,36 @@ describe('catalogNotice', () => {
     expect(notice).toContain('  coder');
   });
 
+  it('says WHY an invalid entry is invalid: the parse reason the catalog holds, scrubbed and bounded, as `relavium list` says it', () => {
+    const broken: CatalogEntry = {
+      ...entry('broken', false),
+      error: 'nodes.0.agent: unknown agent "coder"',
+    };
+    expect(catalogNotice([broken], [])).toContain(
+      `  broken (invalid: nodes.0.agent: unknown agent "coder")`,
+    );
+    const hostile: CatalogEntry = {
+      ...entry('hostile', false),
+      error: `bad\u001b[2J\u202e text ${'x'.repeat(400)}`,
+    };
+    const notice = catalogNotice([hostile], []);
+    expect(notice).not.toContain('\u001b');
+    expect(notice).not.toContain('\u202e');
+    const row = notice.split('\n').find((line) => line.includes('hostile')) ?? '';
+    expect(
+      row.endsWith('…)'),
+      'a long reason is cut with the one ellipsis, inside the parentheses',
+    ).toBe(true);
+    expect(row.length).toBeLessThan(160);
+  });
+
+  it('an invalid entry that holds no reason stays `(invalid)`, never `(invalid: )`', () => {
+    expect(catalogNotice([entry('broken', false)], [])).toContain('  broken (invalid)\n');
+    expect(catalogNotice([{ ...entry('broken', false), error: '' }], [])).toContain(
+      '  broken (invalid)',
+    );
+  });
+
   it('a single empty kind reads "none" (the other kind still lists)', () => {
     expect(catalogNotice([entry('deploy')], [])).toBe('Workflows (1):\n  deploy\nAgents: none');
   });

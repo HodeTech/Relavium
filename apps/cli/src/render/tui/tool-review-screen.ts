@@ -261,7 +261,7 @@ export function fullNavRows(input: NavLegendInput): readonly LegendRender[] {
     { keys: 'PgUp/PgDn', verb: 'page' },
     { keys: 'Home/End', verb: 'top/end' },
   ];
-  if (input.hasChanges) move.push({ keys: ['Tab', 'Shift+Tab'], verb: 'changes' });
+  if (input.hasChanges) move.push({ keys: 'Tab/Shift+Tab', verb: 'changes' });
   const tools: LegendItem[] = [{ keys: '/', verb: 'search' }];
   if (input.hasMasks)
     tools.push({ keys: 'r', verb: input.revealed ? 'hide masked' : 'reveal masked' });
@@ -290,7 +290,7 @@ export const FULL_CONFIRM_ENTER_LEGEND: LegendRender = exitRow(
   exitKey.step(),
 );
 export const FULL_CONFIRM_ANY_LEGEND: LegendRender = exitRow(
-  [{ text: 'Any other key cancels' }, STOP_KEY],
+  [{ text: 'any other key cancels' }, STOP_KEY],
   exitKey.step(),
 );
 export const FULL_CONFIRM_ENTER_ROW = FULL_CONFIRM_ENTER_LEGEND.text;

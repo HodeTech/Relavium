@@ -11,7 +11,7 @@ import { foldMentionKey, type MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import { buildPaletteEntries, filterPaletteEntries } from './palette-entries.js';
 import { reducePaletteKey, type PaletteList } from './palette-reducer.js';
-import { PaletteView } from './palette-view.js';
+import { PaletteView, paletteLegend } from './palette-view.js';
 import { ReverseSearchView } from './reverse-search-view.js';
 
 /**
@@ -44,7 +44,14 @@ describe('the palette legend', () => {
       const view = render(
         <PaletteView list={listOf(layout)} state={{ query: '', index: 0 }} color={false} />,
       );
-      const legend = rowsOf(view.lastFrame()).find((row) => row.includes('Enter run')) ?? '';
+      // The Home's palette (`down`) draws its legend as its last line; a chat's list (`up`) draws none: the chat's prompt block puts the same
+      // words on the hint row (ADR-0146 §4), from `paletteLegend`.
+      const legend =
+        layout === 'down'
+          ? (rowsOf(view.lastFrame()).find((row) => row.includes('Enter run')) ?? '')
+          : paletteLegend(listOf(layout));
+      if (layout === 'up')
+        expect(rowsOf(view.lastFrame()).some((row) => row.includes('Enter run'))).toBe(false);
       expect(legend).toBe('↑/↓ select · Enter run · Esc close');
       expect(listedKeys(legend)).toEqual(['↑/↓', 'Enter', 'Esc']);
       expect(reducePaletteKey('', { upArrow: true }, layout).kind).toBe('move');

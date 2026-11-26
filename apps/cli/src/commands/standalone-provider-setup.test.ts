@@ -185,6 +185,18 @@ describe('standalone native provider setup lifecycle', () => {
     expect(f.text() + f.err()).not.toContain('trailing-secret');
   });
 
+  it('says the starter default was saved ONCE in the notice it leaves behind (the consent notice carries it; the default write must not repeat it)', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f);
+    f.stdin.push('\r');
+    expect(await running).toBe(0);
+    const notice = f.err();
+    expect(notice, 'the setup says what it saved').toContain('Starter default saved.');
+    expect(notice.split('Starter default saved').length - 1, notice).toBe(1);
+  });
+
   it('publishes named-source consent and starter default onto a config that existed only after a visible rewrite notice, quarantining Enter suffix', async () => {
     writeFileSync(join(root, 'selected.toml'), '# hand-made\n[preferences]\ntheme = "dark"\n');
     const f = fixture({ OPENAI_API_KEY: credential });
@@ -267,6 +279,10 @@ describe('standalone native provider setup lifecycle', () => {
     expect(f.outcome()?.ephemeralDefault?.provider).toBe('openai');
     expect(readFileSync(target, 'utf8')).toBe('# Keep this file\n');
     expect(f.err()).toContain('not saved');
+    // the notice says what each answer did ONCE: the source's, then the model's (once, not twice with a second wording of it)
+    expect(f.err()).toBe(
+      'Source allowed for this invocation only. Starter model selected for this invocation only; the default was not saved.\n',
+    );
     expect(f.exit).not.toHaveBeenCalled();
   });
 

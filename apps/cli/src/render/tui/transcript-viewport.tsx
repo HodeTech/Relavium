@@ -2,12 +2,11 @@ import { Box, measureElement, type DOMElement } from 'ink';
 import { Text } from './text.js';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
-import { Emph } from './emphasis-view.js';
 import { transcriptStyleProps } from './projection.js';
 import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
-import { MarkdownText } from './markdown-text.js';
+import { TranscriptRowBody } from './transcript-row.js';
 
 /**
  * The full-screen alt-screen transcript **viewport** (2.6.F Step 4b, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c) —
@@ -134,28 +133,7 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
             key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
             {...transcriptStyleProps(line.style, props.color)}
           >
-            {line.spans !== undefined ? (
-              <MarkdownText
-                spans={line.spans.length === 0 ? [{ text: ' ' }] : line.spans}
-                color={props.color}
-                selected={
-                  segments === undefined
-                    ? undefined
-                    : {
-                        start: segments.before.length,
-                        end: segments.before.length + segments.selected.length,
-                      }
-                }
-              />
-            ) : segments === undefined ? (
-              text
-            ) : (
-              <>
-                {segments.before}
-                <Emph kinds="inverse">{segments.selected}</Emph>
-                {segments.after}
-              </>
-            )}
+            <TranscriptRowBody line={line} color={props.color} segments={segments} />
           </Text>
         );
       })}

@@ -13,6 +13,7 @@ import type { ChatStoreController, ChatStoreSnapshot } from './chat-store.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
 import {
   inspectionPending,
@@ -45,6 +46,8 @@ import {
   keyToken,
   legend,
   legendItems,
+  legendRows,
+  type LegendExit,
   type LegendItem,
   type LegendRender,
 } from './legend.js';
@@ -62,6 +65,7 @@ import {
 } from './tool-review-projection.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
+import { displayWidth } from './viewport.js';
 
 const escaped = (text: string): string =>
   [...text].map((char) => escapeReviewCharacter(char, false)).join('');
@@ -200,7 +204,7 @@ export function ToolReviewHost(
   });
   if (review === undefined) return null;
   if (!reviewTerminalFits(props.size))
-    return <Text>{reviewExitHint(review, 'Terminal too small — resize to at least 80×24')}</Text>;
+    return <Text>{reviewExitHint(review, TERMINAL_TOO_SMALL_TEXT, props.size.cols)}</Text>;
   if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
@@ -211,6 +215,7 @@ export function ToolReviewHost(
             commandTooLarge: review.facts !== undefined && review.document?.valid === false,
             onCard: review.screen === 'card',
           }),
+          props.size.cols,
         )}
       </Text>
     );
@@ -358,14 +363,17 @@ const STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'wa
  * those states act on a frame the person can read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
  * The explanation is the legend's first item, its closing full stop dropped (a legend has none).
  */
-function reviewExitHint(review: ToolReviewState, explanation: string): string {
+function reviewExitHint(review: ToolReviewState, explanation: string, columns: number): string {
   const because: LegendItem = { text: explanation.replace(/\.$/u, '') };
-  if (review.kind !== 'approval') return legend([because], exitKey.close());
+  // Drawn in rows cut between items, so a terminal too narrow for one row never splits `[Ctrl+C]` from what it does.
+  const rows = (items: readonly LegendItem[], exit: LegendExit): string =>
+    legendRows(items, exit, columns, displayWidth).join('\n');
+  if (review.kind !== 'approval') return rows([because], exitKey.close());
   const modal = review.denial !== undefined || review.searching;
-  if (modal) return legend([because, STOP_KEY], exitKey.close('Esc', 'close the box'));
+  if (modal) return rows([because, STOP_KEY], exitKey.close('Esc', 'close the box'));
   return review.screen === 'card'
-    ? legend([because, DENY_KEY], exitKey.decide('stops the turn'))
-    : legend([because, DENY_KEY, STOP_KEY], exitKey.step());
+    ? rows([because, DENY_KEY], exitKey.decide('stops the turn'))
+    : rows([because, DENY_KEY, STOP_KEY], exitKey.step());
 }
 
 const RULE_LABEL = ' Approval needed ';

@@ -46,8 +46,9 @@ export interface SurfaceBase {
   readonly selectedRow?: string | readonly string[] | undefined;
   /**
    * The surface's own legend row, exactly as drawn (`↑/↓ select · Enter run · Esc close`): the matrix asserts it is on ONE row of the frame,
-   * whole, in every cell where the surface renders. An exit key and a landmark can survive a layout that draws a list over the legend, so
-   * this is the property that names it. Absent for a surface whose legend is not one fixed row.
+   * whole, in every cell where the surface renders (a popup drawn over the body: alone in the box's own columns of one of the box's rows, since
+   * the dimmed backdrop shows beside it: `checkLegendRow`). An exit key and a landmark can survive a layout that draws a list over the legend,
+   * so this is the property that names it. Absent for a surface whose legend is not one fixed row.
    */
   readonly legendRow?: string | readonly string[] | undefined;
   /**

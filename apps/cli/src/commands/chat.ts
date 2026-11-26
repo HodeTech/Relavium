@@ -1965,7 +1965,10 @@ export function createChatModeControl(
       // that is running: the footer would show `ask` while that turn's later writes were still approved without a
       // card. Both surfaces (this chat and the Home) reach the mode only through here, so the refusal lives here.
       if (store.getSnapshot().state.status === 'running') {
-        store.notice(MODE_CHANGE_RUNNING_NOTICE);
+        // OD-1 (ADR-0148 §6): a mode change leaves the status line and one transient notification, never a row of the transcript. A control
+        // built with no channel says it in the transcript instead, so the key is never silent.
+        if (opts.announce === undefined) store.notice(MODE_CHANGE_RUNNING_NOTICE);
+        else opts.announce(MODE_CHANGE_RUNNING_NOTICE, 'mode');
         return false;
       }
       const effective = interactive ? mode : 'ask';

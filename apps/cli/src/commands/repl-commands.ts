@@ -306,6 +306,9 @@ function inChats(
   return { 'standalone-chat': placement, 'home-chat': { ...placement, ...homeChat } };
 }
 
+/** What `/doctor` says in the palette, on every surface that has it: the Home too opens the deep tier on its confirmation line (ADR-0148 §8). */
+const DOCTOR_DESCRIPTION = 'Check your setup; --deep also validates keys and MCP.';
+
 /** The `run` of a {@link HomeOpenedCommand} in the flattened view: the Home opens the command itself, so a call here is a routing mistake. */
 const refuseToRun =
   (name: string): CommandRun =>
@@ -444,15 +447,15 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     ],
     // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home capability (pre-chat
     // diagnostics), so it is placed on every surface. On every interactive surface the hosts open the `/doctor` popup before this runs
-    // (ADR-0148 §8), and a typed `--deep` opens it on its confirmation line, on the Home too; the Home's row keeps its words (a wording change
-    // of the palette is a commit of its own). A plain, `--json` or one-shot chat runs this and prints the text report.
+    // (ADR-0148 §8), and a typed `--deep` opens it on its confirmation line, on the Home too, so the one description names `--deep` on every
+    // surface. A plain, `--json` or one-shot chat runs this and prints the text report.
     run: (ctx, args) => ctx.runDoctor(args.includes('--deep')),
     placements: {
-      home: { group: 'check', rank: 10, description: 'Check your setup.', surface: 'popup' },
+      home: { group: 'check', rank: 10, description: DOCTOR_DESCRIPTION, surface: 'popup' },
       ...inChats({
         group: 'inspect',
         rank: 50,
-        description: 'Check your setup; --deep also validates keys and MCP.',
+        description: DOCTOR_DESCRIPTION,
         surface: 'popup',
       }),
     },

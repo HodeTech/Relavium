@@ -47,6 +47,7 @@ import {
   hintRowNotification,
   useCopiedToast,
 } from './chat-ink.js';
+import { chatFrameRows } from './chat-layout.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
   createTranscriptAcknowledgement,
@@ -100,7 +101,7 @@ import { MentionView } from './mention-view.js';
 import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
 import { helpSheetLines } from './help-sheet.js';
-import { PaletteView } from './palette-view.js';
+import { chatPaletteRows } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
@@ -233,6 +234,10 @@ function ChatRegion(
     promptHeight?: number | undefined;
     /** The notification the hint row shows in place of the hint (the Home's one channel), or `undefined`. */
     notification?: string | undefined;
+    /** The lowercase provider id of the chat's bound agent, first on the status line (ADR-0146 §2): the session's own, read where the region is mounted. */
+    provider?: string | undefined;
+    /** Whether the composer draws its cursor cell: `false` while a popup is drawn over the chat, whose keys they are (ADR-0148 §2). Absent ⇒ drawn. */
+    composerCursor?: boolean | undefined;
   }>,
 ): ReactElement {
   // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
@@ -279,6 +284,12 @@ function ChatRegion(
         nowMs={nowMs}
         color={color}
         editor={props.editor}
+        composerCursor={props.composerCursor}
+        surface="home-chat"
+        provider={props.provider}
+        // The header is the introduction of a chat's FIRST mount (inline: written once into the scrollback). A reseat or a `/clear` hands the
+        // region a new store under the same root, which bumps the generation: the same chat goes on, and nothing is written again.
+        introduction={transcriptOwner.generation === 0}
         running={chatIsBusy({
           turnRunning: state.status === 'running',
           shellBusy: props.shellBusy,
@@ -296,6 +307,15 @@ function ChatRegion(
         interruptArmed={props.interruptArmed}
         copied={props.copied}
         paletteOpen={promptHidden(props.overlays)}
+        palette={
+          props.palette === undefined
+            ? undefined
+            : {
+                list: props.palette.list,
+                state: props.palette.state,
+                maxRows: chatPaletteRows(props.reviewSize.rows, props.palette.list),
+              }
+        }
         notification={props.notification}
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -320,14 +340,6 @@ function ChatRegion(
         hasCustody={props.reviewCustody}
         color={color}
       />
-      {props.palette !== undefined && (
-        <PaletteView
-          list={props.palette.list}
-          state={props.palette.state}
-          color={color}
-          {...(viewport === undefined ? {} : { maxRows: viewport.rows - 1 })}
-        />
-      )}
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
       )}
@@ -1081,7 +1093,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
               holdsCustody(liveOverlays())
             }
             reviewClipboard={props.reviewClipboard}
-            editor={composer}
+            editor={state.input}
+            composerCursor={drawing === undefined}
+            provider={state.session.provider}
             overlays={flags}
             palette={state.palette}
             search={state.search}
@@ -1468,18 +1482,21 @@ const emptyPromptSubscribe = (): (() => void) => () => {};
 type NativeSize = Parameters<typeof nativePromptFits>[0];
 
 /**
- * The rows the chat's transcript viewport keeps in the alternate screen: the terminal's own with no native card open, what the card leaves
- * while one is, and one row when the card does not fit (the card then owns the screen).
+ * The rows the chat's FRAME keeps in the alternate screen, which bound its root (the header, the transcript viewport and the prompt block all
+ * sit inside it): the terminal's less one with no native card open ({@link chatFrameRows}), what the card leaves of that while one is, and one row
+ * when the card does not fit (the card then owns the screen).
  */
 function chatViewportRows(
   flags: OverlayFlags,
   prompt: NativePromptSnapshot,
   size: NativeSize,
 ): number {
-  if (!occupiesRows(flags)) return size.rows;
+  // The frame is one row short of the terminal in every case (ADR-0146 §4), the card's rows come out of that.
+  const frame = chatFrameRows(size.rows);
+  if (!occupiesRows(flags)) return frame;
   // A popup's block takes the whole live region: the viewport keeps one row.
   if (!nativeCardShown(prompt)) return 1;
-  return nativePromptFits(size) ? Math.max(1, size.rows - promptRows(prompt, size.cols)) : 1;
+  return nativePromptFits(size) ? Math.max(1, frame - promptRows(prompt, size.cols)) : 1;
 }
 
 /** The rows the chat region is bounded to while a native card is open (two fewer than the viewport keeps), or `undefined` with none open. */

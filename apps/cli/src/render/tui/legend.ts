@@ -292,6 +292,36 @@ export function legendSpans(items: readonly LegendItem[], exit: LegendExit): rea
 }
 
 /**
+ * The legend as rows of at most `columns` (as `width` measures them), filled in order and cut BETWEEN items, never inside one: a terminal
+ * that wraps a long line would split `[Ctrl+C]` from `stops the turn`, and a key is not read without its effect. A row that another follows keeps
+ * the separator's dot at its end (`a · b ·` then `c`), as a wrapped legend reads, so the rows put back one after the other are the legend. The
+ * key that leaves is the last item of the last row; an item wider than a row has a row of its own, and the caller's own cut applies to it. For a
+ * refusal drawn on a terminal too narrow for one row (a card that cannot be shown), where {@link fitLegend}'s dropping of keys would hide what
+ * the person can still press.
+ */
+export function legendRows(
+  items: readonly LegendItem[],
+  exit: LegendExit,
+  columns: number,
+  width: (text: string) => number,
+): readonly string[] {
+  const dot = LEGEND_SEPARATOR.trimEnd();
+  const rows: string[] = [];
+  let row: LegendItem[] = [];
+  for (const item of [...items, exit]) {
+    // an item that is not the last may end a row, which then carries the dot of the separator it stands in front of
+    const trailing = item === exit ? 0 : width(LEGEND_SEPARATOR) - width(' ');
+    if (row.length === 0 || width(keyHint([...row, item])) + trailing <= columns) row.push(item);
+    else {
+      rows.push(`${keyHint(row)}${dot}`);
+      row = [item];
+    }
+  }
+  rows.push(keyHint(row));
+  return rows;
+}
+
+/**
  * Items with no key that leaves: a hint beside a row or a status (`no key yet · Enter add one`, `Notice 1–17 of 60 · PgUp/PgDn read`) and a
  * card's first row of answers, whose second row carries the exit. The same grammar (bracket rule, one separator, verbs that state the effect)
  * as {@link legend}, in a second function so that {@link legend} can keep its exit required. Empty items are an empty render.

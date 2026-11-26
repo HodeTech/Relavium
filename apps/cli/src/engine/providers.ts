@@ -433,10 +433,9 @@ export async function validateProviderKey(
         : provider.generate(request, key, lifecycle.work));
       return { ok: true, detail: `key works (${model})`, reason: 'ok' };
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
       return {
         ok: false,
-        detail: `key test failed — ${raw.split(key).join(keyHint(key))}`,
+        detail: `key test failed — ${failureWords(err, key)}`,
         // Classify from the seam's own error kind (never a string heuristic): a rejected key is `auth` (retry with
         // a new key); a timeout/transport/overloaded/rate-limit is `network` (continue-anyway is sane); else `other`.
         reason: classifyValidationFailure(err),
@@ -451,6 +450,26 @@ export async function validateProviderKey(
     if (timer !== undefined) clearTimeout(timer);
     lifecycle?.signal.removeEventListener('abort', parentStopped);
   }
+}
+
+/** What a key test says of a transport failure that carries no status and no code: the same sentence for every provider. */
+export const CONNECTION_FAILED_WORDS = 'could not reach the provider';
+
+/**
+ * What a failed key test says: a transport failure the provider gave no status or code for is ONE sentence, because each SDK words the same
+ * cause its own way (`Connection error.`, `fetch failed`) and the person reading the rows cannot tell whether they are the same problem. Any
+ * other failure keeps the provider's own words, the key redacted, so a status or a code is never hidden behind the sentence.
+ */
+function failureWords(err: unknown, key: string): string {
+  if (
+    err instanceof LlmProviderError &&
+    err.llmError.kind === 'transport' &&
+    err.llmError.status === undefined &&
+    err.llmError.code === undefined
+  )
+    return CONNECTION_FAILED_WORDS;
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.split(key).join(keyHint(key));
 }
 
 /** Map a probe throw → a {@link ValidationReason}, from the seam's `LlmProviderError.llmError.kind` (never a string

@@ -2220,11 +2220,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
           'the footer must not claim a mode the turn is not under',
         ).toBe('ask');
         expect(m.policyPushes(), 'no policy is pushed mid-turn').toBe(before);
+        // OD-1: said as the chat's transient notification, not as a row of the transcript.
+        expect(m.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
         expect(
           m.store
             .getSnapshot()
             .state.transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
-        ).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+        ).toEqual([]);
         // Once the turn has ended the same key cycles again (ask -> plan).
         m.store.apply(TURN_COMPLETED);
         c.handleKey('', { tab: true, shift: true });
@@ -3219,4 +3221,41 @@ describe('the lines the controller writes into a chat itself follow `plainGlyphs
       await c.teardownActive();
     },
   );
+
+  it('the model-switch notice of a reseat names the model switch as its own lead, so the transcript keeps the host’s `⇄` and blanks any other (ADR-0145 §6)', async () => {
+    const sessionA = makeSession({ sessionId: 'sess-A', onSetEffort: vi.fn() });
+    sessionA.session.store.appendUser('what is 2+2');
+    const sessionB = makeSession({ sessionId: 'sess-A' });
+    const notice = vi.spyOn(sessionB.session.store, 'notice');
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+    });
+    let opened: SettingsPort | undefined;
+    const c = createHomeController({
+      startChat: () =>
+        Promise.resolve({
+          ...sessionA.session,
+          settings: { surface: 'home-chat', announce: vi.fn() },
+        }),
+      reseatChat: () => Promise.resolve(sessionB.session),
+      models: port,
+      openSettings: ({ chat }) => {
+        opened = chat;
+      },
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    opened?.models?.switchModel?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+    await flush();
+    const call = notice.mock.calls.find(([line]) => line.includes('model changed'));
+    expect(call?.[1]).toBe('modelSwitch');
+    await c.teardownActive();
+  });
 });
