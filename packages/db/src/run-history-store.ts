@@ -21,8 +21,12 @@ import {
   eq,
   getTableColumns,
   gt,
+  gte,
   inArray,
   isNull,
+  lt,
+  ne,
+  or,
   sql,
   type AnyColumn,
   type SQL,
@@ -354,7 +358,12 @@ export type RunHistoryReadErrorCode =
   /** A keyset cursor (`before`, `afterSeq`) that is not a safe integer position. */
   | 'invalid_cursor'
   /** More run ids than the read's cap ({@link MAX_RUN_LEASE_IDS}, {@link MAX_RUN_STATE_EVENT_BATCH_IDS}) in one `IN` lookup. */
-  | 'too_many_run_ids';
+  | 'too_many_run_ids'
+  /**
+   * A {@link RunSummaryFilter} value that is not usable: a time bound (`since`, `failedOnlyBefore`) that is not a safe integer, or a
+   * count with no project root (an empty or non-string one). Refused, never read as "no bound" or as "every project".
+   */
+  | 'invalid_filter';
 
 /**
  * A bounded read refused its ARGUMENTS (ADR-0140 §4): the paging reads are called from the render path, where a
@@ -420,6 +429,58 @@ function positiveIntegerLimit(limit: number): number {
 /** A finite positive integer, clamped to `max`; anything else is refused (never read as "unbounded"). */
 function boundedLimit(limit: number, max: number): number {
   return Math.min(positiveIntegerLimit(limit), max);
+}
+
+/**
+ * The filters a page of run summaries ({@link RunHistoryReader.listRunSummaries}) and its count
+ * ({@link RunHistoryReader.countRunSummaries}) share. ONE `WHERE` is built from it for both ({@link runSummaryWhere}), so a count is
+ * exactly the number of rows the page lists for the same filter. A soft-deleted run is in neither. Every value is a bound parameter.
+ */
+export interface RunSummaryFilter {
+  readonly status?: RunStatus;
+  readonly projectRoot?: string;
+  readonly workflowId?: string;
+  /** Only runs created at or after this time (epoch ms, inclusive). A safe integer; anything else is refused (`invalid_filter`). */
+  readonly since?: number;
+  /** Leave out the runs of this status. */
+  readonly exceptStatus?: RunStatus;
+  /**
+   * Keep a `failed` run only when it was created BEFORE this time (epoch ms, exclusive); a run of any other status is not affected by it.
+   * With `exceptStatus: 'paused'` it is the Home's Runs section: what is not under "Attention required" (MVP-11 unit 7). A safe integer;
+   * anything else is refused (`invalid_filter`).
+   */
+  readonly failedOnlyBefore?: number;
+}
+
+/** A time bound of a {@link RunSummaryFilter}: absent, or a safe integer of epoch milliseconds. Content-free when it refuses. */
+function timeBound(value: number | undefined): number | undefined {
+  if (value !== undefined && !Number.isSafeInteger(value)) {
+    throw new RunHistoryReadError(
+      'invalid_filter',
+      'a time bound must be a safe integer of epoch milliseconds',
+    );
+  }
+  return value;
+}
+
+/**
+ * The ONE `WHERE` of a run summary page and of its count ({@link RunSummaryFilter}): soft-deleted runs out, then each filter that is
+ * present. Shared, so the two can never disagree on which runs a filter names.
+ */
+function runSummaryWhere(filter: RunSummaryFilter): SQL | undefined {
+  const since = timeBound(filter.since);
+  const failedOnlyBefore = timeBound(filter.failedOnlyBefore);
+  return and(
+    isNull(runs.deletedAt),
+    filter.status === undefined ? undefined : eq(runs.status, filter.status),
+    filter.projectRoot === undefined ? undefined : eq(runs.projectRoot, filter.projectRoot),
+    filter.workflowId === undefined ? undefined : eq(runs.workflowId, filter.workflowId),
+    since === undefined ? undefined : gte(runs.createdAt, since),
+    filter.exceptStatus === undefined ? undefined : ne(runs.status, filter.exceptStatus),
+    failedOnlyBefore === undefined
+      ? undefined
+      : or(ne(runs.status, 'failed'), lt(runs.createdAt, failedOnlyBefore)),
+  );
 }
 
 /**
@@ -543,15 +604,24 @@ export interface RunHistoryReader {
    * frozen snapshot or a JSON document — and `projectRoot` / `workflowId` / `status` are filters on the same
    * ordering. Unfiltered and project-scoped pages are index-served with no filesort
    * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts).
+   * The time and exclusion filters of a {@link RunSummaryFilter} (`since`, `exceptStatus`, `failedOnlyBefore`) narrow the same
+   * ordered read; a time bound that is not a safe integer is refused (`invalid_filter`).
    * The existing {@link listRuns} and its callers are unchanged.
    */
-  listRunSummaries: (opts: {
-    readonly limit: number;
-    readonly before?: { readonly createdAt: number; readonly id: string };
-    readonly status?: RunStatus;
-    readonly projectRoot?: string;
-    readonly workflowId?: string;
-  }) => RunSummaryRecord[];
+  listRunSummaries: (
+    opts: RunSummaryFilter & {
+      readonly limit: number;
+      readonly before?: { readonly createdAt: number; readonly id: string };
+    },
+  ) => RunSummaryRecord[];
+  /**
+   * How many runs of ONE project a {@link RunSummaryFilter} names — the number of rows {@link listRunSummaries} would list for the same
+   * filter walked to its end (the one `WHERE` both build), soft-deleted runs excluded. Read-only and one statement (`count(*)`), served off
+   * `idx_runs_project_created` (plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts): the Home's true totals of this directory
+   * (MVP-11 unit 7). The project root is required and must be a non-empty string, and a time bound a safe integer; anything else is a
+   * {@link RunHistoryReadError} (`invalid_filter`), never a count of every project.
+   */
+  countRunSummaries: (filter: RunSummaryFilter & { readonly projectRoot: string }) => number;
   /**
    * The summaries of the runs with these ids, by primary key (the Home's pinned runs, ADR-0140 §5): a map from run id to
    * its {@link RunSummaryRecord}, soft-deleted runs excluded. An id that names no run is ABSENT from the map, not an
@@ -1874,10 +1944,7 @@ export function createRunHistoryReader(
         .from(runs)
         .where(
           and(
-            isNull(runs.deletedAt),
-            opts.status === undefined ? undefined : eq(runs.status, opts.status),
-            opts.projectRoot === undefined ? undefined : eq(runs.projectRoot, opts.projectRoot),
-            opts.workflowId === undefined ? undefined : eq(runs.workflowId, opts.workflowId),
+            runSummaryWhere(opts),
             // The keyset predicate: strictly AFTER the cursor in `(created_at DESC, id DESC)` order, which is
             // strictly BEFORE it numerically. The row-value form keeps the second term (`id`) as a tiebreak
             // WITHIN one `created_at`, so rows that share a millisecond straddle a page boundary exactly once.
@@ -1890,6 +1957,20 @@ export function createRunHistoryReader(
         .limit(limit)
         .all()
         .map(fromRunSummaryRow);
+    },
+
+    countRunSummaries: (filter) => {
+      // Required, and checked at runtime too: an absent or empty root would otherwise count every project's runs (or none), and the Home
+      // would print that as this directory's total.
+      if (typeof filter.projectRoot !== 'string' || filter.projectRoot.length === 0) {
+        throw new RunHistoryReadError('invalid_filter', 'a count needs a project root');
+      }
+      const row = db
+        .select({ count: sql<number>`count(*)`.mapWith(Number) })
+        .from(runs)
+        .where(runSummaryWhere(filter))
+        .get();
+      return row?.count ?? 0;
     },
 
     loadRunSummariesByIds: (runIds) => {

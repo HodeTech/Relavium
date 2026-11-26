@@ -127,6 +127,7 @@ export {
   type InterruptedRunInfo,
   type RunRecord,
   type RunSummaryRecord,
+  type RunSummaryFilter,
   type RunDetailRecord,
   type StepRecord,
   type StepSummaryRecord,

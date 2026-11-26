@@ -13,7 +13,13 @@ import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { visitSessionSummaries, type SessionSummary } from './session-summaries.js';
-import { listSessionPage, type SessionPage, type SessionPageOptions } from './session-discovery.js';
+import {
+  countSessionsInDirectory,
+  listSessionPage,
+  scopedWorkingDir,
+  type SessionPage,
+  type SessionPageOptions,
+} from './session-discovery.js';
 import {
   completeSessionUsageInvocation,
   acknowledgeSessionUsageComplete,
@@ -484,10 +490,21 @@ export interface SessionStore {
    * sort key so the order is deterministic when two rows share an `updated_at`. The order + soft-delete filter
    * are served off the `idx_agent_sessions_updated` partial index (no filesort). Pass `{ limit }` to bound the
    * read to the top-N (the Home reads only what it shows — an indexed top-N, never a full materialization);
-   * omit it for the full list (the `chat-list` contract).
+   * omit it for the full list (the `chat-list` contract). Pass `{ workingDir }` for the sessions of ONE directory (the Home's, MVP-11
+   * unit 7: the directory `/resume` calls "this directory"), served off `idx_agent_sessions_working_dir_updated` with the same order;
+   * a `workingDir` that is not a non-empty string is a `SessionDiscoveryBoundaryError`, never read as every directory.
    */
-  listSessions: (opts?: { readonly limit?: number }) => AgentSessionRecord[];
+  listSessions: (opts?: {
+    readonly limit?: number;
+    readonly workingDir?: string;
+  }) => AgentSessionRecord[];
   listSessionPage: (opts?: SessionPageOptions) => SessionPage;
+  /**
+   * How many live sessions were started in `workingDir`: exactly the rows `listSessions({ workingDir })` holds unbounded, soft-deleted
+   * excluded. One read-only `count(*)` off `idx_agent_sessions_working_dir_updated`; the directory is required (a non-empty string, else
+   * `SessionDiscoveryBoundaryError`). The Home's true total of this directory's sessions.
+   */
+  countSessions: (opts: { readonly workingDir: string }) => number;
   /** Visit all live discovery/accounting summaries in bounded indexed pages under one read snapshot. */
   visitSessionSummaries: (visit: (summary: SessionSummary) => void) => void;
   /**
@@ -607,13 +624,25 @@ export function createSessionStore(db: Db): SessionStore {
     return row === undefined ? undefined : fromAgentSessionRow(row);
   };
 
-  const listSessions = (opts?: { readonly limit?: number }): AgentSessionRecord[] => {
-    // This ORDER BY is index-served (idx_agent_sessions_updated, no filesort); its plan is pinned by
-    // apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5) — keep the WHERE/ORDER BY in sync with that budget.
+  const listSessions = (opts?: {
+    readonly limit?: number;
+    readonly workingDir?: string;
+  }): AgentSessionRecord[] => {
+    // This ORDER BY is index-served (idx_agent_sessions_updated, no filesort; with a directory,
+    // idx_agent_sessions_working_dir_updated); both plans are pinned by apps/cli/src/harness/perf-budget.e2e.test.ts
+    // (2.5.I S5, MVP-11 unit 7) — keep the WHERE/ORDER BY in sync with that budget. `'workingDir' in opts` rather than
+    // `!== undefined`: a caller that passes the key with no value is refused, never handed every directory.
+    const where =
+      opts !== undefined && 'workingDir' in opts
+        ? and(
+            isNull(agentSessions.deletedAt),
+            eq(agentSessions.workingDir, scopedWorkingDir(opts.workingDir)),
+          )
+        : isNull(agentSessions.deletedAt);
     const query = db
       .select()
       .from(agentSessions)
-      .where(isNull(agentSessions.deletedAt))
+      .where(where)
       .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id));
     // Only a FINITE POSITIVE INTEGER bounds the read; anything else (undefined, `≤0`, a fraction, `NaN`,
     // `Infinity`) falls back to the unbounded `all()` — the codebase `≤0 ⇒ unbounded` convention, hardened so a
@@ -958,6 +987,7 @@ export function createSessionStore(db: Db): SessionStore {
     loadSession,
     listSessions,
     listSessionPage: (opts) => listSessionPage(db, opts),
+    countSessions: (opts) => countSessionsInDirectory(db, opts.workingDir),
     visitSessionSummaries: (visit) => visitSessionSummaries(db, visit),
     appendMessage: (message, meta) => {
       withSessionUsageWrite(db, [message.sessionId], (tx) => {
