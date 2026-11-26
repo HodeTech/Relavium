@@ -1,4 +1,5 @@
 import { glyphOf } from './glyphs.js';
+import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 
 /**
  * The empty Home's block as DATA ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
@@ -7,11 +8,11 @@ import { glyphOf } from './glyphs.js';
  * frames `home-empty-80x24.png` and `home-empty-100x30.png` were measured to carry (a label starts at column 25 of the 68-column rail at
  * 80 columns, and so on), and the tests hold them to it.
  *
- * Pure, with no wiring: the view that draws the block, the controller that counts its rows and the banner that it replaces read these
- * constants and functions, so the three heights the plaque used to write in three places become {@link HOME_BLOCK_ROWS}. Nothing here
+ * Pure, with no wiring: the view that draws the block, the notice that counts its room and the controller that fills the example read these
+ * constants and functions, so the three heights the old banner wrote in three places are {@link HOME_BLOCK_ROWS}. Nothing here
  * sanitises, because nothing here is drawn from configuration: the wordmark, the labels and the example are product constants.
  *
- * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), only the glyph table.
+ * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), only the glyph table and the prompt window's constants.
  */
 
 /** The left margin, in columns: 8 from 100 columns, 6 below (the Home's floor is 80, so this is 80 to 99 in practice). */
@@ -27,6 +28,18 @@ export function homeRailWidth(columns: number): number {
   if (!Number.isFinite(columns)) return 0;
   return Math.max(0, Math.min(HOME_RAIL_MAX_WIDTH, columns - 2 * homeMargin(columns)));
 }
+
+/**
+ * The rows a full-screen frame is bounded to: one fewer than the terminal, never fewer than one, and one for a size that is not a number. A
+ * frame as tall as the terminal makes Ink treat it as full-screen and clear the whole terminal (the scrollback with it) on every update, so every
+ * host of a frame (the Home's pages, the chat) leaves the last row alone, and every geometry reads THIS function: it is the one place the rule is written.
+ */
+export function frameRows(terminalRows: number): number {
+  return Number.isFinite(terminalRows) ? Math.max(1, Math.floor(terminalRows) - 1) : 1;
+}
+
+/** The columns the Home's prompts spend before their text: the prompt's glyph (`›`, ASCII `>`) and the space after it, and the same width of spaces under it. */
+export const HOME_PROMPT_LEAD_COLUMNS = 2;
 
 /** The wordmark, letter-spaced with two spaces between letters (22 columns); the view draws it bold in the accent. */
 export const WORDMARK = 'R  E  L  A  V  I  U  M';
@@ -45,22 +58,20 @@ export const HOME_BLOCK_ROWS = LANDING_BLOCK_HEAD_ROWS + 2 + 1 + LANDING_FOOT_RO
 
 /**
  * Whether the landing draws the block (wordmark, rail, taglines, notes) or only the one-line title (maintainer, 2026-11-26): the block is
- * the EMPTY Home's, `show_banner` absent or `true` shows it and `false` shows the title instead; a Home that has something to continue draws
- * the title whatever the setting says. The one rule: the view, the notice's room and the controller's example all ask here.
+ * page 1's, and page 1 is the landing in BOTH states of the Home (nothing to continue, or something to continue behind `↓`), so `show_banner`
+ * absent or `true` shows the block and `false` shows the one-line spaced wordmark instead, whatever the Home holds. The one rule: the view
+ * and the notice's room ask here.
  */
-export function showsLandingBlock(
-  configShowBanner: boolean | undefined,
-  isEmpty: boolean,
-): boolean {
-  return isEmpty && configShowBanner !== false;
+export function showsLandingBlock(configShowBanner: boolean | undefined): boolean {
+  return configShowBanner !== false;
 }
 
 /**
- * Whether the prompt shows its example: the empty Home, with nothing typed. The view draws the example by this and `Tab` fills it by this,
+ * Whether the prompt shows its example: on the landing, with nothing typed. The view draws the example by this and `Tab` fills it by this,
  * so a key never fills what is not on screen.
  */
-export function exampleIsShown(isEmpty: boolean, draft: string): boolean {
-  return isEmpty && draft === '';
+export function exampleIsShown(onLanding: boolean, draft: string): boolean {
+  return onLanding && draft === '';
 }
 
 /** What the landing's height depends on besides the block: the prompt's rows, a notice's rows and the hosted run's row (all default to the resting case). */
@@ -76,18 +87,20 @@ function wholeCount(value: number | undefined, min: number): number {
 }
 
 /**
- * The blank rows between the head and the prompt when no notice is shown: two under the block, one under the one-line title. A notice
- * takes their place and brings its own blank row above and below it, so with a notice of `n` rows the gap is `n + 2`.
+ * The rows between the head and the prompt: two under the block, one under the one-line title. A notice stands in those rows, directly over
+ * the prompt, with one blank row above it (the block's second blank row; the title has none to spare), so a notice of one row under the block
+ * does not move the prompt at all (OB76) and a taller one, or any under the title, moves it by the rows it needs: with a notice of `n` rows the
+ * gap is `max(resting, n + 1)`.
  */
 export function landingGapRows(showBlock: boolean, noticeRows = 0): number {
   const notice = wholeCount(noticeRows, 0);
-  if (notice > 0) return notice + 2;
-  return showBlock ? 2 : 1;
+  const resting = showBlock ? 2 : 1;
+  return notice > 0 ? Math.max(resting, notice + 1) : resting;
 }
 
 /**
  * The height of the landing in rows, WITHOUT its top gap: the head (the block's five rows, or the one-line title), the gap (or the notice with
- * its two blank rows), the prompt, the four rows under it, and the hosted run's row (between the status line and the hint: MVP-11 unit 7, the
+ * its blank row above it), the prompt, the four rows under it, and the hosted run's row (between the status line and the hint: MVP-11 unit 7, the
  * study's frame 21). The ONE place that knows it: the banner's height used to be written in three places. The resting landing is
  * {@link HOME_BLOCK_ROWS}.
  */
@@ -101,8 +114,8 @@ export function landingRows(showBlock: boolean, parts: LandingRowParts = {}): nu
 }
 
 /**
- * The rows of the landing above its prompt, without the top gap: the head and the gap (or the notice with its two blank rows). What the palette
- * is drawn below, when it takes the prompt block's place (the hosted run's row is part of that block: it stands under the status line).
+ * The rows of the landing above its prompt, without the top gap: the head and the gap (or the notice with its blank row above it). What the
+ * palette is drawn below, when it takes the prompt block's place (the hosted run's row is part of that block: it stands under the status line).
  */
 export function landingRowsAbovePrompt(showBlock: boolean, parts: LandingRowParts = {}): number {
   const head = showBlock ? LANDING_BLOCK_HEAD_ROWS : LANDING_TITLE_ROWS;
@@ -111,7 +124,7 @@ export function landingRowsAbovePrompt(showBlock: boolean, parts: LandingRowPart
 
 /**
  * The most rows a notice may take on the landing: what the terminal's `rows − 1` leaves once the head, the hosted run's row, the notice's
- * two blank rows, the prompt and its four rows are drawn (the landing stays one row short of the terminal, as the chat's frame does), and
+ * blank row above it, the prompt and its four rows are drawn (the landing stays one row short of the terminal, as the chat's frame does), and
  * never fewer than two so a notice is always readable.
  */
 export function landingNoticeRoom(
@@ -120,9 +133,24 @@ export function landingNoticeRoom(
   parts: Omit<LandingRowParts, 'noticeRows'> = {},
 ): number {
   if (!Number.isFinite(rows)) return 2;
+  return Math.max(2, frameRows(rows) - (landingRows(showBlock, { ...parts, noticeRows: 1 }) - 1));
+}
+
+/**
+ * The most rows the landing's prompt editor may take (OB71): what `rows − 1` leaves once everything else of the landing is drawn (the head,
+ * the gap or the notice, the four rows under the prompt and the hosted run's row), never fewer than a window can have
+ * ({@link PROMPT_WINDOW_MIN_ROWS}). A draft that is longer is drawn as a window of its rows around the cursor with a `▲/▼ N more` marker, so
+ * the head, the cursor, the rule, the status line and the hint stay on the screen and the frame is never as tall as the terminal. At 80×24 with
+ * the block that is 12 rows (a draft of twelve lines is drawn whole, as it always was), 17 with the one-line title.
+ */
+export function landingEditorRows(
+  rows: number,
+  showBlock: boolean,
+  parts: Omit<LandingRowParts, 'promptRows'> = {},
+): number {
   return Math.max(
-    2,
-    Math.floor(rows) - 1 - (landingRows(showBlock, { ...parts, noticeRows: 1 }) - 1),
+    PROMPT_WINDOW_MIN_ROWS,
+    frameRows(rows) - (landingRows(showBlock, { ...parts, promptRows: 1 }) - 1),
   );
 }
 
@@ -136,13 +164,13 @@ export function landingNoticeRoom(
 export function homeTopGap(rows: number, alternateScreen: boolean): number {
   if (!alternateScreen || !Number.isFinite(rows)) return 0;
   const centred = Math.floor((rows - HOME_BLOCK_ROWS) / 2) - 3;
-  return Math.max(0, Math.min(centred, Math.floor(rows) - 1 - HOME_BLOCK_ROWS));
+  return Math.max(0, Math.min(centred, frameRows(rows) - HOME_BLOCK_ROWS));
 }
 
 /**
- * The landing's top gap: {@link homeTopGap} for the block, and nothing for the one-line title (it sits at the top, as a Home that has
- * something to continue does), held to what `rows − 1` leaves once the landing's own rows are drawn, so a notice, a hosted run's row or a
- * prompt that has grown give the gap up before anything else gives way. Inline there is none.
+ * The landing's top gap: {@link homeTopGap} for the block, and nothing for the one-line title (it sits at the top), held to what `rows − 1`
+ * leaves once the landing's own rows are drawn, so a notice, a hosted run's row or a prompt that has grown give the gap up before anything
+ * else gives way. Inline there is none. An open `/` palette claims none of it (page 1 never moves, OB72): the palette is drawn below the prompt.
  */
 export function landingTopGap(
   rows: number,
@@ -151,7 +179,7 @@ export function landingTopGap(
   parts: LandingRowParts = {},
 ): number {
   if (!showBlock || !Number.isFinite(rows)) return 0;
-  const free = Math.floor(rows) - 1 - landingRows(showBlock, parts);
+  const free = frameRows(rows) - landingRows(showBlock, parts);
   return Math.max(0, Math.min(homeTopGap(rows, alternateScreen), free));
 }
 

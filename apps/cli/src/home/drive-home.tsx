@@ -110,7 +110,7 @@ import { createChordHistory } from '../render/tui/chord-guard.js';
 import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
 import { openReport } from '../popups/report-port.js';
 import { openSettings } from '../popups/settings-port.js';
-import { createNotificationChannel } from '../popups/notifications.js';
+import { createNotificationChannel, type NotificationSource } from '../popups/notifications.js';
 import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
@@ -367,6 +367,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // overlay in the alternate screen and a block in the flow inline), on the SAME chord history, which the chat stores share too, so a key
   // typed into a popup is seen by the guards of any card that opens next.
   const notifications = createNotificationChannel();
+  // What the Home itself says on that channel (its `announce`, a provider run's last word) carries this as its source, so the controller can
+  // withdraw it when a chat comes in front: the Home's words are not the chat's (MVP-11 unit 7, round 1: CO76). No popup is this source.
+  const homeAnnouncements: NotificationSource = {};
   let popups: PopupHost | undefined;
   // The `/doctor` popup's host identity (ADR-0148 §8): one per Home, so a completed deep result and a deep run in flight are the Home's,
   // whether the popup was opened on the landing or in a chat it hosts.
@@ -802,7 +805,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           controller?.setProviderState(keyless);
           // What the popup did not say itself (a skip, a setup that could not show its Done step) is ONE notification on the Home's channel,
           // never a Home notice or a transcript line (ADR-0148 §6).
-          if (result.notice !== undefined) notifications.notify(result.notice);
+          if (result.notice !== undefined) notifications.notify(result.notice, homeAnnouncements);
         } finally {
           automaticSetupStarted = true; // finished, however it ended: the offer that waited for room is not spent a second time (round 2, K4)
         }
@@ -927,7 +930,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // What the landing's status line says about the NEXT chat (ADR-0146 §2), from the SAME sources a new chat starts from: the effective `[chat]`
     // block read fresh (`readEffectiveChat`'s own read, with the model this invocation chose), the startup snapshot as the fallback, the starting
     // mode `startChat` resolves, and the Home's cached key sample (never the keychain: the controller reads this at its refresh events and never
-    // on a draw). A strict reload that fails throws, and the controller then keeps the facts it has.
+    // on a draw). A strict reload that fails throws, and the controller then drops the facts (the line is blank until a read succeeds): that
+    // reload has revoked the starting mode's authority, and a line that kept `auto mode` would say what the next chat will not do.
     const statusLabel = statusDirectory(deps.global.cwd, homeDir);
     const statusFacts: HomeStatusReader = {
       read: () => {
@@ -2065,7 +2069,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // What a setting the bare Home applied says, and a chat's model switch that could not be built: the Home's own channel (ADR-0148 §6).
         announce: (text) => {
-          notifications.notify(text);
+          notifications.notify(text, homeAnnouncements);
+        },
+        // ... and withdrawn when a chat comes in front: the chat's hint row is the chat's own at once (CO76).
+        withdrawAnnouncements: () => {
+          notifications.discard(homeAnnouncements);
         },
         launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,
@@ -2397,7 +2405,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         onSuspend: () => {
           if (!homeInputSealed) jobControl.requestSuspend();
         },
-        // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
+        // The landing's block switch (Step 5g): absent or `true` draws the block on page 1, `false` the one-line wordmark (`showsLandingBlock`).
         showBanner: config.showBanner,
         // What a session's directory on the strip is shortened against (ADR-0145 §8).
         paths: displayRoots(deps.global.cwd, homeDir),

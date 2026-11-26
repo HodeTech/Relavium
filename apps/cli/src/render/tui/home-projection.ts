@@ -8,6 +8,7 @@ import type {
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { formatAgeOfIso, formatElapsed, formatTimeUntil, shortId } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
+import { flowLine } from './flow-text.js';
 import { formatCostShort } from './format.js';
 import { glyph, glyphOf } from './glyphs.js';
 import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
@@ -22,19 +23,8 @@ import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './le
  * are safe by construction. Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
  */
 
-/** The minimum terminal the Home renders in; below it, degrade to a resize prompt (ADR-0054 / §2.5.B). */
-export const HOME_MIN_COLS = 80;
-export const HOME_MIN_ROWS = 24;
-
-/** Whether the terminal is at least the Home minimum — else the caller renders {@link tooSmallMessage}. */
-export function homeFitsTerminal(cols: number, rows: number): boolean {
-  return (
-    Number.isSafeInteger(cols) &&
-    Number.isSafeInteger(rows) &&
-    cols >= HOME_MIN_COLS &&
-    rows >= HOME_MIN_ROWS
-  );
-}
+// The Home's terminal floor lives in a leaf (`home-floor.ts`), so the run cards can read it without importing this module; it is found here too.
+export { HOME_MIN_COLS, HOME_MIN_ROWS, homeFitsTerminal, tooSmallMessage } from './home-floor.js';
 
 /** Whether the Home has nothing to show: no session, run or attention row, and no parked run of this project either. */
 export function homeIsEmpty(
@@ -42,11 +32,6 @@ export function homeIsEmpty(
   parkedRuns: readonly unknown[] | undefined,
 ): boolean {
   return snapshot.isEmpty && (parkedRuns === undefined || parkedRuns.length === 0);
-}
-
-/** The single-line degrade shown (and held until a resize) when the terminal is below the Home minimum. */
-export function tooSmallMessage(cols: number, rows: number): string {
-  return `Terminal too small (${cols}×${rows}) — resize to at least ${HOME_MIN_COLS}×${HOME_MIN_ROWS}.`;
 }
 
 /** A gate's deadline as urgency text: "expired" once past (the Phase-1 in-process-timer caveat), else "expires …". */
@@ -135,9 +120,12 @@ export function hostedRunIsLive(snapshot: RunHostSnapshot | undefined): boolean 
 
 /**
  * The run row of the Home's strip ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3): the
- * active run's id and its state, in one line, or `undefined` (no row at all) when no run is active. The state is a word, never a
- * colour alone: `starting` until the engine has named the run, `running`, and `cancelling` once the stop was requested. The id is
- * sanitized at this boundary. `last` is how an earlier leg ended; it is a later card's to show, not this row's.
+ * active run's short id and its state, in one line, or `undefined` (no row at all) when no run is active. The state is a word, never a
+ * colour alone: `starting` until the engine has named the run, `running`, and `cancelling` once the stop was requested. The run host's
+ * snapshot carries no workflow name, so the run is named as the Home's other words name it, by the first eight characters of its id (MVP-11
+ * unit 7, round 1: OB74; the whole id was cut by the row), never the whole id. The id is stored text: the Home's full row scrub
+ * (`flowLine`) runs over it BEFORE it is cut, so no control, bidirectional, invisible or separator character and no key reaches the row.
+ * `last` is how an earlier leg ended; it is a later card's to show, not this row's.
  */
 export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | undefined {
   if (snapshot === undefined || !hostedRunIsLive(snapshot)) return undefined;
@@ -146,7 +134,7 @@ export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | 
   // Once the engine has named the run, `Enter` at the empty prompt brings its view back: the row says so, because nothing else does. The glyph
   // is the run view's own for the same state (`◐ running`, `■ cancelling`), and the word stands beside it.
   const cancelling = active.cancelling;
-  return `${glyph(cancelling ? 'stopping' : 'running')} ${sanitizeInline(active.runId)}${SEP}${cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
+  return `${glyph(cancelling ? 'stopping' : 'running')} ${shortId(flowLine(active.runId))}${SEP}${cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
 }
 
 /** What `Enter` at the empty prompt does while a leg is live and has a run to show: the item the landing's hint draws. */

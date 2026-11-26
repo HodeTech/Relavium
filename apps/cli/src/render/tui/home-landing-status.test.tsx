@@ -253,7 +253,7 @@ describe('the status facts are read at construction and at the events, and publi
     expect(c.getSnapshot().status).toEqual(FIRST);
   });
 
-  it('a read that throws keeps the facts the Home has (and one that throws at construction leaves none), and never throws', () => {
+  it('a read that throws drops the facts the Home had (and one that throws at construction leaves none), and never throws', () => {
     const throwing = vi.fn((): HomeStatusFacts => {
       throw new Error('the configuration does not parse');
     });
@@ -270,7 +270,8 @@ describe('the status facts are read at construction and at the events, and publi
     expect(() => {
       c.setProviderState(false);
     }).not.toThrow();
-    expect(c.getSnapshot().status, 'the line keeps what it said').toEqual(FIRST);
+    // MVP-11 unit 7, round 1 (SE72): the facts it had may no longer be what the next chat uses, so the line says nothing until a read succeeds.
+    expect(c.getSnapshot().status, 'the line no longer says what it said').toBeUndefined();
   });
 });
 

@@ -424,7 +424,7 @@ describe('mounted in the alternate screen', () => {
     expect(m.harness.lastFrame()).toContain('> hi');
   }); // prettier-ignore
 
-  it('an `Enter` typed while it slides is not dropped by the host: it waits, and opens the row once the arrival is on screen', async () => {
+  it('an `Enter` typed while it slides is dropped: no row opens, even once the arrival is on screen (it was pressed before the row was seen)', async () => {
     const resumeChat = vi.fn(() => new Promise<undefined>(() => {}));
     const m = mounted({ resumeChat, snapshot: SESSIONS_ONLY });
     await settleFrames();
@@ -434,6 +434,13 @@ describe('mounted in the alternate screen', () => {
     await settleFrames();
     expect(resumeChat, 'nothing is opened while it slides').not.toHaveBeenCalled();
     m.arrive();
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('Enter resume'));
+    await settleFrames();
+    expect(m.controller.getSnapshot().stripFocus?.id, 'the row is focused, unopened').toBe(
+      'session-1',
+    );
+    expect(resumeChat).not.toHaveBeenCalled();
+    m.harness.stdin.write('\r'); // the same key on the row at rest, which the person has now seen
     await waitFor(() => resumeChat.mock.calls.length > 0);
     expect(resumeChat).toHaveBeenCalledWith('session-1');
   });

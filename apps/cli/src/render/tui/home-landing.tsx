@@ -15,7 +15,10 @@ import {
   WORDMARK,
   type RailPlacement,
 } from './home-layout.js';
+import { homeContentColumns } from './home-notice.js';
 import type { HintRow } from './home-pages.js';
+import { paletteQueryEditor, type PaletteBlockPalette } from './palette-block.js';
+import { paletteLegend, PaletteView } from './palette-view.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { statusLine } from './status-line.js';
@@ -23,16 +26,18 @@ import { Text } from './text.js';
 
 /**
  * The Home's LANDING ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
- * §1, §2, §5, [MVP-11 §4.7](../../../../../docs/roadmap/phases/mvp-11.md#47-the-home)): the calm empty Home, all of its drawing in one place so
- * that the page that leads to the rest of the Home can reuse it as its first. Left-hung at {@link homeMargin} (6 columns at 80, 8 from 100), top to
- * bottom:
+ * §1, §2, §5, [MVP-11 §4.7](../../../../../docs/roadmap/phases/mvp-11.md#47-the-home)): the calm landing, page 1 of the Home in every state, all of
+ * its drawing in one place so that the page that leads to the rest of the Home can reuse it as its first. Left-hung at {@link homeMargin} (6 columns
+ * at 80, 8 from 100), top to bottom:
  *
  * - **the head**: the block (the wordmark in the accent and bold, a blank row, the rail with its three nodes, the three labels, the three dim notes),
  *   or the one-line title (the spaced wordmark) when the block is not shown ({@link HomeLandingProps.showBlock});
- * - the hosted run's row, when a leg is executing (the landing keeps what the Home has always said about it), and a notice when there is one;
- * - **the prompt block**: the prompt (the `›` in the accent and the dim example inside the row, never sent, with the cursor on its first letter),
- *   the thin rule the rail's width, the one status line (or, with no provider key, the call to connect, in the accent), a blank row and the hint.
- *   While the exit guard or the palette owns the bottom of the view the prompt block is not drawn and its place is the children's.
+ * - a notice when there is one, in the blank rows above the prompt (OB76: a short notice moves nothing);
+ * - **the prompt block**: the prompt (the `›` in the accent and the dim example inside the row, never sent, with the cursor on its first letter; a
+ *   long draft is a window of its rows around the cursor with a `▲/▼ N more` marker, OB71), the thin rule the rail's width, the one status line
+ *   (or, with no provider key, the call to connect, in the accent), the hosted run's row when a leg is executing, a blank row and the hint.
+ *   While the exit guard or the palette owns the bottom of the view the prompt block is not drawn and its place is the children's: the palette's
+ *   block ({@link LandingPalette}) opens BELOW the prompt row, which stays where it was, so page 1 never moves.
  *
  * Vertical: in the alternate screen the block sits above the middle ({@link HomeLandingProps.topGap}, from `landingTopGap`: 3 rows at 24, 6 at 30),
  * inline there is no gap, and the whole landing is never taller than `rows − 1`. Every width is the real columns less the margin, so a row that is exactly as wide as its
@@ -54,7 +59,7 @@ export interface LandingNotice {
   readonly footer: string | undefined;
 }
 
-export interface HomeLandingProps {
+interface HomeLandingProps {
   readonly cols: number;
   readonly color: boolean;
   /**
@@ -66,6 +71,8 @@ export interface HomeLandingProps {
   readonly showBlock: boolean;
   readonly editor: EditorState;
   readonly status: LandingStatus;
+  /** The most rows the prompt's editor may take (`landingEditorRows`): a longer draft is drawn as a window of its rows (OB71). */
+  readonly editorRows: number;
   /** The hint row (or the notification that replaces it for its few seconds), with the part drawn in the warning role when there is one. */
   readonly hint: HintRow;
   /** The hosted run's one row, or none: the only live activity the landing shows, between the status line and the hint (the study's frame 21). */
@@ -73,12 +80,8 @@ export interface HomeLandingProps {
   readonly notice?: LandingNotice | undefined;
   /** Whether the prompt block is drawn: not while the exit guard or the palette owns its place. */
   readonly promptShown: boolean;
-  /**
-   * What follows the head where the prompt block would be (the exit-guard card, or the palette). `leadsWithBlank` says it brings a blank row of
-   * its own above itself (the palette does), so the landing draws one blank row fewer.
-   */
+  /** What follows the head where the prompt block would be: the exit-guard card, or the palette's block ({@link LandingPalette}). */
   readonly children?: ReactNode;
-  readonly leadsWithBlank?: boolean | undefined;
 }
 
 /** `rows` blank rows (a Box of that height: an empty Text would take none). */
@@ -138,7 +141,7 @@ function LandingBlock(props: Readonly<{ cols: number; color: boolean }>): ReactE
 }
 
 /** The one-line title the Home draws when the block is not shown (the spaced wordmark: the same form of the name as the chat's header). */
-export function LandingTitle(props: Readonly<{ color: boolean }>): ReactElement {
+function LandingTitle(props: Readonly<{ color: boolean }>): ReactElement {
   return (
     <EmphText {...colorProps(props.color, 'cyan')} emphasis="bold" wrap="truncate-end">
       {WORDMARK}
@@ -201,11 +204,12 @@ export function HomeHintText(props: Readonly<{ hint: HintRow; color: boolean }>)
  * The prompt block: the prompt with its example, the rule, the status row, the hosted run's row when a leg is executing, a blank row and the
  * hint (five rows at rest, `LANDING_FOOT_ROWS` of them under the prompt, one more with the run's row).
  */
-export function LandingPromptBlock(
+function LandingPromptBlock(
   props: Readonly<{
     cols: number;
     color: boolean;
     editor: EditorState;
+    editorRows: number;
     status: LandingStatus;
     hint: HintRow;
     runRow?: string | undefined;
@@ -220,6 +224,8 @@ export function LandingPromptBlock(
         glyph={glyphOf('yourTurn', !color)}
         placeholder={exampleText(!color)}
         cursor={editor.cursor >= 0}
+        maxRows={props.editorRows}
+        columns={homeContentColumns(cols)}
       />
       <Text {...dimProps(color)} wrap="truncate-end">
         {thinRule(homeRailWidth(cols), !color)}
@@ -252,28 +258,65 @@ export function NoticeRows(
   );
 }
 
+/**
+ * The palette's block on the landing, BELOW the prompt row (OB72, the study's frame 11): the prompt row with the typed query where the prompt
+ * was, the thin rule, the list (`bare`: its entries alone, the first one beside the prompt), and the legend. `maxRows` is the budget of the
+ * whole block (the prompt row, the rule, the list and the legend row), `fillRows` the blank rows that keep the legend on the frame's last
+ * row in the alternate screen (none inline, where nothing blank is pushed into the terminal's scrollback). Nothing above the prompt row
+ * changes when the palette opens or closes.
+ */
+export function LandingPalette(
+  props: Readonly<{
+    palette: PaletteBlockPalette;
+    cols: number;
+    color: boolean;
+    maxRows: number;
+    fillRows: number;
+  }>,
+): ReactElement {
+  const { palette, color } = props;
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      <PromptEditor
+        editor={paletteQueryEditor(palette.state.query)}
+        color={color}
+        glyph={glyphOf('yourTurn', !color)}
+      />
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {thinRule(homeRailWidth(props.cols), !color)}
+      </Text>
+      <PaletteView
+        list={palette.list}
+        state={palette.state}
+        color={color}
+        maxRows={props.maxRows}
+        bare
+      />
+      <Blank rows={props.fillRows} />
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {paletteLegend(palette.list)}
+      </Text>
+    </Box>
+  );
+}
+
 export function HomeLanding(props: Readonly<HomeLandingProps>): ReactElement {
   const { cols, color, showBlock, notice } = props;
-  // The blank rows between the head and what follows: a notice has one above and one below, otherwise the block's two (the title's one); what
-  // leads with a blank row of its own takes one of them. The hosted run's row is part of the prompt block (under the status line).
-  const blanksAfter = props.leadsWithBlank === true ? 1 : 0;
+  // The rows between the head and the prompt: the block's two (the title's one), and a notice stands in them directly over the prompt with
+  // a blank row above it, so a short notice moves nothing (`landingGapRows`). The hosted run's row is part of the prompt block.
+  const noticeRows =
+    notice === undefined ? 0 : notice.lines.length + (notice.footer === undefined ? 0 : 1);
   return (
     <Box flexDirection="column" marginTop={props.topGap} marginLeft={homeMargin(cols)}>
       {showBlock ? <LandingBlock cols={cols} color={color} /> : <LandingTitle color={color} />}
-      {notice === undefined ? (
-        <Blank rows={landingGapRows(showBlock) - blanksAfter} />
-      ) : (
-        <>
-          <Blank rows={1} />
-          <NoticeRows notice={notice} color={color} />
-          <Blank rows={1 - blanksAfter} />
-        </>
-      )}
+      <Blank rows={landingGapRows(showBlock, noticeRows) - noticeRows} />
+      {notice !== undefined && <NoticeRows notice={notice} color={color} />}
       {props.promptShown && (
         <LandingPromptBlock
           cols={cols}
           color={color}
           editor={props.editor}
+          editorRows={props.editorRows}
           status={props.status}
           hint={props.hint}
           runRow={props.runRow}

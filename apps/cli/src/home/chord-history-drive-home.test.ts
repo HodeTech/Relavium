@@ -6,7 +6,9 @@
  * (`createNativePromptChannel({ history })` and `createHomeController({ chordHistory })`) are lines of its own and the only thing that
  * would notice one of them gone. The observable is the typeahead layer: a key typed while a prompt flow is open (`unseenInput`, the
  * channel's) is a FOREIGN key in the history it shares with the controller's gate card, so a `Ctrl+Y` on that card within the typeahead
- * window is refused, and one after it counts. With the channel on a history of its own the card never hears of that key.
+ * window is refused, and one after it counts. With the channel on a history of its own the card never hears of that key. The card's own
+ * lockout runs from its appearance (MVP-11 unit 7, round 1), which a typed key's 1.5 s window never outlasts on a card that opens after it;
+ * so the key is typed while the card is ANSWERING its first gate, and the press it locks is the card's answer to its second.
  *
  * The clock is vitest's fake `performance` (the guard's default clock), advanced by hand; nothing else is faked and nothing sleeps. The
  * run host's `resume` is scripted and every home is a temporary directory handed to the Home.
@@ -87,7 +89,10 @@ async function mountHome() {
     slug: 'wf',
     runId: RUN,
     state: 'paused',
-    gate: { gateId: 'g1', gateType: 'approval', message: 'Ship it?' },
+    gates: [
+      { gateId: 'g1', gateType: 'approval', message: 'Ship it?', nodeId: 'g1' },
+      { gateId: 'g2', gateType: 'approval', message: 'And this one?', nodeId: 'g2' },
+    ],
   });
   client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, RUN);
 
@@ -179,6 +184,10 @@ async function mountHome() {
   // The host's evidence that the frames are on screen: this file proves the history, not the painting.
   props.controller.bindGateCardFrame(() => true);
   props.controller.bindHomeFrame(() => true);
+  const showCard = (): void => {
+    const screen = props.controller.getSnapshot().screen;
+    if (screen?.kind === 'gate-card') screen.card.shown(screen.card.getSnapshot());
+  };
   return {
     props,
     running,
@@ -194,9 +203,10 @@ async function mountHome() {
       expect(props.controller.getSnapshot().screen?.kind, 'the gate card is open').toBe(
         'gate-card',
       );
-      const screen = props.controller.getSnapshot().screen;
-      if (screen?.kind === 'gate-card') screen.card.shown(screen.card.getSnapshot());
+      showCard();
     },
+    /** The card's current frame was measured and flushed (its dwell counts from here). */
+    showCard,
     leave: async (): Promise<number> => {
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms
@@ -206,39 +216,42 @@ async function mountHome() {
 }
 
 describe('driveHome shares one chord history between the prompt channel and the controller`s cards', () => {
-  it('a key typed while a prompt flow is open locks a gate card that opens straight after, and not one that opens well after', async () => {
+  it('a key typed while a prompt flow is open locks the gate card it returns to, and not a press well after it', async () => {
     const h = await mountHome();
     expect(h.props.controller.getSnapshot().parkedRuns.map((row) => row.runId)).toEqual([RUN]);
 
-    // t = 1000 ms: the first card (opened at 0) is answered, so the prompt flow opens around the resume (busy) and stays open while the
-    // leg prepares.
+    // t = 2000 ms: the card (opened at 0) answers its first gate once its own window from its appearance is over, so the prompt flow opens
+    // around the resume (busy) and stays open while the leg prepares.
     h.openCard();
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(2_000);
     h.props.controller.handleKey('y', CTRL_Y);
     await until(() => h.resume.mock.calls.length === 1, 'the answer reaching the run host');
     expect(h.props.nativePrompt?.getSnapshot().active, 'the flow is open around the resume').toBe(
       true,
     );
 
-    // t = 2400 ms: the person types into the composer while it is. That key is the channel's, and the controller's cards must hear of it.
-    vi.advanceTimersByTime(1_400);
+    // t = 2600 ms: the person types into the composer while it is. That key is the channel's, and the controller's card must hear of it.
+    vi.advanceTimersByTime(600);
     h.props.nativePrompt?.unseenInput();
-    h.release();
+    // The host found nothing to run (the gate had been decided): the card is open again, on the run's other gate.
+    h.release({ kind: 'settled', message: 'The gate was already decided.' });
     await until(() => h.props.nativePrompt?.getSnapshot().active === false, 'the flow closing');
-    h.props.controller.closeScreen();
+    await until(() => {
+      const screen = h.props.controller.getSnapshot().screen;
+      return screen?.kind === 'gate-card' && screen.card.getSnapshot().phase === 'open';
+    }, 'the card open on its second gate');
+    h.showCard();
 
-    // t = 2500 ms: the card opens again. At 3500 ms the answer's two seconds are over (1000 -> 3000), but the typed key is 1.1 s old.
-    vi.advanceTimersByTime(100);
-    h.openCard();
-    vi.advanceTimersByTime(1_000);
+    // t = 4000 ms: the answer's two seconds are over (2000 -> 4000) and so are the card's own, but the typed key is 1.4 s old.
+    vi.advanceTimersByTime(1_400);
     h.props.controller.handleKey('y', CTRL_Y);
     expect(
       h.resume,
-      'refused: a key was typed 1.1 s ago, in the history the channel shares',
+      'refused: a key was typed 1.4 s ago, in the history the channel shares',
     ).toHaveBeenCalledOnce();
 
-    // The refused key restarted nothing it could hold (no card was answered inside the window), and the typeahead lapses 1.5 s on.
-    vi.advanceTimersByTime(2_000);
+    // The refused key restarted nothing (it was not inside a lockout), and 400 ms on the typeahead has lapsed and the quiet gap is over.
+    vi.advanceTimersByTime(400);
     h.props.controller.handleKey('y', CTRL_Y);
     await until(() => h.resume.mock.calls.length === 2, 'the second answer reaching the run host');
     h.release();

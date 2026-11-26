@@ -926,9 +926,9 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
 
 /**
  * The Home's landing ON SCREEN (ADR-0146 §1, MVP-11 unit 7). `home-landing-frames.test.tsx` pins the empty Home's geometry; this pins that the
- * block is the EMPTY Home's, that `[preferences].show_banner` obeys the maintainer's rule of 2026-11-26 (`true` and absent show the block, `false`
- * shows the one-line spaced wordmark instead), that a Home with something to continue draws the one-line title under every setting, and that the
- * landing never pushes the prompt off an 80x24 terminal.
+ * block is page 1's whatever the Home holds, that `[preferences].show_banner` obeys the maintainer's rule of 2026-11-26 (`true` and absent show the
+ * block, `false` shows the one-line spaced wordmark instead), that a Home with something to continue draws the same landing under every setting
+ * (its strip is the work page's), and that the landing never pushes the prompt off an 80x24 terminal.
  */
 describe('RootApp — the Home landing and its title', () => {
   const BUSY: HomeSnapshot = {
@@ -967,7 +967,7 @@ describe('RootApp — the Home landing and its title', () => {
       expect(frame).toContain(text);
     for (const text of ['talk to an agent', 'save it as YAML', 'every run kept'])
       expect(frame).toContain(text);
-    // The plain heading and the plaque are gone: the title is the spaced wordmark and nothing of the old words is drawn.
+    // The old plain heading and welcome line are gone: the title is the spaced wordmark and nothing of the old words is drawn.
     expect(rows(frame)).not.toContain('relavium');
     expect(frame).not.toContain('Welcome to Relavium');
   });

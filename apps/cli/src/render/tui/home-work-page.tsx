@@ -1,11 +1,18 @@
 import { Box, type DOMElement } from 'ink';
 import type { ReactElement, ReactNode, RefObject } from 'react';
 
-import type { HomeSnapshot } from '../../home/home-store.js';
+import type {
+  HomeAgentRow,
+  HomeGateRow,
+  HomeRunRow,
+  HomeSessionRow,
+  HomeSnapshot,
+} from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { DisplayPathRoots } from '../notation.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
+import { flowLine } from './flow-text.js';
 import type { StatusColor } from './format.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import {
@@ -21,12 +28,13 @@ import {
   type LandingNotice,
   type LandingStatus,
 } from './home-landing.js';
-import { homeMargin, homeRailWidth, thinRule } from './home-layout.js';
+import { frameRows, homeMargin, homeRailWidth, thinRule } from './home-layout.js';
 import {
   DOCKED_CHROME_ROWS,
   DOCKED_PLACEHOLDER,
   UNREADABLE_ROWS_SHOWN,
   WAY_BACK_LINE,
+  workEditorRows,
   workListRows,
   type HintRow,
 } from './home-pages.js';
@@ -42,7 +50,7 @@ import {
 } from './home-projection.js';
 import { homeContentColumns, homePromptRows } from './home-notice.js';
 import type { OpenPalette } from './palette-reducer.js';
-import { paletteLegend, PaletteView } from './palette-view.js';
+import { PaletteAbovePrompt } from './palette-block.js';
 import { paletteLines } from './palette-window.js';
 import { placeForDisplay } from './place-label.js';
 import { colorProps, dimProps } from './projection.js';
@@ -156,6 +164,42 @@ export function buildSections(input: SectionsInput): SectionsModel {
   return withGlyphForm(!input.color, () => sectionsIn(input));
 }
 
+// ---- The stored text of a row (MVP-11 unit 7, round 1) ----------------------------------------------------------------------------
+// A session's title and agent, a run's id and workflow, a gate's message: stored text a model, a project or another terminal wrote. Each passes
+// the Home's full row scrub (`flowLine`: secrets, control, bidirectional, invisible and line-separator characters, host glyphs, answer chords,
+// and the legend's separators and key tokens made inert) BEFORE the strip's label is built from it, so the label's own separators are the only
+// ones on the row. A row's identity (its key, its focus) is the stored id as it is; only what is drawn is scrubbed.
+
+/** A session row with its drawn text scrubbed. */
+function scrubbedSession(row: HomeSessionRow): HomeSessionRow {
+  return {
+    ...row,
+    title: row.title === undefined ? undefined : flowLine(row.title),
+    agentSlug: flowLine(row.agentSlug),
+  };
+}
+/** A run row with its drawn text scrubbed (the workflow, and the id its short form is cut from). */
+function scrubbedRun(row: HomeRunRow): HomeRunRow {
+  return {
+    ...row,
+    runId: flowLine(row.runId),
+    workflowSlug: row.workflowSlug === undefined ? undefined : flowLine(row.workflowSlug),
+  };
+}
+/** A gate row with its drawn text scrubbed (its type is a closed word). */
+function scrubbedGate(row: HomeGateRow): HomeGateRow {
+  return {
+    ...row,
+    runId: flowLine(row.runId),
+    workflowSlug: row.workflowSlug === undefined ? undefined : flowLine(row.workflowSlug),
+    message: flowLine(row.message),
+  };
+}
+/** An agent row with its name scrubbed. */
+function scrubbedAgent(row: HomeAgentRow): HomeAgentRow {
+  return { ...row, agentSlug: flowLine(row.agentSlug) };
+}
+
 function sectionsIn(input: SectionsInput): SectionsModel {
   const { snapshot, parked, focus, columns, nowMs } = input;
   const parkedIds = new Set(parked.map((row) => row.runId));
@@ -186,21 +230,21 @@ function sectionsIn(input: SectionsInput): SectionsModel {
   const unreadable = takeAttention(snapshot.unreadableRunIds, UNREADABLE_ROWS_SHOWN).map(
     (runId) => ({
       key: `unreadable-${runId}`,
-      line: `${glyph('warning')} ${unreadableRunLabel(runId)}`,
+      line: `${glyph('warning')} ${unreadableRunLabel(flowLine(runId))}`,
     }),
   );
   const gateRows = takeAttention(
     snapshot.attention.gates.filter((g) => !parkedIds.has(g.runId)),
   ).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
-    line: `${glyph('warning')} ${gateLabel(g, nowMs)}`,
+    line: `${glyph('warning')} ${gateLabel(scrubbedGate(g), nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
   attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
   const failedStart = Math.max(0, failedFocusIndex - attentionRemaining + 1);
   const failed = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map((r) => ({
     key: r.runId,
-    line: `${glyph('failed')} ${runLabel(r, nowMs)}`,
+    line: `${glyph('failed')} ${runLabel(scrubbedRun(r), nowMs)}`,
     selected: runFocused(r.runId),
   }));
   const attentionCount = parkedRows.length + unreadable.length + gateRows.length + failed.length;
@@ -228,8 +272,13 @@ function sectionsIn(input: SectionsInput): SectionsModel {
   const sessions = takeSection(snapshot.recentSessions.slice(sessionStart), 2, sessionReserve).map(
     (s) => ({
       key: s.sessionId,
-      line: sessionLabel(s, nowMs),
-      hint: placeForDisplay(s.workingDir, input.paths, Math.max(1, columns - STRIP_HINT_INDENT)),
+      line: sessionLabel(scrubbedSession(s), nowMs),
+      hint: placeForDisplay(
+        s.workingDir,
+        input.paths,
+        Math.max(1, columns - STRIP_HINT_INDENT),
+        flowLine,
+      ),
       selected: focus?.kind === 'session' && s.sessionId === focus.id,
     }),
   );
@@ -237,12 +286,12 @@ function sectionsIn(input: SectionsInput): SectionsModel {
   const runStart = Math.max(0, runFocusIndex - runCapacity + 1);
   const runs = takeSection(recentRuns.slice(runStart)).map((r) => ({
     key: r.runId,
-    line: runLabel(r, nowMs),
+    line: runLabel(scrubbedRun(r), nowMs),
     selected: runFocused(r.runId),
   }));
   const agents = takeSection(snapshot.recentAgents).map((a) => ({
     key: a.agentSlug,
-    line: agentLabel(a, nowMs),
+    line: agentLabel(scrubbedAgent(a), nowMs),
   }));
   return { parkedRows, unreadable, gateRows, failed, sessions, runs, agents };
 }
@@ -331,12 +380,6 @@ function WorkSections(
   );
 }
 
-/** What the prompt row shows while the palette is open: the slash and what was typed, the cursor at the end. */
-function paletteQueryEditor(query: string): EditorState {
-  const text = `/${query}`;
-  return { text, cursor: text.length };
-}
-
 /** The bottom block of the work page, and how many rows it takes (the list region is what the rest of the page leaves). */
 export type BottomBlock =
   | { readonly kind: 'docked'; readonly rows: number }
@@ -374,6 +417,8 @@ export function workBottomBlock(input: {
   readonly paletteMaxRows: number;
   readonly editor: EditorState;
   readonly cols: number;
+  /** The terminal's rows: the docked prompt is drawn as a window of at most {@link workEditorRows} of them (OB71). */
+  readonly rows: number;
   readonly color: boolean;
 }): BottomBlock {
   const { exitGuard } = input;
@@ -397,7 +442,9 @@ export function workBottomBlock(input: {
     };
   return {
     kind: 'docked',
-    rows: DOCKED_CHROME_ROWS + homePromptRows(input.editor, homeContentColumns(input.cols)),
+    rows:
+      DOCKED_CHROME_ROWS +
+      homePromptRows(input.editor, homeContentColumns(input.cols), workEditorRows(input.rows)),
   };
 }
 
@@ -435,40 +482,14 @@ function DockedPrompt(props: Readonly<HomeWorkPageProps>): ReactElement {
         glyph={glyphOf('yourTurn', !color)}
         placeholder={DOCKED_PLACEHOLDER}
         cursor={props.promptFocused && props.editor.cursor >= 0}
+        maxRows={workEditorRows(props.rows)}
+        columns={homeContentColumns(cols)}
       />
       <Text {...dimProps(color)} wrap="truncate-end">
         {thinRule(homeRailWidth(cols), !color)}
       </Text>
       <StatusRow status={props.status} cols={cols} color={color} />
       <HomeHintText hint={props.hint} color={color} />
-    </Box>
-  );
-}
-
-/** The palette's block: its list above the prompt (the first entry beside it), the prompt with the query, the rule and the palette's legend. */
-function DockedPalette(
-  props: Readonly<{ palette: OpenPalette; maxRows: number; cols: number; color: boolean }>,
-): ReactElement {
-  const { palette, color } = props;
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      <PaletteView
-        list={palette.list}
-        state={palette.state}
-        color={color}
-        maxRows={props.maxRows}
-      />
-      <PromptEditor
-        editor={paletteQueryEditor(palette.state.query)}
-        color={color}
-        glyph={glyphOf('yourTurn', !color)}
-      />
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {thinRule(homeRailWidth(props.cols), !color)}
-      </Text>
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {paletteLegend(palette.list)}
-      </Text>
     </Box>
   );
 }
@@ -483,10 +504,10 @@ function BottomOf(props: Readonly<HomeWorkPageProps>): ReactElement {
     );
   if (bottom.kind === 'palette')
     return (
-      <DockedPalette
+      <PaletteAbovePrompt
         palette={bottom.palette}
         maxRows={bottom.maxRows}
-        cols={props.cols}
+        ruleColumns={homeRailWidth(props.cols)}
         color={color}
       />
     );
@@ -510,7 +531,7 @@ export function HomeWorkPage(props: Readonly<HomeWorkPageProps>): ReactElement {
     <Box
       ref={props.frame}
       flexDirection="column"
-      height={Math.max(1, Math.floor(rows) - 1)}
+      height={frameRows(rows)}
       overflow="hidden"
       marginLeft={homeMargin(cols)}
       flexShrink={0}

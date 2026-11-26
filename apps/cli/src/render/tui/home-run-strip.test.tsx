@@ -127,7 +127,8 @@ describe('the run row', () => {
   it('is present with an active run: the glyph, the id and a state word, with colour off', () => {
     const rows = runRows(frameOf({ hostedRun: running() }));
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.trimStart()).toMatch(new RegExp(`^~ ${RUN_ID}`, 'u'));
+    // The short id, the first eight characters, never the whole id (MVP-11 unit 7, round 1: OB74).
+    expect(rows[0]?.trimStart()).toMatch(new RegExp(`^~ ${RUN_ID.slice(0, 8)}  ·`, 'u'));
     expect(rows[0]).toContain('running');
   });
 

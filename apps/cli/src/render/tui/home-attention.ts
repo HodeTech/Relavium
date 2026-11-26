@@ -24,8 +24,8 @@ import {
   type ProjectRunGates,
   type RunGatesReader,
 } from '../../home/run-gates.js';
-import { sanitizeInline } from '../sanitize.js';
 import { shortId } from '../notation.js';
+import { flowLine } from './flow-text.js';
 import { glyph } from './glyphs.js';
 import { expiryLabel } from './home-projection.js';
 import { keyLabel, type LegendKey } from './legend.js';
@@ -203,11 +203,12 @@ export function parkedRunLabel(
   nowMs?: number,
 ): string {
   const key = cueText(focused ? FOCUSED_CUE[row.kind] : UNFOCUSED_CUE);
-  const id = sanitizeInline(row.runId);
+  // Stored text, through the Home's full row scrub (MVP-11 unit 7, round 1): the label's own separators are then the only ones on the row.
+  const id = flowLine(row.runId);
   const workflow =
     row.workflow === undefined || row.workflow === ''
       ? undefined
-      : clipLine(sanitizeInline(row.workflow), WORKFLOW_COLUMNS);
+      : clipLine(flowLine(row.workflow), WORKFLOW_COLUMNS);
   const due = nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs);
   const line = (shownId: string, withWorkflow: boolean, withDue: boolean): string =>
     [
@@ -246,8 +247,8 @@ export function hostedEndNotice(
   end: { readonly runId: string; readonly disposition: HostedRunDisposition },
   parked: ParkedRunRow | undefined,
 ): string | undefined {
-  const slug = parked?.workflow === undefined ? '' : sanitizeInline(parked.workflow).trim();
-  const name = slug === '' ? `run ${sanitizeInline(shortId(end.runId))}` : slug;
+  const slug = parked?.workflow === undefined ? '' : flowLine(parked.workflow).trim();
+  const name = slug === '' ? `run ${shortId(flowLine(end.runId))}` : slug;
   switch (end.disposition) {
     case 'paused':
       return `${glyph('paused')} ${name} ${pausedWords(parked?.kind)} on the Home.`;

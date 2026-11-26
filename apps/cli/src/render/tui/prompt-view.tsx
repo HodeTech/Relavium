@@ -14,8 +14,8 @@ import { displayWidth } from './viewport.js';
 
 /**
  * The live multi-line prompt with the cursor drawn at its position (2.5.D step 2) — shared by `ChatView`
- * (`relavium chat`) and the Home `Prompt`, so both surfaces render the editor identically. Each row is a cyan
- * line: the first prefixed `> `, continuation lines aligned under it with two spaces. EVERY segment (before /
+ * (`relavium chat`) and the Home's two prompts, so every surface renders the editor identically. Each row is a cyan
+ * line: the first prefixed with the prompt glyph (`›`, ASCII `>`), continuation lines aligned under it with spaces. EVERY segment (before /
  * the cursor cell / after) passes {@link sanitizeInline} at this display boundary, so a pasted or typed control
  * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block, drawn WHETHER OR NOT
  * colour is on: "no colour" means colour only (ADR-0145 §5, MVP-11 OD-6), and bold, inverse and underline stay.
@@ -36,11 +36,11 @@ import { displayWidth } from './viewport.js';
  * hide the cursor once a line runs past the terminal edge, and would defeat the multi-line buffer entirely). A
  * long/many-line prompt therefore grows downward — it is the bottom element, so the strip above is unaffected.
  *
- * **A bound, for a host that has to keep what is below it** (OB7-M3): with `maxRows` a draft that does not fit is drawn as a window of its rows around
- * the cursor, with a `▲ N more` / `▼ N more` marker for the rows it hides ({@link promptWindow}), so the cursor, the rule, the status line and the hint
- * below a long paste stay on the screen. `columns` is the terminal's width, which the rows are cut to. Absent `maxRows` (the Home's prompt, the
- * picker's filter) the editor is drawn exactly as above, and a draft that fits the bound is too. The whole draft is still in the editor's text: only
- * the drawing is windowed, and what is sent is that text.
+ * **A bound, for a host that has to keep what is below it** (OB7-M3, OB71): with `maxRows` a draft that does not fit is drawn as a window of its rows
+ * around the cursor, with a `▲ N more` / `▼ N more` marker for the rows it hides ({@link promptWindow}), so the cursor, the rule, the status line and
+ * the hint below a long paste stay on the screen. The chat and the Home's two prompts give it (`columns` is the width the rows are cut to). Absent
+ * `maxRows` (the picker's filter, a palette's query) the editor is drawn exactly as above, and a draft that fits the bound is too. The whole draft is
+ * still in the editor's text: only the drawing is windowed, and what is sent is that text.
  */
 export function PromptEditor(
   props: Readonly<{
@@ -60,7 +60,8 @@ export function PromptEditor(
 ): ReactElement {
   const { editor, color } = props;
   const lead = `${props.glyph ?? '>'} `;
-  const hang = ' '.repeat(displayWidth(lead));
+  const leadWidth = displayWidth(lead);
+  const hang = ' '.repeat(leadWidth);
   const showCursor = props.cursor !== false;
   if (props.placeholder !== undefined && editor.text === '') {
     return (
@@ -82,9 +83,10 @@ export function PromptEditor(
       : promptWindow(
           editor.text,
           cursorAt,
-          (props.columns ?? DEFAULT_COLUMNS) - displayWidth(lead),
+          (props.columns ?? DEFAULT_COLUMNS) - leadWidth,
           props.maxRows,
           sanitizeInline,
+          leadWidth,
         );
   if (windowed !== undefined)
     return <WindowedRows lines={windowed} lead={lead} hang={hang} color={color} />;

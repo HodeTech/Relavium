@@ -2,6 +2,7 @@ import type { LlmProviderId } from '@relavium/shared';
 
 import { defaultChatModel } from '../chat/agent-source.js';
 import { inferProviderFromModel } from '../chat/default-agent.js';
+import { effortRowLabel } from '../chat/effort-notice.js';
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { directoryLabelHere } from '../render/display-roots.js';
 import type { HomeStatusFacts } from './home-status-facts.js';
@@ -61,7 +62,8 @@ export interface NextChatFactsInput {
 /**
  * The facts of the next chat: the model and provider the default agent would bind (`defaultChatModel`, then the provider inferred from the
  * model's id when none is named, as the agent's own build does; none when neither can name one), the starting mode, the effort and the
- * directory.
+ * directory. The effort is worded as the chat words it ({@link effortRowLabel}: `on` for a budget-reasoning model's bound tier, the tier's own
+ * name for every other), so the Home and the chat the Home starts never disagree about what a tier is called (CO72).
  */
 export function nextChatFacts(input: NextChatFactsInput): HomeStatusFacts {
   const { settings } = input;
@@ -77,7 +79,9 @@ export function nextChatFacts(input: NextChatFactsInput): HomeStatusFacts {
     ...(named === undefined ? {} : { provider: named }),
     model,
     mode: input.mode,
-    ...(settings.reasoningEffort === undefined ? {} : { effort: settings.reasoningEffort }),
+    ...(settings.reasoningEffort === undefined
+      ? {}
+      : { effort: effortRowLabel(model, settings.reasoningEffort).label }),
     directory: input.directory,
   };
 }

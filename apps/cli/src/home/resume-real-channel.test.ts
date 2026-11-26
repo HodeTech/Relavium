@@ -247,9 +247,11 @@ async function resumeThroughPicker(home: RealHome, sessionId: string): Promise<v
 }
 
 /** `↓` at the Home's empty prompt focuses the strip's first row (the latest conversation), and `Enter` resumes it. */
-function resumeThroughStrip(home: RealHome): void {
+async function resumeThroughStrip(home: RealHome): Promise<void> {
   const { controller } = home.props;
   controller.handleKey('', { downArrow: true });
+  // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+  await vi.waitFor(() => expect(controller.getSnapshot().slide).toBeUndefined());
   controller.handleKey('', { return: true });
 }
 
@@ -266,7 +268,7 @@ describe('a resume opens its conversation, and its disclosure is delivered, only
         await leaveChat(home);
         let open: HomeChatSession | undefined;
         if (route === 'a Home chat`s picker') open = await send(home, 'another');
-        if (route === 'a Sessions strip row') resumeThroughStrip(home);
+        if (route === 'a Sessions strip row') await resumeThroughStrip(home);
         else await resumeThroughPicker(home, saved.sessionId);
         await vi.waitFor(
           () => {

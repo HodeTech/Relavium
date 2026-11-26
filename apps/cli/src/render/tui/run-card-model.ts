@@ -12,7 +12,9 @@
  * - **The guards of the other native cards.** An affirmative chord passes dwell, quiet gap, typeahead and lockout (`createChordGuard`)
  *   and counts only while this exact frame is painted and measured (`painted`). So does a human gate's rejection, which continues the
  *   run; a budget abort is never delayed. The dwell restarts for every new frame: a different gate under the cursor, a re-read of the
- *   gates, an answer that moved the cursor. The lockout is the Home's one (`history`), shared with the consent card.
+ *   gates, an answer that moved the cursor. The lockout is the Home's one (`history`), shared with the consent card, and it runs from the
+ *   card's appearance too (as a native chord card's does): a key held from the `Enter` that opened the card never answers it, and a
+ *   deliberate `Ctrl+Y` counts from about two seconds after it appeared.
  * - **A cursor over the open gates.** With more than one, `↑`/`↓` move it and an answer applies to the gate under it only.
  * - **A budget gate is the same card with other words.** `Ctrl+Y` approves exactly the frozen allowance the log recorded (its structured
  *   field, never a figure read from text) and `Ctrl+N` aborts; an allowance that cannot be approved (unpriced, unrepresentable, legacy)
@@ -55,7 +57,7 @@ import {
 import type { StatusColor } from './format.js';
 import { blankHostGlyphs, glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { formatUsdExact } from '../notation.js';
-import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
+import { homeFitsTerminal, tooSmallMessage } from './home-floor.js';
 import { exitKey, legend, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
@@ -212,10 +214,17 @@ const SEND_FAILED: HostedLaunch = Object.freeze({
 });
 
 export function createRunCard(deps: RunCardDeps): RunCard {
-  const guard = createChordGuard({
-    now: deps.now ?? (() => performance.now()),
-    guard: deps.guard,
-    history: deps.history,
+  const now = deps.now ?? (() => performance.now());
+  const guard = createChordGuard({ now, guard: deps.guard, history: deps.history });
+  // The card's APPEARANCE counts as an answer just before the first key (MVP-11 unit 7, round 1; the native chord cards' rule, unit 6:
+  // `createChordCardGuard`): the lockout runs from whichever came later, the last answer or the card's opening. A key pressed with the `Enter`
+  // that opened the card and held was refused once (its frame was not painted yet) and started nothing, so its first auto-repeat passed the dwell
+  // and the quiet gap; now every strict press inside the window is refused and restarts it, so a key held at any rate never answers, and a
+  // deliberate one counts from about two seconds after the card appeared. A budget abort is not strict and is never delayed.
+  const openedAt = now();
+  const fromOpening = (stamp: ChordStamp): ChordStamp => ({
+    ...stamp,
+    lastResolvedAt: Math.max(stamp.lastResolvedAt, openedAt),
   });
   const painted = deps.painted ?? (() => false);
   const listeners = new Set<() => void>();
@@ -340,7 +349,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
       // A human gate's rejection continues the run (the author routes on it), so it passes every layer an approval does. A budget abort
       // stops the step at the budget, and refusing is the safe answer there: it is never delayed.
       const strict = chord === 'allow' || !isBudgetGate(gate);
-      if (guard.decide(stamp, chord, painted(snapshot), strict) === undefined)
+      if (guard.decide(fromOpening(stamp), chord, painted(snapshot), strict) === undefined)
         return { kind: 'refused' };
       send(gate, decision);
       return { kind: 'answered', gateId: gate.gateId, decision };

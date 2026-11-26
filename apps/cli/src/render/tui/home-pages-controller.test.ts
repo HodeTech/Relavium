@@ -494,7 +494,7 @@ describe('the slide (alternate screen): frames on the scheduler, keys in order a
     expect(r.state().input.text, 'the key after it was typed').toBe('x');
   });
 
-  it('a queued `Enter` on a row whose arrival is on screen opens it', async () => {
+  it('an `Enter` pressed while it slides opens nothing, even on a row whose arrival is on screen by then: it was pressed before the row was seen', async () => {
     const r = rig({ slides: true });
     r.controller.bindHomeFrame(() => true);
     r.press(DOWN);
@@ -503,7 +503,7 @@ describe('the slide (alternate screen): frames on the scheduler, keys in order a
     r.advance(SLIDE_FRAME_MS * 3);
     expect(r.focus()).toBe('s1');
     await settle();
-    expect(r.resumeChat).toHaveBeenCalledWith('s1');
+    expect(r.resumeChat).not.toHaveBeenCalled();
   });
 
   it('a queued key that starts another slide leaves the rest to wait for that one', () => {

@@ -213,7 +213,6 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
     // 80 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
     cols: 86,
     rows: 24,
-    keyless: true,
     showBanner: false,
     onLanding: false,
     hasSessions: true,
@@ -238,7 +237,6 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
     editor: { text: '', cursor: 0 },
     cols: 80,
     rows: 24,
-    keyless: false,
     showBanner: false,
     onLanding: false,
     hasSessions: false,
@@ -291,7 +289,6 @@ describe('a row that continues a line starts with its word, not with the wrap’
     // 20 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
     cols: 26,
     rows: 24,
-    keyless: false,
     showBanner: false,
     onLanding: false,
     hasSessions: false,

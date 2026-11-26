@@ -1,7 +1,7 @@
 import { deriveSessionTitle } from '../../chat/session-title.js';
 import { PATH_ELLIPSIS } from '../notation.js';
 import { flowLine } from './flow-text.js';
-import { WORDMARK } from './home-layout.js';
+import { frameRows, WORDMARK } from './home-layout.js';
 import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 import { keepStart } from './status-line.js';
 import { displayWidth } from './viewport.js';
@@ -68,10 +68,10 @@ export function chatEditorRows(
 /**
  * The rows a full-screen chat's frame is bounded to: one fewer than the terminal (never fewer than one, and one for a terminal whose size is
  * not a number). Both hosts bound their root to it and every geometry consumer (the transcript viewport, the live answer's budget, the
- * mouse mapping) reads the same bound.
+ * mouse mapping) reads the same bound. The rule is {@link frameRows}'s, which the Home's pages read too.
  */
 export function chatFrameRows(terminalRows: number): number {
-  return Number.isFinite(terminalRows) ? Math.max(1, Math.floor(terminalRows) - 1) : 1;
+  return frameRows(terminalRows);
 }
 
 /** What the title is derived from: the transcript's entries, of which only the role and the text of a user line are read. */

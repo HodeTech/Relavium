@@ -1,6 +1,8 @@
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { EditorState } from './chat-input.js';
 import type { ParkedRunKind } from './home-attention.js';
+import { frameRows } from './home-layout.js';
+import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 import {
   exitKey,
   keyHint,
@@ -17,9 +19,9 @@ import {
  * the landing's indicator say. Page 1 (`start`) is ALWAYS the calm landing (ADR-0146 §1); page 2 (`work`) is the work page: the strip's
  * sections with a docked prompt in its last five rows. `↓` goes down to it, `↑` from its first row and `Esc` anywhere on it come back.
  *
- * - **Focus has three places** ({@link HomeFocus}): the landing's prompt, a row of the work page (the strip's focus, by the row's identity:
- *   `strip-focus.ts`), and the work page's docked prompt. There is ONE draft: both prompts draw the same editor, so a message typed on one page
- *   is on the other when the person goes back.
+ * - **Focus has three places**: the landing's prompt, a row of the work page (the strip's focus, by the row's identity: `strip-focus.ts`), and
+ *   the work page's docked prompt. There is ONE draft: both prompts draw the same editor, so a message typed on one page is on the other when
+ *   the person goes back.
  * - **The key reducer** ({@link reducePageKey}) decides only the moves between the pages and the places; every key it does not take is the
  *   prompt's, the palette's or a row's as it always was (`pass`).
  * - **The slide** ({@link slideOffsets}): in the alternate screen the two pages are one document two screens tall and the screen is a window
@@ -31,15 +33,6 @@ import {
 
 /** The Home's two pages: the landing, and the work page under it. */
 export type HomePage = 'start' | 'work';
-
-/** Where the keys go: the landing's prompt, a row of the work page, or the work page's docked prompt. */
-export type HomeFocus = 'start-prompt' | 'rows' | 'docked-prompt';
-
-/** The focus a page and a focused row make: on the landing its prompt; on the work page the row when one is focused, else the docked prompt. */
-export function homeFocusOf(page: HomePage, rowFocused: boolean): HomeFocus {
-  if (page === 'start') return 'start-prompt';
-  return rowFocused ? 'rows' : 'docked-prompt';
-}
 
 // ---- The slide ----------------------------------------------------------------------------------------------------------------
 
@@ -57,7 +50,7 @@ export const SLIDE_SETTLE_BOUND_MS = 250;
 
 /** How far the window travels between the pages: one page, `rows − 1` rows (a page is never taller than that). Nothing for a size that is not a number. */
 export function slideTravel(rows: number): number {
-  return Number.isFinite(rows) ? Math.max(0, Math.floor(rows) - 1) : 0;
+  return Number.isFinite(rows) ? frameRows(rows) : 0;
 }
 
 /**
@@ -328,16 +321,16 @@ export const EXIT_TWICE = exitKey.leave('exit (twice)', 'Ctrl+C');
 /** The same key once it is armed: the second press leaves. */
 export const EXIT_AGAIN = exitKey.leave('exit (again)', 'Ctrl+C');
 /** `Esc` on the work page goes back up to the landing: one step back, nothing changes (the draft stays). */
-export const BACK_TO_START = exitKey.step('Esc', 'start page');
+const BACK_TO_START = exitKey.step('Esc', 'start page');
 
 /** The palette's own key, written first wherever the prompt is empty. */
-export const SLASH_COMMANDS: LegendKey = { keys: '/', verb: 'commands' };
+const SLASH_COMMANDS: LegendKey = { keys: '/', verb: 'commands' };
 /** The way to start a chat that is always there on a landing with nothing to continue. */
-export const TYPE_A_MESSAGE: LegendItem = { text: 'type a message to chat' };
+const TYPE_A_MESSAGE: LegendItem = { text: 'type a message to chat' };
 /** `Tab` fills the landing prompt's example in (ADR-0146 §1): named only where the example is on screen, an empty prompt on the landing. */
-export const TAB_FILLS_EXAMPLE: LegendKey = { keys: 'Tab', verb: 'fill the example' };
+const TAB_FILLS_EXAMPLE: LegendKey = { keys: 'Tab', verb: 'fill the example' };
 /** What `Enter` does with no key, the draft kept (ADR-0146 §5). */
-export const CONNECT_A_PROVIDER: LegendKey = { keys: 'Enter', verb: 'connect a provider' };
+const CONNECT_A_PROVIDER: LegendKey = { keys: 'Enter', verb: 'connect a provider' };
 /** `↑` from the docked prompt's first line goes back onto the list's last row. */
 const BACK_TO_LIST: LegendKey = { keys: '↑', verb: 'back to the list' };
 /** The work page's way back, as its first row draws it (dim). */
@@ -406,13 +399,25 @@ function emptyLandingParts(
     if (indicator.sessions !== undefined) parts.push({ item: indicator.sessions, priority: 3 });
     if (indicator.runs !== undefined) parts.push({ item: indicator.runs, priority: 2 });
   } else if (!connects) parts.push({ item: TYPE_A_MESSAGE, priority: 1 });
-  parts.push({ item: TAB_FILLS_EXAMPLE, priority: indicator === undefined ? 2 : 0 });
+  // The example is on screen (and `Tab` fills it in) only behind a prompt with nothing in it at all, not behind a blank draft (CO77).
+  if (state.draft.text.length === 0)
+    parts.push({ item: TAB_FILLS_EXAMPLE, priority: indicator === undefined ? 2 : 0 });
   return parts;
 }
 
 /**
- * The landing's hint (page 1). Armed, only the second `Ctrl+C`. With a draft, the draft's own keys and then the indicator's head when it fits.
- * With an empty prompt: (no key) `Enter connect a provider`, `[/] commands`, then the INDICATOR when there is something to continue
+ * Whether the prompt holds a draft, for the hints: something besides whitespace (MVP-11 unit 7, round 1: CO77). `Enter` on a draft of nothing
+ * but spaces sends nothing and does what it does on an empty prompt (`submit` trims it), so the hint must not promise `Enter start the chat`.
+ */
+function hasDraft(draft: EditorState): boolean {
+  return draft.text.trim().length > 0;
+}
+
+/**
+ * The landing's hint (page 1). Armed, only the second `Ctrl+C`. With a draft, the draft's own keys and then the indicator's head; what gives
+ * way first is `[Ctrl+J] newline`, then the head (OB73: the `↓ N need you` cue is the landing's one sign of a gate that waits, and it stays at 80
+ * columns while the person types). With an empty prompt (or one of spaces alone, which `Enter` treats as empty): (no key) `Enter connect a
+ * provider`, `[/] commands`, then the INDICATOR when there is something to continue
  * (`↓ 1 needs you` in the warning role, then the session and run counts; with no attention row the `↓` stands on the first count), else `type a
  * message to chat`, then `Tab fill the example`; `[Ctrl+C] exit (twice)` last. What does not fit the row is dropped: the example first, then the
  * call to connect (the status line says it), then the runs, then the sessions; never `[/] commands`, never the `↓`, never the exit. With
@@ -422,13 +427,12 @@ export function landingHint(state: LandingHintState, width: (text: string) => nu
   if (state.interruptArmed) return { text: legend([], EXIT_AGAIN) };
   const indicator = indicatorParts(state.counts);
   const warnHead = indicator?.head.role === 'warn' ? indicator.head : undefined;
-  const parts: readonly HintPart[] =
-    state.draft.text.length > 0
-      ? [
-          ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 'required'),
-          ...(indicator === undefined ? [] : [{ item: indicator.head, priority: 1 }]),
-        ]
-      : emptyLandingParts(state, indicator);
+  const parts: readonly HintPart[] = hasDraft(state.draft)
+    ? [
+        ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1),
+        ...(indicator === undefined ? [] : [{ item: indicator.head, priority: 2 }]),
+      ]
+    : emptyLandingParts(state, indicator);
   return hintRow(fitInOrder(parts, EXIT_TWICE, state.columns, width), EXIT_TWICE, warnHead);
 }
 
@@ -491,10 +495,9 @@ export function workHint(
     );
     return { text: legend(fitInOrder(parts, BACK_TO_START, state.columns, width), BACK_TO_START) };
   }
-  const draft = state.draft.text;
-  if (draft.length > 0) {
+  if (hasDraft(state.draft)) {
     // The draft's own words first; `↑ back to the list` before `[Ctrl+J] newline`, which is the first to give way.
-    const own = draftItems({ draft, keyless: state.keyless }, 1);
+    const own = draftItems({ draft: state.draft.text, keyless: state.keyless }, 1);
     parts.push(...own.filter((part) => part.priority === 'required'));
     if (state.hasRows) parts.push({ item: BACK_TO_LIST, priority: 2 });
     parts.push(...own.filter((part) => part.priority !== 'required'));
@@ -520,5 +523,21 @@ export const DOCKED_CHROME_ROWS = 4;
 export function workListRows(rows: number, bottomRows: number, noticeRows = 0): number {
   if (!Number.isFinite(rows)) return 0;
   const notice = noticeRows > 0 ? noticeRows + 1 : 0;
-  return Math.max(0, Math.floor(rows) - 1 - WORK_HEAD_ROWS - bottomRows - notice);
+  return Math.max(0, frameRows(rows) - WORK_HEAD_ROWS - bottomRows - notice);
+}
+
+/** The fewest list rows the work page keeps beside a long draft (OB71): the way back stays, and the Attention section and the first rows of Continue with it. */
+export const WORK_LIST_MIN_ROWS = 8;
+
+/**
+ * The most rows the work page's docked prompt editor may take (OB71): what `rows − 1` leaves after the way back and its blank row, the docked
+ * block's other four rows and {@link WORK_LIST_MIN_ROWS} of the list, never fewer than a window can have. A longer draft is drawn as a window
+ * around the cursor (`▲/▼ N more`), so the way back, the list's first rows, the rule, the status line and the hint stay on the screen and the
+ * frame is never as tall as the terminal. 9 at 80×24 (a list of 8 rows beside it), 15 at 100×30.
+ */
+export function workEditorRows(rows: number): number {
+  return Math.max(
+    PROMPT_WINDOW_MIN_ROWS,
+    frameRows(rows) - WORK_HEAD_ROWS - DOCKED_CHROME_ROWS - WORK_LIST_MIN_ROWS,
+  );
 }

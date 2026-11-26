@@ -270,8 +270,12 @@ const ENDED_LAST: RunHostSnapshot = {
 
 describe('the run row of the strip (ADR-0139 §3)', () => {
   it('shows the active run’s id and its state as a word, behind a glyph, in one line', () => {
-    expect(hostedRunLabel(running(false))).toBe(`◐ ${RUN_ID}  ·  running  ·  Enter show it`);
-    expect(hostedRunLabel(running(true))).toBe(`■ ${RUN_ID}  ·  cancelling  ·  Enter show it`);
+    expect(hostedRunLabel(running(false))).toBe(
+      `◐ ${shortId(RUN_ID)}  ·  running  ·  Enter show it`,
+    );
+    expect(hostedRunLabel(running(true))).toBe(
+      `■ ${shortId(RUN_ID)}  ·  cancelling  ·  Enter show it`,
+    );
     expect(hostedRunLabel(running(false))).not.toContain('\n');
   });
 

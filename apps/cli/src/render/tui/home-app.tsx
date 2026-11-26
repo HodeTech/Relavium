@@ -169,7 +169,7 @@ export interface RootAppProps {
   readonly clipboard?: ClipboardWriter | undefined;
   /** Explicit masked review copy; independent of mouse selection preferences. */
   readonly reviewClipboard?: ClipboardWriter | undefined;
-  /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
+  /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView` (`showsLandingBlock`: absent or `true` draws page 1's block). */
   readonly showBanner?: boolean | undefined;
   /**
    * What a path on the landing is shortened against (ADR-0145 §8): the project directory and the operator's home. The host that mounts the
@@ -916,7 +916,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
     // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
     // (Only on the Home's pages: a screen in the slot has no list on screen to measure, and its own Enter must reach it. Not while the pages
-    // slide: the controller queues every key until the slide has arrived and that frame is on screen, and applies the same check then.)
+    // slide: the controller drops an `Enter` pressed then, and an answer chord, when it is pressed, since no frame has shown the page at rest.)
     if (
       key.return &&
       current.screen === undefined &&
@@ -947,7 +947,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       editor: current.input,
       cols: live.cols,
       rows: live.rows,
-      keyless: current.keyless,
       showBanner: props.showBanner,
       onLanding,
       hasSessions: current.snapshot.recentSessions.length > 0,
@@ -1455,7 +1454,7 @@ export function watchHomeSources(
 /**
  * Whether the Home's notifications are held now: a decision is on screen (a card, a native prompt, the exit guard, a screen in the slot, a
  * popup step that holds a chord or a secret), or the hint row they draw on is not drawn (a block in the flow, below the floor, a chat that has
- * a submode open). A chat that is busy draws it: the running hint, which a notification replaces.
+ * a submode open), or the Home's armed `Ctrl+C` has it. A chat that is busy draws it: the running hint, which a notification replaces.
  */
 function notificationHeld(
   state: HomeControllerState,
@@ -1470,7 +1469,9 @@ function notificationHeld(
   if (popup.frame !== undefined && currentStep(popup.frame).spec.holds !== undefined) return true;
   if (flags.replacesBody || state.mode === 'loading' || !homeFitsTerminal(size.cols, size.rows))
     return true;
-  if (state.mode === 'home') return landingPromptHidden(flags);
+  // On the Home's pages the armed `Ctrl+C` wins the hint row (`[Ctrl+C] exit (again)`: the next press leaves), and a notification that would
+  // hide it waits, unspent, until the armed state ends (MVP-11 unit 7, round 1: CO75).
+  if (state.mode === 'home') return state.interruptArmed || landingPromptHidden(flags);
   // A chat that is busy (a turn, a `!` command, a submit in flight) draws its hint row (the running hint), so it does not hold the channel: a
   // refusal raised while it runs is read at once, not after the turn (SE7-1).
   return promptHidden(flags);

@@ -154,7 +154,8 @@ import {
   type ReverseSearchState,
 } from './input-history.js';
 import { EmphText } from './emphasis-view.js';
-import { chatPaletteRows, PaletteView, paletteLegend } from './palette-view.js';
+import { PaletteAbovePrompt } from './palette-block.js';
+import { chatPaletteRows } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
 import {
   CHAT_HEADER_ROWS,
@@ -470,13 +471,6 @@ interface ChatViewProps {
 }
 
 /**
- * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
- * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
- * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
- * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
- * sequence cannot corrupt the terminal or inject ANSI/OSC.
- */
-/**
  * The transient "Sent to terminal clipboard" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
  * channel — `store.note` — appends a TRANSCRIPT entry, which re-wraps and shifts the very lines the user just selected
  * (whole-phase review). This flag drives a toast rendered OUTSIDE the transcript, so it confirms the copy without
@@ -518,10 +512,10 @@ export const END_THE_SESSION_AGAIN = exitKey.leave('end the session (again)', 'C
 export const END_THE_SESSION_TWICE = exitKey.leave('end (twice)', 'Ctrl+C');
 
 /** The same second `Ctrl+C` in a chat the Home hosts (ADR-0146 §4): it goes back to the Home, and the word names where. */
-export const BACK_TO_HOME_AGAIN = exitKey.leave('back to Home (again)', 'Ctrl+C');
+const BACK_TO_HOME_AGAIN = exitKey.leave('back to Home (again)', 'Ctrl+C');
 
 /** The first `Ctrl+C` of an idle, empty prompt in a chat the Home hosts: it arms, and the second one goes back to the Home. */
-export const BACK_TO_HOME_TWICE = exitKey.leave('back to Home (twice)', 'Ctrl+C');
+const BACK_TO_HOME_TWICE = exitKey.leave('back to Home (twice)', 'Ctrl+C');
 
 /** The second `Ctrl+C` of the armed state, in the words of `host`: the destination is the Home where there is one, and the end where there is not. */
 const leavesAgain = (host: ChatHost): LegendExit =>
@@ -674,12 +668,6 @@ function InlineScrollback(
   );
 }
 
-/** What the palette's query reads as in the prompt: the slash and what was typed, the cursor at the end of it. */
-function paletteQueryEditor(query: string): EditorState {
-  const text = `/${query}`;
-  return { text, cursor: text.length };
-}
-
 /**
  * What the empty prompt invites: a conversation has something to reply to ({@link hasConversation}: a user or an assistant entry, or the turns a
  * reseat or a resume carried in), a new one has nothing yet. A notice is not a conversation. Never part of the draft, never sent.
@@ -697,7 +685,7 @@ function LeadRow(
 ): ReactElement {
   const { color } = props;
   if (props.copied) {
-    // A green pill when colour is on; a plain `[Sent to terminal clipboard]` under `NO_COLOR` / `--no-color` (parity with the banner).
+    // A green pill when colour is on; a plain `[Sent to terminal clipboard]` under `NO_COLOR` / `--no-color` (colour is never the only carrier, ADR-0145 §5).
     return color ? (
       <EmphText backgroundColor="green" color="black" emphasis="bold">
         {' Sent to terminal clipboard '}
@@ -745,9 +733,8 @@ interface PromptBlockProps {
   readonly live: ReactElement | undefined;
 }
 
-/** The hint row's words: the palette's legend while it is open, a notification in place of the hint, else the hint of the state (running or idle). */
+/** The hint row's words: a notification in place of the hint, else the hint of the state (running or idle); the open palette's block draws its own legend there. */
 function hintFor(props: PromptBlockProps): string {
-  if (props.palette !== undefined) return paletteLegend(props.palette.list);
   if (props.notification !== undefined) return props.notification;
   return props.running
     ? runningHint(props.interruptArmed, props.host)
@@ -772,24 +759,13 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
   const prefix = glyphOf('yourTurn', !color);
   if (palette !== undefined) {
     return (
-      <Box flexDirection="column" flexShrink={0}>
-        {props.live}
-        <PaletteView
-          list={palette.list}
-          state={palette.state}
-          color={color}
-          maxRows={palette.maxRows}
-        />
-        <PromptEditor
-          editor={paletteQueryEditor(palette.state.query)}
-          color={color}
-          glyph={prefix}
-        />
-        {rule}
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {hintFor(props)}
-        </Text>
-      </Box>
+      <PaletteAbovePrompt
+        palette={palette}
+        maxRows={palette.maxRows}
+        ruleColumns={props.columns}
+        color={color}
+        before={props.live}
+      />
     );
   }
   const status = chatStatusLine(
@@ -837,6 +813,13 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
   );
 }
 
+/**
+ * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
+ * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
+ * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
+ * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
+ * sequence cannot corrupt the terminal or inject ANSI/OSC.
+ */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const {
     state,
@@ -2522,8 +2505,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   );
 }
 
-/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
- *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
 /**
  * Sequence the `driveInk` exit: on `exited` RESOLVE, run `teardown` FIRST (unmount ink → restore raw mode + cursor)
  * and only THEN resolve the `outcome`. On `exited` REJECT (an unexpected turn-core throw), `teardown` still runs (the
@@ -2640,6 +2621,8 @@ export function eraseLiveRegionOnRedrive<
   };
 }
 
+/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
+ *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
   const outputMode = detectOutputMode({

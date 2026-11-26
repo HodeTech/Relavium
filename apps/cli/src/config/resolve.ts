@@ -116,8 +116,9 @@ export interface ResolvedConfig {
    *  system clipboard. A GLOBAL-only preference for the same reason as {@link mouse}. `undefined` ⇒ the phase default
    *  in `resolveCopyOnSelect`; meaningless (and ignored) when {@link mouse} is off. */
   readonly copyOnSelect: boolean | undefined;
-  /** `[preferences].show_banner` (2.6.F Step 5g, ADR-0068; ADR-0146 §1) — the empty Home's block (wordmark, rail, taglines). A GLOBAL-only
-   *  preference. `undefined` and `true` ⇒ the block on an empty Home; `false` ⇒ the one-line title instead (`showsLandingBlock`). */
+  /** `[preferences].show_banner` (2.6.F Step 5g, ADR-0068; ADR-0146 §1) — the landing's block (wordmark, rail, taglines): page 1 of the Home,
+   *  whatever the Home holds. A GLOBAL-only preference. `undefined` and `true` ⇒ the block; `false` ⇒ the one-line spaced wordmark
+   *  instead (`showsLandingBlock`). */
   readonly showBanner: boolean | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];

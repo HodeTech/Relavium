@@ -528,6 +528,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         kind: 'session',
         id: first.sessionId,
       });
+      // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+      await vi.waitFor(() => expect(home.controller.getSnapshot().slide).toBeUndefined());
       const display = vi.spyOn(store, 'loadUserDisplayTexts');
       display.mockImplementationOnce(() => {
         throw new Error('PRIVATE_DISPLAY_FAILURE');
@@ -4191,6 +4193,8 @@ workflow:
             timeout: WAIT_MS,
           });
           props.controller.handleKey('', { downArrow: true });
+          // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+          await vi.waitFor(() => expect(props.controller.getSnapshot().slide).toBeUndefined());
           props.controller.handleKey('', ENTER);
           await vi.waitFor(
             () => {

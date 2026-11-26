@@ -390,7 +390,6 @@ const homeNotice: Recorder = () => {
     editor: emptyEditor(),
     cols: 80,
     rows: 24,
-    keyless: false,
     showBanner: false,
     onLanding: false,
     hasSessions: false,

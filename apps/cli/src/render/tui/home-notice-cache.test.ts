@@ -17,12 +17,16 @@ const options = {
   editor: { text: '', cursor: 0 },
   cols: 40,
   rows: 40,
-  keyless: false,
   showBanner: false,
   onLanding: false,
   hasSessions: false,
 };
-const wrapCalls = (): number => vi.mocked(wrapWords).mock.calls.length;
+/**
+ * The wraps of the NOTICE's text so far. The layout also measures the prompt (the editor's rows are what Ink's word wrap makes of the draft,
+ * `wrappedRowCount`, OB71), which is one call per line of the draft and, with the draft empty here, a line of blanks; those are not the notice.
+ */
+const wrapCalls = (): number =>
+  vi.mocked(wrapWords).mock.calls.filter(([line]) => line.trim() !== '').length;
 
 beforeEach(() => {
   vi.mocked(wrapWords).mockClear();

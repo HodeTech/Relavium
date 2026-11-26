@@ -3166,7 +3166,8 @@ describe('the lines the controller writes into a chat itself follow `plainGlyphs
         }
       }
       await flush();
-      expect(note).toHaveBeenCalledWith(line);
+      // A fact about the session's world: it stays until `/clear` (MVP-11 unit 7, round 1: SE73).
+      expect(note).toHaveBeenCalledWith(line, 'session');
       await c.teardownActive();
     },
   );

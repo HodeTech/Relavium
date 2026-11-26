@@ -114,7 +114,7 @@ export interface HomeSnapshot {
    * and the listing is where a user would come to find out which run is broken. Empty on the healthy path.
    */
   readonly unreadableRunIds: readonly string[];
-  /** True when there is NOTHING to show (a fresh install) — the UI renders a first-run welcome, not empty strips. */
+  /** True when there is NOTHING to show (a fresh install) — the Home has no work page, and its landing says so (no `↓`), not empty strips. */
   readonly isEmpty: boolean;
 }
 
@@ -291,7 +291,7 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     recentRuns.length === 0 &&
     gates.length === 0 &&
     failedRuns.length === 0 &&
-    // A Home whose only content is a damaged run must not render the fresh-install welcome (#W15-15) — that
+    // A Home whose only content is a damaged run must not read as a fresh install, with nothing to continue (#W15-15) — that
     // would be the "no data" answer this finding is about, in its most misleading form.
     unreadableRunIds.length === 0;
 

@@ -37,6 +37,12 @@ export interface PaletteViewProps {
    * inside it. Absent ⇒ every entry is drawn, as it always was.
    */
   readonly maxRows?: number | undefined;
+  /**
+   * Draw the list alone, whichever way it runs (the landing's list under its prompt): the host draws the query on its own prompt row and the legend
+   * on its own row, as a chat's list above the prompt does by its layout. `maxRows` is then the whole block's (the prompt row, the rule, the list
+   * and the legend row: the chrome of three rows is the same). Absent ⇒ the layout decides.
+   */
+  readonly bare?: boolean | undefined;
 }
 
 /** The words a dim row carries instead of its description: they read without colour (`unavailable · no conversation to clear`). */
@@ -175,8 +181,9 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
         );
       })
     );
-  // A chat's list is the body alone, directly above the prompt: its query is the prompt's text and its legend is the hint row.
-  if (list.layout === 'up') {
+  // A chat's list is the body alone, directly above the prompt: its query is the prompt's text and its legend is the hint row. The landing's
+  // `bare` list is the same body, in the order of its layout, under its prompt.
+  if (list.layout === 'up' || props.bare === true) {
     return (
       <Box flexDirection="column" flexShrink={0}>
         {body}

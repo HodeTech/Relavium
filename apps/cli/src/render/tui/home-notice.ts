@@ -1,9 +1,16 @@
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
-import { homeMargin, landingNoticeRoom, showsLandingBlock } from './home-layout.js';
-import { DOCKED_CHROME_ROWS, workListRows } from './home-pages.js';
+import {
+  HOME_PROMPT_LEAD_COLUMNS,
+  homeMargin,
+  landingEditorRows,
+  landingNoticeRoom,
+  showsLandingBlock,
+} from './home-layout.js';
+import { DOCKED_CHROME_ROWS, workEditorRows, workListRows } from './home-pages.js';
 import { keyHint } from './legend.js';
-import { displayWidth, wrapWords } from './viewport.js';
+import { PROMPT_WINDOW_MIN_ROWS, wrappedRowCount } from './prompt-window.js';
+import { wrapWords } from './viewport.js';
 
 /**
  * The columns the Home's notice, its prompt and its hint are laid out in: the terminal less the left margin, on both pages (the landing and the
@@ -14,14 +21,24 @@ export function homeContentColumns(cols: number): number {
   return Number.isFinite(cols) ? Math.max(1, Math.floor(cols) - homeMargin(cols)) : cols;
 }
 
-export function homePromptRows(editor: EditorState, columns: number): number {
-  return editor.text
-    .split('\n')
-    .reduce(
-      (sum, line) =>
-        sum + Math.max(1, Math.ceil((displayWidth(sanitizeInline(line)) + 3) / columns)),
-      0,
-    );
+/**
+ * The rows the prompt editor draws for `editor` in `columns` columns: what Ink's word wrap makes of the draft, lead and cursor cell included
+ * ({@link wrappedRowCount}: a prose paragraph takes more rows than a count of its characters over the width), at least one row per line. The
+ * cursor's cell is counted even where no cursor is drawn (an unfocused prompt), so the count is never short. With `maxRows` (the bound the Home
+ * gives its editors, OB71: `landingEditorRows`, `workEditorRows`) a draft that is longer is drawn as a window of at most that many rows (never
+ * fewer than a window can have), so that is the count.
+ */
+export function homePromptRows(editor: EditorState, columns: number, maxRows?: number): number {
+  const natural = wrappedRowCount(
+    editor.text,
+    editor.cursor < 0 ? editor.text.length : editor.cursor,
+    HOME_PROMPT_LEAD_COLUMNS,
+    columns,
+    sanitizeInline,
+  );
+  return maxRows === undefined
+    ? natural
+    : Math.min(natural, Math.max(PROMPT_WINDOW_MIN_ROWS, Math.floor(maxRows)));
 }
 
 export interface HomeNoticeOptions {
@@ -29,7 +46,6 @@ export interface HomeNoticeOptions {
   readonly editor: EditorState;
   readonly cols: number;
   readonly rows: number;
-  readonly keyless: boolean;
   readonly showBanner: boolean | undefined;
   /**
    * Which page the notice is drawn on: `true` the landing (page 1: the head, the notice, the prompt block), `false` the work page (page 2: its
@@ -144,19 +160,34 @@ function wrappedNotice(notice: string, cols: number): readonly string[] {
 }
 
 /**
+ * The most rows the prompt editor of the page the notice is laid out for may take, without the notice itself: the landing's bound beside its
+ * head, its hosted run's row (the rows reserved) and the four rows under the prompt, or the work page's bound beside its list's least. The
+ * view draws its editors by the same bounds (`landingEditorRows`, `workEditorRows`).
+ */
+function noticeEditorRows(
+  options: Pick<HomeNoticeOptions, 'onLanding' | 'rows' | 'showBanner'>,
+  reserved: number,
+): number {
+  return options.onLanding
+    ? landingEditorRows(options.rows, showsLandingBlock(options.showBanner), { runRows: reserved })
+    : workEditorRows(options.rows);
+}
+
+/**
  * Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. On the landing
- * (page 1) the room is what `rows − 1` leaves after the head, the notice's two blank rows, the prompt and its four rows ({@link landingNoticeRoom});
+ * (page 1) the room is what `rows − 1` leaves after the head, the notice's blank row above it, the prompt and its four rows ({@link landingNoticeRoom});
  * on the work page (page 2) it is what the list leaves under the way back once the docked prompt block, the notice's blank row and the rows the
  * focus can reach are counted ({@link workListRows}).
  */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
   const width = homeContentColumns(options.cols);
-  const promptRows = homePromptRows(options.editor, width);
   const reserved = options.reservedRows ?? 0;
+  // The prompt is drawn as a window of at most the page's bound (OB71); the notice's room is what the page leaves beside THAT many rows.
+  const promptRows = homePromptRows(options.editor, width, noticeEditorRows(options, reserved));
   let available: number;
   if (options.onLanding) {
-    const showBlock = showsLandingBlock(options.showBanner, true);
+    const showBlock = showsLandingBlock(options.showBanner);
     available = Math.max(2, landingNoticeRoom(options.rows, showBlock, { promptRows }) - reserved);
   } else {
     const management = continueSectionRows(options) + (options.hasAttentionRuns === true ? 3 : 0);

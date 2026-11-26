@@ -10,10 +10,17 @@ import { describe, expect, it } from 'vitest';
 
 import { type ChatStatusInput, type HomeStatusInput, statusLine } from './status-line.js';
 
-/** What one call may cost, on a warm module, however long a value is: the line under test took 31 ms before the bound; the bound is generous. */
-const CALL_BOUND_MS = 5;
+/**
+ * How much more a value of 100,000 characters may cost than one of 10,000: the cost is the same once a value is past the window the line scrubs
+ * (the bound is 256 code points, the window 1,024), so the answer is 1 and a loaded machine moves it by a fraction; unbounded, it grows with the
+ * length and the answer is 10. A RATIO and not a wall-clock figure: the cost of one call is 3 ms on a quiet machine and 10 ms on a loaded one,
+ * and the property under test (SE7-6) is that it does not grow with the value, not how fast the machine is.
+ */
+const GROWTH_BOUND = 3;
 
 const WIDE = 2000;
+const SIZE = 10_000;
+const MUCH_LONGER = 100_000;
 const long = (text: string, count: number): string => text.repeat(Math.ceil(count / text.length));
 
 const CHAT = (over: Partial<ChatStatusInput> = {}): ChatStatusInput => ({
@@ -54,37 +61,54 @@ function callMs(call: () => unknown): number {
 
 const KEY_SHAPED = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
 
+/** The cost of a line built by `build` for values of `length` characters, as a multiple of what it costs for `SIZE` characters. */
+function growth(build: (length: number) => () => unknown): number {
+  const small = callMs(build(SIZE));
+  const large = callMs(build(MUCH_LONGER));
+  return large / small;
+}
+
 describe('the status line costs the same whatever the length of a value (SE7-6)', () => {
-  const TEN_THOUSAND = 10_000;
-
-  it('a chat with a 10,000-character model id, provider and mode costs a few milliseconds a call at most', () => {
-    const input = CHAT({
-      model: long('model-', TEN_THOUSAND),
-      provider: long('provider-', TEN_THOUSAND),
-      mode: long('mode-', TEN_THOUSAND),
-      effort: long('effort-', TEN_THOUSAND),
-    });
-    expect(callMs(() => statusLine(input, 100, 0))).toBeLessThan(CALL_BOUND_MS);
+  it('a chat with a model id, provider, mode and effort ten times longer costs no more than 3 times as much a call', () => {
+    expect(
+      growth((length) => {
+        const input = CHAT({
+          model: long('model-', length),
+          provider: long('provider-', length),
+          mode: long('mode-', length),
+          effort: long('effort-', length),
+        });
+        return () => statusLine(input, 100, 0);
+      }),
+    ).toBeLessThan(GROWTH_BOUND);
   });
 
-  it('a chat with 10,000-character cost forms costs the same', () => {
-    const input = CHAT({
-      cost: {
-        full: long('$1 known; ', TEN_THOUSAND),
-        short: long('$1 known', TEN_THOUSAND),
-        qualified: true,
-      },
-    });
-    expect(callMs(() => statusLine(input, 100, 0))).toBeLessThan(CALL_BOUND_MS);
+  it('a chat with cost forms ten times longer costs the same', () => {
+    expect(
+      growth((length) => {
+        const input = CHAT({
+          cost: {
+            full: long('$1 known; ', length),
+            short: long('$1 known', length),
+            qualified: true,
+          },
+        });
+        return () => statusLine(input, 100, 0);
+      }),
+    ).toBeLessThan(GROWTH_BOUND);
   });
 
-  it('the Home with a 10,000-character directory, model and provider costs the same', () => {
-    const input = HOME({
-      directory: `~/${long('segment/', TEN_THOUSAND)}`,
-      model: long('model-', TEN_THOUSAND),
-      provider: long('provider-', TEN_THOUSAND),
-    });
-    expect(callMs(() => statusLine(input, 100))).toBeLessThan(CALL_BOUND_MS);
+  it('the Home with a directory, model and provider ten times longer costs the same', () => {
+    expect(
+      growth((length) => {
+        const input = HOME({
+          directory: `~/${long('segment/', length)}`,
+          model: long('model-', length),
+          provider: long('provider-', length),
+        });
+        return () => statusLine(input, 100);
+      }),
+    ).toBeLessThan(GROWTH_BOUND);
   });
 });
 

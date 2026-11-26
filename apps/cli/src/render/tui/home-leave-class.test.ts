@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { STARTING_CHAT_LINE } from './home-app.js';
-import { EXIT_AGAIN, EXIT_TWICE } from './home-view.js';
+import { EXIT_AGAIN, EXIT_TWICE } from './home-pages.js';
 
 /**
  * The key that leaves the Home is of the `leave` class ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §2):

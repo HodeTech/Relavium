@@ -28,7 +28,7 @@ export interface HomeStatusFacts {
   readonly directory: string;
 }
 
-/** What the controller reads the facts through: synchronous, called at its refresh points only, and free to throw (the controller keeps the facts it has). */
+/** What the controller reads the facts through: synchronous, called at its refresh points only, and free to throw (the controller then drops the facts: the line is blank until a read succeeds, never stale). */
 export interface HomeStatusReader {
   readonly read: () => HomeStatusFacts;
 }

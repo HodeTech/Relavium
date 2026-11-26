@@ -77,7 +77,9 @@ function gate(id: string): RunGate {
 
 /** A gate card and the native channel over one clock; `history` is what the Home shares (or `undefined`: each keeps its own). */
 function rig(history: ChordHistory | undefined) {
-  let now = 0;
+  // The gate card opened two seconds before the person answers it at 0: its own lockout runs from its appearance (MVP-11 unit 7, round 1),
+  // so an answer at the very moment it opened would be refused.
+  let now = -APPROVAL_LOCKOUT_MS;
   const resume = vi.fn(() => Promise.resolve(STARTED));
   const card = createRunCard({
     runId: RUN,

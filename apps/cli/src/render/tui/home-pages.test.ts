@@ -411,12 +411,13 @@ describe('the landing’s hint', () => {
     ).toBe('Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)');
   });
 
-  it('with a draft says the draft’s keys, then the indicator’s `↓` when it fits', () => {
+  it('with a draft says the draft’s keys, then the indicator’s `↓`, which `[Ctrl+J] newline` gives way to', () => {
     expect(landing({ draft: ONE_LINE, counts: H3, columns: 120 }).text).toBe(
       'Enter start the chat · [Ctrl+J] newline · ↓ 1 needs you · [Ctrl+C] exit (twice)',
     );
+    // MVP-11 unit 7, round 1 (OB73): at 80 columns the cue stays and the newline key goes (it was the other way round).
     expect(landing({ draft: ONE_LINE, counts: H3 }).text).toBe(
-      'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
+      'Enter start the chat · ↓ 1 needs you · [Ctrl+C] exit (twice)',
     );
     expect(landing({ draft: editor('/mod'), counts: H3, columns: 120 }).text).toBe(
       'Enter run · [Ctrl+J] newline · ↓ 1 needs you · [Ctrl+C] exit (twice)',

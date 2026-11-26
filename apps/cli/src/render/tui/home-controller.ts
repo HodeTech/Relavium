@@ -164,6 +164,7 @@ import {
 } from './tui-constants.js';
 import {
   HOME_MIN_ROWS,
+  homeFitsTerminal,
   hostedRunIsLive,
   homeIsEmpty,
   type ExitGuardPhase,
@@ -202,7 +203,7 @@ import { nearestCommandName } from './command-typo.js';
 import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
 import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
-import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
+import { chordOf, createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
 import { keyHint, keyToken } from './legend.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
 import { looksLikeProviderKey } from '../provider-key-shape.js';
@@ -818,6 +819,12 @@ export interface HomeControllerDeps {
    */
   readonly announce?: ((text: string) => void) | undefined;
   /**
+   * Withdraw every notification {@link announce} said that is still showing or waiting (MVP-11 unit 7, round 1: CO76): the Home's words are
+   * about the Home, so they go when a chat comes in front (its build starts, or a resumed conversation is adopted), or the chat's hint row reads
+   * them in place of its own, its way back included. The chat's own notifications are not the Home's and stay. Absent ⇒ nothing is withdrawn.
+   */
+  readonly withdrawAnnouncements?: (() => void) | undefined;
+  /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
    */
@@ -842,8 +849,8 @@ export interface HomeControllerDeps {
    * What the Home's status line says about the next chat (ADR-0146 §2): the provider, the model, the mode, the effort and the directory a chat
    * started now would use. Read ONCE when the controller is built and again only at the events that can change them (a provider run, a
    * `/models` default write, a `/mode` default, a chat ending or a `/clear`), never on a draw: it may read configuration, and a draw touches no
-   * keychain and no disk. A read that throws leaves the facts the Home has. Absent ⇒ the Home has no status line (a test's Home) and nothing
-   * else changes.
+   * keychain and no disk. A read that throws leaves the Home with no facts (its status row is blank) until a read succeeds: the facts it had
+   * may no longer be what the next chat uses. Absent ⇒ the Home has no status line (a test's Home) and nothing else changes.
    */
   readonly statusFacts?: HomeStatusReader | undefined;
   readonly providerSetup?: {
@@ -1126,8 +1133,10 @@ function legBoundary(now: RunHostSnapshot, before: RunHostSnapshot | undefined):
 }
 
 /**
- * The status facts the reader gives now (ADR-0146 §2), or `previous` when there is no reader or the read throws (a strict configuration reload
- * that failed: the line keeps what it said, and the failure belongs to whatever builds the next chat). The very object `previous` when nothing
+ * The status facts the reader gives now (ADR-0146 §2), or `previous` when there is no reader. A read that throws (a strict configuration reload
+ * that failed) gives NO facts: the line is drawn blank until a read succeeds, because the facts it had are no longer what the next chat would use
+ * (that reload revoked the starting mode's authority, and the next chat refuses to start), and the line never claims what the next chat will
+ * not do (MVP-11 unit 7, round 1: SE72); the failure itself belongs to whatever builds the next chat. The very object `previous` when nothing
  * changed, so a re-read that finds the same facts publishes nothing and repaints nothing.
  */
 function readStatusFacts(
@@ -1139,7 +1148,7 @@ function readStatusFacts(
     const next = reader.read();
     return sameStatusFacts(next, previous) ? previous : next;
   } catch {
-    return previous;
+    return undefined;
   }
 }
 
@@ -1203,6 +1212,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let slideQueue: readonly QueuedInput[] = [];
   let settlingSlide = false;
   let cancelSettleBound: (() => void) | undefined;
+  // The Home's draft while a conversation resumed from the Home is in front (MVP-11 unit 7, round 1: SE74): it was not sent, so the chat
+  // starts with an empty composer and the Home's prompt has the draft again when the chat ends. Never a draft that looks like a key.
+  let keptDraft: EditorState | undefined;
+  // The row of the work page a screen in the slot was opened from (its identity and where it stood), until the slot is empty again: the focus
+  // goes back to it, or to the row that now stands where it stood when it is gone (MVP-11 unit 7, round 1: OB77; `restoreRowFocus`).
+  let screenFromRow: { readonly focus: StripFocus; readonly index: number } | undefined;
   let activePollRunning = false;
   let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
@@ -1337,15 +1352,37 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (state.homePage === 'work' && homeIsEmpty(state.snapshot, state.parkedRuns))
       state = { ...state, homePage: 'start', stripFocus: undefined };
   };
+  /**
+   * The slot is empty again after a screen opened from a row of the work page (MVP-11 unit 7, round 1: OB77): the focus is that row's again,
+   * by its identity, or, when the screen took it off the list (a gate answered: the run is no longer parked), the row that now stands where it
+   * stood (the last one when the list got shorter), never the docked prompt while there is a row to stand on. A focus the closing change set
+   * itself, a focus that still names a row, a chat in front and the landing are left as they are.
+   */
+  const restoreRowFocus = (patch: Partial<HomeControllerState>): void => {
+    const origin = screenFromRow;
+    screenFromRow = undefined;
+    if (origin === undefined || 'stripFocus' in patch) return;
+    if (state.mode !== 'home' || state.homePage !== 'work') return;
+    const rows = stripRows(state.parkedRuns, state.snapshot);
+    if (focusFor(rows, state.stripFocus) !== undefined) return;
+    const stripFocus =
+      focusFor(rows, origin.focus) === undefined
+        ? focusAt(rows, Math.min(origin.index, rows.length - 1))
+        : origin.focus;
+    if (stripFocus !== undefined) state = { ...state, stripFocus };
+  };
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
     const before = state;
     state = { ...state, ...patch, noticeRevision };
     if ('snapshot' in patch || 'parkedRuns' in patch) followRows(patch);
+    if (before.screen !== undefined && state.screen === undefined) restoreRowFocus(patch);
     // A screen or a card that opens or closes ends the swallowed `Enter` (see `focusJustDropped`): the first key after the landing comes
     // back is the landing's own.
     if (before.screen !== state.screen) focusJustDropped = false;
     syncActivePoll();
+    // A chat comes in front (its build starts, a resumed one is adopted): the Home's own notifications are about the Home, and go (CO76).
+    if (before.mode === 'home' && state.mode !== 'home') deps.withdrawAnnouncements?.();
     notify();
     // The landing is back from a screen: the strip is read again now rather than at the next tick (ADR-0140 §6).
     if (before.screen !== undefined && state.screen === undefined) stripPoll?.refresh();
@@ -1478,9 +1515,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // the change SLIDES: the page and the focus are the target's at once (so the keys, the hints and the measured frame are), and `slide` walks
   // the view's window through the frames of `slideFrames`, one every `SLIDE_FRAME_MS`. Every key and paste that arrives meanwhile waits in
   // `slideQueue` and is applied in order once the arrival is on screen (the host's `homeFrameShown`; with no host bound, at once; with a host
-  // that never says so, after `SLIDE_SETTLE_BOUND_MS`), each through the very route a live key takes. `Ctrl+C` does not wait: it ends the slide
-  // where it would arrive, applies what was queued before it, and is then handled at once (a second press there opens the exit guard over the
-  // page that has arrived). A resize ends the slide the same way, without the `Ctrl+C`.
+  // that never says so, after `SLIDE_SETTLE_BOUND_MS`), each through the very route a live key takes, EXCEPT a key that answers (`Enter` and
+  // the answer chords): it is judged when it is pressed, when no frame has shown the page at rest, and dropped (`answersUnseen`). A queue that
+  // can no longer be applied as it was pressed (the terminal went below the floor, a popup took the keyboard) is dropped whole. `Ctrl+C` does
+  // not wait: it ends the slide where it would arrive, applies what was queued before it, and is then handled at once (a second press there
+  // opens the exit guard over the page that has arrived). A resize ends the slide the same way, without the `Ctrl+C`.
   /** The slide's next frame, or its arrival. */
   const stepSlide = (): void => {
     cancelSlideFrame = undefined;
@@ -1526,41 +1565,55 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, SLIDE_SETTLE_BOUND_MS);
   };
   /**
-   * An `Enter` from the queue on a focused row whose frame is not on screen: dropped, as the host drops a live one (`home-app.tsx`), because a
-   * row the person has not seen must not be opened.
+   * Whether the keys that waited may still be applied as they were pressed: not below the Home's 80×24 floor (the host delivers only the way out
+   * there, and the page they were pressed at is gone) and not while a popup owns the keyboard (it opened while they waited, and none was meant for
+   * it). A native prompt owns the keyboard only while a native action is busy, which {@link routeKey} refuses on its own.
    */
-  const unseenRowEnter = (entry: QueuedInput): boolean =>
-    entry.kind === 'key' &&
-    entry.key.return === true &&
-    state.screen === undefined &&
-    state.stripFocus !== undefined &&
-    homeFrameVisible !== undefined &&
-    !homeFrameVisible(state);
-  /** Apply the queued keys and pastes in order. A queued key that starts another slide leaves the rest to wait for that one. */
+  const queueStillApplies = (): boolean =>
+    deps.popupOpen?.() !== true &&
+    (terminal === undefined || homeFitsTerminal(terminal.columns, terminal.rows));
+  /**
+   * Apply the queued keys and pastes in order. A queued key that starts another slide leaves the rest to wait for that one; a queue that can no
+   * longer be applied as it was pressed ({@link queueStillApplies}) is dropped, the rest of it with it.
+   */
   const drainSlideQueue = (): void => {
     settlingSlide = false;
     cancelSettleBound?.();
     cancelSettleBound = undefined;
     let queued = slideQueue;
     slideQueue = [];
-    while (queued.length > 0 && !exiting) {
+    while (queued.length > 0 && !exiting && queueStillApplies()) {
       if (state.slide !== undefined) {
         slideQueue = [...queued, ...slideQueue];
         return;
       }
       const [entry, ...rest] = queued;
       queued = rest;
-      if (entry === undefined || unseenRowEnter(entry)) continue;
+      if (entry === undefined) continue;
       if (entry.kind === 'paste') pasteText(entry.text);
       else routeKey(entry.input, entry.key);
     }
   };
-  /** Whether `input` waits for the slide (or its arrival); a `Ctrl+C` ends the slide and does not wait. */
+  /**
+   * A key pressed while the pages slide (or while their arrival waits for its frame) that would ANSWER something: `Enter` (it opens the focused
+   * row, sends the draft, runs the palette's command) or an answer chord (`Ctrl+Y`, `Ctrl+N`). It is judged when it is PRESSED, not when it would
+   * be applied: no frame had shown the page it acts on at rest then, so it is dropped (the live rule: no unseen row is opened, `home-app.tsx`), and
+   * a chord is never replayed onto a card a key before it opened. It is still a key of the Home's chord history: a card that opens soon after
+   * sees it in its quiet gap.
+   */
+  const answersUnseen = (input: QueuedInput): boolean =>
+    input.kind === 'key' &&
+    (input.key.return === true || chordOf(input.input, input.key) !== undefined);
+  /** Whether `input` waits for the slide (or its arrival); a `Ctrl+C` ends the slide and does not wait, and a key that answers is dropped. */
   const queuedForSlide = (input: QueuedInput): boolean => {
     if (state.slide === undefined && !settlingSlide) return false;
     if (input.kind === 'key' && isInterruptKey(input.input, input.key)) {
       arriveSlide(true);
       return false;
+    }
+    if (answersUnseen(input)) {
+      landingKeys.stamp();
+      return true;
     }
     slideQueue = [...slideQueue, input];
     return true;
@@ -1633,7 +1686,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const line = withGlyphForm(deps.plainGlyphs === true, () =>
       hostedEndNotice({ runId: end.runId, disposition: end.terminal.disposition }, row),
     );
-    if (line !== undefined) chat.store.note(line);
+    // A fact about the session's world, not an answer to a gesture: it stays until `/clear` or the chat ends, and the next message does not
+    // consume it (MVP-11 unit 7, round 1: SE73), or a run waiting for the person loses its one sign in the chat.
+    if (line !== undefined) chat.store.note(line, 'session');
   };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
   const refreshHostedRun = (): void => {
@@ -2115,9 +2170,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         tearingDown = undefined;
         cancelFired = false;
         if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
+        // The draft a conversation resumed from the Home kept is the returned Home's prompt again (SE74); any other chat leaves it empty.
+        const input = keptDraft ?? emptyEditor();
+        keptDraft = undefined;
         set({
           session: undefined,
-          input: emptyEditor(),
+          input,
           notice: undefined, // a stale notice (a build failure, a refusal) must not leak into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
@@ -2731,10 +2789,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return came.outcome;
   };
 
+  /** The Home's draft as a resume from the Home keeps it for the chat's end: nothing when empty, and never a draft that looks like a key. */
+  const draftToKeep = (draft: EditorState): EditorState | undefined =>
+    draft.text.length === 0 || looksLikeProviderKey(draft.text) ? undefined : draft;
   /**
    * The resumed conversation takes the place of the one open (`old`, if any), unless the Home left or another took it meanwhile (both read
    * here, after the `/resume` frame closed, and again after `old`'s teardown). Called with the frame closed: its activation may wait on a
-   * flushed frame, and an open popup's close would abort that wait.
+   * flushed frame, and an open popup's close would abort that wait. A conversation resumed from the Home keeps the Home's draft for its end.
    */
   const adoptResumed = async (
     old: HomeChatSession | undefined,
@@ -2756,6 +2817,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     cancelFired = false;
     history = EMPTY_HISTORY;
+    // Resumed from the Home (no chat was open): its draft was not sent, so it waits for the chat's end (`endChat`), unless it looks like a key.
+    if (old === undefined) keptDraft = draftToKeep(state.input);
     set({
       session: result,
       mode: 'chat',
@@ -4089,7 +4152,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return outcome.then === 'none';
       case 'open-row': {
         const row = rows[rowIndex ?? -1];
-        if (row !== undefined) activateStripRow(row);
+        if (row === undefined || rowIndex === undefined) return true;
+        activateStripRow(row);
+        // A screen it opened gives the focus back to this row when it closes (OB77, `restoreRowFocus`).
+        if (state.screen !== undefined)
+          screenFromRow = { focus: { kind: row.kind, id: row.id }, index: rowIndex };
         return true;
       }
     }

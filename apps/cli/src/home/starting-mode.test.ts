@@ -297,6 +297,8 @@ async function fixture(
   const resume = async () => {
     mounted.controller.handleKey('', { downArrow: true });
     expect(mounted.controller.getSnapshot().stripFocus).toBeDefined();
+    // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+    await vi.waitFor(() => expect(mounted.controller.getSnapshot().slide).toBeUndefined());
     mounted.controller.handleKey('', ENTER);
     return ready();
   };

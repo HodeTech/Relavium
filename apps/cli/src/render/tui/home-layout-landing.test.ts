@@ -21,24 +21,20 @@ import {
  * are all counted here. The frames (`home-landing-frames.test.tsx`) hold the drawn rows to these numbers.
  */
 
-describe('showsLandingBlock: the block is the EMPTY Home’s, and `show_banner = false` turns it into the title', () => {
+describe('showsLandingBlock: the block is page 1’s whatever the Home holds, and `show_banner = false` turns it into the title', () => {
   it.each([
-    [undefined, true, true],
-    [true, true, true],
-    [false, true, false],
-    // A Home that has something to continue draws the title whatever the setting says.
-    [undefined, false, false],
-    [true, false, false],
-    [false, false, false],
-  ] as const)('show_banner=%s, empty=%s ⇒ block %s', (setting, empty, block) => {
-    expect(showsLandingBlock(setting, empty)).toBe(block);
+    [undefined, true],
+    [true, true],
+    [false, false],
+  ] as const)('show_banner=%s ⇒ block %s', (setting, block) => {
+    expect(showsLandingBlock(setting)).toBe(block);
   });
 });
 
 describe('exampleIsShown: the example is on screen exactly when it can be filled in', () => {
-  it('shows on the empty Home with nothing typed, and nowhere else', () => {
+  it('shows on the landing with nothing typed, and nowhere else', () => {
     expect(exampleIsShown(true, '')).toBe(true);
-    expect(exampleIsShown(false, '')).toBe(false); // a Home with a strip draws no example
+    expect(exampleIsShown(false, '')).toBe(false); // the work page’s docked prompt draws no example
     expect(exampleIsShown(true, 'a')).toBe(false);
     // A draft of one blank is a draft: the prompt draws it, not the example (the prompt shows the example only for an empty text).
     expect(exampleIsShown(true, ' ')).toBe(false);
@@ -63,14 +59,22 @@ describe('landingRows: the height of the landing without its top gap', () => {
     expect(landingRows(false, { runRows: 1, promptRows: 2 })).toBe(9);
   });
 
-  it('a notice takes the place of the gap and brings a blank row above and below it: n rows cost n rows on the block and n + 1 on the title', () => {
+  // OB76 (round 1): a notice stands in the blank rows above the prompt, directly over it, with one blank row above it. A one-row notice under the
+  // block moves nothing (the block's second blank row is where it stands); a taller one, or any under the one-line title, moves the prompt by the rows
+  // it needs: the gap is `max(resting, n + 1)`. Before, the notice brought a blank row above AND below it (`n + 2`) and moved the prompt by one.
+  it('a notice stands in the gap with a blank row above it: the block keeps its twelve rows for one row and grows by the rest, the title by n', () => {
+    expect(landingRows(true, { noticeRows: 1 })).toBe(12);
+    for (const n of [2, 7, 11]) {
+      expect(landingRows(true, { noticeRows: n }), `block, ${String(n)}`).toBe(11 + n);
+    }
     for (const n of [1, 2, 7, 11]) {
-      expect(landingRows(true, { noticeRows: n }), `block, ${String(n)}`).toBe(12 + n);
-      expect(landingRows(false, { noticeRows: n }), `title, ${String(n)}`).toBe(7 + n + 1);
+      expect(landingRows(false, { noticeRows: n }), `title, ${String(n)}`).toBe(7 + n);
     }
     expect(landingGapRows(true)).toBe(2);
     expect(landingGapRows(false)).toBe(1);
-    expect(landingGapRows(true, 4)).toBe(6);
+    expect(landingGapRows(true, 1)).toBe(2);
+    expect(landingGapRows(true, 4)).toBe(5);
+    expect(landingGapRows(false, 1)).toBe(2);
   });
 
   // The hosted run's row stands under the status line (MVP-11 unit 7, the study's frame 21): it is part of the prompt block, not of the rows
@@ -98,9 +102,9 @@ describe('landingRows: the height of the landing without its top gap', () => {
 });
 
 describe('landingNoticeRoom: what a notice may take, and the landing still short of the terminal', () => {
-  it('is 11 rows on the block at 24 rows, and the landing with that notice is exactly rows − 1', () => {
-    expect(landingNoticeRoom(24, true)).toBe(11);
-    expect(landingRows(true, { noticeRows: 11 })).toBe(23);
+  it('is 12 rows on the block at 24 rows, and the landing with that notice is exactly rows − 1', () => {
+    expect(landingNoticeRoom(24, true)).toBe(12);
+    expect(landingRows(true, { noticeRows: 12 })).toBe(23);
   });
 
   it.each([true, false])(
