@@ -1,4 +1,5 @@
 import { prepareOutputCapPlan } from '@relavium/llm';
+import { DEFAULT_CHAT_MODEL } from './default-agent.js';
 import type { PreEgressInfo, SessionStreamHandleEvent } from '@relavium/core';
 import { reconstructSessionState, unwrapUntrusted } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
@@ -1015,12 +1016,13 @@ describe('createSessionPersister', () => {
     const catalog = createModelCatalogStore(client.db, { uuid: () => 'm-1', now: () => 0 });
     catalog.upsert({
       providerId: provider.id,
-      modelId: 'claude-sonnet-4-6',
-      displayName: 'Sonnet',
+      // The producing model is the zero-config chat agent's: the starter table's Anthropic entry (Haiku 5.5).
+      modelId: DEFAULT_CHAT_MODEL,
+      displayName: 'Default chat model',
       contextWindowTokens: 200_000,
       maxOutputTokens: 8_192,
     });
-    const sonnetId = catalog.catalogIdByModelId('claude-sonnet-4-6');
+    const sonnetId = catalog.catalogIdByModelId(DEFAULT_CHAT_MODEL);
     expect(sonnetId).toBeDefined();
 
     let tick = Date.parse('2026-06-25T00:00:00.000Z');

@@ -1903,7 +1903,8 @@ export const mutations = [
     "  observer?.observed(existing.preferences?.default_mode ?? 'ask');\n",
     '',
     ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
-    48,
+    // 52 since MVP-11 unit 6 (was 48): the remembered first-run skip is the SIXTH writer, four more source states in write-observation.
+    52,
     "'model preferences' source 'ask'",
     'W2_STARTUP_WRITER_MODE_OBSERVATION',
     [
@@ -1913,6 +1914,7 @@ export const mutations = [
         'keychain acknowledgement',
         'default mode',
         'hint acknowledgement',
+        'first-run skip',
       ].flatMap((writer) =>
         ['ask', 'absent']
           .filter((state) => writer !== 'model preferences' || state !== 'ask')
@@ -1933,7 +1935,8 @@ export const mutations = [
     '    observer?.failed();\n',
     '',
     ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
-    48,
+    // 52 since MVP-11 unit 6 (was 48): the sixth writer (the remembered first-run skip).
+    52,
     "'model preferences' source 'invalid'",
     'W2_STARTUP_WRITER_READ_FAILURE',
     [
@@ -1942,6 +1945,7 @@ export const mutations = [
         'keychain acknowledgement',
         'default mode',
         'hint acknowledgement',
+        'first-run skip',
       ].map((writer) => ({
         target: `'${writer}' source 'invalid'`,
         marker: 'W2_STARTUP_WRITER_READ_FAILURE',
@@ -1962,7 +1966,8 @@ export const mutations = [
     '    if (!(cause instanceof ConfigWriteRefusedError)) observer?.failed();\n',
     '    void observer;\n',
     ['apps/cli/src/config/write-observation.test.ts'],
-    23,
+    // 27 since MVP-11 unit 6 (was 23): six writers × four source states, and the three inspection cases.
+    27,
     'parent replaced by a file revokes at actual source inspection',
     'W2_STARTUP_WRITER_INSPECTION_FAILURE',
   ),

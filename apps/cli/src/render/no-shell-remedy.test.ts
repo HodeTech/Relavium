@@ -448,6 +448,12 @@ const FILE_SURFACES: Readonly<Record<string, readonly PaletteSurface[]>> = {
   'home/provider-setup.ts': ['home', 'standalone-chat'],
   'home/run-launch.ts': ['home'],
   'home/hosted-run-terminal.ts': ['home'],
+  // The Home's flows that write (MVP-11 unit 6, 6.3): their popups, and what each names next on its Done step, are read on the Home only.
+  'home/project-init.ts': ['home'],
+  'render/tui/import-card.ts': ['home'],
+  'render/tui/export-card.ts': ['home'],
+  // The in-chat `/export` confirmation popup (ADR-0148 §10): read in both chats.
+  'popups/export-popup.ts': ['standalone-chat', 'home-chat'],
   // The first-run setup is ONE flow on two surfaces: the Home's native cards and a stand-alone chat's (which has neither `/providers` nor a
   // Home to open it from). A string that names a command is checked against both; the ones that are the Home's alone are said so below.
   'onboarding/setup-notes.ts': ['home', 'standalone-chat'],
@@ -487,10 +493,27 @@ const SURFACE_OVERRIDES: readonly {
   },
   {
     file: 'onboarding/setup-notes.ts',
-    includes: '/providers connects a provider any time',
+    includes: '/providers connects a provider anytime',
     surfaces: ['home'],
   },
   { file: 'home/provider-setup.ts', includes: 'Open /providers to retry', surfaces: ['home'] },
+  // The `/providers` popup's own words (MVP-11 unit 6): drawn only in the Home's popup (its Done steps and the remembered skip), never on the
+  // stand-alone chat's card, which keeps its words.
+  {
+    file: 'onboarding/setup-notes.ts',
+    includes: 'or /init to set up this folder',
+    surfaces: ['home'],
+  },
+  {
+    file: 'home/provider-setup.ts',
+    includes: '/providers connects a provider any time.',
+    surfaces: ['home'],
+  },
+  {
+    file: 'home/provider-setup.ts',
+    includes: '/providers retries the keychain any time.',
+    surfaces: ['home'],
+  },
 ];
 
 const names = (commands: readonly { readonly name: string }[]): ReadonlySet<string> =>

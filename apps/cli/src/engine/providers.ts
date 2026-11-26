@@ -255,12 +255,19 @@ export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
-/** A known provider's metadata — display name, base URL, a cheap model for the live key test, and the public
- *  pricing page (the ADR-0065 §1 default `pricing_reference_url`, where a user finds a price to hand-enter). */
+/** A known provider's metadata — display name, base URL, its starter model, and the public pricing page (the ADR-0065 §1
+ *  default `pricing_reference_url`, where a user finds a price to hand-enter). */
 export interface ProviderMeta {
   readonly displayName: string;
   readonly baseUrl: string;
-  readonly testModel: string;
+  /**
+   * The provider's STARTER model: the ONE starter table of [ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+   * §6 (ruled 2026-11-24: the current family, every entry in the shipped catalogue, priced and a chat model). Every path that picks a model for a
+   * provider reads it and no other spelling: the default a first setup and an environment-key consent write, the zero-config chat's model, the
+   * live key check of the setup, `relavium provider test` and the doctor's deep tier (`maxTokens: 1`). A test pins each entry against the
+   * catalogue and greps the sources for a model id written by hand on those paths.
+   */
+  readonly starterModel: string;
   /** The provider's public pricing page — the default `llm_providers.pricing_reference_url` seeded on
    *  `provider add` (overridable with `--pricing-url`). A display-only pointer; NEVER fetched (not an egress
    *  target), so it needs no SSRF gate. Verified 2026-07-06 against each provider's live docs. */
@@ -269,7 +276,7 @@ export interface ProviderMeta {
 
 /**
  * The known providers (each has an `@relavium/llm` adapter). The single home for CLI provider metadata:
- * `displayName`, `baseUrl`, a cheap `testModel` for the live key-check, and the public `pricingUrl`. Every
+ * `displayName`, `baseUrl`, the `starterModel` (the one starter table), and the public `pricingUrl`. Every
  * provider-facing CLI surface is **data-driven off this map + {@link KNOWN_PROVIDER_IDS}** — registering a provider
  * here (plus its `LLM_PROVIDERS` id — see below) lights up every surface with **no per-surface edit**, via one of
  * two access patterns:
@@ -281,10 +288,10 @@ export interface ProviderMeta {
  *    `set-key` / `remove-key` / `test`, which accept a single name gated by the WIDER `ProviderIdSchema`
  *    (`z.enum(LLM_PROVIDERS)`) — so an `LLM_PROVIDERS` id absent from `KNOWN_PROVIDERS` would pass validation and
  *    then throw on the `undefined` metadata lookup (the second reason the two lists must stay in lock-step).
- * A new provider's test model / display name is thus defined once. See the `add-llm-adapter` skill for the
+ * A new provider's starter model / display name is thus defined once. See the `add-llm-adapter` skill for the
  * end-to-end checklist.
  */
-/** The provider ids the CLI knows how to validate + onboard (those with a `testModel`). The const tuple is the
+/** The provider ids the CLI knows how to validate + onboard (those with a `starterModel`). The const tuple is the
  *  SOURCE OF TRUTH — `satisfies readonly ProviderId[]` validates each is a real `ProviderId` (no cast, no
  *  widening), and {@link KNOWN_PROVIDERS} is keyed on it, so THOSE two cannot drift; the wizard, `provider`, and
  *  `/doctor` probe all iterate it directly.
@@ -309,25 +316,25 @@ export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], Provid
   anthropic: {
     displayName: 'Anthropic',
     baseUrl: 'https://api.anthropic.com',
-    testModel: 'claude-haiku-4-5',
+    starterModel: 'claude-haiku-5-5',
     pricingUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
   },
   openai: {
     displayName: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
-    testModel: 'gpt-5.4-mini',
+    starterModel: 'gpt-5.4-mini',
     pricingUrl: 'https://platform.openai.com/docs/pricing',
   },
   gemini: {
     displayName: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com',
-    testModel: 'gemini-2.5-flash',
+    starterModel: 'gemini-2.5-flash',
     pricingUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
   },
   deepseek: {
     displayName: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
-    testModel: 'deepseek-v4-flash',
+    starterModel: 'deepseek-v4-flash',
     pricingUrl: 'https://api-docs.deepseek.com/quick_start/pricing',
   },
 };

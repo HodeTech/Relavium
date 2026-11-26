@@ -8,12 +8,14 @@
  * - `/agent` and `/help` are built from what the session already holds and opened with their content (no read, nothing to wait for).
  * - `/workflows` opens loading and scans the project's catalog in work the popup starts (`cost-session.ts` reads the same way).
  * - `/cost` (and `/cost --release`) is `cost-session.ts`.
+ * - `/export`'s confirmation (not a report: a one-step write that asks first, ADR-0148 §10) is `export-session.ts`.
  *
  * Every one writes nothing into the transcript or a notice (the residue rule, ADR-0148 §6): the host's routing never dispatches the line.
  */
 
 import { agentContent, agentSpec, agentUnreadableContent } from './agent-popup.js';
 import { openCostPopup } from './cost-session.js';
+import { openExportPopup } from './export-session.js';
 import type { PopupContent } from './frame-model.js';
 import { helpContent, helpSpec } from './help-popup.js';
 import { copyControlsFor, copyReport } from './popup-copy.js';
@@ -106,12 +108,18 @@ function openCost(request: ReportOpenRequest): PopupOpenResult {
   return cost === undefined ? MISSING : openCostPopup(request, cost);
 }
 
+function openExport(request: ReportOpenRequest): PopupOpenResult {
+  const port = request.port.export;
+  return port === undefined ? MISSING : openExportPopup(request, port);
+}
+
 /** What opens each report: the one table of this file, typed over every kind of the port, so a kind without an opener does not compile. */
 const OPENERS: Readonly<Record<ReportKind, (request: ReportOpenRequest) => PopupOpenResult>> = {
   agent: openAgent,
   cost: openCost,
   workflows: openWorkflows,
   help: openHelp,
+  export: openExport,
 };
 
 /** Open the report popup `request.line` names; see the module header. A refused open is said by the host in one notification. */

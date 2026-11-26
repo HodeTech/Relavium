@@ -69,20 +69,27 @@ function fixture(
         finish = resolve;
       }),
   );
+  /** The Home's one notification channel (ADR-0148 §6): what the setup and the controller say instead of a Home notice. */
+  const announced: string[] = [];
   const c = createHomeController({
     homeStore: { read: () => SNAPSHOT },
     startChat,
     onExit: () => {},
     onError: () => {},
+    announce: (text) => announced.push(text),
     providerSetup: { initialKeyless: options.keyless ?? true, open },
   });
-  /** The setup closes, as the Home's wiring reports it: whether a key exists now, and the notice the setup left. */
-  const close = async (keyless: boolean, notice?: string): Promise<void> => {
-    c.setProviderState(keyless, notice);
+  /**
+   * The setup closes, as the Home's wiring reports it (MVP-11 unit 6): whether a key exists now, and the one notification the setup's result
+   * becomes when the popup did not say it itself. Nothing is written to the Home's notice.
+   */
+  const close = async (keyless: boolean, notification?: string): Promise<void> => {
+    c.setProviderState(keyless);
+    if (notification !== undefined) announced.push(notification);
     finish();
     await flush();
   };
-  return { c, open, startChat, lines, close };
+  return { c, open, startChat, lines, close, announced };
 }
 
 describe('Enter on a typed message while keyless', () => {
@@ -114,11 +121,11 @@ describe('Enter on a typed message while keyless', () => {
     const f = fixture();
     type(f.c, 'hello');
     f.c.handleKey('', ENTER);
-    await f.close(true, 'Setup skipped · /providers connects a provider any time');
+    await f.close(true, 'Setup skipped · /providers connects a provider anytime');
     expect(f.c.getSnapshot().input.text).toBe('hello');
-    expect(f.c.getSnapshot().notice).toBe(
-      'Setup skipped · /providers connects a provider any time',
-    );
+    // The skip is one notification, never the Home's notice (ADR-0148 §6, MVP-11 unit 6).
+    expect(f.c.getSnapshot().notice).toBeUndefined();
+    expect(f.announced).toEqual(['Setup skipped · /providers connects a provider anytime']);
     expect(f.c.getSnapshot().nativeActionBusy).toBe(false);
     expect(f.startChat).not.toHaveBeenCalled();
     expect(f.lines).toEqual([]);
@@ -128,7 +135,7 @@ describe('Enter on a typed message while keyless', () => {
     const f = fixture();
     type(f.c, 'hello');
     f.c.handleKey('', ENTER);
-    await f.close(false, 'Connected: Verified and stored your Anthropic key in the OS keychain.');
+    await f.close(false);
     expect(f.c.getSnapshot().keyless).toBe(false);
     expect(f.c.getSnapshot().input.text, 'the draft is still there after the key').toBe('hello');
     expect(f.startChat, 'the key did not send it').not.toHaveBeenCalled();
@@ -180,7 +187,7 @@ describe('a draft that looks like a provider key is never kept and never recorde
     ['a key inside a sentence', `here is my key ${FAKE_KEY} please use it`],
     ['a key on the second line of a draft', `first line\n${FAKE_KEY}`],
   ])(
-    '%s: the editor is cleared, the history is empty, the setup opens with the reason',
+    '%s: the editor is cleared, the history is empty, the setup opens and one notification says why',
     (_name, draft) => {
       const f = fixture();
       f.c.handlePaste(draft);
@@ -189,16 +196,14 @@ describe('a draft that looks like a provider key is never kept and never recorde
       const state = f.c.getSnapshot();
       expect(state.input.text, 'the key is not kept in the prompt').toBe('');
       expect(state.historyEntries, 'and is never recorded').toEqual([]);
-      expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+      // MVP-11 unit 6: the reason is ONE notification, never a Home notice, and nothing of it (or of the draft) is carried into the setup.
+      expect(state.notice).toBeUndefined();
+      expect(f.announced).toEqual([KEY_SHAPED_DRAFT_NOTICE]);
       expect(f.open).toHaveBeenCalledTimes(1);
-      expect(
-        f.open.mock.calls[0]?.[0],
-        'the card carries the reason where the person is looking',
-      ).toEqual({
-        note: KEY_SHAPED_DRAFT_NOTICE,
-      });
+      expect(f.open.mock.calls[0]?.[0], 'nothing is carried into the setup').toBeUndefined();
       expect(f.startChat).not.toHaveBeenCalled();
       expect(JSON.stringify(state), 'the key is nowhere in the state').not.toContain('journeyfake');
+      expect(f.announced.join(' '), 'nor in what is announced').not.toContain('journeyfake');
     },
   );
 
@@ -209,14 +214,14 @@ describe('a draft that looks like a provider key is never kept and never recorde
     const state = f.c.getSnapshot();
     expect(state.input.text).toBe('');
     expect(state.historyEntries).toEqual([]);
-    expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+    expect(state.notice).toBeUndefined();
+    expect(f.announced).toEqual([KEY_SHAPED_DRAFT_NOTICE]);
     expect(JSON.stringify(state)).not.toContain('journeyfake');
   });
 
-  it('says what happened in the fixed words (kept nowhere, to be pasted in the setup, and nothing about where it is stored), and never echoes any part of the draft', () => {
-    expect(KEY_SHAPED_DRAFT_NOTICE).toBe(
-      'That looked like an API key, so it was not kept. Choose a provider in the setup that just opened and paste it there.',
-    );
+  it('says what happened in the fixed words (kept nowhere, nothing about where it is stored), in a notification’s 54 columns, and never echoes any part of the draft', () => {
+    expect(KEY_SHAPED_DRAFT_NOTICE).toBe('That looked like an API key · it was not kept');
+    expect(KEY_SHAPED_DRAFT_NOTICE.length).toBeLessThanOrEqual(54);
     expect(
       KEY_SHAPED_DRAFT_NOTICE,
       'the keychain may be down: no promise about storage',
@@ -234,22 +239,24 @@ describe('a draft that looks like a provider key is never kept and never recorde
     expect(JSON.stringify(f.c.getSnapshot())).not.toContain('journeyfake');
   });
 
-  // The sentence says "in the setup that just opened"; once the setup has closed with nothing to say of its own it is false (round 2, K4).
-  it('takes the sentence down when the setup closes with nothing of its own, and keeps any notice the setup left', async () => {
+  // The sentence was a Home notice that outlived the setup (round 2, K4); since unit 6 it is a notification and leaves nothing to take down.
+  it('leaves nothing in the Home notice before or after the setup closes, whatever the setup said', async () => {
     const closed = fixture();
     closed.c.handlePaste(FAKE_KEY);
     closed.c.handleKey('', ENTER);
-    expect(closed.c.getSnapshot().notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+    expect(closed.c.getSnapshot().notice).toBeUndefined();
     await closed.close(true);
     expect(closed.c.getSnapshot().notice, 'no setup is open any more').toBeUndefined();
 
     const skipped = fixture();
     skipped.c.handlePaste(FAKE_KEY);
     skipped.c.handleKey('', ENTER);
-    await skipped.close(true, 'Setup skipped · /providers connects a provider any time');
-    expect(skipped.c.getSnapshot().notice).toBe(
-      'Setup skipped · /providers connects a provider any time',
-    );
+    await skipped.close(true, 'Setup skipped · /providers connects a provider anytime');
+    expect(skipped.c.getSnapshot().notice).toBeUndefined();
+    expect(skipped.announced).toEqual([
+      KEY_SHAPED_DRAFT_NOTICE,
+      'Setup skipped · /providers connects a provider anytime',
+    ]);
 
     // Any OTHER notice survives a close that has nothing to say, as it always did.
     const other = fixture();

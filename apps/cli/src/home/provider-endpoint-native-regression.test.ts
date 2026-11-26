@@ -18,6 +18,7 @@ import { acknowledgeWrite, type CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome } from './drive-home.js';
+import { acknowledgePopupFrames, pasteKey } from './provider-popup.test-support.js';
 
 const oldUrl = 'https://old.example:8443/private-path?secret-query=hidden';
 const newUrl = 'https://new.example:9443/other-path?secret-query=hidden';
@@ -162,6 +163,8 @@ it('Home discloses its pinned adapter origin before validation despite another p
       props = p;
       const ui = p.nativePrompt;
       ui?.bindVisibility((expected) => ui.getSnapshot() === expected);
+      // The Home's setup is a popup (MVP-11 unit 6): the renderer acknowledges its frames, which its opening guard waits for.
+      if (ui !== undefined) acknowledgePopupFrames(ui);
       return {
         unmount: () => {
           ui?.bindVisibility(undefined);
@@ -194,8 +197,7 @@ it('Home discloses its pinned adapter origin before validation despite another p
     expect(card).not.toContain('private-path');
     expect(card).not.toContain('secret-query');
     expect(card).not.toContain(secret);
-    p.nativePrompt.paste(secret);
-    p.nativePrompt.input('', { ...key, return: true });
+    await pasteKey(p.nativePrompt, secret);
     await vi.waitFor(() => expect(f.urls.length).toBeGreaterThan(0));
     expect(new URL(f.urls[0] ?? '').origin).toBe('https://old.example:8443');
     const freshProvider = f.fresh().resolveProvider('openai');

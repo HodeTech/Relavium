@@ -250,13 +250,13 @@ describe('runOnboardingWizard', () => {
     expect(s.get('anthropic')?.apiKeyKeychainRef).toBe(keychainAccount('anthropic'));
     // ...the chosen provider's starter model was set as the default (so the NEXT chat binds a model whose key exists)...
     expect(writeDefaultModel).toHaveBeenCalledWith(
-      KNOWN_PROVIDERS.anthropic.testModel,
+      KNOWN_PROVIDERS.anthropic.starterModel,
       'anthropic',
     );
     // ...a "Connected" note shows only the key HINT (last 4), never the full key, and confirms + hands off.
     const all = [...notes, ...outros].join('\n');
     expect(all).toContain('••••1234');
-    expect(all).toContain(KNOWN_PROVIDERS.anthropic.testModel); // the starter model is surfaced
+    expect(all).toContain(KNOWN_PROVIDERS.anthropic.starterModel); // the starter model is surfaced
     expect(all).not.toContain('sk-ant-supersecret-1234'); // the full key NEVER appears anywhere
     expect(outros.some((o) => o.includes('all set'))).toBe(true);
   });
@@ -275,8 +275,8 @@ describe('runOnboardingWizard', () => {
       writeDefaultModel,
     });
     // NOT the anthropic default — the openai starter, so a first chat doesn't try (and fail) an anthropic key.
-    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.testModel, 'openai');
-    expect(KNOWN_PROVIDERS.openai.testModel).not.toBe(KNOWN_PROVIDERS.anthropic.testModel);
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.starterModel, 'openai');
+    expect(KNOWN_PROVIDERS.openai.starterModel).not.toBe(KNOWN_PROVIDERS.anthropic.starterModel);
   });
 
   it('cancelling the provider select skips setup, writes NOTHING (no key, no default model)', async () => {
@@ -465,7 +465,7 @@ describe('runOnboardingWizard', () => {
       ]),
     });
     expect(keychain.store.get(keychainAccount('gemini'))).toBe('sk-offline-key');
-    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel, 'gemini');
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.starterModel, 'gemini');
     // ADR-0146 §6: a failed check is not answered by a reflex Enter into an unverified key. The default is the retry of the check.
     expect(selectCalls[1]?.initialValue).toBe('recheck');
     expect(selectCalls[1]?.initialValue).not.toBe('continue');
@@ -514,13 +514,13 @@ describe('runOnboardingWizard', () => {
     );
 
     it.each(['network', 'auth', 'other'] as const)(
-      'never pre-selects Save it anyway, and its hint says how to verify later without naming a doctor check that does not exist (%s)',
+      'never pre-selects Save it anyway, and its hint says how to verify later: the doctor deep check, which exists since unit 4 (%s)',
       async (reason) => {
         const call = await retryOptions(reason);
         expect(call.initialValue).not.toBe('continue');
         const save = call.options.find((option) => option.value === 'continue');
-        expect(save?.hint).toBe('verify later by opening a chat');
-        expect(JSON.stringify(call.options)).not.toContain('/doctor');
+        // MVP-11 unit 6: the doctor's deep tier landed in 4b, so the hint names it (`/doctor`, then `[d]`) instead of "open a chat".
+        expect(save?.hint).toBe('not checked · verify later with /doctor, then [d]');
         // No spelling of the old labels survives anywhere in the prompt.
         expect(JSON.stringify(call.options)).not.toContain('Enter a new key');
       },

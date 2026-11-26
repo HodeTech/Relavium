@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
@@ -116,7 +117,7 @@ describe('the /models member a chat session hands its driver', () => {
       expect(models.scope).toBe('chat');
       // The model the session is bound to: the same the `/effort` member reads.
       expect(models.current()).toBe(ctx.settings?.effort?.model());
-      expect(models.current()).toBe('claude-sonnet-4-6');
+      expect(models.current()).toBe(DEFAULT_CHAT_MODEL); // the zero-config chat model: the starter table's Anthropic entry
       expect(models.currentProvider()).toBe('anthropic');
       expect(models.currentEffort()).toBeUndefined();
       models.setEffort?.('high');

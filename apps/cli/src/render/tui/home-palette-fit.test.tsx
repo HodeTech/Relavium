@@ -49,7 +49,12 @@ const BANNER_TOP = '+--------------------------------------------------------+';
 function mount(size: { cols: number; rows: number }, sessions: number, alternateScreen: boolean) {
   const onExit = vi.fn();
   const startChat = vi.fn(() => new Promise<never>(() => {}));
+  // What the Home says on its notification channel (ADR-0148 §6: a flow that cannot run says so there, never in a Home notice).
+  const announced: string[] = [];
   const controller = createHomeController({
+    announce: (text) => {
+      announced.push(text);
+    },
     startChat,
     homeStore: { read: () => snapshotWith(sessions) },
     schedule: () => () => {},
@@ -69,7 +74,7 @@ function mount(size: { cols: number; rows: number }, sessions: number, alternate
     />,
   );
   const frame = (): string[] => plain(harness.lastFrame() ?? '').split('\n');
-  return { controller, harness, startChat, onExit, frame };
+  return { controller, harness, startChat, onExit, frame, announced };
 }
 type Mounted = ReturnType<typeof mount>;
 
@@ -282,9 +287,10 @@ describe.each([
       expect(m.onExit, `${String(sessions)} sessions`).not.toHaveBeenCalled();
       expect(m.controller.getSnapshot().palette).toBeUndefined();
       // No launch or resume port is wired in this Home, so the controller says so: the entry that ran was /run, or /resume.
-      expect(m.controller.getSnapshot().notice).toMatch(
+      expect(m.announced.at(-1)).toMatch(
         sessions === 0 ? /^Running a workflow is unavailable/u : /^Session resume is unavailable/u,
       );
+      expect(m.controller.getSnapshot().notice).toBeUndefined();
       cleanup();
     }
   });

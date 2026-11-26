@@ -147,11 +147,14 @@ function rig(options: RigOptions) {
   const onError = vi.fn((cause: unknown) => {
     if (options.faultsEndTheHome !== true) throw cause;
   });
+  // The Home's one notification channel (ADR-0148 §6): what a resume says when it ends without a conversation.
+  const announced: string[] = [];
   const deps: HomeControllerDeps = {
     startChat: options.startChat ?? (() => new Promise(() => {})),
     homeStore: { read },
     ...(options.history === false ? {} : { history }),
     resumeChat,
+    announce: (text) => announced.push(text),
     hostedRuns: {
       snapshot: () => options.hosted ?? IDLE,
       cancel: () => true,
@@ -197,6 +200,7 @@ function rig(options: RigOptions) {
     loads,
     loadDetail,
     resumeChat,
+    announced,
     readGates,
     resumeRun,
     onExit,
@@ -921,13 +925,14 @@ describe('the Enter after a refresh dropped the focused row is not the empty pro
 });
 
 describe('a resume the person cancelled says so', () => {
-  it('on a strip session whose resume returns nothing, the landing shows the fixed notice', async () => {
+  it('on a strip session whose resume returns nothing, the fixed sentence is one notification, never the landing`s notice', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
     press(r.controller, DOWN);
     press(r.controller, ENTER);
     await settle();
     expect(r.resumeChat).toHaveBeenCalledWith('s1');
-    expect(r.controller.getSnapshot().notice).toBe('Resume cancelled.');
+    expect(r.announced).toEqual(['Resume cancelled.']);
+    expect(r.controller.getSnapshot().notice).toBeUndefined();
     expect(r.controller.getSnapshot().mode).toBe('home');
     expect(r.controller.getSnapshot().nativeActionBusy).toBe(false);
   });

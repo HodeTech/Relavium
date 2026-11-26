@@ -148,10 +148,13 @@ function mount(options: Options = {}) {
         ? Promise.resolve(chatSession(sessionId))
         : options.resume(sessionId),
   );
+  // The Home's one notification channel: what a resume says when it ends without a conversation (ADR-0148 §6).
+  const announced: string[] = [];
   const deps: HomeControllerDeps = {
     ...(agents === undefined ? {} : { agents }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(options.resume === 'none' ? {} : { resumeChat }),
+    announce: (text) => announced.push(text),
     startChat,
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},
@@ -165,6 +168,7 @@ function mount(options: Options = {}) {
     controller,
     startChat,
     resumeChat,
+    announced,
     lines,
     agentReads: fakeAgents.read,
     sessionReads: fakeSessions.read,
@@ -377,8 +381,8 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     expect(hostOf(controller)?.tab).toBe('agents');
   });
 
-  it('a conversation that cannot be resumed says so on the landing, and no screen is left open', async () => {
-    const { controller } = onSessions({
+  it('a conversation that cannot be resumed says so in one notification (not the landing`s notice), and no screen is left open', async () => {
+    const { controller, announced } = onSessions({
       resume: () => Promise.resolve({ notice: 'That conversation could not be resumed.' }),
     });
     controller.handleKey('', ENTER);
@@ -387,13 +391,16 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     });
     await flush();
     const after = controller.getSnapshot();
-    expect(after.notice).toBe('That conversation could not be resumed.');
+    expect(announced).toEqual(['That conversation could not be resumed.']);
+    expect(after.notice).toBeUndefined();
     expect(after.screen).toBeUndefined();
     expect(after.mode).toBe('home');
   });
 
-  it('a resume the person cancelled (it returns nothing) says so on the landing, with no screen left open', async () => {
-    const { controller, resumeChat } = onSessions({ resume: () => Promise.resolve(undefined) });
+  it('a resume the person cancelled (it returns nothing) says so in one notification, with no screen left open', async () => {
+    const { controller, resumeChat, announced } = onSessions({
+      resume: () => Promise.resolve(undefined),
+    });
     controller.handleKey('', ENTER);
     await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), {
       timeout: WAIT_MS,
@@ -401,7 +408,8 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     await flush();
     expect(resumeChat).toHaveBeenCalledWith('sess-bbb');
     const after = controller.getSnapshot();
-    expect(after.notice).toBe('Resume cancelled.');
+    expect(announced).toEqual(['Resume cancelled.']);
+    expect(after.notice).toBeUndefined();
     expect(after.screen).toBeUndefined();
     expect(after.mode).toBe('home');
   });

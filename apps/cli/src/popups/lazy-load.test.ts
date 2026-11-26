@@ -34,6 +34,8 @@ const LAZY = [
   'report-session',
   'cost-session',
   'cost-popup',
+  'export-session',
+  'export-popup',
   'agent-popup',
   'help-popup',
   'workflows-popup',

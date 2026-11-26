@@ -24,7 +24,9 @@ const snapshot: HomeSnapshot = {
   unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${n}`),
   isEmpty: false,
 };
-// A long report the Home's notice holds whole: what `/import` resolves with here (the notice wraps and pages any long sentence the same way).
+// A long report the Home's notice holds whole (the notice wraps and pages any long sentence the same way). Put there through the controller's
+// own `setProviderState`: `/import` was the vehicle until MVP-11 unit 6 (6.3), when a flow's result became its popup's Done step and a
+// notification, and stopped writing the Home's notice (ADR-0148 §6).
 const detail =
   'REPORT_START ' + 'Read this diagnostic detail carefully. '.repeat(80) + 'FINAL_RECOVERY_REMEDY';
 function mount(alternate: boolean, color: boolean, keyless = false) {
@@ -42,7 +44,6 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
     resumeChat,
     pickSession,
     homeStore: { read: () => snapshot },
-    importDefined: () => Promise.resolve(detail),
     providerSetup: { initialKeyless: keyless, open: () => Promise.resolve() },
     onExit,
     onError: (cause) => {
@@ -87,12 +88,9 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
       output.rows = rows;
       output.emit('resize');
     },
-    report: async () => {
-      input.push('/');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette).toBeDefined());
-      input.push('import');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette?.state.query).toBe('import'));
-      input.push('\r');
+    report: () => {
+      controller.setProviderState(keyless, detail);
+      return Promise.resolve();
     },
     close: async () => {
       await controller.teardownActive();

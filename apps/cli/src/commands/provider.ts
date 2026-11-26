@@ -123,7 +123,7 @@ async function verifyProvider(
   const result = await validateProviderKey(
     provider,
     key,
-    KNOWN_PROVIDERS[id].testModel,
+    KNOWN_PROVIDERS[id].starterModel,
     undefined,
     deps.workOwner,
   );
@@ -321,7 +321,7 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
     throw new CliError('invalid_invocation', `no adapter for provider '${id}'.`);
   }
   const key = deps.resolver.keyFor(id); // keychain → env var → error; never logged
-  const model = args.model ?? KNOWN_PROVIDERS[id].testModel;
+  const model = args.model ?? KNOWN_PROVIDERS[id].starterModel;
   // The live ping + the defensive key-redaction live in `validateProviderKey` (the seam), shared with the
   // `/doctor --deep` probe so the secret-scrubbing has one tested home.
   const result = await validateProviderKey(provider, key, model, undefined, deps.workOwner);

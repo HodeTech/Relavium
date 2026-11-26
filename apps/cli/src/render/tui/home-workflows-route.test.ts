@@ -71,7 +71,7 @@ interface Options {
   readonly withChat?: boolean;
   readonly defined?: DefinedPort | undefined;
   readonly launch?: ((slug?: string, path?: string) => Promise<string>) | undefined;
-  readonly exporter?: ((slug: string) => Promise<string>) | undefined;
+  readonly exporter?: ((slug: string) => Promise<string | undefined>) | undefined;
   readonly host?: () => RunHostSnapshot;
   /** Pins that put an entry the catalog lacks in front of the others. */
   readonly pinned?: readonly string[];
@@ -128,8 +128,14 @@ function mount(options: Options = {}) {
       throw cause;
     },
   };
-  const controller = createHomeController(deps);
-  return { controller, startChat, lines, read: fake.read };
+  const announced: string[] = [];
+  const controller = createHomeController({
+    ...deps,
+    announce: (text) => {
+      announced.push(text);
+    },
+  });
+  return { controller, startChat, lines, read: fake.read, announced };
 }
 
 const hostOf = (c: HomeController): TabHostState | undefined => {
@@ -308,6 +314,19 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     expect(hostOf(controller)?.defined?.cursor, 'the tab is left where it was').toBe(1);
   });
 
+  it('r whose start failed inside the /run popup (the popup said it, and the launch answers nothing) adds nothing to the tab or the Home', async () => {
+    const launch = vi.fn(() => Promise.resolve(''));
+    const { controller } = mount({ launch });
+    submit(controller, '/workflows');
+    controller.handleKey('', DOWN);
+    controller.handleKey('r', {});
+    await flush();
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(messageOf(controller), 'the tab`s row is left as it was').toBeUndefined();
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    expect(hostOf(controller)?.tab).toBe('defined');
+  });
+
   it('r refused while a resume leg is still acquiring its run keeps the Defined tab: the id that leg gets later is not a run this launch started', async () => {
     // A resume leg is between its confirmation and the engine's start result: `launching`, a leg with no run id yet. This launch is refused
     // ("a run is already starting"), and by the time the flow answers the resume has its id.
@@ -383,12 +402,12 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     expect(messageOf(controller)).toBe('Cannot run ../../x: it is not in the catalog.');
   });
 
-  it('x opens the export card for the row’s workflow and shows what it said on the tab', async () => {
+  it('x opens the export popup for the row’s workflow; what it wrote its Done step said, so the tab and the notice stay as they were', async () => {
     const exporter = vi.fn((slug: string) => {
       void slug;
-      return Promise.resolve('Exported workflow nightly.');
+      return Promise.resolve(undefined);
     });
-    const { controller } = mount({ exporter });
+    const { controller, announced } = mount({ exporter });
     submit(controller, '/workflows');
     controller.handleKey('', DOWN);
     controller.handleKey('x', {});
@@ -396,8 +415,24 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     expect(exporter).toHaveBeenCalledWith('nightly');
     expect(controller.getSnapshot().nativeActionBusy).toBe(true);
     await flush();
-    expect(messageOf(controller)).toBe('Exported workflow nightly.');
+    // ADR-0148 §6: no residue (MVP-11 unit 6, 6.3: the result was the tab's message row before)
+    expect(messageOf(controller)).toBeUndefined();
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    expect(announced).toEqual([]);
+    expect(hostOf(controller)?.tab, 'the tab is left as the key left it').toBe('defined');
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
+  });
+
+  it('x: a popup closed with nothing written is one notification, and never the tab’s row', async () => {
+    const { controller, announced } = mount({
+      exporter: () => Promise.resolve('Nothing was written.'),
+    });
+    submit(controller, '/workflows');
+    controller.handleKey('x', {});
+    await flush();
+    expect(announced).toEqual(['Nothing was written.']);
+    expect(messageOf(controller)).toBeUndefined();
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('x on a row that is not a workflow of the catalog opens no card', async () => {

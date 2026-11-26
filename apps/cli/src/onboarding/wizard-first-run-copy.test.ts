@@ -9,7 +9,7 @@ import { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import type { CliIo } from '../process/io.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { KeychainUnavailableError } from '../secrets/keychain.js';
-import { leftoverSetupNote, setupSkippedNotice } from './setup-notes.js';
+import { keyStepNote, leftoverSetupNote, setupSkippedNotice } from './setup-notes.js';
 import { runOnboardingWizard, type OnboardingDefaultResult } from './wizard.js';
 
 /**
@@ -173,7 +173,7 @@ describe('the first-run sentence belongs to a genuine first run', () => {
 
 describe('a skip leaves one line, and an instruction is never the notice', () => {
   it.each([
-    ['home', 'Setup skipped · /providers connects a provider any time'],
+    ['home', 'Setup skipped · /providers connects a provider anytime'],
     ['standalone-chat', 'Setup skipped · restart this chat to open provider setup any time'],
   ] as const)(
     'the Skip setup row after a failed check, on %s, ends on the skip line',
@@ -195,13 +195,15 @@ describe('a skip leaves one line, and an instruction is never the notice', () =>
       undefined,
     );
     expect(leftoverSetupNote('Provider destination: Official endpoint')).toBeUndefined();
+    // The key step's note (MVP-11 unit 6) says where the key goes: an instruction, never kept as a notice.
+    expect(leftoverSetupNote(keyStepNote('api.anthropic.com'))).toBeUndefined();
     expect(leftoverSetupNote('')).toBeUndefined();
     expect(leftoverSetupNote(undefined)).toBeUndefined();
     expect(leftoverSetupNote('Could not save the keychain reminder.')).toBe(
       'Could not save the keychain reminder.',
     );
-    expect(leftoverSetupNote('Setup skipped · /providers connects a provider any time')).toBe(
-      'Setup skipped · /providers connects a provider any time',
+    expect(leftoverSetupNote('Setup skipped · /providers connects a provider anytime')).toBe(
+      'Setup skipped · /providers connects a provider anytime',
     );
   });
 });

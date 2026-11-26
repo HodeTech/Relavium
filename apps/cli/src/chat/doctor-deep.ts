@@ -80,7 +80,7 @@ async function probeProvider(
   const result = await validateProviderKey(
     provider,
     key,
-    KNOWN_PROVIDERS[id].testModel,
+    KNOWN_PROVIDERS[id].starterModel,
     deps.timeoutMs,
     deps.workOwner,
   );
@@ -145,7 +145,7 @@ export async function runConsentedProviderChecks(
     return validateProviderKey(
       provider,
       key,
-      KNOWN_PROVIDERS[id].testModel,
+      KNOWN_PROVIDERS[id].starterModel,
       deps.timeoutMs,
       deps.lifecycle,
     ).then((result) =>

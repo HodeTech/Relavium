@@ -13,20 +13,47 @@ import { faultForTranscript } from '../config/config-error-text.js';
 import { ConfigError } from '../config/errors.js';
 import { loadResolvedConfig, type LoadedConfig } from '../config/load.js';
 import { shortRunId } from '../history/run-detail-model.js';
+import { foldLineSeparators } from '../popups/frame-model.js';
+import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
-import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { flowText } from '../render/tui/flow-text.js';
 import { keyToken } from '../render/tui/legend.js';
-import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-prompt-channel.js';
+import {
+  NATIVE_PROMPT_BACK,
+  type NativeChordPort,
+  type NativePromptFlow,
+} from '../render/tui/native-prompt-channel.js';
+import { clipLine } from '../render/tui/sheet-frame.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { workflowSourceDigest } from '../run-core/source-digest.js';
 import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
+import { framedFlow, type FramedChordFlow, type FramedFlowOptions } from './framed-flow.js';
 import type { HostedLaunch, HostedSecretPort, RunHost, RunHostSnapshot } from './run-host.js';
 
 /**
  * Launch a workflow from the Home
  * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §2, §4, §7): a picker over the project's valid
- * workflows, a form for its declared inputs, a confirmation that defaults to No, and one call to {@link RunHost.start}.
+ * workflows, a form for its declared inputs, a confirmation answered by `Ctrl+Y`, and one call to {@link RunHost.start}.
+ *
+ * **A popup of three steps** ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1, §3;
+ * MVP-11 unit 6): the flow is drawn in the popup frame through `framedFlow` ({@link RUN_FRAME}: `/run` from Home, the rail
+ * `Workflow · Inputs · Confirm`). The picker is the first step, every input is asked on the second, and the confirmation is the third: the chord
+ * card framed (the run's question, what the run can do in its facts, `[Ctrl+Y] Start it · [Ctrl+N] Cancel`), whose guards are the chord card's,
+ * unchanged. It was a Yes/No choice that defaulted to No; ADR-0148 §3 makes it a chord, as every step that starts or writes something is. The
+ * start itself is no step of the popup: the frame is taken away while the host starts the leg (`unframed`), so the MCP consent card the leg may
+ * raise on the same channel is drawn as the card it always was, never inside the `/run` frame with a stale step on its rail.
+ *
+ * **What it leaves behind** (ADR-0148 §6). Nothing in the Home's notice or a transcript: a run that started opens the run view and the launch
+ * says so in one notification ({@link startedNotice}); a cancel says {@link LAUNCH_CANCELLED}; a refusal found before anything was opened (no
+ * workflow, a leg already running) is one notification too. A start that FAILED after the popup opened (the file changed, an input the
+ * workflow refuses, the host's own refusal) is said inside the popup, in its own words and whole, on a last step that `Enter` or `Esc` closes:
+ * those sentences carry the remedy and are longer than a notification's 54 columns, and a popup's errors stay in the popup (§5).
+ *
+ * **Every word a project wrote is scrubbed before it reaches the channel** ({@link bounded}: the full scrub of a Home flow, `flowText`): a
+ * workflow's name, a path, an input's description and default, a value typed into the form, a catalog's reason, a server's name. The chord
+ * step's own pass over its body only makes key tokens inert; it would draw a name that says `Press Ctrl+Y now` as written.
  *
  * **A pure machine plus its effects.** {@link reduceLaunch} is the whole flow as a pure function of a state and an event; it returns the
  * next state and the effects to run, and does nothing else. The driver ({@link createRunLaunch}) runs each effect through a port (the
@@ -41,8 +68,24 @@ import type { HostedLaunch, HostedSecretPort, RunHost, RunHostSnapshot } from '.
  * left (`Esc` back, `Ctrl+C`, a refusal) wipes its entry.
  *
  * **`Esc` steps back one field and `Ctrl+C` leaves** (ADR-0139 §5): every field and the confirmation open with `escape: 'back'`; the
- * picker has nothing to step back to, so `Esc` there leaves. A typed-ahead `Enter` at the confirmation lands on its default, No.
+ * picker has nothing to step back to, so `Esc` there leaves. A typed-ahead `Enter` at the confirmation answers nothing: only `Ctrl+Y` starts,
+ * past the chord card's guards.
  */
+
+/** The popup frame of `/run`: its name, its origin and its three steps (ADR-0148 §1). The rail stays where the flow puts it. */
+export const RUN_FRAME: FramedFlowOptions = {
+  title: '/run',
+  origin: 'home',
+  stepNames: ['Workflow', 'Inputs', 'Confirm'],
+  progress: 'manual',
+};
+/** The steps of {@link RUN_FRAME}, by what is asked on them. */
+const STEP = { workflow: 0, inputs: 1, confirm: 2 } as const;
+/** The confirmation's answers, as its legend row names them (`[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies`, whole at 80×24). */
+export const RUN_CONFIRM_ALLOW = 'Start it';
+export const RUN_CONFIRM_DENY = 'Cancel';
+/** The words of the one option of the last step that says a start failed. */
+export const RUN_FAILED_CLOSE = 'Close';
 
 /** A workflow the picker offers. */
 export interface LaunchChoice {
@@ -486,9 +529,38 @@ function workflowLabel(name: string | undefined, id: string): string {
   return bounded(name ?? id, LABEL_LIMIT);
 }
 
+/**
+ * Text a project, a file or a person wrote, as the popup may draw it: the full scrub of a Home flow (`flowText`: secrets scrubbed, control,
+ * bidirectional and invisible characters removed, compatibility forms folded, host glyphs blanked, an answer chord replaced, key tokens and the
+ * legend separator made inert), its line and paragraph separators folded to a space (the popup's body folds them as it draws, and a word that
+ * reaches a notification or the Defined tab's row is one row too), then cut to `limit`.
+ */
 function bounded(text: string, limit: number): string {
-  const clean = sanitizeUntrustedInline(text);
-  return clean.length <= limit ? clean : `${clean.slice(0, limit - 1)}…`;
+  return cut(scrubbed(text), limit);
+}
+
+/** The full scrub of a Home flow, with the line separators folded: every word of a project this module puts on the channel goes through it. */
+function scrubbed(text: string): string {
+  return foldLineSeparators(flowText(text));
+}
+
+/**
+ * Text this module COMPOSED from scrubbed pieces and its own words, cut to `limit` with the ellipsis. It is not scrubbed again: the scrub
+ * blanks host glyphs, and the ellipsis a piece was cut with is one (a second pass would turn every `…` into `...`).
+ */
+function cut(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+/** The first of `forms` that a notification draws whole (54 columns: beside a popup's way back at 80×24), else the last of them cut. */
+function fitted(...forms: readonly [string, ...string[]]): string {
+  const fits = forms.find((text) => displayWidth(text) <= POPUP_NOTICE_MAX_COLUMNS);
+  return fits ?? clipLine(forms[forms.length - 1] ?? '', POPUP_NOTICE_MAX_COLUMNS);
+}
+
+/** A notice's first sentence (what it says before the remedy that follows it), or the whole notice when it has one sentence. */
+function firstSentence(text: string): string {
+  return /^.*?[.!?](?=\s|$)/u.exec(text)?.[0] ?? text;
 }
 
 /** The valid entries as choices, and the invalid ones as one line saying why they are not offered. */
@@ -597,7 +669,8 @@ function formIssue(
 ): string | undefined {
   try {
     const admitted = resolveAndValidateWorkflowInputs(def, resolveInputs(def, values, secrets));
-    return admitted.ok ? undefined : inputAdmissionMessage(admitted.issues);
+    // The validator's sentence may name what the workflow declares (an input, an enum value): through the scrub, as every word of the popup.
+    return admitted.ok ? undefined : scrubbed(inputAdmissionMessage(admitted.issues));
   } catch (cause) {
     return isCliError(cause) ? bounded(cause.message, 240) : 'The inputs are not valid.';
   }
@@ -636,10 +709,9 @@ function confirmationQuestion(form: LaunchForm, masked: ReadonlySet<string>): st
   const head = `Run ${form.choice.label}`;
   for (let shown = given.length; shown > 0; shown -= 1) {
     const question = `${head}${inputsClause(given, shown)}?`;
-    if (sanitizeUntrustedInline(question).length <= SUMMARY_LIMIT)
-      return bounded(question, SUMMARY_LIMIT);
+    if (question.length <= SUMMARY_LIMIT) return question;
   }
-  return bounded(`${head}${inputsClause(given, 0)}?`, SUMMARY_LIMIT);
+  return cut(`${head}${inputsClause(given, 0)}?`, SUMMARY_LIMIT);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -770,7 +842,7 @@ export function launchAuthorityNote(
     fsScope === undefined || fsScope.tier === 'sandboxed' ? undefined : fileScopeSentence(fsScope),
     clauses.length === 0 ? undefined : `This run can ${clauses.join('; ')}.`,
   ].filter((sentence): sentence is string => sentence !== undefined);
-  return sentences.length === 0 ? undefined : bounded(sentences.join(' '), AUTHORITY_LIMIT);
+  return sentences.length === 0 ? undefined : cut(sentences.join(' '), AUTHORITY_LIMIT);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -821,11 +893,11 @@ function createSecretHold(): SecretHold {
 // ---------------------------------------------------------------------------------------------------------------------
 
 export interface RunLaunchDeps {
-  /** The Home's native prompt flow: the only place a field, a card or a masked value is ever asked. */
-  readonly flow: Pick<
-    NativePromptFlow,
-    'begin' | 'end' | 'note' | 'busy' | 'select' | 'text' | 'password' | 'confirm'
-  >;
+  /**
+   * The Home's native prompt flow, raw: the only place a field, a card or a masked value is ever asked. The launch frames it as the `/run`
+   * popup itself ({@link RUN_FRAME}); the confirmation is its chord card.
+   */
+  readonly flow: NativePromptFlow & NativeChordPort;
   /**
    * `snapshot` is read once, before the form opens: with a leg preparing or executing the host refuses every start, so asking the
    * person for a workflow, its inputs and a confirmation only to say so at the end wastes the form (and a typed secret).
@@ -850,11 +922,12 @@ export interface LaunchSession {
 
 export interface RunLaunch {
   /**
-   * Run the launch flow once and resolve with the notice the Home shows. A second call while one is open joins it. It rejects only
-   * for a fault no refusal describes; every refusal is a notice.
+   * Run the launch flow once and resolve with what the Home says of it: one notification's words (a run that started, a cancel, a refusal
+   * found before the popup opened), or `''` when the popup has already said it (a start that failed after it opened is told on the popup's last
+   * step, which the person has closed by then). A second call while one is open joins it. It rejects only for a fault no refusal describes.
    *
    * With a `slug` the picker is skipped once and the form starts for that workflow (the Defined tab's `r`), through the same
-   * machine, validation, confirmation (default No) and single-start latch. The slug is only COMPARED with the slugs of the valid
+   * machine, validation, confirmation (`Ctrl+Y`) and single-start latch. The slug is only COMPARED with the slugs of the valid
    * catalog entries: it is never a path, never read from disk, and one that matches no entry opens nothing ({@link launchNotOffered}).
    * `Esc` at the first field steps back to the picker, which then opens on that workflow. With the catalog `path` the row was listed
    * from, the flow refuses a slug whose file is another one now ({@link launchMoved}), so the form and the confirmation (which name the
@@ -878,17 +951,27 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
     : `A run is already executing (${shortRunId(runId)}). ${keyToken('Enter')} on its row in the strip opens it.`;
 }
 
+/**
+ * What a started run says in its one notification: the workflow and the run's first characters, within 54 columns (a long name gives way to
+ * the run alone). The run view opens on it at the same time, so it says nothing of where the run is.
+ */
+export function startedNotice(label: string, runId: string): string {
+  const run = shortRunId(scrubbed(runId));
+  return fitted(`Started ${bounded(label, LABEL_LIMIT)} · run ${run}`, `Started run ${run}`);
+}
+
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {
-  if (launch.kind === 'started')
-    return `Started ${choice.label} as run ${sanitizeUntrustedInline(launch.runId)}. It runs in the background.`;
-  return sanitizeUntrustedInline(launch.message);
+  if (launch.kind === 'started') return startedNotice(choice.label, launch.runId);
+  // The host's sentence may quote what a project wrote (a server, an id): through the same scrub as every other word of this popup.
+  return scrubbed(launch.message);
 }
 
 const FIELD_PROMPT_ESCAPE = 'back';
 
 /** What `open` has settled before it begins a flow: the notice that ends it, or the offered workflows (and what was skipped) to begin on. */
 type Admission =
-  | { readonly kind: 'refused'; readonly notice: string }
+  /** `empty`: the project has nothing to run (the popup's empty state), rather than a catalog that failed or a slug that cannot begin. */
+  | { readonly kind: 'refused'; readonly notice: string; readonly empty: boolean }
   | {
       readonly kind: 'admitted';
       readonly choices: readonly LaunchChoice[];
@@ -919,7 +1002,7 @@ function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | und
     entries = deps.catalog.list();
   } catch (cause) {
     if (isCliError(cause))
-      return { kind: 'refused', notice: sanitizeUntrustedInline(cause.message) };
+      return { kind: 'refused', notice: scrubbed(cause.message), empty: false };
     throw cause;
   }
   const { choices, skipped } = offeredWorkflows(entries);
@@ -927,36 +1010,41 @@ function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | und
     return {
       kind: 'refused',
       notice: skipped === undefined ? LAUNCH_NO_WORKFLOWS : `${LAUNCH_NO_WORKFLOWS} ${skipped}`,
+      empty: true,
     };
   const refusal = slugRefusal(choices, slug, path);
   return refusal === undefined
     ? { kind: 'admitted', choices, skipped }
-    : { kind: 'refused', notice: refusal };
+    : { kind: 'refused', notice: refusal, empty: false };
 }
 
 export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
-  const { flow } = deps;
+  // The `/run` popup over the Home's raw channel: every prompt of the launch is drawn in its frame, on the step it names.
+  const flow = framedFlow(deps.flow, RUN_FRAME);
   let current: { readonly session: LaunchSession; readonly done: Promise<string> } | undefined;
 
   const open = async (slug?: string, path?: string): Promise<string> => {
     if (current !== undefined) return current.done;
     deps.assertAdmitting?.();
     const busy = deps.host.snapshot === undefined ? undefined : launchBusy(deps.host.snapshot());
-    if (busy !== undefined) return busy;
+    if (busy !== undefined) return refusedBusy(busy, slug);
     const admission = admit(deps, slug, path);
-    if (admission.kind === 'refused') return admission.notice;
+    if (admission.kind === 'refused') return refusedAdmission(flow, admission, slug);
     const { choices, skipped } = admission;
 
     const signal = flow.begin();
     const hold = createSecretHold();
-    const running = runSession({ deps, hold, signal, preselect: slug, skipped });
+    const running = runSession({ flow, deps, hold, signal, preselect: slug, skipped });
     current = { session: running.session, done: running.done };
     try {
       if (skipped !== undefined) flow.note(skipped, 'Run workflow');
       running.session.dispatch({ kind: 'opened', choices });
       const notice = await running.done;
       if (running.fault !== undefined) throw running.fault.cause;
-      return notice;
+      // Nothing failed, or the flow is already cancelled (the person left while the refusal was on its way): the notice is the word.
+      if (running.failure === undefined || signal.aborted) return notice;
+      await lastStep(flow, running.failure);
+      return '';
     } finally {
       current = undefined;
       hold.forget('all');
@@ -967,14 +1055,71 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
   return { open, session: () => current?.session };
 }
 
+/**
+ * A leg already running: the popup cannot open now. The typed `/run` says it in one notification (its first sentence, which names the run);
+ * `r` says it whole on the Defined tab's own row.
+ */
+function refusedBusy(busy: string, slug: string | undefined): string {
+  return slug === undefined ? fitted(busy, firstSentence(busy)) : busy;
+}
+
+/**
+ * A launch the catalog refused before anything was asked. `r` says it whole on the Defined tab's own row and opens nothing. The typed `/run`
+ * says it in the popup, whole, with the files it did not offer and why, on its first step: nothing to run (the empty state) or a catalog that
+ * could not be read (the error state; ADR-0148 §5). There is nothing to pick, and the popup has said it all (`''`).
+ */
+async function refusedAdmission(
+  flow: FramedChordFlow,
+  admission: Extract<Admission, { kind: 'refused' }>,
+  slug: string | undefined,
+): Promise<string> {
+  if (slug !== undefined) return admission.notice;
+  flow.begin();
+  try {
+    await lastStep(flow, {
+      notice: admission.notice,
+      step: STEP.workflow,
+      tone: admission.empty ? 'ok' : 'failed',
+    });
+  } finally {
+    await flow.end();
+  }
+  return '';
+}
+
+/**
+ * The popup's last step when the launch cannot go on: a start that failed after the popup opened, in the sentence the refusal was given in (the
+ * remedy is in it), or a project with nothing to run; whole and wrapped, on the step it happened at. `Enter` or `Esc` closes it (a step back
+ * that aborts nothing), and so does `Ctrl+C`.
+ */
+async function lastStep(flow: FramedChordFlow, failure: LaunchFailure): Promise<void> {
+  await flow.at(failure.step).select({
+    message: failure.notice,
+    options: [{ value: 'close', label: RUN_FAILED_CLOSE }],
+    escape: 'back',
+    final: failure.tone ?? 'failed',
+  });
+}
+
+/** What the popup's last step says when the launch cannot go on, on which step, in which tone (a failure unless it says otherwise). */
+interface LaunchFailure {
+  readonly notice: string;
+  readonly step: number;
+  readonly tone?: 'ok' | 'failed';
+}
+
 interface SessionRun {
   readonly session: LaunchSession;
   readonly done: Promise<string>;
   fault: { readonly cause: unknown } | undefined;
+  /** Set when the flow closed on a failure (not a cancel and not a start): the popup says it before it closes. */
+  failure: LaunchFailure | undefined;
 }
 
 /** The machine and the loop that runs its effects. */
 function runSession(options: {
+  /** The `/run` popup ({@link RUN_FRAME}) over the Home's channel. */
+  readonly flow: FramedChordFlow;
   readonly deps: RunLaunchDeps;
   readonly hold: SecretHold;
   readonly signal: AbortSignal;
@@ -983,8 +1128,8 @@ function runSession(options: {
   /** The line the picker showed about the files it did not offer: put back when a card that replaced it is left. */
   readonly skipped?: string | undefined;
 }): SessionRun {
-  const { deps, hold, signal, preselect, skipped } = options;
-  const { flow, host, catalog } = deps;
+  const { flow, deps, hold, signal, preselect, skipped } = options;
+  const { host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
   let state: LaunchState = { kind: 'idle', turn: 0 };
   let loaded: WorkflowDefinition | undefined;
@@ -995,8 +1140,23 @@ function runSession(options: {
   const run: SessionRun = {
     done,
     fault: undefined,
+    failure: undefined,
     session: { state: () => state, dispatch: (event) => dispatch(event) },
   };
+
+  /** The step a failure in the current state happened at: the pick (and its read) on the first, a field on the second, the rest on the last. */
+  function stepOf(current: LaunchState): number {
+    if (current.kind === 'picking' || current.kind === 'idle') return STEP.workflow;
+    return current.kind === 'asking' ? STEP.inputs : STEP.confirm;
+  }
+
+  /** Close the flow on a failure that the popup will say: only while the flow is still open (a closed one has already said its word). */
+  function closeFailed(notice: string): void {
+    if (state.kind === 'closed') return;
+    run.failure = { notice, step: stepOf(state) };
+    if (state.kind === 'starting') dispatch({ kind: 'launched', turn: state.turn, notice });
+    else dispatch({ kind: 'stop', notice });
+  }
 
   function dispatch(event: LaunchEvent): void {
     const step = reduceLaunch(state, event);
@@ -1014,14 +1174,13 @@ function runSession(options: {
   }
 
   function fail(cause: unknown): void {
-    // An expected refusal is a notice; anything else is carried out to the caller, after the flow is closed.
-    let notice: string;
-    if (isCliError(cause) && cause.code === 'invalid_invocation')
-      notice = sanitizeUntrustedInline(cause.message);
-    else {
-      run.fault = { cause };
-      notice = 'The run could not be started.';
+    // An expected refusal is said in the popup; anything else is carried out to the caller, after the flow is closed.
+    if (isCliError(cause) && cause.code === 'invalid_invocation') {
+      closeFailed(scrubbed(cause.message));
+      return;
     }
+    run.fault = { cause };
+    const notice = 'The run could not be started.';
     // A run that is starting is closed by its own outcome; every other state, by a stop.
     if (state.kind === 'starting') dispatch({ kind: 'launched', turn: state.turn, notice });
     else dispatch({ kind: 'stop', notice });
@@ -1059,7 +1218,7 @@ function runSession(options: {
       answer = String(at);
     } else {
       preselected = false;
-      answer = await flow.select({
+      answer = await flow.at(STEP.workflow).select({
         message: 'Run which workflow?',
         options: effect.choices.map((choice, index) => ({
           value: String(index),
@@ -1107,9 +1266,11 @@ function runSession(options: {
     if (def === undefined) throw new CliError('cli_internal', 'launch form has no workflow');
     const message = field.label;
     const validate = (value: string): string | undefined => fieldIssue(def, field, value);
+    // Every input is asked on the popup's second step; a masked one keeps the channel's own field (its private editor, a resize that clears it).
+    const inputs = flow.at(STEP.inputs);
     let answer: string | symbol;
     if (field.type === 'boolean') {
-      answer = await flow.select({
+      answer = await inputs.select({
         message,
         options: [
           { value: 'true', label: 'true' },
@@ -1119,9 +1280,9 @@ function runSession(options: {
         escape: FIELD_PROMPT_ESCAPE,
       });
     } else if (field.secret) {
-      answer = await flow.password({ message, validate, escape: FIELD_PROMPT_ESCAPE });
+      answer = await inputs.password({ message, validate, escape: FIELD_PROMPT_ESCAPE });
     } else {
-      answer = await flow.text({ message, validate, escape: FIELD_PROMPT_ESCAPE });
+      answer = await inputs.text({ message, validate, escape: FIELD_PROMPT_ESCAPE });
     }
     if (answer === NATIVE_PROMPT_BACK) {
       dispatch({ kind: 'back', turn });
@@ -1145,27 +1306,28 @@ function runSession(options: {
     if (def === undefined) throw new CliError('cli_internal', 'launch form has no workflow');
     const refusal = formIssue(def, effect.form.values, hold.copy());
     if (refusal !== undefined) {
-      dispatch({ kind: 'stop', notice: `Not started. ${refusal}` });
+      closeFailed(`Not started. ${refusal}`);
       return;
     }
-    // What the run can do is the HOST's own row above the question (the card's note): the workflow's name, which the question carries,
-    // is in another row and cannot continue it. It stays only while this card is up, and the picker's note is put back after it.
+    // What the run can do is the HOST's own passage, the chord card's facts: the workflow's name, which the question carries, is in another
+    // row and cannot continue it. A chord card clears any note above it (the picker's line about the files it did not offer is put back after).
     const authority = launchAuthorityNote(def, effect.form.fsScope);
-    if (authority !== undefined) flow.note(authority);
-    let answer: boolean | symbol;
+    let answer: string | symbol;
     try {
-      // No is the default: an `Enter` typed ahead, or pressed twice, answers No.
-      answer = await flow.confirm(
-        confirmationQuestion(effect.form, hold.names()),
-        false,
-        FIELD_PROMPT_ESCAPE,
-      );
+      // `Ctrl+Y` alone starts (ADR-0148 §3), past the chord card's guards: an `Enter` typed ahead, or held, answers nothing.
+      answer = await flow.at(STEP.confirm).chord({
+        message: confirmationQuestion(effect.form, hold.names()),
+        details: authority === undefined ? [] : [authority],
+        allow: RUN_CONFIRM_ALLOW,
+        deny: RUN_CONFIRM_DENY,
+        escape: FIELD_PROMPT_ESCAPE,
+      });
     } finally {
-      if (authority !== undefined) restoreNote();
+      restoreNote();
     }
     if (answer === NATIVE_PROMPT_BACK) dispatch({ kind: 'back', turn: effect.turn });
-    else if (typeof answer === 'boolean')
-      dispatch({ kind: 'confirmed', turn: effect.turn, yes: answer });
+    else if (answer === 'allow' || answer === 'deny')
+      dispatch({ kind: 'confirmed', turn: effect.turn, yes: answer === 'allow' });
     else dispatch({ kind: 'stop' });
   }
 
@@ -1174,7 +1336,6 @@ function runSession(options: {
       dispatch({ kind: 'stop', notice: LAUNCH_CANCELLED });
       return;
     }
-    flow.busy('Starting the run…');
     const { choice, values, sourceDigest, fsScope } = effect.form;
     // **`Esc` and `Ctrl+C` while the leg prepares (P1-4).** The screen says `Esc cancel`, and the engine build, the reconcile and an MCP
     // connect can take up to two minutes. The abort does two things at once: it closes THIS flow (the keyboard is the Home's again, the
@@ -1186,17 +1347,26 @@ function runSession(options: {
     };
     signal.addEventListener('abort', leave, { once: true });
     try {
-      const launch = await host.start({
-        workflow: choice.path,
-        rawInputs: values,
-        secrets: hold.port,
-        // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
-        expectedSourceDigest: sourceDigest,
-        // The file scope the confirmation named: the start refuses, before anything is asked, when the project now sets another.
-        expectedFsScope: fsScope?.tier ?? 'sandboxed',
-        signal,
+      // The start is the run's, not a step of the popup: the frame is taken away while the host has it, so the MCP consent card the leg may
+      // raise on this same channel is drawn as its own card (ADR-0139 §4), never in the `/run` frame on a rail it is not a step of.
+      const launch = await flow.unframed(() => {
+        // The wait is drawn as the card it is too: no frame of the popup is ever shown around the start.
+        flow.busy('Starting the run…');
+        return host.start({
+          workflow: choice.path,
+          rawInputs: values,
+          secrets: hold.port,
+          // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
+          expectedSourceDigest: sourceDigest,
+          // The file scope the confirmation named: the start refuses, before anything is asked, when the project now sets another.
+          expectedFsScope: fsScope?.tier ?? 'sandboxed',
+          signal,
+        });
       });
-      dispatch({ kind: 'launched', turn: effect.turn, notice: launchNotice(choice, launch) });
+      const notice = launchNotice(choice, launch);
+      if (launch.kind === 'started' || state.kind !== 'starting' || state.turn !== effect.turn)
+        dispatch({ kind: 'launched', turn: effect.turn, notice });
+      else closeFailed(notice);
     } finally {
       signal.removeEventListener('abort', leave);
     }

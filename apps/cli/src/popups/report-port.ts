@@ -1,7 +1,8 @@
 /**
  * What a chat host hands the four report popups, and the one way a host opens one ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1, §6, §10; [MVP-11 §4.4](../../../../docs/roadmap/phases/mvp-11.md#44-reports-and-settings-as-popups)): `/agent`, `/cost` (and `/cost --release`),
- * `/workflows` and `/help`, opened ONLY in an interactive chat (the chat the Home hosts and a stand-alone `relavium chat`). This module is the
+ * `/workflows` and `/help`, and `/export`'s one-step confirmation (§10, OD-10: not a report, but opened the same way), opened ONLY in an
+ * interactive chat (the chat the Home hosts and a stand-alone `relavium chat`). This module is the
  * EAGER half, split from the lazy half as `doctor-port.ts` is: types, the parse of a typed line, and a loader that brings the popups' code in
  * (`report-session.ts` and what it imports) only when the person first asks for a report, so a host never pays for it at start. What the four
  * reports and the `/doctor` popup share (the scrub and the wrap, the work starter, the copy, the phrases of a refused chord) is
@@ -89,6 +90,31 @@ export interface HelpPort {
   readonly keys: readonly { readonly keys: string; readonly verb: string }[];
 }
 
+/** Where an in-chat `/export` would write, as the popup shows it before it asks. */
+export interface SessionExportView {
+  /** The file, relative to the project's root (`.relavium/workflows/<id>.relavium.yaml`): never absolute, never under `~`. */
+  readonly target: string;
+  /** Whether the write rewrites this session's own earlier export (the one overwrite `/export` makes); otherwise a new file. */
+  readonly overwrites: boolean;
+}
+
+/**
+ * What the in-chat `/export` popup reads and does ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §10, [MVP-11 OD-10](../../../../docs/roadmap/phases/mvp-11.md#72-decisions-od-1-to-od-23)): the scaffold is written only after the popup has
+ * shown where it goes and the person answered `Ctrl+Y`. **Both are called only in work the popup starts or at a confirmed answer**, never while
+ * the popup is drawn: they are a read of the session and the disk, and the session's own `/export` write.
+ */
+export interface SessionExportPort {
+  /** Where an export would write NOW, worked out and not written (`prepareSessionExport`). May throw (no project, no free id, …). */
+  readonly prepare: () => SessionExportView;
+  /** Write the scaffold now: the session's own `/export` (`exportSessionToProject`), and the file it wrote, project-relative. May throw. */
+  readonly commit: () => { readonly target: string };
+  /** What a fault of either says, in the product's words (never the fault's own message). */
+  readonly failure: (cause: unknown) => string;
+  /** The review notice's sentence (`SESSION_EXPORT_REVIEW_NOTICE`'s): what the scaffold is, and what to review before committing it. */
+  readonly review: string;
+}
+
 /** What a chat host hands the report popups. Built once per chat session; nothing in it is read until a popup runs. */
 export interface ReportsPort extends PopupPortBase {
   readonly surface: ReportSurface;
@@ -97,6 +123,8 @@ export interface ReportsPort extends PopupPortBase {
   readonly cost?: CostPort | undefined;
   readonly workflows?: WorkflowsPort | undefined;
   readonly help?: HelpPort | undefined;
+  /** `/export`'s confirmation popup (ADR-0148 §10). Absent ⇒ `/export` is dispatched and writes as it did (a plain, `--json` or one-shot chat). */
+  readonly export?: SessionExportPort | undefined;
 }
 
 /** One report: the port member it needs, the command that names it, and whether the command takes `--release`. */
@@ -117,9 +145,12 @@ export const REPORTS = [
   { kind: 'cost', command: '/cost', takesRelease: true },
   { kind: 'workflows', command: '/workflows', takesRelease: false },
   { kind: 'help', command: '/help', takesRelease: false },
+  // Not a report but a one-step write that asks first (ADR-0148 §10, OD-10): routed, gated and opened exactly as the reports are, so it rides the
+  // same one routing function and the same open adapter of every host, BEFORE the line is counted as a submit.
+  { kind: 'export', command: '/export', takesRelease: false },
 ] as const satisfies readonly ReportDefinition[];
 
-/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows` or `/help`: the name of the member of the port that makes it a popup. */
+/** The report a typed line names: `/agent`, `/cost` (with `--release`), `/workflows`, `/help` or `/export`: the name of the member of the port that makes it a popup. */
 export type ReportKind = (typeof REPORTS)[number]['kind'];
 
 /** The members of a {@link ReportsPort} that come from the session's own line handler (the host adds the surface, the owner and the glyph form). */

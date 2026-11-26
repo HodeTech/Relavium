@@ -19,7 +19,20 @@ import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychai
 import { captureIo } from '../test-support.js';
 import { createProviderSetupCoordinator, type ProviderSetupDeps } from './provider-setup.js';
 
-vi.mock('../onboarding/wizard.js', () => ({ runOnboardingWizard: vi.fn(() => Promise.resolve()) }));
+// The coordinator runs the native setup (`runNativeSetup`); the mock hands every call to one spy, `runOnboardingWizard`, with the wizard's deps
+// and its `native` together, as the coordinator once called it, and reports a setup that ended with nothing stored.
+vi.mock('../onboarding/wizard.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../onboarding/wizard.js')>();
+  const runOnboardingWizard = vi.fn<(deps: unknown) => Promise<void>>(() => Promise.resolve());
+  return {
+    ...actual,
+    runOnboardingWizard,
+    runNativeSetup: vi.fn(async (deps: object, native: object) => {
+      await runOnboardingWizard({ ...deps, native });
+      return { kind: 'finished', stored: false };
+    }),
+  };
+});
 import { runOnboardingWizard } from '../onboarding/wizard.js';
 
 const store: ProviderStore = {
@@ -346,7 +359,7 @@ describe('provider setup coordinator', () => {
 
   describe('a skip says so, and only a first run skips', () => {
     it.each([
-      ['home' as const, 'Setup skipped · /providers connects a provider any time'],
+      ['home' as const, 'Setup skipped · /providers connects a provider anytime'],
       [
         'standalone-chat' as const,
         'Setup skipped · restart this chat to open provider setup any time',
@@ -369,7 +382,7 @@ describe('provider setup coordinator', () => {
       expect(result).toEqual({
         status: 'deferred',
         changed: false,
-        notice: 'Setup skipped · /providers connects a provider any time',
+        notice: 'Setup skipped · /providers connects a provider anytime',
       });
     });
 
@@ -378,7 +391,7 @@ describe('provider setup coordinator', () => {
       expect(await createProviderSetupCoordinator(f.deps).run('explicit')).toEqual({
         status: 'cancelled',
         changed: false,
-        notice: 'Setup skipped · /providers connects a provider any time',
+        notice: 'Setup skipped · /providers connects a provider anytime',
       });
     });
 

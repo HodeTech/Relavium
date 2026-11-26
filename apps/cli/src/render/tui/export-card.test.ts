@@ -7,6 +7,10 @@
  * The prompt channel is the real one (keys go in through `ui.input`, as the host's `useInput` delivers them) and so is the port over a
  * temporary project, so "writes nothing" is read from the directory and not from a flag the card keeps. Every project and home is a
  * temporary directory.
+ *
+ * MVP-11 unit 6 (6.3): the card is a popup now (`framedFlow`, rail `Review · Done`): a write ends in the persistent Done step (what was
+ * exported and the file it went to; a refused write says so there), a refusal is a step of the popup with its reason under it, and the flow
+ * resolves with a notification only when nothing was written and nothing said so (`EXPORT_NOT_WRITTEN`); nothing goes to the tab's row.
  */
 import {
   existsSync,
@@ -31,6 +35,7 @@ import {
   EXPORT_ALLOW_LABEL,
   EXPORT_CLOSE_LABEL,
   EXPORT_DENY_LABEL,
+  EXPORT_FAILED,
   EXPORT_NOT_WRITTEN,
   exportCardText,
   runExportCard,
@@ -149,7 +154,38 @@ function rig(slug = 'code-review', over: { readonly port?: ExportPort } = {}) {
     channel.ui.shown(channel.ui.getSnapshot());
     now = 10_000;
   };
-  return { ...channel, ...counted, result, cardUp, at: (ms: number) => (now = ms) };
+  /** The refusal, where the question would have been. */
+  const refusalUp = (): Promise<void> =>
+    vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
+  /**
+   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file its one option names; then `Enter` closes it and the flow's
+   * result (the notification it asks the Home for: none, the step said it) is read.
+   */
+  const done = async () => {
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
+    const step = channel.ui.getSnapshot();
+    channel.ui.input('', { ...none, return: true });
+    const notification = await result;
+    return {
+      message: step.message,
+      lines: step.details,
+      target: step.options[0]?.hint,
+      tone: step.final,
+      step,
+      notification,
+    };
+  };
+  return {
+    ...channel,
+    ...counted,
+    result,
+    cardUp,
+    refusalUp,
+    done,
+    at: (ms: number) => (now = ms),
+  };
 }
 
 describe('the card says where it would write, and how much, before it asks', () => {
@@ -158,6 +194,14 @@ describe('the card says where it would write, and how much, before it asks', () 
     await r.cardUp();
     const card = r.ui.getSnapshot();
     expect(card.kind).toBe('chord');
+    // the popup's Review step (ADR-0148 §1): step 1 of 2, from the Home
+    expect(card.popup).toMatchObject({
+      title: 'Export',
+      origin: 'home',
+      stepIndex: 0,
+      stepCount: 2,
+      stepNames: ['Review', 'Done'],
+    });
     expect(card.message).toBe("Write workflow 'code-review' to a file in this directory?");
     expect(card.details[0]).toBe(`destination ${DESTINATION}`);
     expect(card.details[1]).toMatch(/^size {8}\d[\d,]* bytes$/u);
@@ -175,7 +219,7 @@ describe('the card says where it would write, and how much, before it asks', () 
     await r.cardUp();
     const shown = /^size\s+([\d,]+) bytes$/u.exec(r.ui.getSnapshot().details[1] ?? '')?.[1];
     r.ui.input('y', ctrl);
-    await r.result;
+    await r.done();
     expect(Buffer.byteLength(readFileSync(target(), 'utf8'), 'utf8')).toBe(
       Number((shown ?? '').replaceAll(',', '')),
     );
@@ -269,13 +313,19 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     const r = rig();
     await r.cardUp();
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(`Exported workflow 'code-review' to ${DESTINATION}.`);
+    await vi.waitFor(() => expect(r.ui.getSnapshot().final).toBe('ok'), { timeout: WAIT_MS });
     expect(r.commits).toHaveBeenCalledTimes(1);
     const written = readFileSync(target(), 'utf8');
     expect(written).toContain('id: code-review');
-    r.ui.input('y', ctrl); // a held key: there is no card to answer
+    r.ui.input('y', ctrl); // a held key: the Done step takes no chord, and there is no card to answer
     await Promise.resolve();
+    expect(r.ui.getSnapshot().final, 'the Done step stays').toBe('ok');
     expect(r.commits).toHaveBeenCalledTimes(1);
+    const done = await r.done();
+    expect(done.message).toBe("Exported workflow 'code-review'");
+    expect(done.target).toBe(DESTINATION);
+    expect(done.step.popup?.stepIndex).toBe(1);
+    expect(done.notification).toBeUndefined();
     expect(readFileSync(target(), 'utf8')).toBe(written);
     expect(r.ui.getSnapshot().active).toBe(false);
   });
@@ -292,7 +342,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(existsSync(target())).toBe(false);
     r.at(60_000);
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('Exported workflow');
+    expect((await r.done()).message).toBe("Exported workflow 'code-review'");
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
@@ -322,9 +372,11 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     // Between the card and the answer something else took the place (a directory here).
     mkdirSync(target());
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      `Not exported. ${DESTINATION} already exists — pass --force to overwrite`,
-    );
+    const done = await r.done();
+    expect(done.tone).toBe('failed');
+    expect(done.message).toBe(EXPORT_FAILED);
+    expect(done.lines).toEqual([`${DESTINATION} already exists — pass --force to overwrite`]);
+    expect(done.notification).toBeUndefined();
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
@@ -333,9 +385,9 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await r.cardUp();
     writeFileSync(target(), 'someone else wrote this\n');
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      `Not exported. ${DESTINATION} already exists — pass --force to overwrite`,
-    );
+    expect((await r.done()).lines).toEqual([
+      `${DESTINATION} already exists — pass --force to overwrite`,
+    ]);
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
 });
@@ -345,16 +397,18 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     writeFileSync(target(), 'pre-existing\n');
     const before = tree(root);
     const r = rig();
-    await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
+    await r.refusalUp();
     const card = r.ui.getSnapshot();
-    expect(card.message).toContain("Cannot export 'code-review':");
-    expect(card.message).toContain(
+    expect(card.message).toBe("Cannot export 'code-review'.");
+    expect(card.details.join('\n')).toContain(
       `${DESTINATION} already exists, and this card never overwrites.`,
     );
+    expect(card.final, 'drawn as what failed').toBe('failed');
     expect(card.options.map((option) => option.label)).toEqual([EXPORT_CLOSE_LABEL]);
+    r.ui.shown(card);
+    r.at(10_000);
     r.ui.input('', { ...none, return: true });
-    const notice = await r.result;
-    expect(notice).toMatch(/^Not exported\. code-review\.relavium\.yaml already exists/u);
+    expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
     expect(r.commits, 'there was nothing to commit').not.toHaveBeenCalled();
     expect(readFileSync(target(), 'utf8')).toBe('pre-existing\n');
     expect(tree(root)).toEqual(before);
@@ -365,24 +419,25 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     writeFileSync(join(root, '.relavium', 'workflows', 'code-review-copy.relavium.yaml'), WORKFLOW);
     const before = tree(root);
     const r = rig();
-    await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
+    await r.refusalUp();
     const card = r.ui.getSnapshot();
-    expect(card.message).toContain("Cannot export 'code-review':");
-    expect(card.message).toContain('declared by two workflow files');
-    expect(card.message).toContain('code-review.relavium.yaml');
-    expect(card.message).toContain('code-review-copy.relavium.yaml');
-    r.ui.input('', { ...none, return: true });
+    expect(card.message).toBe("Cannot export 'code-review'.");
+    const reason = card.details.join('\n');
+    expect(reason).toContain('declared by two workflow files');
+    expect(reason).toContain('code-review.relavium.yaml');
+    expect(reason).toContain('code-review-copy.relavium.yaml');
+    r.ui.input('', { ...none, escape: true });
     await r.result;
     expect(r.commits, 'nothing to commit').not.toHaveBeenCalled();
     expect(tree(root)).toEqual(before);
   });
 
-  it('Esc closes the refusal too, and says the same', async () => {
+  it('Esc closes the refusal too, and leaves nothing more to say', async () => {
     writeFileSync(target(), 'pre-existing\n');
     const r = rig();
-    await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
+    await r.refusalUp();
     r.ui.input('', { ...none, escape: true });
-    expect(await r.result).toMatch(/^Not exported\. /u);
+    expect(await r.result).toBeUndefined();
     expect(readFileSync(target(), 'utf8')).toBe('pre-existing\n');
   });
 
@@ -393,10 +448,10 @@ describe('a refusal is shown in the card, and writes nothing', () => {
       writeFileSync(join(root, 'x.relavium.yaml'), WORKFLOW.replace('id: code-review', 'id: x'));
       const before = tree(root);
       const r = rig(slug);
-      await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
-      expect(r.ui.getSnapshot().message).toContain('no workflow or agent with id');
-      r.ui.input('', { ...none, return: true });
-      expect(await r.result).toContain('Not exported. no workflow or agent with id');
+      await r.refusalUp();
+      expect(r.ui.getSnapshot().details.join('\n')).toContain('no workflow or agent with id');
+      r.ui.input('', { ...none, escape: true });
+      expect(await r.result).toBeUndefined();
       expect(r.commits).not.toHaveBeenCalled();
       expect(tree(root)).toEqual(before);
       expect(readFileSync(join(root, 'x.relavium.yaml'), 'utf8')).toContain('id: x'); // the decoy was not exported or touched
@@ -423,7 +478,9 @@ describe('a refusal is shown in the card, and writes nothing', () => {
   });
 
   it('a fault that is not a refusal propagates, with the flow ended', async () => {
+    let now = 0;
     const channel = createNativePromptChannel({
+      now: () => now,
       guard: { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 },
     });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
@@ -445,6 +502,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
       timeout: WAIT_MS,
     });
     channel.ui.shown(channel.ui.getSnapshot());
+    now = 10_000;
     channel.ui.input('y', { ...none, ctrl: true });
     const outcome = await settled;
     expect(outcome instanceof Error && outcome.message).toBe('disk fault');

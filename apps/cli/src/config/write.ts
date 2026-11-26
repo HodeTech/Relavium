@@ -208,6 +208,24 @@ export function prepareKeychainUnavailableAcknowledged(
   );
 }
 
+/**
+ * The remembered skip of the first-run provider setup (ADR-0146 §6, ruled 2026-11-24; operator-owned onboarding state, ADR-0112): a closed
+ * setter that can write `first_run_setup_skipped = true` and nothing else. The Home publishes it through its visible-publication path, so a
+ * hand-made config is rewritten only behind its disclosure; it carries no value the person typed.
+ */
+export function prepareFirstRunSetupSkipped(
+  home: string = homedir(),
+  targetPath?: string,
+  observer?: ConfigReadObserver,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({ ...existing.preferences, first_run_setup_skipped: true }),
+    home,
+    targetPath,
+    observer,
+  );
+}
+
 /** Closed operator-only setters; model-preference writers cannot select modes. */
 export function prepareDefaultChatMode(
   mode: ChatMode,

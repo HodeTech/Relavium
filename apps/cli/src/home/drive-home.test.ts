@@ -61,6 +61,7 @@ import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
+import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
 import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -72,6 +73,7 @@ import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
+import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
 import { PRICING_ACTION_SET, PRICING_NOT_RECORDED } from '../render/tui/pricing-card.js';
 import {
   defaultSubscribeProcessExit,
@@ -517,6 +519,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       await vi.waitFor(() => expect(props).toBeDefined(), { timeout: WAIT_MS });
       if (props === undefined) throw new Error('Home did not mount');
       const home = props;
+      // The live host's acknowledgement: every frame of the channel is measured and flushed at once (the `/resume` popup's opening guard
+      // starts at its first such frame).
+      const native = home.nativePrompt;
+      native?.subscribe(() => native.shown(native.getSnapshot()));
       type(home, 'hello');
       home.controller.handleKey('', { return: true });
       await vi.waitFor(
@@ -552,6 +558,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       });
       expect(build).not.toHaveBeenCalled();
       expect(home.nativePrompt?.getSnapshot().selected).toBe(1); // Return is the safe default.
+      // The retry question is the `/resume` popup's Restore step; an `Enter` counts once the popup's opening settle has passed on screen.
+      expect(home.nativePrompt?.getSnapshot().popup).toMatchObject({
+        title: '/resume',
+        stepNames: ['Session', 'Restore'],
+        stepIndex: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
       home.nativePrompt?.input('', NATIVE_RETURN);
       await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
         timeout: WAIT_MS,
@@ -619,11 +632,19 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         () => expect(home.nativePrompt?.getSnapshot().options[0]?.value).toBe('foreign-session'),
         { timeout: WAIT_MS },
       );
+      // What the Home says on its one notification channel from here (ADR-0148 §6), shown or queued.
+      const channel = home.notifications;
+      if (channel === undefined) throw new Error('the Home has no notification channel');
+      const notify = vi.spyOn(channel, 'notify');
+      const notified = (): string[] => notify.mock.calls.map((call) => call[0]);
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
       home.nativePrompt?.input('', NATIVE_RETURN);
       await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
         timeout: WAIT_MS,
       });
-      expect(home.controller.getSnapshot().notice).toContain('another directory');
+      // A session of another directory is refused in one notification, never in the Home's notice or the chat.
+      expect(notified().join('\n')).toContain('another directory');
+      expect(home.controller.getSnapshot().notice ?? '').not.toContain('another directory');
       expect(build).toHaveBeenCalledTimes(1);
       home.controller.handleKey('c', { ctrl: true });
       home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
@@ -2182,10 +2203,14 @@ workflow:
       const card = prompt.getSnapshot();
       expect(card.message).toBe("Write workflow 'beta' to a file in this directory?");
       expect(card.details[0]).toBe('destination beta.relavium.yaml');
+      // a popup (MVP-11 unit 6, 6.3): `Export`, its Review step; a No is one notification on the Home's channel, never the tab's row
+      expect(card.popup?.title).toBe('Export');
       prompt.input('n', channelKey({ ctrl: true }));
-      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Nothing was written.'), {
-        timeout: WAIT_MS,
-      });
+      await vi.waitFor(
+        () => expect(props.notifications?.getSnapshot().current?.text).toBe('Nothing was written.'),
+        { timeout: WAIT_MS },
+      );
+      expect(definedOf(props)?.message).toBeUndefined();
       expect(() => readFileSync(join(cwd, 'beta.relavium.yaml'), 'utf8')).toThrow();
       props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
@@ -2209,7 +2234,13 @@ workflow:
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toContain('Run alpha'), {
         timeout: WAIT_MS,
       });
-      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['Yes', 'No']);
+      // The confirmation is the `/run` popup's chord step (ADR-0148 §3): `Ctrl+Y` starts, `Ctrl+N` cancels.
+      expect(prompt.getSnapshot().kind).toBe('chord');
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual([
+        'Start it',
+        'Cancel',
+      ]);
+      expect(prompt.getSnapshot().popup).toMatchObject({ title: '/run', stepIndex: 2 });
       prompt.input('c', channelKey({ ctrl: true }));
       await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Run cancelled.'), {
         timeout: WAIT_MS,
@@ -2292,6 +2323,17 @@ workflow:
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       expect(await drivePromise).toBe(EXIT_CODES.success);
     };
+    /**
+     * The popup's first frame played as measured and flushed (no renderer is mounted here), and its opening settle waited out for real: a key
+     * that answers counts only on a frame that was shown, half a second after it was (ADR-0148 §3, MVP-11 unit 6).
+     */
+    const shownAndSettled = async (prompt: NonNullable<RootAppProps['nativePrompt']>) => {
+      prompt.shown(prompt.getSnapshot());
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
+    };
+    /** The one notification the Home's channel shows now. */
+    const notified = (props: RootAppProps): string | undefined =>
+      props.notifications?.getSnapshot().current?.text;
 
     it('/import asks for a path, shows the import over the Home’s own project directory, and a No writes nothing', async () => {
       mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
@@ -2304,6 +2346,8 @@ workflow:
       expect(props.controller.getSnapshot().nativeActionBusy, 'the keyboard is the card’s').toBe(
         true,
       );
+      expect(prompt.getSnapshot().popup?.title).toBe('/import');
+      await shownAndSettled(prompt);
       prompt.paste('incoming/shared.relavium.yaml');
       prompt.input('', nativeKey({ return: true }));
       await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
@@ -2312,10 +2356,11 @@ workflow:
       expect(card.details[0]).toMatch(/^from\s+incoming\/shared\.relavium\.yaml$/u);
       expect(card.details[1]).toMatch(/^to\s+\.relavium\/workflows\/shared\.relavium\.yaml$/u);
       prompt.input('n', nativeKey({ ctrl: true }));
-      await vi.waitFor(
-        () => expect(props.controller.getSnapshot().notice).toBe('Nothing was written.'),
-        { timeout: WAIT_MS },
-      );
+      // one notification on the Home's channel, never the Home's notice (ADR-0148 §6)
+      await vi.waitFor(() => expect(notified(props)).toBe('Nothing was written.'), {
+        timeout: WAIT_MS,
+      });
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
       expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
       expect(() =>
         readFileSync(join(cwd, '.relavium', 'workflows', 'shared.relavium.yaml'), 'utf8'),
@@ -2342,6 +2387,8 @@ workflow:
       expect(prompt.getSnapshot().options[0]?.label, 'the first option is the one chosen').toBe(
         PRICING_ACTION_SET,
       );
+      expect(prompt.getSnapshot().popup?.title).toBe('/pricing');
+      await shownAndSettled(prompt);
       prompt.input('', nativeKey({ return: true })); // the first option: Set a price
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Which model?'), {
         timeout: WAIT_MS,
@@ -2352,7 +2399,10 @@ workflow:
         options.length,
         'the merged catalog the /models picker lists is behind the list: more than the one row for a model it does not show',
       ).toBeGreaterThan(1);
-      prompt.input('', nativeKey({ upArrow: true })); // wraps to the last option: Another model…
+      // In a popup the arrows stop at the ends (ADR-0148 §3): down to the last option, Another model…
+      for (let at = 1; at < options.length; at += 1)
+        prompt.input('', nativeKey({ downArrow: true }));
+      expect(prompt.getSnapshot().selected).toBe(options.length - 1);
       prompt.input('', nativeKey({ return: true }));
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Model id'), {
         timeout: WAIT_MS,
@@ -2365,10 +2415,10 @@ workflow:
       );
       expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['OpenAI']); // the display name, not the id
       prompt.input('c', nativeKey({ ctrl: true })); // leaves the form: nothing was recorded
-      await vi.waitFor(
-        () => expect(props.controller.getSnapshot().notice).toBe(PRICING_NOT_RECORDED),
-        { timeout: WAIT_MS },
-      );
+      await vi.waitFor(() => expect(notified(props)).toBe(PRICING_NOT_RECORDED), {
+        timeout: WAIT_MS,
+      });
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
       expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
       await leave(props, drivePromise);
     });
@@ -3212,7 +3262,8 @@ workflow:
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
 
-    // Start a chat (bound to the default claude-sonnet-4-6) + run one turn so the transcript persists.
+    // Start a chat (bound to the zero-config default, the starter table's Anthropic model since MVP-11 unit 6) + run one turn so the
+    // transcript persists.
     type(props, 'first');
     props.controller.handleKey('', ENTER);
     await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined(), {
@@ -3228,7 +3279,7 @@ workflow:
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
     const before = await openedReport(props, 'agent');
-    expect(before).toContain('claude-sonnet-4-6');
+    expect(before).toContain(DEFAULT_CHAT_MODEL);
     expect(before).toMatch(/Reasoning effort\s+not set/u);
     closeReport(props);
 
@@ -3268,7 +3319,7 @@ workflow:
     // The MARKER, through the real Home builder — the only place the Home's argument order is pinned. `toContain` on
     // the new model alone would pass a REVERSED marker just as happily.
     const marker = carried.at(-1)?.text ?? '';
-    expect(marker).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    expect(marker).toContain(`${DEFAULT_CHAT_MODEL} → claude-opus-4-8`);
     expect(marker).toContain('@-attached file contents included'); // ADR-0059's bound disclosure clause
     // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');

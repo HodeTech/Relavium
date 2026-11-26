@@ -119,7 +119,7 @@ describe('ADR-0108 provider-header command projections', () => {
             return Promise.resolve(
               outcome === 'refusal'
                 ? offlineOpenAiRefusal()
-                : offlineOpenAiReply(KNOWN_PROVIDERS.openai.testModel),
+                : offlineOpenAiReply(KNOWN_PROVIDERS.openai.starterModel),
             );
           };
           const deps = commandDeps(
@@ -184,7 +184,7 @@ describe('ADR-0108 provider-header command projections', () => {
             }
             const body: unknown = await request.json();
             expect(body).toMatchObject({
-              model: KNOWN_PROVIDERS.openai.testModel,
+              model: KNOWN_PROVIDERS.openai.starterModel,
               messages: [{ role: 'user', content: 'ping' }],
             });
           }

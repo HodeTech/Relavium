@@ -58,6 +58,8 @@ interface Mounted {
   readonly startChat: ReturnType<typeof vi.fn>;
   /** The lines the chat was handed. */
   readonly lines: string[];
+  /** What the Home said on its one notification channel (ADR-0148 §6). */
+  readonly announced: string[];
 }
 
 /** A Home with NO port wired, so each command answers at its own gate; `extra` wires the few the tests need. */
@@ -80,6 +82,7 @@ function mount(options: { sessions?: number; extra?: Partial<HomeControllerDeps>
     };
     return Promise.resolve(session);
   });
+  const announced: string[] = [];
   const controller = createHomeController({
     startChat,
     homeStore: { read: () => snapshotWith(options.sessions ?? 0) },
@@ -88,9 +91,10 @@ function mount(options: { sessions?: number; extra?: Partial<HomeControllerDeps>
     onError: (cause) => {
       throw cause;
     },
+    announce: (text) => announced.push(text),
     ...options.extra,
   });
-  return { controller, onExit, startChat, lines };
+  return { controller, onExit, startChat, lines, announced };
 }
 
 const type = (c: HomeController, text: string): void => {
@@ -126,14 +130,16 @@ describe('every command the registry places on the Home is handled by the Home�
    */
   type Outcome =
     | { readonly notice: string }
+    /** Said in one notification, and the Home's notice left as it was (a flow that is a popup leaves no residue, ADR-0148 §6). */
+    | { readonly notified: string }
     | { readonly screen: 'help' }
     | { readonly exit: true };
   const OUTCOMES: Readonly<Record<string, Outcome>> = {
-    resume: { notice: 'Session resume is unavailable here.' },
-    run: { notice: 'Running a workflow is unavailable in this session.' },
+    resume: { notified: 'Session resume is unavailable here.' },
+    run: { notified: 'Running a workflow is unavailable in this session.' },
     workflows: { notice: 'The project’s workflows are not available here.' },
     agents: { notice: 'The project’s agents are not available here.' },
-    providers: { notice: 'Provider setup is unavailable in this session.' },
+    providers: { notified: 'Provider setup is unavailable in this session.' },
     models: { notice: '/models is unavailable here.' },
     mode: { notice: 'Startup mode settings are unavailable here.' },
     permissions: { notice: 'Remembered commands are not available here.' },
@@ -166,6 +172,12 @@ describe('every command the registry places on the Home is handled by the Home�
         ? undefined
         : `screen: ${snapshot.screen?.kind ?? '(none)'}`;
     if (snapshot.screen !== undefined) return `opened the ${snapshot.screen.kind} screen`;
+    if ('notified' in expected) {
+      if (snapshot.notice !== undefined) return `notice: ${snapshot.notice}`;
+      return m.announced.join('\n') === expected.notified
+        ? undefined
+        : `notified: ${m.announced.join(' | ') || '(none)'}`;
+    }
     return snapshot.notice === expected.notice
       ? undefined
       : `notice: ${snapshot.notice ?? '(none)'}`;

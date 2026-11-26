@@ -1,5 +1,5 @@
 import { lstatSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 import {
   SlugClashError,
@@ -90,6 +90,17 @@ function clashReason(cause: unknown): string | undefined {
   return `${cause.kind} '${sanitizeUntrustedInline(cause.slug)}' already exists in this project, and this card never overwrites. ${REPLACE_WITH_SHELL}`;
 }
 
+/**
+ * The destination relative to the project's root, the directory that holds `.relavium/` (`.relavium/workflows/<id>.relavium.yaml`): what the
+ * Done step names, whatever directory the Home was opened in. `undefined` for one that is not inside the root (the plan confines it there, so
+ * this is a guard against a display that would name an absolute path, not a case the prepare lets through).
+ */
+function projectRelative(plan: ImportPlan): string | undefined {
+  const rel = relative(dirname(plan.projectConfigDir), plan.target);
+  if (rel === '' || isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return undefined;
+  return rel.split(sep).join('/');
+}
+
 /** The `errno` code a CliError wraps (the write's EEXIST is wrapped by `writeAuthoredFile`), or none. */
 function wrappedErrno(cause: unknown): string | undefined {
   const inner: unknown = isCliError(cause) ? cause.cause : undefined;
@@ -176,6 +187,7 @@ export function createImportPort(deps: ImportPortDeps): ImportPort {
           slug: sanitizeUntrustedInline(plan.slug),
           source: sanitizeUntrustedInline(plan.source),
           destination,
+          target: sanitizeUntrustedInline(projectRelative(plan) ?? plan.targetDisplay),
           bytes: plan.bytes,
           // The command's own sentences (composed here, not read from the file), one row each: the trailing newline is the stream's.
           warnings: plan.warnings.map((warning) => sanitizeInline(warning.trimEnd())),

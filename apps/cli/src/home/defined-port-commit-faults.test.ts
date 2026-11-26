@@ -6,6 +6,10 @@
  *
  * `commitExport` is replaced here (the one fault a test cannot cause portably is a file system that refuses a write); the port, the
  * card and the Home controller are the real ones, and the controller has an invocation work owner, which is what ends a Home.
+ *
+ * MVP-11 unit 6 (6.3): the card is a popup now, so a refused write is said on its persistent Done step (what failed and why), not on the
+ * tab's message row (ADR-0148 §6: no residue); the flow it runs on here answers `Ctrl+Y` and closes whatever step it is shown, and records
+ * what each step said.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -165,11 +169,29 @@ const EMPTY: HomeSnapshot = {
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const ENTER = { return: true } as const;
 
-/** A card whose person answers `Ctrl+Y`: the real card, the real port, no terminal. */
+/** What each select of the flow said (the Done step is a select): its message, lines and tone. */
+const shownSteps: { message: string; details: readonly string[]; final: string | undefined }[] = [];
+
+/** A card whose person answers `Ctrl+Y` and closes the Done step: the real card, the real port, no terminal. */
 const yes: ExportCardDeps['flow'] = {
   begin: () => new AbortController().signal,
   end: () => Promise.resolve(),
-  select: () => Promise.resolve('close'),
+  cancel: () => undefined,
+  popup: () => undefined,
+  note: () => undefined,
+  busy: () => undefined,
+  pick: () => Promise.resolve('close'),
+  select: (options) => {
+    shownSteps.push({
+      message: options.message,
+      details: options.details ?? [],
+      final: options.final,
+    });
+    return Promise.resolve('close');
+  },
+  confirm: () => Promise.resolve(false),
+  text: () => Promise.resolve(''),
+  password: () => Promise.resolve(''),
   chord: () => Promise.resolve('allow'),
 };
 
@@ -231,15 +253,19 @@ async function exportFirstRow(controller: HomeController): Promise<void> {
 
 describe('in a Home with a work owner, an errno from the write does not end the Home', () => {
   it.each(FIXED_REASONS)(
-    '%s: the tab says it, and the owner is told nothing',
+    '%s: the popup’s Done step says it, and the owner is told nothing',
     async (code, sentence) => {
+      shownSteps.length = 0;
       const m = mountHome();
       vi.mocked(commitExport).mockImplementation(() => {
         throw errnoError(code);
       });
       await exportFirstRow(m.controller);
       expect(vi.mocked(commitExport)).toHaveBeenCalledTimes(1);
-      expect(messageOf(m.controller)).toBe(`Not exported. ${sentence}`);
+      expect(shownSteps).toEqual([
+        { message: 'Not exported.', details: [sentence], final: 'failed' },
+      ]);
+      expect(messageOf(m.controller), 'nothing is left on the tab’s row').toBeUndefined();
       expect(m.failure, 'the work owner was not told of a fault').not.toHaveBeenCalled();
       expect(m.onError).not.toHaveBeenCalled();
       expect(m.onExit).not.toHaveBeenCalled();

@@ -7,6 +7,12 @@
  * The prompt channel is the real one (keys go in through `ui.input`, as the host's `useInput` delivers them), and so is the port, over a
  * `:memory:` database and the real catalog store, so "writes nothing" is read from the database and not from a flag the card keeps. No
  * test touches an operator's `history.db`.
+ *
+ * MVP-11 unit 6 (6.3): the form is a popup now (`framedFlow`, rail `Action · Model · Rates · Confirm · Done`), so the rig plays the flow's
+ * first frame as shown before it answers (the opening guard drops a key no frame was shown for) and moves the highlight as a popup does (the
+ * arrows stop at the ends); a write ends in the persistent Done step (what was recorded and the core's own sentence; a refused write says so
+ * there), a refusal is a step of the popup with its reason under it, and the flow resolves with a notification only when nothing was written
+ * and nothing said so (`PRICING_NOT_RECORDED`).
  */
 import {
   createClient,
@@ -34,9 +40,11 @@ import {
   PRICING_CLOSE_LABEL,
   PRICING_DENY_LABEL,
   PRICING_EDIT_LABEL,
+  PRICING_FAILED,
   PRICING_MODEL_ID_FAULTS,
   PRICING_NOT_RECORDED,
   PRICING_OTHER_MODEL,
+  PRICING_REFUSED,
   PRICING_SET_ALLOW_LABEL,
   PRICING_SET_OWNERSHIP,
   pricingCardText,
@@ -152,6 +160,12 @@ function countingPort(entries: readonly ModelCatalogEntry[]) {
   return { port, commits, offers };
 }
 
+/** Where the rig's clock is when the flow's first frame is shown, once that frame has settled, and when the card is shown and answered. */
+const FIRST_SHOWN_AT = 1;
+const SETTLED_AT = 1000;
+const CARD_SHOWN_AT = 2000;
+const CARD_ANSWERED_AT = 12_000;
+
 /** The real channel with a clock the test moves, the form running, and the helpers that answer it as the host would. */
 function rig(
   entries: readonly ModelCatalogEntry[] = [
@@ -165,24 +179,32 @@ function rig(
   const counted = countingPort(entries);
   const result = runPricingCard({ flow: channel.flow, port: counted.port });
   const snap = () => channel.ui.getSnapshot();
+  /** The flow's opening guard counts from its FIRST framed frame: played as shown once, then the clock is past its settle. */
+  let opened = false;
 
   /** Wait for a prompt of `kind` whose message contains `text`. */
-  const until = (kind: 'select' | 'text' | 'chord', text?: string) =>
-    vi.waitFor(
+  const until = async (kind: 'select' | 'text' | 'chord', text?: string): Promise<void> => {
+    await vi.waitFor(
       () => {
         expect(snap().kind).toBe(kind);
         if (text !== undefined) expect(snap().message).toContain(text);
       },
       { timeout: WAIT_MS, interval: 5 },
     );
-  /** Pick the option labelled `labelText` in the open select, with the arrows, then Enter. */
+    if (opened) return;
+    opened = true;
+    now = FIRST_SHOWN_AT;
+    channel.ui.shown(snap());
+    now = SETTLED_AT;
+  };
+  /** Pick the option labelled `labelText` in the open select, with the arrows (in a popup they stop at the ends), then Enter. */
   const choose = (labelText: string): void => {
     const { options, selected } = snap();
     const target = options.findIndex((option) => option.label === labelText);
     if (target < 0)
       throw new Error(`no option "${labelText}" in ${options.map((o) => o.label).join(' | ')}`);
-    for (let at = selected; at !== target; at = (at + 1) % options.length)
-      channel.ui.input('', { ...none, downArrow: true });
+    const key: Key = target > selected ? { ...none, downArrow: true } : { ...none, upArrow: true };
+    for (let moves = Math.abs(target - selected); moves > 0; moves -= 1) channel.ui.input('', key);
     channel.ui.input('', enter);
   };
   const type = (text: string): void => {
@@ -195,9 +217,25 @@ function rig(
   /** The card is up: let it be painted and read, long enough that the guard accepts a chord. */
   const cardUp = async (): Promise<void> => {
     await until('chord');
-    now = 0;
+    now = CARD_SHOWN_AT;
     channel.ui.shown(snap());
-    now = 10_000;
+    now = CARD_ANSWERED_AT;
+  };
+  /** The refusal, where the card would have been: its reason is the line under it. */
+  const refusalUp = async (): Promise<string> => {
+    await until('select', PRICING_REFUSED);
+    return snap().details.join('\n');
+  };
+  /**
+   * The persistent Done step (ADR-0148 §6): what it said, its tone and its lines; then `Enter` closes it and the flow's result (the
+   * notification it asks the Home for: none, the step said it) is read.
+   */
+  const done = async () => {
+    await vi.waitFor(() => expect(snap().final).toBeDefined(), { timeout: WAIT_MS, interval: 5 });
+    const step = snap();
+    channel.ui.input('', enter);
+    const notification = await result;
+    return { message: step.message, lines: step.details, tone: step.final, step, notification };
   };
   /** Answer the first two questions: the action, then the model by its id. */
   const start = async (action: string, model: string): Promise<void> => {
@@ -223,6 +261,8 @@ function rig(
     type,
     escape,
     cardUp,
+    refusalUp,
+    done,
     start,
     fill,
     at: (ms: number) => (now = ms),
@@ -270,10 +310,10 @@ describe('the form asks one question per row of the field table', () => {
       r.type('');
     }
     // Nothing was given, so the core refuses: at least one price is needed. It is a sentence in the card's place.
-    await r.until('select', 'Not recorded.');
-    expect(r.snap().message).toContain('Set at least one price');
+    expect(await r.refusalUp()).toContain('Set at least one price');
+    expect(r.snap().popup?.stepIndex, 'on the Confirm step').toBe(3);
     r.choose(PRICING_CLOSE_LABEL);
-    expect(await r.result).toMatch(/^Not recorded\. Set at least one price/u);
+    expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
     expect(catalog.listAll()).toHaveLength(0);
   });
 
@@ -322,7 +362,7 @@ describe('the form asks one question per row of the field table', () => {
       }
       r.type('');
     }
-    await r.until('select', 'Not recorded.');
+    await r.refusalUp();
     r.choose(PRICING_CLOSE_LABEL);
     await r.result;
     expect(catalog.listAll()).toHaveLength(0);
@@ -344,6 +384,14 @@ describe('the card shows exactly what will be recorded, and whose override it is
     await r.cardUp();
     const card = r.snap();
     expect(card.kind).toBe('chord');
+    // the popup's Confirm step (ADR-0148 §1): `/pricing`, from the Home, step 4 of 5
+    expect(card.popup).toMatchObject({
+      title: '/pricing',
+      origin: 'home',
+      stepIndex: 3,
+      stepCount: 5,
+      stepNames: ['Action', 'Model', 'Rates', 'Confirm', 'Done'],
+    });
     expect(card.message).toBe("Record your price for 'gpt-5.5' under OpenAI?");
     expect(card.details).toEqual([
       'model       gpt-5.5 (OpenAI)',
@@ -381,9 +429,14 @@ describe('the card shows exactly what will be recorded, and whose override it is
     ).toBe(false);
     expect(r.snap().details).toContain('A price you left empty keeps what is stored now.');
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain(
+    const done = await r.done();
+    expect(done.message).toBe(
+      'Recorded · acme-custom-1 · input $0.12345679 per M, output $9 per M, video $0.5 per second',
+    );
+    expect(done.lines[0]).toContain(
       'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679 per M',
     );
+    expect(done.notification).toBeUndefined();
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
       input: row?.inputCostPerMtokMicrocents,
@@ -441,9 +494,11 @@ describe('the card shows exactly what will be recorded, and whose override it is
     ]);
     expect(rowsFor('gpt-5.5'), 'asking removes nothing').toHaveLength(1);
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
+    const done = await r.done();
+    expect(done.message).toBe('Removed · gpt-5.5');
+    expect(done.lines).toEqual([
       'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5 per M, output $30 per M.',
-    );
+    ]);
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
   });
@@ -451,16 +506,15 @@ describe('the card shows exactly what will be recorded, and whose override it is
   it('a CLEAR of a model with no override says so and asks for nothing', async () => {
     const r = rig();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
-    await r.until('select', 'Not recorded.');
-    expect(r.snap().message).toContain('has no user price to clear — nothing changed.');
+    expect(await r.refusalUp()).toBe(
+      'gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
+    );
     expect(
       r.snap().options.map((option) => option.label),
       'there is nothing to change',
     ).toEqual([PRICING_CLOSE_LABEL]);
     r.choose(PRICING_CLOSE_LABEL);
-    expect(await r.result).toBe(
-      'Not recorded. gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
-    );
+    expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
   });
 });
@@ -521,7 +575,8 @@ describe('the default is No', () => {
   });
 
   it('a signal that aborts while the card is open closes it as a No and writes nothing', async () => {
-    const channel = createNativePromptChannel({ now: () => 10_000 });
+    let now = 0;
+    const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
     const stop = new AbortController();
     // The Home's own flow hands its abort signal to the card: a Home that is closing aborts it.
@@ -546,6 +601,11 @@ describe('the default is No', () => {
         },
         { timeout: WAIT_MS, interval: 5 },
       );
+      if (now === 0) {
+        now = FIRST_SHOWN_AT;
+        channel.ui.shown(channel.ui.getSnapshot());
+        now = SETTLED_AT;
+      }
       act();
     };
     await drive('select', 'what do you want to do', () => channel.ui.input('', enter));
@@ -573,16 +633,21 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     const r = rig();
     await atCard(r);
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      'Set user pricing for acme-custom-1 (OpenAI): input $3 per M, output $9 per M. It applies to your next run/chat and survives a model refresh.',
-    );
+    await vi.waitFor(() => expect(r.snap().final).toBe('ok'), { timeout: WAIT_MS, interval: 5 });
     expect(r.commits).toHaveBeenCalledTimes(1);
     const [row] = rowsFor('acme-custom-1');
     expect(row?.source).toBe('user');
     expect(row?.inputCostPerMtokMicrocents).toBe(300_000_000);
     expect(row?.outputCostPerMtokMicrocents).toBe(900_000_000);
-    r.ui.input('y', ctrl); // a held key: there is no card to answer
+    r.ui.input('y', ctrl); // a held key: the Done step takes no chord, and there is no card to answer
     await Promise.resolve();
+    expect(r.snap().final, 'the Done step stays').toBe('ok');
+    const done = await r.done();
+    expect(done.message).toBe('Recorded · acme-custom-1 · input $3 per M, output $9 per M');
+    expect(done.lines).toEqual([
+      'Set user pricing for acme-custom-1 (OpenAI): input $3 per M, output $9 per M. It applies to your next run/chat and survives a model refresh.',
+    ]);
+    expect(done.step.popup?.stepIndex, 'the rail’s last step').toBe(4);
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(rowsFor('acme-custom-1')).toHaveLength(1);
     expect(r.snap().active).toBe(false);
@@ -593,16 +658,16 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ input: '3', output: '9' });
     await r.until('chord');
-    r.at(0);
+    r.at(CARD_SHOWN_AT);
     r.ui.shown(r.snap());
-    r.at(5); // the frame has just appeared
+    r.at(CARD_SHOWN_AT + 5); // the frame has just appeared
     r.ui.input('y', ctrl);
     expect(r.snap().kind, 'the card stays').toBe('chord');
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll()).toHaveLength(0);
     r.at(60_000);
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('Set user pricing');
+    expect((await r.done()).lines[0]).toContain('Set user pricing');
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
@@ -624,6 +689,11 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
         },
         { timeout: WAIT_MS, interval: 5 },
       );
+      if (now === 0) {
+        now = FIRST_SHOWN_AT;
+        channel.ui.shown(channel.ui.getSnapshot());
+        now = SETTLED_AT;
+      }
       keys();
     };
     await answer('select', 'what do you want to do', () => channel.ui.input('', enter));
@@ -638,7 +708,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
       timeout: WAIT_MS,
       interval: 5,
     });
-    now = 0;
+    now = CARD_SHOWN_AT;
     channel.ui.shown(channel.ui.getSnapshot());
     now = 60_000;
     channel.ui.input('y', ctrl);
@@ -654,9 +724,12 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await atCard(r);
     client.sqlite.pragma('query_only = ON');
     r.ui.input('y', ctrl);
-    const notice = await r.result;
+    const done = await r.done();
     client.sqlite.pragma('query_only = OFF');
-    expect(notice).toBe(`Not recorded. ${PRICING_WRITE_FAULT}`);
+    expect(done.tone).toBe('failed');
+    expect(done.message).toBe(PRICING_FAILED);
+    expect(done.lines).toEqual([PRICING_WRITE_FAULT]);
+    expect(done.notification).toBeUndefined();
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(catalog.listAll()).toHaveLength(0);
     expect(r.snap().active, 'the flow is ended').toBe(false);
@@ -678,10 +751,9 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
       outputCostPerMtokMicrocents: 200_000_000,
     });
     r.ui.input('y', ctrl);
-    const notice = await r.result;
-    expect(notice).toMatch(
-      /^Not recorded\. 'acme-custom-1' is already user-priced under 'deepseek'\./u,
-    );
+    const done = await r.done();
+    expect(done.tone).toBe('failed');
+    expect(done.lines[0]).toMatch(/^'acme-custom-1' is already user-priced under 'deepseek'\./u);
     expect(r.commits).toHaveBeenCalledTimes(1);
     const rows = rowsFor('acme-custom-1');
     expect(rows, 'the commit wrote no row of its own').toHaveLength(1);
@@ -695,10 +767,10 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ input: '3' });
-    await r.until('select', 'Not recorded.');
     // The output is missing; the form says so by label, never by flag.
-    expect(r.snap().message).toContain('Output price is missing');
-    expect(r.snap().message).not.toContain('--');
+    const reason = await r.refusalUp();
+    expect(reason).toContain('Output price is missing');
+    expect(reason).not.toContain('--');
     expect(r.snap().options.map((option) => option.label)).toEqual([
       PRICING_EDIT_LABEL,
       PRICING_CLOSE_LABEL,
@@ -710,7 +782,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     await r.cardUp();
     expect(r.snap().details).toContain('output      $9 per M');
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('input $3 per M, output $9 per M');
+    expect((await r.done()).message).toContain('input $3 per M, output $9 per M');
     expect(rowsFor('acme-custom-1')).toHaveLength(1);
   });
 
@@ -718,12 +790,9 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'gpt-5.5');
     await r.fill({ input: '3', image: '0.04' });
-    await r.until('select', 'Not recorded.');
-    expect(r.snap().message).toContain('Input price and Output price are set together');
+    expect(await r.refusalUp()).toContain('Input price and Output price are set together');
     r.choose(PRICING_CLOSE_LABEL);
-    expect(await r.result).toMatch(
-      /^Not recorded\. Input price and Output price are set together/u,
-    );
+    expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll()).toHaveLength(0);
   });
@@ -732,8 +801,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ image: '0.04' });
-    await r.until('select', 'Not recorded.');
-    expect(r.snap().message).toContain('has no token price');
+    expect(await r.refusalUp()).toContain('has no token price');
     r.choose(PRICING_CLOSE_LABEL);
     await r.result;
     expect(catalog.listAll()).toHaveLength(0);
@@ -768,8 +836,7 @@ describe('Esc steps back, and leaving the first question leaves the form', () =>
   it('a CLEAR does not ask for prices', async () => {
     const r = rig();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
-    await r.until('select', 'Not recorded.'); // no override: refused before any price is asked
-    expect(r.snap().message).not.toContain('Input price');
+    expect(await r.refusalUp()).not.toContain('Input price'); // no override: refused before any price is asked
     r.choose(PRICING_CLOSE_LABEL);
     await r.result;
   });
@@ -796,7 +863,7 @@ describe('a model the list does not show', () => {
     await r.cardUp();
     expect(r.snap().message).toBe("Record your price for 'house-model' under DeepSeek?");
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('Set user pricing for house-model (DeepSeek)');
+    expect((await r.done()).lines[0]).toContain('Set user pricing for house-model (DeepSeek)');
     expect(rowsFor('house-model')).toHaveLength(1);
   });
 
@@ -876,10 +943,9 @@ describe('a model the list does not show', () => {
     expect(options[1]?.label.replaceAll(String.fromCodePoint(0x200b), '')).toBe('gpt-5.5');
     r.ui.input('', enter);
     await r.fill({ input: '3', output: '9' });
-    await r.until('select', 'Not recorded.');
-    expect(r.snap().message).toContain(PRICING_MODEL_ID_FAULTS.invisible);
+    expect(await r.refusalUp()).toBe(PRICING_MODEL_ID_FAULTS.invisible);
     r.choose(PRICING_CLOSE_LABEL);
-    expect(await r.result).toBe(`Not recorded. ${PRICING_MODEL_ID_FAULTS.invisible}`);
+    expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll(), 'the decoy was not written as a row of its own').toHaveLength(0);
   });

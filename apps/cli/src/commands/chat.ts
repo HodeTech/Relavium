@@ -60,7 +60,14 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSessionToProject, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
+import {
+  exportedTarget,
+  exportSessionToProject,
+  prepareSessionExport,
+  SESSION_EXPORT_REVIEW_NOTICE,
+  SESSION_EXPORT_REVIEW_SENTENCE,
+  type ExportToProjectOptions,
+} from '../chat/export.js';
 import { sourceLabel } from '../process/source-label.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
@@ -2302,6 +2309,17 @@ export function createChatLineHandler(
   };
   /** Why a catalog scan failed, in the fault's own sanitized words as a transcript may carry them (never an absolute path). */
   const listFailureReason = (err: unknown): string => workflowListFailureReason(faultToShow(err));
+  /** What `/export` writes from, read now: THIS session, into the project the live config finds (the typed line and its popup alike). */
+  const projectExport = (): ExportToProjectOptions => {
+    const { projectConfigDir, homeDir } = readLiveConfig();
+    return {
+      store: opened.store,
+      sessionId: built.sessionId,
+      cwd: deps.global.cwd,
+      projectConfigDir,
+      homeDir,
+    };
+  };
   /**
    * Clear the held estimates of THIS session by the user's decision: the durable record, then the live governor, in that order and through
    * the one function the `/cost` popup's confirmed step calls too (ADR-0074 §1).
@@ -2337,14 +2355,7 @@ export function createChatLineHandler(
       try {
         // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
         // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
-        const { projectConfigDir, homeDir } = readLiveConfig();
-        const result = exportSessionToProject({
-          store: opened.store,
-          sessionId: built.sessionId,
-          cwd: deps.global.cwd,
-          projectConfigDir,
-          homeDir,
-        });
+        const result = exportSessionToProject(projectExport());
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;
         if (deps.global.json) {
@@ -2799,6 +2810,20 @@ export function createChatLineHandler(
             },
           },
           help: { keys: Object.values(CHAT_KEYS) },
+          // `/export` asks first (ADR-0148 §10, OD-10): where the scaffold would go, worked out and not written, then this session's own
+          // `/export` write at the answer, the file named project-relative and a fault in the product's words. Nothing reaches the transcript.
+          export: {
+            prepare: () => {
+              const { target, overwrites } = prepareSessionExport(projectExport());
+              return { target, overwrites };
+            },
+            commit: () => {
+              const options = projectExport();
+              return { target: exportedTarget(options, exportSessionToProject(options)) };
+            },
+            failure: (cause) => toUserFacing(faultToShow(cause)).message,
+            review: SESSION_EXPORT_REVIEW_SENTENCE,
+          },
         }
       : undefined,
     // The settings popups' members (ADR-0148 §3, §6): interactive only, where there is a popup host to open them on. Each applies through the

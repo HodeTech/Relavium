@@ -210,6 +210,10 @@ export const GlobalConfigSchema = z
           .strict()
           .optional(),
         keychain_unavailable_acknowledged: z.boolean().optional(),
+        // Operator-owned onboarding state (ADR-0112; ADR-0146 §6, ruled 2026-11-24): the person SKIPPED the first-run provider setup, so the
+        // Home does not open it by itself again (`/providers` and the keyless `Enter` still open it at any time). Written only by its own
+        // closed setter (`prepareFirstRunSetupSkipped`); it records the skip, never anything the person typed.
+        first_run_setup_skipped: z.boolean().optional(),
         theme: z.string().optional(),
         // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace

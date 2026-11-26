@@ -13,6 +13,9 @@ import { PROMPTS_RECORDERS } from './recorders/prompts.js';
 import { SHEETS_RECORDERS } from './recorders/sheets.js';
 import { TAB_HOST_RECORDERS } from './recorders/tab-host.js';
 import { POPUP_RECORDERS } from './recorders/popups.js';
+import { RESUME_RUN_RECORDERS } from './recorders/resume-run.js';
+import { PROJECT_FLOWS_RECORDERS } from './recorders/project-flows.js';
+import { PROVIDERS_FLOW_RECORDERS } from './recorders/providers-flow.js';
 
 /** One recorder per producer id: the join of every group's. */
 export const RECORDERS: Readonly<Record<string, Recorder>> = {
@@ -26,6 +29,9 @@ export const RECORDERS: Readonly<Record<string, Recorder>> = {
   ...PROMPTS_RECORDERS,
   ...HOME_HOST_RECORDERS,
   ...POPUP_RECORDERS,
+  ...RESUME_RUN_RECORDERS,
+  ...PROJECT_FLOWS_RECORDERS,
+  ...PROVIDERS_FLOW_RECORDERS,
 };
 
 /** Every producer driven through every state it has, in registry order: what `legend.golden.json` holds. */

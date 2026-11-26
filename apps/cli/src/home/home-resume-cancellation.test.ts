@@ -7,6 +7,7 @@ import { startMcpClient } from '@relavium/mcp';
 import { AgentSchema } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { buildResumedChatSession } from '../chat/session-host.js';
+import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import { createProviderResolver } from '../engine/providers.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
@@ -17,6 +18,13 @@ import { driveHome, type HomeDeps } from './drive-home.js';
 vi.mock('../secrets/os-keychain.js', () => ({
   createOsKeychainStore: () => ({ get: () => null, set: () => {}, delete: () => false }),
 }));
+/**
+ * `/resume` is a popup (ADR-0148 §1): its picker answers no `Enter` until the popup's opening settle has passed on screen, so the test waits that
+ * long, once, as a person's eyes do (the Home's channel runs on the real clock).
+ */
+const PAST_THE_OPENING_MS = POPUP_SELECT_SETTLE_MS + 100;
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 const key: Key = {
   upArrow: false,
   downArrow: false,
@@ -201,6 +209,9 @@ describe.each([false, true])(
             props = value;
             const native = value.nativePrompt;
             native?.bindVisibility((expected) => native.getSnapshot() === expected);
+            // The live host's acknowledgement: every frame the channel publishes is measured and flushed at once (a framed popup's opening
+            // guard starts at its first such frame).
+            native?.subscribe(() => native.shown(native.getSnapshot()));
             value.onRendererReady?.(async (publish) => {
               await publish?.();
             });
@@ -250,6 +261,14 @@ describe.each([false, true])(
             controller.handlePaste('/resume');
             controller.handleKey('', { return: true });
             await vi.waitFor(() => expect(props?.nativePrompt?.getSnapshot().kind).toBe('picker'));
+            // The picker is the `/resume` popup's first step: its frame names the command and the rail.
+            expect(props.nativePrompt?.getSnapshot().popup).toMatchObject({
+              title: '/resume',
+              origin: 'chat',
+              stepNames: ['Session', 'Restore'],
+              stepIndex: 0,
+            });
+            await pause(PAST_THE_OPENING_MS);
             props.nativePrompt?.paste('target saved');
             await vi.waitFor(() =>
               expect(

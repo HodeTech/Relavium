@@ -41,10 +41,14 @@ function scriptedLaunch() {
   const begin = vi.fn(() => new AbortController().signal);
   const end = vi.fn(() => Promise.resolve());
   const select = vi.fn(() => Promise.resolve(Symbol('cancel')));
+  // Every member the `/run` popup's frame wraps (`framedFlow` takes the whole channel flow and its chord card); none is called here.
   const flow = {
     begin,
     end,
     select,
+    cancel: vi.fn(),
+    pick: vi.fn(),
+    chord: vi.fn(),
     note: vi.fn(),
     busy: vi.fn(),
     text: vi.fn(),
@@ -79,24 +83,25 @@ function mount(opts: { launch?: () => Promise<string>; withChat?: boolean } = {}
     stopReason: () => 'exit',
     teardown: () => Promise.resolve(),
   };
+  // The Home's one notification channel: what `/run` says (ADR-0148 §6), never the Home's notice.
+  const announced: string[] = [];
   const controller = createHomeController({
     ...(opts.launch === undefined ? {} : { launchRun: opts.launch }),
     startChat: () => Promise.resolve(session),
     homeStore: { read: () => EMPTY },
+    announce: (text) => announced.push(text),
     onExit: vi.fn(),
     onError: (cause) => {
       throw cause;
     },
   });
-  return { controller, lines, store };
+  return { controller, lines, store, announced };
 }
 
 describe('/run on the bare Home', () => {
-  it('opens the launch flow, clears the composer and shows the notice it resolves with', async () => {
-    const launchRun = vi.fn(() =>
-      Promise.resolve('Started w as run r-1. It runs in the background.'),
-    );
-    const { controller } = mount({ launch: launchRun });
+  it('opens the launch flow, clears the composer and says what it resolves with in one notification', async () => {
+    const launchRun = vi.fn(() => Promise.resolve('Started w · run r-1'));
+    const { controller, announced } = mount({ launch: launchRun });
     controller.handlePaste('/run');
     controller.handleKey('', ENTER);
     expect(launchRun).toHaveBeenCalledTimes(1);
@@ -106,22 +111,22 @@ describe('/run on the bare Home', () => {
       'the composer is held while the flow is open',
     ).toBe(true);
     await flush();
-    expect(controller.getSnapshot().notice).toBe(
-      'Started w as run r-1. It runs in the background.',
-    );
+    expect(announced).toEqual(['Started w · run r-1']);
+    expect(controller.getSnapshot().notice, 'nothing in the Home`s notice').toBeUndefined();
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
   });
 
   it('is opened by the palette too', async () => {
     const launchRun = vi.fn(() => Promise.resolve('done'));
-    const { controller } = mount({ launch: launchRun });
+    const { controller, announced } = mount({ launch: launchRun });
     controller.handleKey('/', {}); // an empty prompt: the palette opens
     expect(controller.getSnapshot().palette).toBeDefined();
     type(controller, 'run');
     controller.handleKey('', ENTER);
     await flush();
     expect(launchRun).toHaveBeenCalledTimes(1);
-    expect(controller.getSnapshot().notice).toBe('done');
+    expect(announced).toEqual(['done']);
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('takes no argument', () => {
@@ -133,13 +138,21 @@ describe('/run on the bare Home', () => {
     expect(controller.getSnapshot().notice).toContain('accepts no arguments');
   });
 
-  it('says it is unavailable when no launch is wired', () => {
-    const { controller } = mount();
+  it('says it is unavailable when no launch is wired, in one notification', () => {
+    const { controller, announced } = mount();
     controller.handlePaste('/run');
     controller.handleKey('', ENTER);
-    expect(controller.getSnapshot().notice).toBe(
-      'Running a workflow is unavailable in this session.',
-    );
+    expect(announced).toEqual(['Running a workflow is unavailable in this session.']);
+    expect(controller.getSnapshot().notice).toBeUndefined();
+  });
+
+  it('a popup that said it all (an empty answer) adds no notification', async () => {
+    const { controller, announced } = mount({ launch: () => Promise.resolve('') });
+    controller.handlePaste('/run');
+    controller.handleKey('', ENTER);
+    await flush();
+    expect(announced).toEqual([]);
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('a fault in the flow becomes a notice, not a crash', async () => {

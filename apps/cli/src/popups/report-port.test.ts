@@ -70,6 +70,8 @@ describe('REPORTS: one table for the line, the availability and the opener', () 
       ['cost', '/cost', true],
       ['workflows', '/workflows', false],
       ['help', '/help', false],
+      // `/export`'s confirmation popup (ADR-0148 §10, MVP-11 unit 6): routed and opened as the reports are
+      ['export', '/export', false],
     ]);
   });
 
@@ -86,6 +88,12 @@ describe('REPORTS: one table for the line, the availability and the opener', () 
         cost: { read: () => new Promise(() => undefined), release: vi.fn() },
         workflows: { read: () => new Promise(() => undefined) },
         help: { keys: [] },
+        export: {
+          prepare: () => ({ target: '.relavium/workflows/hello.relavium.yaml', overwrites: false }),
+          commit: () => ({ target: '.relavium/workflows/hello.relavium.yaml' }),
+          failure: () => 'unused',
+          review: 'unused',
+        },
       };
       const opened = r.open(port, { kind });
       expect(opened.opened).toBe(true);

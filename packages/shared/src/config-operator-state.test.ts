@@ -31,4 +31,15 @@ describe('global operator state', () => {
         .success,
     ).toBe(false);
   });
+
+  it('accepts the remembered first-run skip as a boolean only (ADR-0146 §6), never a string or a value of the person', () => {
+    for (const value of [true, false])
+      expect(
+        GlobalConfigSchema.safeParse({ preferences: { first_run_setup_skipped: value } }).success,
+      ).toBe(true);
+    for (const value of ['true', 1, 'sk-ant-api03-not-a-key', { skipped: true }, null])
+      expect(
+        GlobalConfigSchema.safeParse({ preferences: { first_run_setup_skipped: value } }).success,
+      ).toBe(false);
+  });
 });

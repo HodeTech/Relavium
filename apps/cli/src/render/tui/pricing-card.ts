@@ -7,7 +7,9 @@ import {
   type PricingField,
   type PricingFieldId,
 } from '../../commands/pricing-fields.js';
+import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
+import { flowText } from './flow-text.js';
 import {
   NATIVE_PROMPT_BACK,
   type NativeChordPort,
@@ -17,9 +19,11 @@ import { clipLine } from './sheet-frame.js';
 
 /**
  * The pricing form of the Home — `/pricing`, the palette's name for `relavium models pricing`
- * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §9, MVP-8 step 5).
- * It is a MONEY-FLOOR write: a price stored here outranks the catalog's for every later run and chat on this machine, so the form is
- * built to be unable to record anything the person did not see.
+ * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §9, MVP-8 step 5),
+ * drawn as a popup ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1, §3, §6)
+ * whose rail is `Action · Model · Rates · Confirm · Done` (every price prompt sits on `Rates`; a clear passes it by). It is a MONEY-FLOOR
+ * write: a price stored here outranks the catalog's for every later run and chat on this machine, so the form is built to be unable to
+ * record anything the person did not see.
  *
  * - **Its fields are the shell's.** After the first choice (`Set a price` or `Clear the override`) and the model, there is one prompt per
  *   row of the field table the shell's parser and core read (`commands/pricing-fields.ts`): a test walks that table, so the form cannot
@@ -33,11 +37,19 @@ import { clipLine } from './sheet-frame.js';
  * - **A refusal is a sentence, never a crash.** The pairing rule (input and output are set together, or not at all) and every other
  *   refusal of the core comes back as text in the card's place, with a way to change the prices or to close it; nothing is written. A
  *   write the database refuses is a fixed sentence.
+ * - **The result is the Done step** (§6): what was recorded (or removed) and the rates, closed by `Enter` or `Esc`; a write the database
+ *   refused says so there. Nothing goes to the Home's notice: leaving with nothing written is one notification, the sentence
+ *   {@link runPricingCard} resolves with.
  *
- * Every string passes the channel's sanitize floor again; the bounds here keep the card inside 80×24.
+ * **Every string a model, a provider or the core supplied passes the full scrub ({@link flowText}) before it reaches the channel**, and a
+ * model id that the scrub would change is refused before the card asks (the card shows the id that is stored, or none); the bounds here
+ * keep the popup inside 80×24.
  */
 
-/** One model the picker offers: what is recorded under (`modelId`, `provider`), and the hint that tells the person what it costs now. */
+/**
+ * One model the picker offers: what is recorded under (`modelId`, `provider`), and the hint that tells the person what it costs now (display
+ * text the port composed from a known provider's display name and its own words; its ` · ` is the product's).
+ */
 export interface PricingModelChoice {
   readonly modelId: string;
   readonly provider: string;
@@ -113,8 +125,14 @@ export const PRICING_CLEAR_ALLOW_LABEL = 'Remove the override';
 export const PRICING_DENY_LABEL = 'Write nothing';
 export const PRICING_CLOSE_LABEL = 'Close';
 export const PRICING_EDIT_LABEL = 'Change the prices';
-/** What the Home says when the card was answered with anything but a Yes, or the form was left. */
+/** The notification when the card was answered with anything but a Yes, or the form was left. */
 export const PRICING_NOT_RECORDED = 'Nothing was written.';
+/** What the Done step says when the write itself was refused. */
+export const PRICING_FAILED = 'Not recorded.';
+export const PRICING_TITLE = '/pricing';
+export const PRICING_STEPS = ['Action', 'Model', 'Rates', 'Confirm', 'Done'] as const;
+/** The rail's step of each prompt of the form (the Done step is the rail's last). */
+const RAIL = { action: 0, model: 1, rates: 2, confirm: 3 } as const;
 /** The ownership sentence of a SET: the override is the operator's, on this machine, and it outranks the catalog. */
 export const PRICING_SET_OWNERSHIP =
   "This override belongs to this machine's operator: it is stored here and outranks the catalog price for this model.";
@@ -141,8 +159,8 @@ export interface PricingCardText {
 
 /** The card's words for one offer: the question, exactly what is recorded (or removed), and whose override it is. */
 export function pricingCardText(offer: PricingOffer): PricingCardText {
-  const model = clipLine(offer.model, MODEL_COLUMNS);
-  const provider = offer.providerName ?? offer.provider;
+  const model = clipLine(flowText(offer.model), MODEL_COLUMNS);
+  const provider = flowText(offer.providerName ?? offer.provider);
   const target = `${model} (${provider})`;
   if (offer.kind === 'clear') {
     return {
@@ -172,8 +190,24 @@ export function pricingCardText(offer: PricingOffer): PricingCardText {
   };
 }
 
-/** What the Home shows for a refusal. The reason is the prepare's or the commit's own sentence. */
-export const pricingRefused = (reason: string): string => `Not recorded. ${reason}`;
+/** What the refusal step says above the reason (the prepare's own sentence, which says why): a set and a clear alike changed nothing. */
+export const PRICING_REFUSED = 'Nothing was changed.';
+
+/** What the Done step says for a write that was made: what was recorded (or removed) and the rates, and the core's own sentence under it. */
+export function pricingDoneText(
+  offer: PricingOffer,
+  written: string,
+): { readonly message: string; readonly lines: readonly string[] } {
+  const model = clipLine(flowText(offer.model), MODEL_COLUMNS);
+  const rates = offer.prices.map((price) => `${price.id} ${price.amount}`).join(', ');
+  return {
+    message:
+      offer.kind === 'clear'
+        ? `Removed · ${model}`
+        : `Recorded · ${model}${rates === '' ? '' : ` · ${rates}`}`,
+    lines: [clipLine(flowText(written), REASON_COLUMNS)],
+  };
+}
 
 /** The prompt for one field, generated from its row of the field table. */
 export function pricingFieldMessage(field: PricingField, model: string): string {
@@ -182,7 +216,7 @@ export function pricingFieldMessage(field: PricingField, model: string): string 
     mate === undefined
       ? ''
       : ` Set together with the ${mate.label.toLowerCase()}, or leave both empty.`;
-  return `${field.label} for '${clipLine(model, MODEL_COLUMNS)}', ${field.unitWords}. Empty: not set.${together}`;
+  return `${field.label} for '${clipLine(flowText(model), MODEL_COLUMNS)}', ${field.unitWords}. Empty: not set.${together}`;
 }
 
 /** Why the card cannot state a model id as it is stored. */
@@ -197,13 +231,15 @@ export type PricingModelIdFault = ModelIdFault | 'too-long' | 'unsafe';
  *   the card's quotes (so `gpt-5` and `gpt-5 ` would read the same).
  * - `too-long`: more than {@link PRICING_MODEL_ID_LIMIT} code units, or more columns than the card gives the id
  *   ({@link MODEL_COLUMNS}). The card shows the id in full or not at all: it never cuts it short with an ellipsis.
- * - `unsafe`: the sanitizer would change it (a control byte, a bidirectional override, a key-shaped string).
+ * - `unsafe`: the sanitizer or the popup's full scrub would change it (a control byte, a bidirectional override, a key-shaped string, a
+ *   compatibility form, a host glyph, a chord or a legend token): the popup draws every id through that scrub ({@link flowText}), so an id it
+ *   would draw otherwise than it is stored cannot be priced from here.
  */
 export function pricingModelIdFault(id: string): PricingModelIdFault | undefined {
   const shared = modelIdFault(id);
   if (shared !== undefined) return shared;
   if (id.length > PRICING_MODEL_ID_LIMIT || clipLine(id, MODEL_COLUMNS) !== id) return 'too-long';
-  if (sanitizeUntrustedInline(id) !== id) return 'unsafe';
+  if (sanitizeUntrustedInline(id) !== id || flowText(id) !== id) return 'unsafe';
   return undefined;
 }
 
@@ -227,9 +263,8 @@ export function pricingModelIdIssue(value: string): string | undefined {
 }
 
 export interface PricingCardDeps {
-  /** The Home's native prompt flow: its select and text for the questions, its chord card for the last one. */
-  readonly flow: Pick<NativePromptFlow, 'begin' | 'end' | 'note' | 'select' | 'text'> &
-    NativeChordPort;
+  /** The Home's native prompt flow: framed here as the `/pricing` popup (its selects and text fields, its chord card, its Done step). */
+  readonly flow: NativePromptFlow & NativeChordPort;
   readonly port: PricingPort;
   /** Throws when the Home is closing; called before anything is read or asked. */
   readonly assertAdmitting?: (() => void) | undefined;
@@ -252,14 +287,16 @@ interface Step {
 const awayFrom = (answer: symbol): 'back' | 'stop' =>
   answer === NATIVE_PROMPT_BACK ? 'back' : 'stop';
 
-/** The steps of the form, in order. The per-field steps are one per row of the field table. */
-function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]): readonly Step[] {
-  const { flow, port } = deps;
-
+/** The steps of the form, in order, each asked on its step of the rail. The per-field steps are one per row of the field table. */
+function stepsOf(
+  flow: FramedChordFlow,
+  port: PricingPort,
+  choices: readonly PricingModelChoice[],
+): readonly Step[] {
   const action: Step = {
     applies: () => true,
     run: async (draft) => {
-      const answer = await flow.select({
+      const answer = await flow.at(RAIL.action).select({
         message: 'Model pricing: what do you want to do?',
         options: [
           { value: 'set', label: PRICING_ACTION_SET, hint: 'record your own price for a model' },
@@ -282,8 +319,9 @@ function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]):
 
   /** A model id typed by hand, then the provider that serves it; `Esc` at the provider asks for the id again. */
   const askOther = async (): Promise<PricingTarget | 'back' | 'stop'> => {
+    const on = flow.at(RAIL.model);
     for (;;) {
-      const id = await flow.text({
+      const id = await on.text({
         message: 'Model id',
         validate: pricingModelIdIssue,
         escape: 'back',
@@ -294,9 +332,12 @@ function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]):
         flow.note('No provider is registered yet. Connect one with /providers.', 'Price');
         return 'back';
       }
-      const provider = await flow.select({
-        message: `Which provider serves '${clipLine(id.trim(), MODEL_COLUMNS)}'?`,
-        options: slugs.map((slug) => ({ value: slug, label: port.providerName?.(slug) ?? slug })),
+      const provider = await on.select({
+        message: `Which provider serves '${clipLine(flowText(id.trim()), MODEL_COLUMNS)}'?`,
+        options: slugs.map((slug) => ({
+          value: slug,
+          label: flowText(port.providerName?.(slug) ?? slug),
+        })),
         escape: 'back',
       });
       if (typeof provider !== 'string') {
@@ -311,12 +352,13 @@ function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]):
     applies: () => true,
     run: async (draft) => {
       for (;;) {
-        const answer = await flow.select({
+        const answer = await flow.at(RAIL.model).select({
           message: 'Which model?',
           options: [
             ...choices.map((choice, index) => ({
               value: String(index),
-              label: clipLine(choice.modelId, MODEL_COLUMNS),
+              label: clipLine(flowText(choice.modelId), MODEL_COLUMNS),
+              // the port's display text: a known provider's display name and the port's own words, its separator the product's own
               hint: clipLine(choice.hint, HINT_COLUMNS),
             })),
             {
@@ -347,7 +389,7 @@ function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]):
     (field): Step => ({
       applies: (draft) => draft.action === 'set',
       run: async (draft) => {
-        const answer = await flow.text({
+        const answer = await flow.at(RAIL.rates).text({
           message: pricingFieldMessage(field, draft.target?.modelId ?? ''),
           validate: (value) => priceTextIssue(field, value),
           escape: 'back',
@@ -385,14 +427,18 @@ async function walk(
   return index < 0 ? 'stopped' : 'done';
 }
 
-/** The refusal where the card would have been: the reason, and the ways out. Resolves `true` when the person wants to change the prices. */
+/**
+ * The refusal where the card would have been, on the rail's Confirm step: the reason, and the ways out. Resolves `true` when the person wants
+ * to change the prices. Whatever closes it writes nothing.
+ */
 async function showRefusal(
-  deps: PricingCardDeps,
+  flow: FramedChordFlow,
   reason: string,
   canEdit: boolean,
 ): Promise<boolean> {
-  const answer = await deps.flow.select({
-    message: pricingRefused(clipLine(reason, REASON_COLUMNS)),
+  const answer = await flow.at(RAIL.confirm).select({
+    message: PRICING_REFUSED,
+    details: [clipLine(flowText(reason), REASON_COLUMNS)],
     options: [
       ...(canEdit ? [{ value: 'edit', label: PRICING_EDIT_LABEL }] : []),
       { value: 'close', label: PRICING_CLOSE_LABEL },
@@ -410,19 +456,27 @@ function valuesOf(action: 'set' | 'clear', draft: Draft): PricingValues {
 }
 
 /**
- * Show the card of a prepared plan and write it only on a Yes. The default is No: only an `allow` the chord guard let through is a Yes,
- * never "anything that is not a `deny`".
+ * Show the card of a prepared plan and write it only on a Yes, then end in the Done step. The default is No: only an `allow` the chord
+ * guard let through is a Yes, never "anything that is not a `deny`". Resolves with the notification for a No, else `undefined`.
  */
 async function confirmAndCommit(
-  deps: PricingCardDeps,
+  flow: FramedChordFlow,
   prepared: Extract<PricingPrepared, { readonly ok: true }>,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | undefined> {
   const text = pricingCardText(prepared.offer);
-  const answer = await deps.flow.chord({ ...text, escape: 'cancel', signal });
+  const answer = await flow.at(RAIL.confirm).chord({ ...text, escape: 'cancel', signal });
   if (answer !== 'allow') return PRICING_NOT_RECORDED;
   const attempt = prepared.commit();
-  return attempt.ok ? attempt.written : pricingRefused(attempt.reason);
+  if (attempt.ok) await flow.done(pricingDoneText(prepared.offer, attempt.written));
+  else
+    await flow.done({
+      message: PRICING_FAILED,
+      lines: [clipLine(flowText(attempt.reason), REASON_COLUMNS)],
+      label: PRICING_CLOSE_LABEL,
+      tone: 'failed',
+    });
+  return undefined;
 }
 
 /**
@@ -430,10 +484,11 @@ async function confirmAndCommit(
  * price's step) until the person writes, declines or leaves.
  */
 async function askAndWrite(
-  deps: PricingCardDeps,
+  flow: FramedChordFlow,
+  port: PricingPort,
   steps: readonly Step[],
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | undefined> {
   const draft: Draft = { action: undefined, target: undefined, prices: new Map() };
   // The first field's step: where a person who is refused returns to change the prices.
   const firstField = steps.length - PRICING_FIELDS.length;
@@ -442,25 +497,32 @@ async function askAndWrite(
     if ((await walk(steps, draft, from)) === 'stopped') return PRICING_NOT_RECORDED;
     const { action, target } = draft;
     if (action === undefined || target === undefined) return PRICING_NOT_RECORDED;
-    const prepared = deps.port.prepare(target, valuesOf(action, draft));
-    if (prepared.ok) return confirmAndCommit(deps, prepared, signal);
-    if (!(await showRefusal(deps, prepared.reason, action === 'set')))
-      return pricingRefused(prepared.reason);
+    const prepared = port.prepare(target, valuesOf(action, draft));
+    if (prepared.ok) return confirmAndCommit(flow, prepared, signal);
+    // The refusal was read where it was shown: closing it leaves nothing more to say.
+    if (!(await showRefusal(flow, prepared.reason, action === 'set'))) return undefined;
     from = firstField;
   }
 }
 
 /**
- * Ask what to price, prepare the plan, show it, and write it only on a Yes. Resolves with the sentence the Home shows; a refusal and a
- * No are sentences, not faults. The flow is begun here and ended here, whatever the answer.
+ * Ask what to price, prepare the plan, show it, and write it only on a Yes. Resolves with the ONE notification the Home shows (nothing was
+ * written: a No, an `Esc`, a cancel), or `undefined` when the popup itself said what happened (the Done step, a refusal). The flow is begun
+ * here and ended here, whatever the answer.
  */
-export async function runPricingCard(deps: PricingCardDeps): Promise<string> {
+export async function runPricingCard(deps: PricingCardDeps): Promise<string | undefined> {
   deps.assertAdmitting?.();
   const choices = deps.port.models();
-  const signal = deps.flow.begin();
+  const flow = framedFlow(deps.flow, {
+    title: PRICING_TITLE,
+    origin: 'home',
+    stepNames: PRICING_STEPS,
+    progress: 'manual',
+  });
+  const signal = flow.begin();
   try {
-    return await askAndWrite(deps, stepsOf(deps, choices), signal);
+    return await askAndWrite(flow, deps.port, stepsOf(flow, deps.port, choices), signal);
   } finally {
-    await deps.flow.end();
+    await flow.end();
   }
 }

@@ -948,7 +948,9 @@ describe('the id on the card is the id that is stored', () => {
     const narrow = `a${String.fromCodePoint(0x301).repeat(300)}`;
     expect(narrow).toHaveLength(301);
     expect(refused(narrow, { input: '3', output: '9' })).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
-    const edge = `a${String.fromCodePoint(0x301).repeat(199)}`;
+    // `q`, not `a`: the popup's full scrub folds `a` and the acute to `á`, so that id would be drawn otherwise than it is stored and is refused
+    // as `unsafe` before the bound is reached (MVP-11 unit 6, 6.3); `q` has no composed form and the scrub keeps it as written.
+    const edge = `q${String.fromCodePoint(0x301).repeat(199)}`;
     expect(edge).toHaveLength(200);
     expect(
       port.prepare(

@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 
 import {
   MAX_SOURCE_CHARS,
@@ -42,9 +42,15 @@ import { takenWorkflowIds } from '../workflows/catalog.js';
  * summaries, trimming and omitted context may not transfer into its executable nodes.
  */
 
+/** What every export says the scaffold is and what to review before committing it: written once, for the notice and the popup. */
+const SESSION_EXPORT_REVIEW =
+  'exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing. Historical agent snapshots may require edits to pass current validation before running.';
+
 /** Fixed, value-free successful-export notice: interactive transcript or plain/JSON stderr. */
-export const SESSION_EXPORT_REVIEW_NOTICE =
-  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing. Historical agent snapshots may require edits to pass current validation before running.\n';
+export const SESSION_EXPORT_REVIEW_NOTICE = `note: ${SESSION_EXPORT_REVIEW}\n`;
+
+/** The same words as a sentence of their own, as the in-chat `/export` popup shows them above its answer (ADR-0148 §10). */
+export const SESSION_EXPORT_REVIEW_SENTENCE = `${SESSION_EXPORT_REVIEW.charAt(0).toUpperCase()}${SESSION_EXPORT_REVIEW.slice(1)}`;
 
 export interface ExportSessionOptions {
   readonly store: SessionStore;
@@ -145,30 +151,8 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * project's own spelling.
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
-  const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
-  const dir = join(root, 'workflows');
-  assertProjectArtifactPath(dir, opts.homeDir);
-  const loaded = loadSession(opts.store, opts.sessionId);
-  const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
-  const base = scaffold.workflow.id;
-  const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>
-    index === 0 ? base : `${base}-${String(index + 1)}`,
-  );
-  // The id becomes a file name: refuse anything that is not a kebab id, whatever the scaffold produced.
-  if (!WORKFLOW_ID_GRAMMAR.test(base)) {
-    throw new CliError('cli_internal', 'the export produced an unusable workflow id');
-  }
-  // The catalog scan comes first: it also refuses a workflows directory that resolves outside the project, which
-  // the own-export rewrite below must not write into either.
-  const taken =
-    opts.projectConfigDir === undefined
-      ? new Set<string>()
-      : takenWorkflowIds(opts.projectConfigDir, opts.cwd, opts.homeDir);
-  // The canonical directory the writes go through, and the guard that holds them to it.
-  const realDir = dirname(
-    confineToProjectConfig(root, join(dir, `${base}.relavium.yaml`), relative(opts.cwd, dir))
-      .writeTarget,
-  );
+  const { dir, realDir, scaffold, loaded, candidates, taken, base } = planProjectExport(opts);
+  // The guard that holds the writes to the canonical directory.
   const guard = pinnedDirectoryGuard(realDir);
   for (const id of candidates) {
     const path = join(dir, `${id}.relavium.yaml`);
@@ -201,9 +185,126 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
       return exportResult(path, definition, loaded);
     }
   }
-  throw new CliError(
+  throw noFreeWorkflowId(base);
+}
+
+/** The refusal when every id near `base` is taken: the write and its preview say it in the same words. */
+function noFreeWorkflowId(base: string): CliError {
+  return new CliError(
     'invalid_invocation',
     `no free workflow id near '${base}' in the project's workflows/ — rename or move some of those workflow files, then run /export again`,
+  );
+}
+
+/** What a project export decides before it writes: where, from which scaffold, and which ids are already taken. */
+interface ProjectExportPlan {
+  /** The `.relavium/` directory the export goes under (absent ⇒ the working directory's, created by the write). */
+  readonly root: string;
+  /** `<root>/workflows`, as the project spells it: the path the result and the labels name. */
+  readonly dir: string;
+  /** The canonical `workflows` directory every file operation names. */
+  readonly realDir: string;
+  readonly scaffold: WorkflowDefinition;
+  readonly loaded: {
+    readonly session: AgentSessionRecord;
+    readonly messages: readonly SessionMessage[];
+  };
+  readonly base: string;
+  /** `<base>`, `<base>-2`, …, in the order they are tried. */
+  readonly candidates: readonly string[];
+  /** The ids a catalog entry or a file stem already holds. */
+  readonly taken: ReadonlySet<string>;
+}
+
+/**
+ * Everything {@link exportSessionToProject} works out before it writes, in the same order and with the same refusals: the directories, the
+ * session and its scaffold, the ids to try and the ids taken. Shared with {@link prepareSessionExport}, so the preview and the write cannot
+ * decide differently from the same disk.
+ */
+function planProjectExport(opts: ExportToProjectOptions): ProjectExportPlan {
+  const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
+  const dir = join(root, 'workflows');
+  assertProjectArtifactPath(dir, opts.homeDir);
+  const loaded = loadSession(opts.store, opts.sessionId);
+  const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
+  const base = scaffold.workflow.id;
+  const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>
+    index === 0 ? base : `${base}-${String(index + 1)}`,
+  );
+  // The id becomes a file name: refuse anything that is not a kebab id, whatever the scaffold produced.
+  if (!WORKFLOW_ID_GRAMMAR.test(base)) {
+    throw new CliError('cli_internal', 'the export produced an unusable workflow id');
+  }
+  // The catalog scan comes first: it also refuses a workflows directory that resolves outside the project, which
+  // the own-export rewrite must not write into either.
+  const taken =
+    opts.projectConfigDir === undefined
+      ? new Set<string>()
+      : takenWorkflowIds(opts.projectConfigDir, opts.cwd, opts.homeDir);
+  // The canonical directory the writes go through.
+  const realDir = dirname(
+    confineToProjectConfig(root, join(dir, `${base}.relavium.yaml`), relative(opts.cwd, dir))
+      .writeTarget,
+  );
+  return { root, dir, realDir, scaffold, loaded, base, candidates, taken };
+}
+
+/** What an in-chat `/export` would write, worked out and NOT written ({@link prepareSessionExport}). */
+export interface SessionExportPreview {
+  /** The file, relative to the project's root (`.relavium/workflows/<id>.relavium.yaml`). */
+  readonly target: string;
+  /** The workflow id the file would hold. */
+  readonly workflowId: string;
+  /** Whether the write rewrites this session's own earlier export (the one overwrite `/export` makes), or creates a new file. */
+  readonly overwrites: boolean;
+}
+
+/** `path` relative to the project's root (the directory that holds `root`, the `.relavium/` directory), with `/` between its parts. */
+function projectRelativeOf(root: string, path: string): string {
+  return relative(dirname(root), path).split(sep).join('/');
+}
+
+/** Whether something already sits at `path` (a file, a link, a directory): the write's `wx` would refuse it and move on to the next id. */
+function occupied(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    // Nothing there, or nothing that can be looked at: the write is tried there and says itself what is wrong.
+    return false;
+  }
+}
+
+/**
+ * What {@link exportSessionToProject} would write NOW, without writing anything: the file it would create, or this session's own earlier
+ * export that it would rewrite (MVP-11 OD-10, ADR-0148 §10: the in-chat `/export` asks first and names its target). The same plan and the
+ * same order of candidates as the write: the first candidate that holds this session's own export is rewritten; otherwise the first id no
+ * catalog entry, file stem or file already holds is created. It throws what the write would throw before writing (no project directory, an
+ * unknown session, no free id). A preview is evidence of the disk at the moment it was taken, so a caller that writes later asks again.
+ */
+export function prepareSessionExport(opts: ExportToProjectOptions): SessionExportPreview {
+  const { root, dir, realDir, candidates, taken, base } = planProjectExport(opts);
+  const preview = (id: string, overwrites: boolean): SessionExportPreview => ({
+    target: projectRelativeOf(root, join(dir, `${id}.relavium.yaml`)),
+    workflowId: id,
+    overwrites,
+  });
+  for (const id of candidates) {
+    if (ownExport(join(realDir, `${id}.relavium.yaml`), opts.sessionId) !== undefined)
+      return preview(id, true);
+  }
+  for (const id of candidates) {
+    if (taken.has(id) || isWindowsDeviceName(id)) continue;
+    if (!occupied(join(realDir, `${id}.relavium.yaml`))) return preview(id, false);
+  }
+  throw noFreeWorkflowId(base);
+}
+
+/** The file an in-chat `/export` wrote, relative to the project's root: what its popup's Done step names. */
+export function exportedTarget(opts: ExportToProjectOptions, result: ExportResult): string {
+  return projectRelativeOf(
+    resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir),
+    result.path,
   );
 }
 

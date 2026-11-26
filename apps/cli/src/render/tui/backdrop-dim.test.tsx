@@ -394,6 +394,8 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
 // `/workflows` and `/help`, the settings `/effort`, `/mode`, `/models` and `/permissions`, and the test layer's form and effect list) draws the frame its host has open, and the
 // matrix's own backdrop property checks every cell of it (`checkBackdropDim`, run in every alternate-screen colour cell). So does each framed
 // native prompt of the matrix (`.native-popup-*`: a field, a wait or a chord step has no selected row for the check below to find).
+const FRAMED_FLOW_SURFACE =
+  /^home\.(provider-|native-|init-|import-|export-|pricing-|resume-|run-launch)/u;
 const POPUP_SURFACES = ALL_SURFACES.filter(
   (surface) =>
     surface.popup !== undefined &&
@@ -401,7 +403,11 @@ const POPUP_SURFACES = ALL_SURFACES.filter(
     !surface.id.includes('.report-') &&
     !surface.id.includes('.settings-') &&
     !surface.id.includes('.permissions-') &&
-    !surface.id.includes('.native-popup-'),
+    !surface.id.includes('.native-popup-') &&
+    !surface.id.includes('.export-confirm') &&
+    // The flows of unit 6 are framed native prompts too (a field, a wait, a chord step or a Done step): their box is where the live flow
+    // draws it, so it exists only while a surface has the flow open, and the matrix's own backdrop check covers every cell of each.
+    !FRAMED_FLOW_SURFACE.test(surface.id),
 );
 
 /** Where the popup of `entry` is drawn in `ALT`, and the cells inside it. */

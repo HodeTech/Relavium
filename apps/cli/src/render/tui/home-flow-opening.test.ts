@@ -1,0 +1,137 @@
+/**
+ * The Home's half of the flows that write (MVP-11 unit 6, 6.3; ADR-0148 §3, §6): the key that opens `/init`, `/import`, `/pricing` or the
+ * Defined tab's `x` export is stamped as a RESOLUTION on the Home's one key history before the flow opens, so a flow whose first prompt is its
+ * `Ctrl+Y` card is armed against it (the run-function half, a held key that never answers, is `home-flow-popups.test.ts`); and what the flow
+ * resolves with is one notification on the Home's channel, never the Home's notice or a transcript line.
+ *
+ * The controller is real; each flow is a spy that stays open, so the stamp is read at the moment the flow begins.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import { buildDefinedModel } from '../../history/defined-model.js';
+import type { HomeSnapshot } from '../../home/home-store.js';
+import { createChordHistory } from './chord-guard.js';
+import { createHomeController, type HomeControllerDeps } from './home-controller.js';
+import type { DefinedPort } from './tab-host-workflows.js';
+
+const EMPTY: HomeSnapshot = {
+  attention: { gates: [], failedRuns: [] },
+  recentSessions: [],
+  recentRuns: [],
+  recentAgents: [],
+  unreadableRunIds: [],
+  isEmpty: true,
+};
+const ENTER = { return: true } as const;
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+const defined: DefinedPort = {
+  read: () => ({
+    model: buildDefinedModel({
+      entries: [
+        {
+          slug: 'nightly',
+          name: undefined,
+          nodeCount: 1,
+          path: 'nightly.relavium.yaml',
+          valid: true,
+        },
+      ],
+      pins: [],
+    }),
+    slugOf: (index) => (index === 0 ? 'nightly' : undefined),
+    pathOf: (index) => (index === 0 ? 'nightly.relavium.yaml' : undefined),
+  }),
+};
+
+type Opener = 'init' | 'import' | 'pricing' | 'export';
+
+function mount(resolveWith: string | undefined = undefined) {
+  let clock = 50_000;
+  const history = createChordHistory();
+  const announced: string[] = [];
+  /** The flow, open until the test lets it resolve; when it began, the history's last resolution. */
+  let release: () => void = () => undefined;
+  const begun: number[] = [];
+  const flow = vi.fn(
+    () =>
+      new Promise<string | undefined>((resolve) => {
+        begun.push(history.lastResolvedAt);
+        release = () => resolve(resolveWith);
+      }),
+  );
+  const deps: HomeControllerDeps = {
+    now: () => clock,
+    chordHistory: history,
+    initializeProject: flow,
+    importDefined: flow,
+    pricing: flow,
+    exportDefined: flow,
+    defined,
+    startChat: () => new Promise<never>(() => undefined),
+    homeStore: { read: () => EMPTY },
+    schedule: () => () => undefined,
+    announce: (text) => {
+      announced.push(text);
+    },
+    onExit: () => undefined,
+    onError: (cause) => {
+      throw cause;
+    },
+  };
+  const controller = createHomeController(deps);
+  const open = async (opener: Opener): Promise<void> => {
+    if (opener === 'export') {
+      controller.handlePaste('/workflows');
+      controller.handleKey('', ENTER);
+      await flush();
+      clock += 3000;
+      controller.handleKey('x', {});
+      return;
+    }
+    controller.handlePaste(`/${opener}`);
+    clock += 3000;
+    controller.handleKey('', ENTER);
+  };
+  return {
+    controller,
+    history,
+    announced,
+    flow,
+    begun,
+    open,
+    release: () => release(),
+    now: () => clock,
+  };
+}
+
+describe.each(['init', 'import', 'pricing', 'export'] as const)('%s', (opener) => {
+  it('the key that opened the flow is a resolution on the Home’s key history, stamped before the flow began', async () => {
+    const m = mount();
+    await m.open(opener);
+    expect(m.flow).toHaveBeenCalledTimes(1);
+    expect(m.begun, 'the flow began after the stamp').toEqual([m.now()]);
+    expect(m.history.lastResolvedAt).toBe(m.now());
+  });
+
+  it('what it resolves with is ONE notification; the Home’s notice and the tab’s row stay as they were', async () => {
+    const m = mount('Nothing was written.');
+    await m.open(opener);
+    m.release();
+    await flush();
+    expect(m.announced).toEqual(['Nothing was written.']);
+    expect(m.controller.getSnapshot().notice).toBeUndefined();
+    const screen = m.controller.getSnapshot().screen;
+    if (screen?.kind === 'tab-host') expect(screen.host.defined?.message).toBeUndefined();
+  });
+
+  it('a flow whose Done step said what happened leaves nothing to say', async () => {
+    const m = mount(undefined);
+    await m.open(opener);
+    m.release();
+    await flush();
+    expect(m.announced).toEqual([]);
+    expect(m.controller.getSnapshot().notice).toBeUndefined();
+    expect(m.controller.getSnapshot().nativeActionBusy).toBe(false);
+  });
+});

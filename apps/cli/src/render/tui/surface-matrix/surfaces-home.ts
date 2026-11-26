@@ -11,15 +11,10 @@ import {
   type ModelsState,
 } from './models-fixture.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
-import {
-  openExportCard,
-  openImportCard,
-  openInitCard,
-  openModeFlow,
-  openPricingCard,
-  openProviderSetup,
-  openResumePicker,
-} from './home-flows.js';
+import { openModeFlow } from './home-flows.js';
+import { PROJECT_FLOW_SURFACES } from './project-flows-fixture.js';
+import { PROVIDER_FLOW_SURFACES } from './providers-flow-fixture.js';
+import { RESUME_RUN_SURFACES } from './resume-run-fixture.js';
 import {
   ACTIVE_PORT,
   AGENTS_PORT,
@@ -647,143 +642,11 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       await m.until(() => /startup/u.test(m.text()));
     },
   },
-  {
-    host: 'home',
-    id: 'home.init-card',
-    title: 'The /init card (what will be created, and the question)',
-    exitKey: 'Esc',
-    landmark: 'Create these project directories?',
-    setup: NATIVE,
-    open: async (m) => {
-      openInitCard(m);
-      await settleOn(m, 'Create these project directories?');
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.import-card',
-    title: 'The /import card (what would be written, a chord card)',
-    exitKey: 'Esc',
-    landmark: "Import workflow 'nightly-report'",
-    setup: NATIVE,
-    open: async (m) => {
-      const { answer } = openImportCard(m);
-      await settleOn(m, 'Path of the workflow');
-      await m.settle();
-      answer();
-      await settleOn(m, "Import workflow 'nightly-report'");
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.export-card',
-    title: 'The Defined tab’s export card (where a workflow would be written, a chord card)',
-    exitKey: 'Esc',
-    landmark: "Write workflow 'nightly-report'",
-    setup: NATIVE,
-    open: async (m) => {
-      openExportCard(m);
-      await settleOn(m, "Write workflow 'nightly-report'");
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.pricing-card',
-    title: 'The /pricing form (its first question)',
-    exitKey: 'Esc',
-    landmark: 'Model pricing: what do you want to do?',
-    setup: NATIVE,
-    open: async (m) => {
-      openPricingCard(m);
-      await settleOn(m, 'Model pricing: what do you want to do?');
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.resume-picker',
-    title: 'The /resume picker',
-    exitKey: 'Esc',
-    landmark: 'Resume a session',
-    selectedRow: 'Fix the flaky test · ',
-    setup: NATIVE,
-    open: async (m) => {
-      openResumePicker(m);
-      await settleOn(m, 'Resume a session');
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.native-provider-list',
-    title: 'The provider setup’s list of providers (/providers)',
-    exitKey: 'Esc',
-    landmark: /Anthropic/u,
-    setup: NATIVE,
-    open: async (m) => {
-      openProviderSetup(m, { mode: 'explicit' });
-      await m.until(() => /Anthropic/u.test(m.text()));
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.native-key-step',
-    title: 'The provider setup’s key step (a masked field)',
-    exitKey: 'Esc',
-    landmark: /API key|key for/u,
-    setup: NATIVE,
-    open: async (m) => {
-      openProviderSetup(m, { mode: 'explicit' });
-      await m.until(() => /Anthropic/u.test(m.text()));
-      await m.settle();
-      m.key(KEYS.enter);
-      await m.until(() => /API key|key for/u.test(m.text()));
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.native-env-consent',
-    title: 'The provider setup’s consent to use a key found in the environment',
-    exitKey: 'Esc',
-    landmark: 'Allow this source?',
-    setup: NATIVE,
-    open: async (m) => {
-      openProviderSetup(m, { mode: 'automatic', env: { OPENAI_API_KEY: 'sk-matrix-0000' } });
-      await settleOn(m, 'Allow this source?');
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.native-keychain-card',
-    title: 'The provider setup’s card for an unavailable keychain',
-    exitKey: 'Esc',
-    landmark: /keychain/iu,
-    setup: NATIVE,
-    open: async (m) => {
-      openProviderSetup(m, { mode: 'explicit', keychain: 'unavailable' });
-      await m.until(() => /Anthropic/u.test(m.text()));
-      await m.settle();
-      m.key(KEYS.enter);
-      await m.until(() => /keychain/iu.test(m.text()));
-    },
-  },
-  {
-    host: 'home',
-    id: 'home.native-failed-check-card',
-    title: 'The provider setup’s card for a key the provider refused',
-    exitKey: 'Esc',
-    landmark: /refused|rejected|did not work|failed/iu,
-    setup: NATIVE,
-    open: async (m) => {
-      openProviderSetup(m, { mode: 'explicit', rejectKeys: true });
-      await m.until(() => /Anthropic/u.test(m.text()));
-      await m.settle();
-      m.key(KEYS.enter);
-      await m.until(() => /API key|key for/u.test(m.text()));
-      await m.settle();
-      m.key(bracketed('sk-ant-matrix-0000000000000000000000'));
-      await m.settle();
-      m.key(KEYS.enter);
-      await m.until(() => /refused|rejected|did not work|failed/iu.test(m.text()));
-    },
-  },
+  // `/init`, `/import`, the Defined tab's export and `/pricing`, as the popups they are (MVP-11 unit 6, 6.3).
+  ...PROJECT_FLOW_SURFACES,
+  // `/resume` and `/run`, as the popups they are (MVP-11 unit 6, 6.4).
+  ...RESUME_RUN_SURFACES,
+  // The `/providers` popup and its first run, in each of their states (MVP-11 unit 6, 6.2).
+  ...PROVIDER_FLOW_SURFACES,
   ...NATIVE_POPUP_KINDS.map(homeNativePopupSurface),
 ];

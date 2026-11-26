@@ -9,6 +9,9 @@ import { PROMPTS_PRODUCERS } from './recorders/prompts.js';
 import { SHEETS_PRODUCERS } from './recorders/sheets.js';
 import { TAB_HOST_PRODUCERS } from './recorders/tab-host.js';
 import { POPUP_PRODUCERS } from './recorders/popups.js';
+import { PROJECT_FLOWS_PRODUCERS } from './recorders/project-flows.js';
+import { RESUME_RUN_PRODUCERS } from './recorders/resume-run.js';
+import { PROVIDERS_FLOW_PRODUCERS } from './recorders/providers-flow.js';
 
 /**
  * Every producer of a key legend, a hint line, a footer hint or a sentence that names a key
@@ -27,4 +30,7 @@ export const PRODUCERS: readonly Producer[] = [
   ...PROMPTS_PRODUCERS,
   ...HOME_HOST_PRODUCERS,
   ...POPUP_PRODUCERS,
+  ...RESUME_RUN_PRODUCERS,
+  ...PROJECT_FLOWS_PRODUCERS,
+  ...PROVIDERS_FLOW_PRODUCERS,
 ];

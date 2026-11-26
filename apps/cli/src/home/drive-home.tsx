@@ -1,6 +1,7 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { runHomeProjectInit } from './project-init.js';
-import { runSessionPicker } from './session-picker.js';
+import { RESUME_RESTORING, RESUME_STEP, resumePopup, runSessionPicker } from './session-picker.js';
+import type { FramedFlow } from './framed-flow.js';
 import { isDefaultModelCancelled, withDefaultModelCard } from '../chat/default-model-save.js';
 import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
 import { resumeHint } from '../chat/resume-hint.js';
@@ -110,7 +111,6 @@ import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
-import { leftoverSetupNote } from '../onboarding/setup-notes.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toCliError } from '../process/errors.js';
 import {
@@ -385,20 +385,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // whether the popup was opened on the landing or in a chat it hosts.
   const doctorScope = {};
   let lastSavedSessionId: string | undefined;
-  let finalSetupNote: string | undefined;
-  const promptFlow = {
-    ...nativePrompt.flow,
-    begin: () => {
-      finalSetupNote = undefined;
-      return nativePrompt.flow.begin();
-    },
-    end: async () => {
-      // What the flow left on its card, but not a note that only said what a step was (the first-run sentence, the destination): after an
-      // `Esc` that was the whole notice. The coordinator's own result speaks for a skip.
-      finalSetupNote = leftoverSetupNote(nativePrompt.ui.getSnapshot().note);
-      await nativePrompt.flow.end();
-    },
-  };
+  // The Home's one prompt flow. A flow's card note is not kept as a Home notice any more (ADR-0148 §6, MVP-11 unit 6): the provider popup ends
+  // in its Done step or one notification, so nothing a step said outlives it.
+  const promptFlow = { ...nativePrompt.flow };
   const keyPolicy = createStandardEnvKeyPolicy(globalConfig?.preferences);
   let invocationDefault: InvocationModelDefault | undefined;
   // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
@@ -816,7 +805,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         assertAdmitting();
         const native = nativePrompt.ui.getSnapshot().active;
         if (prepared.rewriteNeeded || native) {
-          if (flushVisible === undefined)
+          // A rewrite is published only behind its disclosure on the open card or popup (ADR-0148 §6): with none open there is nowhere to
+          // draw it that is not a Home notice (residue), so the write is refused, as it is when nothing can be drawn at all.
+          if (flushVisible === undefined || !native)
             throw new CliError(
               'output_unavailable',
               'The config rewrite notice could not be displayed.',
@@ -824,10 +815,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           await flushVisible(() => {
             const notice =
               'Saving preferences rewrites the global config and removes its comments and ordering.';
-            if (native) {
-              if (prepared.rewriteNeeded) promptFlow.note(notice);
-              else promptFlow.busy('Saving preferences…');
-            } else controller?.setProviderState(keyless, notice);
+            if (prepared.rewriteNeeded) promptFlow.note(notice);
+            else promptFlow.busy('Saving preferences…');
           });
         }
         const snapshot = native ? nativePrompt.ui.getSnapshot() : undefined;
@@ -906,6 +895,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       assertAdmitting: assertHomeAdmitting,
       endpointContext: (id) => providerEndpointContext(providers, id),
       publishPreference,
+      // The Home draws the setup as its `/providers` popup (ADR-0148 §1, ADR-0146 §6) and remembers a skip of the automatic first run.
+      popup: true,
+      rememberSkip: true,
       wizard: {
         store: providerStore,
         keychain,
@@ -923,14 +915,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const openProviders = (mode: 'automatic' | 'explicit', intro?: string): Promise<void> => {
       if (providerRun !== undefined) return providerRun;
       const operation = async (): Promise<void> => {
-        // A previous flow's leftover note is not this run's: `run('automatic')` can return `ready` before it ever begins a flow, and `begin`
-        // is the only other place the note is reset (round 2, B5).
-        finalSetupNote = undefined;
         try {
           const result = await providerSetup.run(mode, intro);
           if (homeInputSealed) return;
           keyless = sampleKeys();
-          controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
+          controller?.setProviderState(keyless);
+          // What the popup did not say itself (a skip, a setup that could not show its Done step) is ONE notification on the Home's channel,
+          // never a Home notice or a transcript line (ADR-0148 §6).
+          if (result.notice !== undefined) notifications.notify(result.notice);
         } finally {
           automaticSetupStarted = true; // finished, however it ended: the offer that waited for room is not spent a second time (round 2, K4)
         }
@@ -973,6 +965,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       clipboard,
       cachedKeys: () => keySample,
       plainGlyphs: !deps.global.color,
+      // The doctor's remedy is a HAND-OFF (maintainer, 2026-11-25; MVP-11 unit 6): `Enter` on a failing key row closes the doctor and opens
+      // `/providers` on the Home, through the Home's own opening gate (a refusal is one notification); `Esc` there returns to the Home. The
+      // provider popup cannot be the doctor's child: the channel's flow is a sheet source that would close every open popup unanswered.
+      openRemedy: (remedy, context) => {
+        if (remedy.kind !== 'providers' || controller === undefined) return false;
+        context.close();
+        controller.openProviderSetup();
+        return true;
+      },
     };
     // The `✓`-marked current default is the EFFECTIVE default — `[chat].default_model` resolves project → workspace
     // → global `[preferences].default_model` (ADR-0063 §1). It is re-read FRESH from disk each call (not the loaded
@@ -1732,31 +1733,58 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       target: ReseatTarget,
       transcript: readonly TranscriptEntry[],
     ) => restoreChat(sessionId, target, transcript);
+    /** The `/resume` popup while the controller holds it open ({@link resumeFrame}): the picker and the restore are its two stages. */
+    let resumeFlow: FramedFlow | undefined;
+    /**
+     * `/resume` as ONE popup (ADR-0148 §1, MVP-11 unit 6): the controller runs its whole resume (the picker, the check that the session is not
+     * the one open, the restore) inside this frame, so nothing closes between the picker and the restore and the popup's opening settle runs
+     * once. The frame is the Home's channel framed by `resumePopup`, its origin the surface `/resume` was typed on.
+     */
+    const resumeFrame = async (
+      origin: 'home' | 'chat',
+      run: () => Promise<void>,
+    ): Promise<void> => {
+      const framed = resumePopup(promptFlow, origin);
+      framed.begin();
+      resumeFlow = framed;
+      try {
+        await run();
+      } finally {
+        resumeFlow = undefined;
+        await framed.end();
+      }
+    };
     const resumeChat = async (
       sessionId: string,
     ): Promise<HomeChatSession | { readonly notice: string } | undefined> => {
       assertHomeAdmitting();
       const loaded = opened.store.loadFull(sessionId);
+      // What a resume that cannot start says, in one notification (54 columns): the popup closes on it (ADR-0148 §6).
       if (loaded === undefined || loaded.session.agentSnapshot === undefined)
-        return { notice: 'This saved session is unavailable or has no agent snapshot.' };
+        return { notice: 'This saved session is unavailable.' };
       // Discovery scope never grants authority. Check the canonical context, not the indexed picker column.
       if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
-        return {
-          notice: ANOTHER_DIRECTORY_NOTICE,
-        };
-      const transcript = await prepareRestoredHistory({
-        messages: loaded.messages,
-        memory: loaded.session.agentSnapshot.memory,
-        transcriptBound: transcriptBoundFor(altScreenActive),
-        readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
-        assertAdmitting: assertHomeAdmitting,
-        retry: () => retryRestoredHistory(promptFlow),
-      });
-      if (transcript === undefined) return undefined;
-      assertHomeAdmitting();
-      const signal = promptFlow.begin();
-      promptFlow.note(RESTORING_NOTE);
+        return { notice: 'This session is in another directory: open Home there' };
+      // The restore is the `/resume` popup's second step (MVP-11 unit 6): inside the one frame the controller holds from the picker to here
+      // (`resumeFrame`), or a frame of its own when it is asked directly. Its wait and its retry question are drawn there, `Esc` cancels it.
+      const flow = resumeFlow ?? resumePopup(promptFlow, 'home');
+      const signal = flow.begin();
       try {
+        const restoring = flow.at(RESUME_STEP.restore);
+        restoring.busy(RESUME_RESTORING);
+        const transcript = await prepareRestoredHistory({
+          messages: loaded.messages,
+          memory: loaded.session.agentSnapshot.memory,
+          transcriptBound: transcriptBoundFor(altScreenActive),
+          readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
+          assertAdmitting: assertHomeAdmitting,
+          retry: () => retryRestoredHistory(flow),
+        });
+        if (transcript === undefined) return undefined;
+        assertHomeAdmitting();
+        // The retry question's sentence belongs to it, not to the wait that follows.
+        flow.note('');
+        restoring.busy(RESUME_RESTORING);
         const built = await restoreChat(sessionId, undefined, transcript, true, loaded, signal);
         if (signal.aborted) {
           await built.teardown();
@@ -1771,7 +1799,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         throw cause;
       } finally {
-        await promptFlow.end();
+        await flow.end();
       }
     };
 
@@ -2291,9 +2319,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }),
         reseatChat,
         resumeChat,
+        resumeFrame,
+        // The picker is the `/resume` popup's first step, inside the frame `resumeFrame` holds (the raw card only when asked outside it).
         pickSession: () =>
           runSessionPicker({
-            flow: promptFlow,
+            flow: resumeFlow ?? promptFlow,
             store: opened.store,
             cwd: fsPolicyWorkspace(fsPolicy),
             paths: displayRoots(fsPolicyWorkspace(fsPolicy), homeDir),
@@ -2462,15 +2492,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       };
       /**
        * Whether the first-run offer may open now: it opens once, never while it waits for room, never after the Home began leaving, never over
-       * an injected prompter, and never for a bare `relavium permissions`, which is not a first run: no provider card or key consent may open
-       * on top of the screen it came for.
+       * an injected prompter, never for a bare `relavium permissions`, which is not a first run: no provider card or key consent may open
+       * on top of the screen it came for, and never again once the person skipped it (ADR-0146 §6, the remembered skip read at start-up from
+       * the global config: `/providers` and the keyless `Enter` still open it).
        */
       const mayOfferFirstRunSetup = (): boolean =>
         !automaticSetupStarted &&
         !waitingForRoom &&
         !homeInputSealed &&
         deps.onboardingPrompter === undefined &&
-        deps.openPermissions !== true;
+        deps.openPermissions !== true &&
+        globalConfig?.preferences?.first_run_setup_skipped !== true;
       /**
        * Below the minimum the card cannot be shown, and the one first-run offer must not be spent on a message that says "Esc cancels"
        * (observed: that `Esc` ended the setup for good, and resizing up did not bring it back). It waits for room, with the offer unspent, and

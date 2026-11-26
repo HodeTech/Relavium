@@ -285,7 +285,9 @@ test('secrets workload corrections retain independent complete-count and reader-
   assert.equal(secretsControls.length, 139);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    549,
+    // 552 since MVP-11 unit 6 (was 549): the remembered first-run skip is the sixth config writer, a witness of its own in
+    // `startup-writer-mode-observation` ('ask', 'absent') and in `startup-writer-read-failure` ('invalid').
+    552,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],

@@ -66,7 +66,7 @@ describe('native setup recovery names the reachable host action', () => {
         if (failure === 'skip')
           expect(copy).toContain(
             surface === 'home'
-              ? 'Setup skipped · /providers connects a provider any time'
+              ? 'Setup skipped · /providers connects a provider anytime'
               : 'Setup skipped · restart this chat to open provider setup any time',
           );
         else

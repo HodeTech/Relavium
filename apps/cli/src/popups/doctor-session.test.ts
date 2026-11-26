@@ -1545,6 +1545,24 @@ describe('the seams of the doctor, each pinned by the line of code that removes 
     expect(calls).toEqual([[{ kind: 'providers' }, 'function']]);
   });
 
+  it('the Home’s hand-off (MVP-11 unit 6): an opener that closes the doctor and starts /providers leaves no doctor open, and is called once', async () => {
+    const handedOff: unknown[] = [];
+    const r = await onProviderKeysDetail({
+      openRemedy: (remedy, context) => {
+        // As the Home wires it: the doctor closes itself, then the provider popup opens on the Home through its gate.
+        context.close();
+        handedOff.push(remedy);
+        return true;
+      },
+    });
+    expect(r.words()).toContain('Press Enter to open /providers');
+    r.press('', ENTER);
+    expect(handedOff).toEqual([{ kind: 'providers' }]);
+    expect(r.host.getSnapshot().open, 'the doctor closed before the setup opens').toBe(false);
+    r.press('', ENTER);
+    expect(handedOff, 'a closed doctor hands off nothing more').toHaveLength(1);
+  });
+
   it('a row that has no remedy opens nothing on Enter, even with the seam wired', async () => {
     const calls: unknown[] = [];
     const r = doctorRig();

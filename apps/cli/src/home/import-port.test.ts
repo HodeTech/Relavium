@@ -153,6 +153,8 @@ describe('prepare reads and validates through the command’s own first half, an
       slug: 'reviewer',
       source: 'incoming.agent.yaml',
       destination: AGENT_PATH,
+      // the Done step's name for it: relative to the project's root, whatever the working directory (MVP-11 unit 6, 6.3)
+      target: AGENT_PATH,
       bytes: Buffer.byteLength(
         'id: reviewer\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: Review the code.\n',
         'utf8',
@@ -160,6 +162,17 @@ describe('prepare reads and validates through the command’s own first half, an
       warnings: [],
     });
     expect(tree(root), 'preparing writes nothing').toEqual(before);
+  });
+
+  it('from a subdirectory of the project the destination is shown from there, and the Done step’s target from the project’s root (MVP-11 unit 6)', () => {
+    const sub = join(root, 'src', 'deep');
+    mkdirSync(sub, { recursive: true });
+    const result = createImportPort({ global: { ...global(), cwd: sub }, homeDir: home }).prepare(
+      '../../incoming.agent.yaml',
+    );
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.offer.destination).toBe(join('..', '..', AGENT_PATH));
+    expect(result.offer.target).toBe(AGENT_PATH);
   });
 
   it('an absolute path is read as it is, and its source is shown relative to the working directory', () => {

@@ -62,6 +62,7 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
   ['report-workflows-loading', 'the /workflows popup: the catalog being read'],
   ['report-workflows-error', 'the /workflows popup: the catalog could not be listed'],
   ['report-help', 'the /help popup: the commands and keys of a chat'],
+  ['export-confirm', 'the /export confirmation popup: the file it writes, and the review sentence'],
   ['settings-effort', 'the /effort popup: the tiers of the bound model, the one in force marked'],
   [
     'settings-form',
@@ -120,11 +121,13 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.mcp-consent-card', 'the MCP consent card'),
   row('home.exit-guard', 'the exit-guard card'),
   // The native prompt cards of the provider setup, and the flows of the Home's commands.
+  row('home.provider-first-run', 'the first-run setup popup’s first step (skip for now)'),
   row('home.native-provider-list', 'the provider setup’s list of providers'),
   row('home.native-key-step', 'the provider setup’s key step'),
   row('home.native-env-consent', 'the provider setup’s consent to an environment key'),
   row('home.native-keychain-card', 'the provider setup’s card for an unavailable keychain'),
   row('home.native-failed-check-card', 'the provider setup’s card for a key the provider refused'),
+  row('home.provider-done', 'the provider setup popup’s Done step'),
   row(
     'home.settings-models',
     'the /models popup on the bare Home: the catalog, the default marked',
@@ -138,8 +141,13 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.import-card', 'the /import path field and its card'),
   row('home.export-card', 'the Defined tab’s export card'),
   row('home.init-card', 'the /init card'),
-  row('home.resume-picker', 'the /resume picker'),
-  row('home.run-launch', 'the /run picker, form and confirmation'),
+  row('home.resume-picker', 'the /resume popup: its session picker'),
+  row(
+    'home.resume-restore',
+    'the /resume popup: the retry question of a history that could not be read',
+  ),
+  row('home.run-launch', 'the /run popup: its confirmation, the chord step'),
+  row('home.run-launch-secret', 'the /run popup: a masked input after a resize cleared it'),
   row('home.first-run-setup', 'the first-run setup that opens itself'),
   // The popup (ADR-0148): the frame every user-started report, setting and flow will wear, opened by the test layer until a command is one.
   row(
@@ -179,8 +187,6 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
  * it in the same commit (the completeness test fails otherwise), and a later step that adds a seam deletes its entry.
  */
 export const NOT_COVERED_YET: Readonly<Record<string, string>> = {
-  'home.run-launch':
-    'the /run flow (picker, input form, confirmation) is built inside driveHome over the engine and the run host; there is no injection seam short of an engine',
   'home.first-run-setup':
     'the setup that opens itself is driven by driveHome from the renderer-ready callback and the keyless read; its cards are covered through the provider setup rows, the self-opening path needs driveHome',
   'run-app.live':

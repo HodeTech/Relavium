@@ -630,7 +630,12 @@ export interface HomeControllerDeps {
    *  it); a live chat's `/permissions` is a popup over its own port (`HomeChatSession.settings`). */
   readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
-  readonly initializeProject?: () => Promise<string>;
+  /**
+   * `/init` at the landing (ADR-0148 §1, §6): the popup that shows what it would create, asks with `Ctrl+Y` and ends in its Done step. It
+   * resolves with the ONE notification the Home shows (a cancel, a folder that is already a project), or `undefined` when the popup said what
+   * happened. Absent ⇒ `/init` says initialization is unavailable.
+   */
+  readonly initializeProject?: () => Promise<string | undefined>;
   /**
    * Launch a workflow from the Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): the
    * picker, the form and the confirmation, all on the native prompt channel, then the host's start. It resolves with the notice the
@@ -668,24 +673,26 @@ export interface HomeControllerDeps {
    */
   readonly sessions?: SessionsPort | undefined;
   /**
-   * The Defined tab's export card: prepare the export of one catalog workflow, show where it would be written, and write it only on a
-   * Yes. It resolves with the sentence the tab shows; it holds the native action while the card is open. Absent ⇒ `x` says export is
-   * unavailable.
+   * The Defined tab's export popup: prepare the export of one catalog workflow, show where it would be written, write it only on a Yes and
+   * end in its Done step (ADR-0148 §6). It resolves with the ONE notification the Home shows (nothing was written), or `undefined` when the
+   * popup said what happened; it holds the native action while the popup is open. Absent ⇒ `x` says export is unavailable.
    */
-  readonly exportDefined?: ((slug: string) => Promise<string>) | undefined;
+  readonly exportDefined?: ((slug: string) => Promise<string | undefined>) | undefined;
   /**
    * `/import` at the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   * §9): ask for a path, show what the import would write, and write the file only on a Yes. It resolves with the sentence the landing shows;
-   * it holds the native action while the card is open. A Home word: with a chat in front the typed line is the chat's. Absent ⇒ `/import`
-   * says import is unavailable in this session.
+   * §9): ask for a path, show what the import would write, write the file only on a Yes and end in its Done step (ADR-0148 §6). It resolves
+   * with the ONE notification the Home shows (nothing was written), or `undefined` when the popup said what happened; it holds the native
+   * action while the popup is open. A Home word: with a chat in front the typed line is the chat's. Absent ⇒ `/import` says import is
+   * unavailable in this session.
    */
-  readonly importDefined?: (() => Promise<string>) | undefined;
+  readonly importDefined?: (() => Promise<string | undefined>) | undefined;
   /**
-   * `/pricing` at the landing (ADR-0140 §9): the form that sets or clears the operator's own price for a model, and the card that records it
-   * only on a Yes. It resolves with the sentence the landing shows; it holds the native action while the form is open. A Home word, as
-   * `/import` is. Absent ⇒ `/pricing` says model pricing is not available here.
+   * `/pricing` at the landing (ADR-0140 §9): the popup that sets or clears the operator's own price for a model, records it only on a Yes and
+   * ends in its Done step (ADR-0148 §6). It resolves with the ONE notification the Home shows (nothing was written), or `undefined` when the
+   * popup said what happened; it holds the native action while the popup is open. A Home word, as `/import` is. Absent ⇒ `/pricing` says
+   * model pricing is not available here.
    */
-  readonly pricing?: (() => Promise<string>) | undefined;
+  readonly pricing?: (() => Promise<string | undefined>) | undefined;
   /**
    * The Active tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §2). The Home polls them only while that tab is in front and no card or exit question is up, every 1.5 seconds and only when the
@@ -783,6 +790,12 @@ export interface HomeControllerDeps {
   readonly resumeChat?: (
     sessionId: string,
   ) => Promise<HomeChatSession | { readonly notice: string } | undefined>;
+  /**
+   * The `/resume` popup's ONE frame (ADR-0148 §1; MVP-11 unit 6): run `run` (the picker, the check that the session is not the one open, the
+   * restore) inside a popup frame the host opens first and closes after, so nothing closes between the picker and the restore. `origin` is the
+   * surface the resume was asked on. Absent ⇒ the stages run as they are (a test's Home).
+   */
+  readonly resumeFrame?: (origin: 'home' | 'chat', run: () => Promise<void>) => Promise<void>;
   readonly providerSetup?: {
     readonly initialKeyless: boolean;
     /** Open the explicit provider setup. `note` is shown in the setup's own card, where a person who is looking at the setup can read it. */
@@ -824,6 +837,11 @@ export interface HomeController {
    */
   readonly openPermissionsAsCommand: () => void;
   /**
+   * Open `/providers` as the person would from the palette, through the Home's opening gate (a refusal is one notification): the doctor's
+   * remedy hands off to it after closing itself (maintainer, 2026-11-25; MVP-11 unit 6).
+   */
+  readonly openProviderSetup: () => void;
+  /**
    * Put a screen in front of the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §1).
    * It replaces whatever the slot held, and returns whether it opened: it refuses while the Home is not the landing (a chat or its
    * build), an overlay is open, the exit-guard card is up or the Home is ending. The screen then owns every key, and no paste reaches
@@ -858,10 +876,10 @@ export interface HomeController {
 
 /**
  * What a draft that looks like a provider key is answered with when there is no key yet (ADR-0146 §6): the draft was cleared, not kept and not
- * recorded, and the key belongs in the setup that has just opened. Fixed text: it never echoes the draft.
+ * recorded, and never carried into the setup's key step. ONE notification on the Home's channel (ADR-0148 §6, MVP-11 unit 6), never a Home
+ * notice or the setup's note, so it fits the 54 columns a notification has inside a popup. Fixed text: it never echoes the draft.
  */
-export const KEY_SHAPED_DRAFT_NOTICE =
-  'That looked like an API key, so it was not kept. Choose a provider in the setup that just opened and paste it there.';
+export const KEY_SHAPED_DRAFT_NOTICE = 'That looked like an API key · it was not kept';
 
 /**
  * What a draft that looks like a provider key is answered with when a key already exists (ADR-0146 §6, round 2 A1): Enter on it would build a
@@ -924,8 +942,10 @@ const RUN_HISTORY_UNAVAILABLE = 'The run history is not available here.';
 /** What `/doctor` says on a Home that has no doctor popup to open (only a test's Home: `driveHome` always wires one). */
 const DOCTOR_UNAVAILABLE = 'Doctor is not available here.';
 
-/** What the landing says when a session resume ends because the person cancelled one of its interactive steps. */
-const RESUME_CANCELLED = 'Resume cancelled.';
+/** What a session resume says (one notification) when it ends because the person cancelled one of its interactive steps. */
+export const RESUME_CANCELLED = 'Resume cancelled.';
+/** What `/resume` says (one notification) when the conversation picked is the one already open: nothing is restored. */
+export const RESUME_ALREADY_OPEN = 'This conversation is already open.';
 
 /** What `Enter` says on a focused row the strip no longer lists: nothing was opened. */
 const STRIP_ROW_GONE = 'That row is no longer on the strip. Nothing was opened.';
@@ -2131,23 +2151,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     void driveNativeAction(operation, label).catch(failHome);
   };
 
+  /**
+   * Open `/providers` (the setup popup, ADR-0146 §6) through the Home's opening gate. What it says is never written to the Home's notice or a
+   * transcript (ADR-0148 §6): a setup this session cannot open, and the reason a key-shaped draft was not kept, are each ONE notification.
+   */
   const openProviderSetup = (options?: {
-    readonly note: string;
     readonly patch: Partial<HomeControllerState>;
+    readonly announce?: string;
   }): void => {
     const port = deps.providerSetup;
     if (port === undefined) {
       // Whatever the caller had to change in the same breath (a draft that is a key is cleared) is still changed: nothing is kept for a
-      // setup that will not open. Its own reason, which says where to paste the key, would be false here, so the notice is this one.
-      set({ ...options?.patch, notice: 'Provider setup is unavailable in this session.' });
-      state.session?.store.note('Provider setup is unavailable in this session.');
+      // setup that will not open. Its own reason, which says where to paste the key, would be false here, so the notification is this one.
+      if (options !== undefined) set(options.patch);
+      deps.announce?.('Provider setup is unavailable in this session.');
       return;
     }
-    openNativeAction(
-      () => port.open(options === undefined ? undefined : { note: options.note }),
-      'Provider setup',
-      options?.patch,
-    );
+    const opening = !state.nativeActionBusy;
+    openNativeAction(() => port.open(), 'Provider setup', options?.patch);
+    // The reason a key-shaped draft was cleared is said only when the setup opened: a refused open says its refusal, and only that.
+    if (options?.announce !== undefined && opening && state.nativeActionBusy)
+      deps.announce?.(options.announce);
+  };
+  /**
+   * What a Home flow that writes (`/init`, `/import`, `/pricing`, the Defined tab's export) resolved with: the ONE notification it asks for (a
+   * cancel, nothing written), on the Home's channel, or nothing when its popup said what happened (its Done step, a refusal). Never the Home's
+   * notice and never a transcript (ADR-0148 §6): the flows leave no residue.
+   */
+  const announceFlowResult = (notification: string | undefined): void => {
+    if (!exiting && notification !== undefined) deps.announce?.(notification);
+  };
+  /**
+   * The key that opens a Home flow that writes (the composer's `Enter` of `/init`, `/import` or `/pricing`, `x` on a Defined row) is stamped
+   * as a RESOLUTION on the Home's one key history, before the flow opens: a flow whose first prompt is its `Ctrl+Y` card (`/init`, the Defined
+   * export) is then armed against it, as a popup that opens on its own confirmation line is armed against the last key before it
+   * (`popup-host.ts`, ADR-0148 §3). Unstamped, a `Ctrl+Y` held from the moment the card appeared met no lockout (a refused early press restarts
+   * one only inside it) and, at a slow repeat rate past the quiet gap, answered once the card's dwell had passed. A deliberate `Ctrl+Y` there
+   * now needs the lockout (2 s) after the key that opened the flow.
+   */
+  const resolveOpeningKey = (): void => {
+    landingKeys.resolved(landingKeys.stamp());
   };
   const openProjectInit = (): void => {
     const open = deps.initializeProject;
@@ -2156,12 +2199,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note('Project initialization is unavailable in this session.');
       return;
     }
+    resolveOpeningKey();
     openNativeAction(async () => {
-      const notice = await open();
-      if (!exiting) {
-        set({ notice });
-        state.session?.store.note(notice);
-      }
+      // The popup's Done step said what was created; a cancel or a folder that is already a project is one notification (ADR-0148 §6).
+      announceFlowResult(await open());
     }, 'Project initialization');
   };
 
@@ -2182,22 +2223,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * `/run`: the launch flow. A run that started is shown at once (`Esc` leaves it running and `Enter` on the empty prompt comes back); a
-   * launch that was refused or left opens no view, and its notice stays on the landing, where the person who typed it is looking: the view of
-   * ANOTHER run that executes at the time is not what `/run` asked for ({@link launchStartedRun}).
+   * `/run`: the launch flow, the `/run` popup (ADR-0148 §1; MVP-11 unit 6). A run that started is shown at once (`Esc` leaves it running and
+   * `Enter` on the empty prompt comes back); a launch that was refused or left opens no view: the view of ANOTHER run that executes at the time
+   * is not what `/run` asked for ({@link launchStartedRun}). What the launch says is one notification on the Home's channel, never the Home's
+   * notice (§6): a run that started, a cancel, a refusal found before the popup opened; a start that failed after it opened was said in the
+   * popup itself, and the launch then has nothing more to say (`''`: no notification).
    */
   const openRunLaunch = (): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
-      set({ notice: 'Running a workflow is unavailable in this session.' });
+      deps.announce?.('Running a workflow is unavailable in this session.');
       return;
     }
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const notice = await launch();
+      const said = await launch();
       if (exiting) return;
-      set({ notice, ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
+      set({ ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
       if (launchStartedRun(before)) openRunView();
+      if (said !== '') deps.announce?.(said);
     }, 'Run workflow');
   };
 
@@ -2255,9 +2299,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
-   * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
-   * refused or left says so on the tab. A run STARTED is told by {@link launchStartedRun}, as `/run` tells it: a refusal leaves another
+   * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the
+   * single start are the flow's own). A run that started is shown at once, `Esc` returns to the tab, and the start is one notification; a
+   * launch that was refused or left says so on the tab's own message row, never in the Home's notice (ADR-0148 §6), and one whose failure the
+   * popup has already said (`''`) adds nothing. A run STARTED is told by {@link launchStartedRun}, as `/run` tells it: a refusal leaves another
    * leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
@@ -2268,29 +2313,33 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const notice = await launch(slug, path);
+      const said = await launch(slug, path);
       if (exiting) return;
-      set({ notice, ...parkedPatch() });
-      if (!launchStartedRun(before) || !openRunView('tab-host')) noteOnDefinedTab(notice);
+      set({ ...parkedPatch() });
+      if (launchStartedRun(before) && openRunView('tab-host')) deps.announce?.(said);
+      else if (said !== '') noteOnDefinedTab(said);
     }, 'Run workflow');
   };
 
-  /** `x` on a Defined row: the export card. What it writes, it writes only on a Yes, and the tab says what happened. */
+  /**
+   * `x` on a Defined row: the export popup. What it writes, it writes only on a Yes; its Done step says what happened, and a No is one
+   * notification (ADR-0148 §6). The tab is left as the key left it: nothing is written to its message row.
+   */
   const openDefinedExport = (slug: string): void => {
     const exportDefined = deps.exportDefined;
     if (exportDefined === undefined) {
       noteOnDefinedTab('Export is unavailable in this session.');
       return;
     }
+    resolveOpeningKey();
     openNativeAction(async () => {
-      const notice = await exportDefined(slug);
-      if (!exiting) noteOnDefinedTab(notice);
+      announceFlowResult(await exportDefined(slug));
     }, 'Export');
   };
 
   /**
-   * `/import` at the landing: the import card. Typed and chosen from the palette it is this one function, so the two cannot drift. What the
-   * card writes, it writes only on a Yes; the sentence it resolves with is the landing's notice, which is where the person who typed it looks.
+   * `/import` at the landing: the import popup. Typed and chosen from the palette it is this one function, so the two cannot drift. What the
+   * popup writes, it writes only on a Yes; its Done step says what happened, and a No is one notification (ADR-0148 §6).
    */
   const openImportCard = (): void => {
     const importDefined = deps.importDefined;
@@ -2298,22 +2347,22 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: 'Import is unavailable in this session.' });
       return;
     }
+    resolveOpeningKey();
     openNativeAction(async () => {
-      const notice = await importDefined();
-      if (!exiting) set({ notice });
+      announceFlowResult(await importDefined());
     }, 'Import');
   };
 
-  /** `/pricing` at the landing: the model pricing form and its card, opened as {@link openImportCard} is. */
+  /** `/pricing` at the landing: the model pricing popup, opened as {@link openImportCard} is. */
   const openPricingCard = (): void => {
     const pricing = deps.pricing;
     if (pricing === undefined) {
       set({ notice: 'Model pricing is not available here.' });
       return;
     }
+    resolveOpeningKey();
     openNativeAction(async () => {
-      const notice = await pricing();
-      if (!exiting) set({ notice });
+      announceFlowResult(await pricing());
     }, 'Model pricing');
   };
 
@@ -2392,76 +2441,89 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * Resume a saved conversation: the one in `selectedId`, or the one the picker returns. `leaving` is published with the action's first state
-   * change (see {@link openNativeAction}); it is used only when the action starts, so a resume that is not available leaves it unpublished.
+   * Resume a saved conversation: the one in `selectedId`, or the one the picker returns, as the `/resume` popup (ADR-0148 §1; MVP-11 unit 6).
+   * The whole resume (the picker, the check below, the restore) runs inside the ONE frame the host holds open
+   * ({@link HomeControllerDeps.resumeFrame}), so nothing closes between the picker and the restore. What it has to say (the conversation is
+   * already open, a cancelled restore, a session that cannot be resumed here, a Home that cannot resume) is one notification on the Home's
+   * channel, never the Home's notice and never a line in the conversation (§6); a resume that opens its conversation says nothing, the
+   * conversation is the result. `leaving` is published with the action's first state change (see {@link openNativeAction}); it is used only
+   * when the action starts, so a resume that is not available leaves it unpublished.
    */
   const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
-      const notice = SESSIONS_RESUME_UNAVAILABLE;
-      set({ notice });
-      state.session?.store.note(notice);
+      deps.announce?.(SESSIONS_RESUME_UNAVAILABLE);
       return;
     }
-    const operation = async (): Promise<void> => {
-      const old = state.session;
+    const say = (text: string): void => {
+      if (!exiting) deps.announce?.(text);
+    };
+    const resumeIn = async (old: HomeChatSession | undefined): Promise<void> => {
       const id = selectedId ?? (await deps.pickSession?.());
       if (id === undefined || exiting) return;
       if (old?.sessionId === id) {
-        old.store.note('This conversation is already open.');
+        say(RESUME_ALREADY_OPEN);
         return;
       }
       const result = await resume(id);
       if (result === undefined) {
-        // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the landing says so
-        // instead of coming back as if nothing had been asked.
-        if (!exiting) {
-          set({ notice: RESUME_CANCELLED });
-          old?.store.note(RESUME_CANCELLED);
-        }
+        // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the Home says so instead of
+        // coming back as if nothing had been asked.
+        say(RESUME_CANCELLED);
         return;
       }
       if ('notice' in result) {
-        if (!exiting) {
-          set({ notice: result.notice });
-          old?.store.note(result.notice);
-        }
+        say(result.notice);
         return;
       }
-      if (exiting || state.session !== old) {
-        await result.teardown();
-        return;
-      }
-      if (old !== undefined) {
-        const td = old.teardown();
-        activeTeardown = td;
-        await boundTeardown(td).catch(() => undefined);
-        if (activeTeardown === td) activeTeardown = undefined;
-      }
-      if (exiting) {
-        await result.teardown();
-        return;
-      }
-      cancelFired = false;
-      history = EMPTY_HISTORY;
-      set({
-        session: result,
-        mode: 'chat',
-        input: emptyEditor(),
-        pendingMessage: '',
-        notice: undefined,
-        stripFocus: undefined,
-        attachments: [],
-        historyEntries: [],
-        search: undefined,
-        mention: undefined,
-        shellBusy: false,
-        shellCommand: undefined,
-        submitBusy: true,
-      });
-      activateSession(result, () => set({ submitBusy: false }));
+      await adoptResumed(old, result);
+    };
+    const operation = async (): Promise<void> => {
+      const old = state.session;
+      const frame = deps.resumeFrame;
+      if (frame === undefined) await resumeIn(old);
+      else await frame(old === undefined ? 'home' : 'chat', () => resumeIn(old));
     };
     openNativeAction(operation, 'Session resume', leaving);
+  };
+
+  /** The resumed conversation takes the place of the one open (`old`, if any), unless the Home left or another took it meanwhile. */
+  const adoptResumed = async (
+    old: HomeChatSession | undefined,
+    result: HomeChatSession,
+  ): Promise<void> => {
+    if (exiting || state.session !== old) {
+      await result.teardown();
+      return;
+    }
+    if (old !== undefined) {
+      const td = old.teardown();
+      activeTeardown = td;
+      await boundTeardown(td).catch(() => undefined);
+      if (activeTeardown === td) activeTeardown = undefined;
+    }
+    if (exiting) {
+      await result.teardown();
+      return;
+    }
+    cancelFired = false;
+    history = EMPTY_HISTORY;
+    set({
+      session: result,
+      mode: 'chat',
+      input: emptyEditor(),
+      pendingMessage: '',
+      notice: undefined,
+      stripFocus: undefined,
+      attachments: [],
+      historyEntries: [],
+      search: undefined,
+      mention: undefined,
+      shellBusy: false,
+      shellCommand: undefined,
+      submitBusy: true,
+    });
+    activateSession(result, () => set({ submitBusy: false }));
   };
 
   /**
@@ -2766,18 +2828,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    *
    * The exception is a draft that looks like a provider key ({@link looksLikeProviderKey}). It is never kept and never recorded, so a pasted
    * key does not stay in the prompt or reach the input history's Up and `Ctrl+R` recall (which is in memory only; it is kept clean for the next
-   * person at the keyboard). The editor is cleared in the same state change that opens the setup, and the notice says why and where the key
-   * goes. The keyed landing refuses the same draft before a chat is built ({@link submit}).
+   * person at the keyboard), and never carried into the setup's key step. The editor is cleared in the same state change that opens the setup,
+   * and one notification says why (never a Home notice). The keyed landing refuses the same draft before a chat is built ({@link submit}).
    */
   const connectProviderKeepingDraft = (): void => {
     if (!looksLikeProviderKey(state.input.text)) {
       openProviderSetup();
       return;
     }
-    openProviderSetup({
-      note: KEY_SHAPED_DRAFT_NOTICE,
-      patch: { input: emptyEditor(), notice: KEY_SHAPED_DRAFT_NOTICE },
-    });
+    openProviderSetup({ patch: { input: emptyEditor() }, announce: KEY_SHAPED_DRAFT_NOTICE });
   };
 
   const submit = (): void => {
@@ -3935,16 +3994,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return state;
     },
     setProviderState(keyless, notice) {
-      if (!exiting) {
-        // The sentence that said what the setup was for ('...in the setup that just opened') is false once it has closed with nothing of its
-        // own to say, so it goes (round 2, K4); any other notice stays, as it did.
-        const spent = notice === undefined && state.notice === KEY_SHAPED_DRAFT_NOTICE;
-        set({
-          keyless,
-          ...(notice === undefined ? (spent ? { notice: undefined } : {}) : { notice }),
-        });
-        if (notice !== undefined) state.session?.store.note(notice);
-      }
+      // The provider setup tells only whether a key exists now (what it did is its Done step or one notification, ADR-0148 §6); a host's other
+      // notice (`noteEffectAttention`) still lands in the Home's notice area. Nothing is written into a conversation's transcript.
+      if (!exiting) set({ keyless, ...(notice === undefined ? {} : { notice }) });
+    },
+    openProviderSetup() {
+      if (!exiting) openProviderSetup();
     },
     handleKey(input, key) {
       // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from

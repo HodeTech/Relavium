@@ -4,7 +4,7 @@ import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 import { KNOWN_PROVIDER_IDS, KNOWN_PROVIDERS } from '../engine/providers.js';
 import { sourceLabel } from '../process/source-label.js';
 import { resolveYamlSource } from '../workflows/resolve.js';
-import { buildDefaultChatAgent, DEFAULT_CHAT_MODEL } from './default-agent.js';
+import { buildDefaultChatAgent } from './default-agent.js';
 
 export interface ResolveChatAgentOptions {
   readonly cwd: string;
@@ -37,9 +37,9 @@ export interface ResolveChatAgentOptions {
  * A configured `defaultModel` wins, with its persisted provider (ADR-0059). Otherwise the provider is a
  * `defaultProvider` the caller passed, else the first provider in {@link KNOWN_PROVIDER_IDS} order that has a key,
  * else Anthropic. Config resolution never passes a provider without a model (it drops a stray one), so from config
- * the choice is always the key-aware one. Anthropic keeps the long-standing zero-config {@link DEFAULT_CHAT_MODEL}; any other provider gets the
- * onboarding wizard's starter model (`KNOWN_PROVIDERS[id].testModel`), so a user with only an OpenAI key reaches a
- * working chat instead of an Anthropic credential failure.
+ * the choice is always the key-aware one. Every provider gets its STARTER model (`KNOWN_PROVIDERS[id].starterModel`, the one starter
+ * table of ADR-0146 §6, which `DEFAULT_CHAT_MODEL` is Anthropic's entry of), so a zero-config chat starts on the model a first setup
+ * would choose, and a user with only an OpenAI key reaches a working chat instead of an Anthropic credential failure.
  */
 export function defaultChatModel(opts: ResolveChatAgentOptions): {
   readonly model: string;
@@ -54,7 +54,7 @@ export function defaultChatModel(opts: ResolveChatAgentOptions): {
     (hasKey === undefined ? undefined : KNOWN_PROVIDER_IDS.find((id) => hasKey(id))) ??
     'anthropic';
   return {
-    model: provider === 'anthropic' ? DEFAULT_CHAT_MODEL : KNOWN_PROVIDERS[provider].testModel,
+    model: KNOWN_PROVIDERS[provider].starterModel,
     provider,
   };
 }

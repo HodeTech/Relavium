@@ -115,6 +115,9 @@ async function fixture(
   };
 }
 
+/** What ten tokens cost on the zero-config chat model (the starter table's Anthropic entry, Haiku 5.5: $0.10 in / $0.50 out per M), in micro-cents. */
+const ONE_TURN_COST = 600;
+
 it.each([0, 10])(
   'native actual-write refusal keeps all events/footer pending (tokens=%s)',
   async (tokens) => {
@@ -190,7 +193,7 @@ it.each([0, 10])(
       expect(actual).toHaveLength(1);
       expect(actual[0]?.invocation).toBeDefined();
       expect(actual[0]?.cumulativeCostMicrocents).toBe(f.snapshot().totalCostMicrocents);
-      expect(f.snapshot().totalCostMicrocents).toBe(tokens === 0 ? 0 : 18000);
+      expect(f.snapshot().totalCostMicrocents).toBe(tokens === 0 ? 0 : ONE_TURN_COST);
       const settledIndex = f.events.findIndex((event) => event.type === 'cost:updated');
       for (const event of f.events.slice(settledIndex)) {
         expect(event.usageCoverage).toEqual(f.snapshot().coverage);
@@ -224,7 +227,7 @@ it('a throwing subscriber cannot undo the native ACK or masquerade as a ledger f
     await f.built.whenHostSafeToClose();
     expect(f.notes).toHaveLength(1);
     expect(f.snapshot().coverage.pendingInvocations).toBe(0);
-    expect(f.snapshot().totalCostMicrocents).toBe(18000);
+    expect(f.snapshot().totalCostMicrocents).toBe(ONE_TURN_COST);
     expect(f.persister.durabilityFailure).toBeUndefined();
     expect(f.events.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
   } finally {
@@ -259,7 +262,7 @@ it('a post-ACK snapshot failure is a host publication failure and preserves the 
     });
     expect(f.persister.durabilityFailure).toBeUndefined();
     expect(f.snapshot().coverage.pendingInvocations).toBe(0);
-    expect(f.snapshot().totalCostMicrocents).toBe(18000);
+    expect(f.snapshot().totalCostMicrocents).toBe(ONE_TURN_COST);
     expect(f.snapshot().rows.reduce((sum, row) => sum + row.callCount, 0)).toBe(1);
     expect(f.events.filter((event) => event.type === 'cost:updated')).toHaveLength(0);
   } finally {
@@ -295,7 +298,7 @@ it('a failed pending snapshot cannot publish cached complete coverage on followi
     expect(tokens).toHaveLength(40);
     expect(tokens.every((event) => event.usageCoverage?.unverified === true)).toBe(true);
     expect(f.snapshot().coverage.pendingInvocations).toBe(0);
-    expect(f.snapshot().totalCostMicrocents).toBe(18000);
+    expect(f.snapshot().totalCostMicrocents).toBe(ONE_TURN_COST);
     expect(f.persister.durabilityFailure).toBeUndefined();
   } finally {
     f.close();

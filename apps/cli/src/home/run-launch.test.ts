@@ -28,7 +28,7 @@ import {
   createNativePromptChannel,
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
-import { selectLayout, selectPageRows } from '../render/tui/native-select-window.js';
+import { nativePopupGeometry } from '../popups/popup-slot.js';
 import { captureIo } from '../test-support.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { FS_SCOPE_CHANGED } from '../run-core/prepare-run.js';
@@ -312,13 +312,22 @@ function rig(
   scratch.push(home);
   fallbackHome = home;
   const homeIo = captureIo();
-  // Every layer of the chord guard off: the guard is proved in its own tests, and a card here is answered the moment it is up.
+  // Every layer of the chord guard off, and the popup's opening settle too: the guards are proved in their own tests (and the `/run` popup's
+  // chord in `run-launch-popup.test.ts`), and a prompt here is answered the moment it is up. The clock moves on at every read, so a key always
+  // arrives after the frame it answers was shown (the opening guard's rule that a key must come after the popup appeared still holds).
+  let tick = 0;
   const channel = createNativePromptChannel({
     guard: { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 },
+    settleMs: 0,
+    now: () => (tick += 1),
   });
   channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
   const snapshots: string[] = [];
-  channel.ui.subscribe(() => snapshots.push(JSON.stringify(channel.ui.getSnapshot())));
+  channel.ui.subscribe(() => {
+    // The live host's acknowledgement: every frame published is measured and flushed at once.
+    channel.ui.shown(channel.ui.getSnapshot());
+    snapshots.push(JSON.stringify(channel.ui.getSnapshot()));
+  });
   const builds = vi.fn();
   const startMcpClient = vi.fn(() => realStartMcpClient([]));
   const host = new RunHost({
@@ -452,7 +461,7 @@ function runStatuses(): unknown[] {
     .map((row) => (typeof row === 'object' && row !== null && 'status' in row ? row.status : row));
 }
 
-/** Pick the first workflow in the picker and answer the one number field, leaving the confirmation card up. */
+/** Pick the first workflow in the picker and answer the one number field, leaving the confirmation (the `/run` popup's chord step) up. */
 async function toConfirmation(r: Rig, value = '3'): Promise<NativePromptSnapshot> {
   const k = keys(r);
   await shows(r, 'select', 'Run which workflow?');
@@ -460,7 +469,22 @@ async function toConfirmation(r: Rig, value = '3'): Promise<NativePromptSnapshot
   await shows(r, 'text', 'Input 1 of 1: n');
   k.type(value);
   k.enter();
-  return shows(r, 'select', 'Run ');
+  return shows(r, 'chord', 'Run ');
+}
+
+/**
+ * The popup's last step when a start failed after it opened (or the project has nothing to run): wait for it, return its sentence, and close it
+ * with `Enter`, as a person who read it does. The launch then resolves with `''`: the popup has said it.
+ */
+async function lastStep(r: Pick<Rig, 'channel'>): Promise<NativePromptSnapshot> {
+  const step = await untilPrompt(
+    r,
+    (snapshot) => snapshot.kind === 'select' && snapshot.final !== undefined,
+    'the popup`s last step',
+  );
+  expect(step.options.map((option) => option.label)).toEqual(['Close']);
+  keys(r).enter();
+  return step;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -494,72 +518,89 @@ describe('the picker offers only what can run', () => {
       writeWorkflow(`${id}.relavium.yaml`, NO_INPUTS.replace('id: no-inputs', `id: ${id}`));
     }
     const r = rig();
-    // What the live host's acknowledgement binds: how far a page moves the cursor on the terminal the picker is drawn on.
+    // What the live host's acknowledgement binds: how far a page moves the cursor in the window the `/run` popup draws at 80x24.
     const terminal = { cols: 80, rows: 24 };
-    r.channel.ui.bindPageRows(() => selectPageRows(r.channel.ui.getSnapshot(), terminal));
+    const popupLayout = (snapshot: NativePromptSnapshot) =>
+      nativePopupGeometry(snapshot, 'overlay', terminal, true).layout;
+    r.channel.ui.bindPageRows(() => popupLayout(r.channel.ui.getSnapshot())?.page);
     const opened = r.launch.open();
     const picker = await shows(r, 'select', 'Run which workflow?');
     expect(picker.options).toHaveLength(60);
-    // The card the terminal cannot hold whole is windowed: the first rows, and a marker for the rest.
-    const layout = selectLayout(picker, terminal);
-    expect(layout?.lines.at(-1)).toEqual({ kind: 'marker', position: 'below', text: '▼ 40 more' });
-    expect(layout?.lines.filter((line) => line.kind === 'option')).toHaveLength(20);
+    expect(picker.popup, 'the picker is the popup`s first step').toMatchObject({
+      title: '/run',
+      stepIndex: 0,
+      stepNames: ['Workflow', 'Inputs', 'Confirm'],
+    });
+    // The popup cannot hold sixty rows: they are windowed, the first rows and a marker for the rest.
+    const layout = popupLayout(picker);
+    const window = layout?.lines.filter((line) => line.kind === 'selected' || line.kind === 'row');
+    const shown = window?.length ?? 0;
+    expect(shown, 'a window, not every row').toBeLessThan(60);
+    expect(layout?.lines.at(-1)?.text.trim()).toBe(`▼ ${String(60 - shown)} more`);
     r.channel.ui.input('', { ...none, pageDown: true });
     const paged = r.channel.ui.getSnapshot();
-    expect(paged.selected).toBe(19);
+    expect(paged.selected, 'a page moves to the window`s last row').toBe(shown - 1);
     // Enter answers the row the cursor is on: the launch goes on with that workflow, which names itself on the confirmation.
     keys(r).enter();
-    const confirmation = await shows(r, 'select', 'Run ');
-    expect(confirmation.message).toContain(paged.options[19]?.label ?? 'unreachable');
-    expect(confirmation.message).toContain('wf-19');
+    const confirmation = await shows(r, 'chord', 'Run ');
+    expect(confirmation.message).toContain(paged.options[shown - 1]?.label ?? 'unreachable');
+    expect(confirmation.message).toContain(`wf-${String(shown - 1).padStart(2, '0')}`);
     // Esc at the confirmation steps back to the picker; Ctrl+C leaves the flow.
     keys(r).ctrlC();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
   });
 
-  it('with no valid workflow, offers nothing, opens no prompt, and gives the reason', async () => {
+  it('with no valid workflow, offers nothing to pick and says why in the popup, whole (its empty state, ADR-0148 §5)', async () => {
     writeWorkflow('not-a-workflow.relavium.yaml', BROKEN);
     const r = rig();
-    const notice = await r.launch.open();
-    expect(notice).toContain(LAUNCH_NO_WORKFLOWS);
-    expect(notice).toContain('Not offered');
-    expect(notice).toContain('not-a-workflow');
-    expect(notice).toContain('a workflow must declare at least one node');
-    expect(r.channel.ui.getSnapshot().active, 'no flow was ever opened').toBe(false);
-    expect(r.snapshots).toEqual([]);
+    const opened = r.launch.open();
+    const empty = await lastStep(r);
+    expect(empty.message).toContain(LAUNCH_NO_WORKFLOWS);
+    expect(empty.message).toContain('Not offered');
+    expect(empty.message).toContain('not-a-workflow');
+    expect(empty.message).toContain('a workflow must declare at least one node');
+    expect(empty.final, 'an empty project is not a failure').toBe('ok');
+    expect(empty.popup).toMatchObject({ title: '/run', stepIndex: 0 });
+    expect(await opened, 'the popup said it: nothing more to say').toBe('');
+    expect(r.channel.ui.getSnapshot().active, 'the flow is closed').toBe(false);
+    expect(
+      r.snapshots.some((snapshot) => snapshot.includes('Run which workflow?')),
+      'nothing to pick',
+    ).toBe(false);
+    expect(r.states, 'the machine never left idle').toEqual([]);
   });
 
-  it('with no workflows at all, says so', async () => {
+  it('with no workflows at all, says so in the popup', async () => {
     const r = rig();
-    expect(await r.launch.open()).toBe(LAUNCH_NO_WORKFLOWS);
+    const opened = r.launch.open();
+    expect((await lastStep(r)).message).toBe(LAUNCH_NO_WORKFLOWS);
+    expect(await opened).toBe('');
     expect(r.startCalls).toHaveLength(0);
   });
 });
 
 describe('a double submit starts one run', () => {
-  it('two Enters in one tick start exactly one run (one engine built)', async () => {
+  it('two Ctrl+Y in one tick start exactly one run (one engine built)', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
     const card = await toConfirmation(r);
-    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
-    k.up(); // a deliberate move to Yes
-    expect(r.channel.ui.getSnapshot().selected).toBe(0);
+    expect(card.options.map((option) => option.label)).toEqual(['Start it', 'Cancel']);
 
     const session = r.launch.session();
     expect(session?.state().kind, 'the confirmation is the current prompt').toBe('confirming');
     const turn = session?.state().turn ?? -1;
-    // One tick, no yield between them: the Enter, a second Enter (a key held down), and two more deliveries of the same answer
+    // One tick, no yield between them: the Ctrl+Y, a second Ctrl+Y (a key held down), and two more deliveries of the same answer
     // straight to the machine, as any second path to the confirmation (a repeat, a different host) would make them.
-    k.enter();
-    k.enter();
+    k.ctrlY();
+    k.ctrlY();
     session?.dispatch({ kind: 'confirmed', turn, yes: true });
     session?.dispatch({ kind: 'confirmed', turn, yes: true });
 
     const notice = await opened;
-    expect(notice).toMatch(/^Started host-happy as run /);
+    expect(notice).toMatch(/^Started host-happy · run /);
     expect(r.startCalls, 'the host was asked once').toHaveLength(1);
     expect(r.builds, 'one engine').toHaveBeenCalledTimes(1);
     expect(runCount(), 'one run').toBe(1);
@@ -622,12 +663,17 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     const opened = r.launch.open();
     await toConfirmation(r);
     writeWorkflow('happy.relavium.yaml', EDITED); // the writer, after the card is up
-    k.up(); // a deliberate move to Yes
-    k.enter();
+    k.ctrlY(); // a deliberate Ctrl+Y
 
-    const notice = await opened;
-    expect(notice).toBe('The workflow file changed after you confirmed. Open the list again.');
-    expect(notice).toBe(WORKFLOW_SOURCE_CHANGED);
+    // The refusal is said in the popup, whole, on the step it failed at (it is longer than a notification); the launch has nothing more to say.
+    const failed = await lastStep(r);
+    expect(failed.message).toBe(
+      'The workflow file changed after you confirmed. Open the list again.',
+    );
+    expect(failed.message).toBe(WORKFLOW_SOURCE_CHANGED);
+    expect(failed.final).toBe('failed');
+    expect(failed.popup?.stepIndex, 'on the Confirm step').toBe(2);
+    expect(await opened).toBe('');
     // The host was asked, with the digest of the text the confirmation was built from, and turned the start away.
     expect(r.startCalls).toHaveLength(1);
     expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(HAPPY));
@@ -649,9 +695,8 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     // The remedy the sentence names works: the list opened again reads the file as it is now, and that is what is confirmed and run.
     const again = r.launch.open();
     await toConfirmation(r);
-    k.up();
-    k.enter();
-    expect(await again).toMatch(/^Started host-happy as run /);
+    k.ctrlY();
+    expect(await again).toMatch(/^Started host-happy · run /);
     expect(r.startCalls[1]?.request.expectedSourceDigest).toBe(sha256(EDITED));
     expect(runCount()).toBe(1);
     await idle(r);
@@ -665,9 +710,9 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     const opened = r.launch.open();
     await toConfirmation(r);
     writeWorkflow('happy.relavium.yaml', `${HAPPY}\n`);
-    k.up();
-    k.enter();
-    expect(await opened).toBe(WORKFLOW_SOURCE_CHANGED);
+    k.ctrlY();
+    expect((await lastStep(r)).message).toBe(WORKFLOW_SOURCE_CHANGED);
+    expect(await opened).toBe('');
     expect(r.builds).not.toHaveBeenCalled();
     expect(runCount()).toBe(0);
     await idle(r);
@@ -682,9 +727,8 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     const k = keys(r);
     const opened = r.launch.open();
     await toConfirmation(r);
-    k.up();
-    k.enter();
-    expect(await opened).toMatch(/^Started host-happy as run /);
+    k.ctrlY();
+    expect(await opened).toMatch(/^Started host-happy · run /);
     expect(r.startCalls).toHaveLength(1);
     expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(text));
     expect(r.builds).toHaveBeenCalledTimes(1);
@@ -721,12 +765,11 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     await shows(r, 'text', 'Input 1 of 1: n');
     k.type('3');
     k.enter();
-    const card = await shows(r, 'select', 'Run ');
+    const card = await shows(r, 'chord', 'Run ');
     expect(card.message).toBe('Run New name with n=3?');
     expect(card.message).not.toContain('Old name');
-    k.up();
-    k.enter();
-    expect(await opened).toMatch(/^Started New name as run /);
+    k.ctrlY();
+    expect(await opened).toMatch(/^Started New name · run /);
     expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(
       sha256(named('New name').replace('inputs.n * 2', 'inputs.n * 3')),
     );
@@ -766,16 +809,15 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     expect(state.kind).toBe('starting');
   });
 
-  it('a second Enter in one tick still starts one run, and it is bound by the one digest', async () => {
+  it('a second Ctrl+Y in one tick still starts one run, and it is bound by the one digest', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
     await toConfirmation(r);
-    k.up();
-    k.enter();
-    k.enter();
-    expect(await opened).toMatch(/^Started host-happy as run /);
+    k.ctrlY();
+    k.ctrlY();
+    expect(await opened).toMatch(/^Started host-happy · run /);
     expect(r.startCalls).toHaveLength(1);
     expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(HAPPY));
     expect(runCount()).toBe(1);
@@ -834,9 +876,8 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    await shows(r, 'select', 'Run ');
-    k.up(); // a deliberate move to Yes
-    k.enter();
+    await shows(r, 'chord', 'Run ');
+    k.ctrlY(); // a deliberate Ctrl+Y
     // The answer reaches the machine a microtask later; the host is asked once and then holds the start.
     await vi.waitFor(() => {
       expect(r.startCalls, 'the host was asked once and holds the start').toHaveLength(1);
@@ -873,9 +914,8 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    await shows(r, 'select', 'Run ');
-    k.up(); // a deliberate move to Yes
-    k.enter();
+    await shows(r, 'chord', 'Run ');
+    k.ctrlY(); // a deliberate Ctrl+Y
     // The leg is preparing: the engine is being built and the screen says so.
     await vi.waitFor(() => {
       expect(r.builds, 'the engine build is the held window').toHaveBeenCalledTimes(1);
@@ -885,6 +925,8 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
       message: 'Starting the run…',
       escape: 'cancel',
     });
+    // The start is the run's, not a step of the popup: the frame is taken away while the host has it (a consent card it raises is a card).
+    expect(r.channel.ui.getSnapshot().popup).toBeUndefined();
     expect(r.host.snapshot().launching).toBe(true);
 
     k.ctrlC();
@@ -936,8 +978,7 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
       const k = keys(r);
       const opened = r.launch.open();
       await toConfirmation(r);
-      k.up();
-      k.enter();
+      k.ctrlY();
       await vi.waitFor(() => {
         expect(r.startMcpClient, 'the leg is connecting').toHaveBeenCalledTimes(1);
       }, WAIT);
@@ -952,17 +993,16 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
     },
   );
 
-  it('an Enter and a Ctrl+C in one read: the flow is cancelled, the host is never asked, and /run does not hang', async () => {
+  it('a Ctrl+Y and a Ctrl+C in one read: the flow is cancelled, the host is never asked, and /run does not hang', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    await shows(r, 'select', 'Run ');
-    k.up(); // a deliberate move to Yes
-    // One read, no yield between them: the Enter answers the card, and the Ctrl+C aborts the flow BEFORE the machine has seen the answer.
-    k.enter();
+    await shows(r, 'chord', 'Run ');
+    // One read, no yield between them: the Ctrl+Y answers the card, and the Ctrl+C aborts the flow BEFORE the machine has seen the answer.
+    k.ctrlY();
     k.ctrlC();
 
     expect(await settledWithin(opened)).toBe(LAUNCH_CANCELLED);
@@ -987,15 +1027,16 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
 });
 
 describe('open(slug) starts the form for one workflow (the Defined tab’s r)', () => {
-  it('skips the picker: the first prompt is the workflow’s own, and the confirmation still defaults to No', async () => {
+  it('skips the picker: the first prompt is the workflow’s own, and the confirmation is still answered by Ctrl+Y alone', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const opened = r.launch.open('no-inputs');
-    const card = await shows(r, 'select', 'Run no-inputs');
-    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
-    expect(card.options[card.selected]?.label, 'the cursor is on No').toBe('No');
+    const card = await shows(r, 'chord', 'Run no-inputs');
+    expect(card.options.map((option) => option.label)).toEqual(['Start it', 'Cancel']);
     keys(r).enter();
+    expect(r.channel.ui.getSnapshot().kind, 'an Enter answers nothing').toBe('chord');
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     // The picker was never drawn: no snapshot of the whole session asked "which workflow".
@@ -1019,12 +1060,11 @@ describe('open(slug) starts the form for one workflow (the Defined tab’s r)', 
     for (let i = 0; i < 3; i += 1) k.backspace();
     k.type('4');
     k.enter();
-    await shows(r, 'select', 'Run host-happy with n=4?');
+    await shows(r, 'chord', 'Run host-happy with n=4?');
     const turn = r.launch.session()?.state().turn ?? -1;
-    k.up();
-    k.enter();
+    k.ctrlY();
     r.launch.session()?.dispatch({ kind: 'confirmed', turn, yes: true }); // the same answer again, in the same tick
-    expect(await opened).toMatch(/^Started host-happy as run /);
+    expect(await opened).toMatch(/^Started host-happy · run /);
     expect(r.startCalls, 'one start').toHaveLength(1);
     expect(r.startCalls[0]?.request.workflow).toBe('.relavium/workflows/happy.relavium.yaml');
     expect(runCount()).toBe(1);
@@ -1093,8 +1133,8 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const opened = r.launch.open('no-inputs', listed);
-    await shows(r, 'select', 'Run no-inputs');
-    keys(r).enter();
+    await shows(r, 'chord', 'Run no-inputs');
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 
@@ -1153,11 +1193,20 @@ describe('the file that is read for the pick must still declare the id it was li
   it('refuses a slug that was asked for (the Defined tab’s `r`), names the id the file declares now, and shows no form or confirmation', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig({ catalog: changesIdBeforeRead });
-    const notice = await r.launch.open('no-inputs');
-    expect(notice).toBe(launchChanged('no-inputs', 'renamed'));
-    expect(notice).toMatch(/^Not started\. Open the list again: .* declares renamed now\.$/u);
-    // The flow was begun (the channel says it is busy while the file is read), but no question or card was ever put up for the changed file.
-    const shown = r.snapshots.map((snapshot) => (JSON.parse(snapshot) as { kind: string }).kind);
+    const opened = r.launch.open('no-inputs');
+    // The popup was open (the file is read inside it): the refusal is its last step, on the Workflow step, whole.
+    const failed = await lastStep(r);
+    expect(failed.message).toBe(launchChanged('no-inputs', 'renamed'));
+    expect(failed.message).toMatch(
+      /^Not started\. Open the list again: .* declares renamed now\.$/u,
+    );
+    expect(failed.popup?.stepIndex).toBe(0);
+    expect(await opened).toBe('');
+    // No question or card was ever put up for the changed file: only the waits and the step that says it was refused.
+    const shown = r.snapshots
+      .map((snapshot) => JSON.parse(snapshot) as { kind: string; final?: string })
+      .filter((snapshot) => snapshot.final === undefined)
+      .map((snapshot) => snapshot.kind);
     expect(shown.filter((kind) => kind !== 'busy' && kind !== 'idle')).toEqual([]);
     expect(r.states.map((state) => state.kind)).not.toContain('confirming');
     expect(r.states.map((state) => state.kind)).not.toContain('asking');
@@ -1172,7 +1221,8 @@ describe('the file that is read for the pick must still declare the id it was li
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     keys(r).enter();
-    expect(await opened).toBe(launchChanged('no-inputs', 'renamed'));
+    expect((await lastStep(r)).message).toBe(launchChanged('no-inputs', 'renamed'));
+    expect(await opened).toBe('');
     expect(r.states.map((state) => state.kind)).not.toContain('confirming');
     expect(r.startCalls).toHaveLength(0);
     expect(runCount()).toBe(0);
@@ -1182,8 +1232,8 @@ describe('the file that is read for the pick must still declare the id it was li
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig({ catalog: (real) => ({ list: () => real.list(), load: (p) => real.load(p) }) });
     const opened = r.launch.open('no-inputs');
-    await shows(r, 'select', 'Run no-inputs');
-    keys(r).enter();
+    await shows(r, 'chord', 'Run no-inputs');
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 });
@@ -1235,54 +1285,59 @@ describe('two files that declare one workflow id', () => {
     expect(r.startCalls).toHaveLength(0);
     // An id only one file declares is not ambiguous.
     const opened = r.launch.open('no-inputs');
-    await shows(r, 'select', 'Run no-inputs');
-    keys(r).enter();
+    await shows(r, 'chord', 'Run no-inputs');
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 });
 
-describe('the confirmation defaults to No', () => {
-  it('opens on No, and an Enter typed ahead answers No: nothing is started', async () => {
+describe('the confirmation is answered by Ctrl+Y alone (ADR-0148 §3)', () => {
+  it('is the popup`s chord step: an Enter typed ahead answers nothing, Ctrl+N cancels, and nothing is started', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     const r = rig();
     const opened = r.launch.open();
     const card = await toConfirmation(r);
-    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
-    expect(card.options[card.selected]?.label, 'the cursor is on No').toBe('No');
+    expect(card.kind).toBe('chord');
+    expect(card.options.map((option) => option.label)).toEqual(['Start it', 'Cancel']);
+    expect(card.popup, 'on the Confirm step').toMatchObject({ title: '/run', stepIndex: 2 });
+    expect(card.escape, '`Esc` steps back to the inputs').toBe('back');
     expect(card.message).toContain('Run host-happy with n=3?');
     keys(r).enter(); // the Enter that was typed ahead
+    expect(r.channel.ui.getSnapshot().kind, 'an Enter answers nothing').toBe('chord');
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(r.builds).not.toHaveBeenCalled();
     expect(runCount()).toBe(0);
   });
 
-  it('is No for a workflow with no inputs too: the Enter that picked it, repeated a tick later, lands on No', async () => {
+  it('for a workflow with no inputs too: the Enter that picked it, repeated a tick later, answers nothing', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter(); // picks it
-    const card = await shows(r, 'select', 'Run no-inputs');
-    expect(card.options[card.selected]?.label).toBe('No');
+    await shows(r, 'chord', 'Run no-inputs');
     k.enter(); // the repeat
+    expect(r.channel.ui.getSnapshot().kind).toBe('chord');
+    expect(r.launch.session()?.state().kind).toBe('confirming');
+    k.ctrlC();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(runCount()).toBe(0);
   });
 
-  it('answers Yes only to a deliberate move to Yes', async () => {
+  it('starts only on a deliberate Ctrl+Y', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    await shows(r, 'select', 'Run no-inputs');
-    k.up();
-    k.enter();
-    expect(await opened).toMatch(/^Started no-inputs as run /);
+    await shows(r, 'chord', 'Run no-inputs');
+    k.ctrlY();
+    expect(await opened).toMatch(/^Started no-inputs · run /);
     expect(r.startCalls).toHaveLength(1);
     await idle(r);
   });
@@ -1308,9 +1363,8 @@ describe('the form validates with the workflow`s own validator', () => {
     for (let i = 0; i < 3; i += 1) k.backspace();
     k.type('7');
     k.enter();
-    const card = await shows(r, 'select', 'Run host-happy with n=7?');
-    expect(card.options[card.selected]?.label).toBe('No');
-    k.enter();
+    await shows(r, 'chord', 'Run host-happy with n=7?');
+    k.ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 
@@ -1385,8 +1439,9 @@ describe('a masked value stays out of everything', () => {
         logged.push(JSON.stringify(args));
       });
     }
-    // The Home's own controller carries the typed `/run`, as the product does.
+    // The Home's own controller carries the typed `/run`, as the product does, and its one notification channel.
     const controllerStates: string[] = [];
+    const notified: string[] = [];
     const controller = createHomeController({
       startChat: () => {
         throw new Error('unexpected chat');
@@ -1404,6 +1459,7 @@ describe('a masked value stays out of everything', () => {
       onExit: vi.fn(),
       onError: vi.fn(),
       launchRun: () => r.launch.open(),
+      announce: (text) => notified.push(text),
     });
     controller.subscribe(() => controllerStates.push(JSON.stringify(controller.getSnapshot())));
     controller.handlePaste('/run');
@@ -1421,13 +1477,14 @@ describe('a masked value stays out of everything', () => {
     // Only dots are on the card, never the value.
     expect(r.channel.ui.getSnapshot().display).toMatch(/^•+$/);
     k.enter();
-    const card = await shows(r, 'select', 'Run host-secret with n=3, token=••••?');
-    k.up();
-    expect(card.options[card.selected]?.label).toBe('No');
-    k.enter();
+    await shows(r, 'chord', 'Run host-secret with n=3, token=••••?');
+    k.ctrlY();
 
     await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), WAIT);
-    expect(controller.getSnapshot().notice).toMatch(/^Started host-secret as run /);
+    // The start is one notification on the Home's channel, and the Home's notice is left as it was (ADR-0148 §6).
+    expect(notified).toHaveLength(1);
+    expect(notified[0]).toMatch(/^Started host-secret · run /);
+    expect(controller.getSnapshot().notice).toBeUndefined();
     await idle(r);
     // The run got the secret: it completed. (Blank or missing, the run core would have refused it.)
     expect(runStatuses()).toEqual(['completed']);
@@ -1437,6 +1494,7 @@ describe('a masked value stays out of everything', () => {
       'every controller state': controllerStates.join('\n'),
       'the controller`s final state': JSON.stringify(controller.getSnapshot()),
       'every prompt snapshot': r.snapshots.join('\n'),
+      'every notification': notified.join('\n'),
       'the host`s notices': JSON.stringify(r.host.notices.snapshot()),
       'the Home`s stdout and stderr': r.homeIo.out() + r.homeIo.err(),
       'the console': logged.join('\n'),
@@ -1484,15 +1542,16 @@ describe('a masked value stays out of everything', () => {
     await shows(base, 'password', 'Input 2 of 2: token');
     k.type('first-secret');
     k.enter();
-    await shows(base, 'select', 'Run host-optional-secret with n=5, token=••••?');
+    await shows(base, 'chord', 'Run host-optional-secret with n=5, token=••••?');
     k.esc(); // back to the secret field
     const again = await shows(base, 'password', 'Input 2 of 2: token');
     expect(again.display, 'the field is asked again from nothing').toBe('');
     k.enter(); // empty: an optional secret is omitted
-    await shows(base, 'select', 'Run host-optional-secret with n=5, token=(none)?');
-    k.up();
-    k.enter();
-    expect(await opened).toBe('A run is already executing: run-1.');
+    await shows(base, 'chord', 'Run host-optional-secret with n=5, token=(none)?');
+    k.ctrlY();
+    // The host's refusal came after the popup opened: it is the popup's last step.
+    expect((await lastStep(base)).message).toBe('A run is already executing: run-1.');
+    expect(await opened).toBe('');
     // The first secret is gone: stepping back dropped it, so the port had nothing for the host to take.
     expect(taken).toEqual([{}]);
     expect(host.start).toHaveBeenCalledTimes(1);
@@ -1531,7 +1590,7 @@ describe('a masked value stays out of everything', () => {
 });
 
 describe('what the host says is what the person reads', () => {
-  it('shows a refusal as the notice, with the flow closed', async () => {
+  it('shows a refusal in the popup, whole, then the flow is closed', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();
     const host = {
@@ -1557,10 +1616,13 @@ describe('what the host says is what the person reads', () => {
     const opened = launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    await shows(r, 'select', 'Run no-inputs');
-    k.up();
-    k.enter();
-    expect(await opened).toBe('A run is already executing: run-9.');
+    await shows(r, 'chord', 'Run no-inputs');
+    k.ctrlY();
+    // The host's own sentence, whole, as the popup's last step (it came after the popup opened); then the flow is closed.
+    const failed = await lastStep(r);
+    expect(failed.message).toBe('A run is already executing: run-9.');
+    expect(failed.final).toBe('failed');
+    expect(await opened).toBe('');
     expect(r.channel.ui.getSnapshot().active).toBe(false);
   });
 });
@@ -1570,27 +1632,28 @@ describe('the confirmation says what the run can do (P1-7)', () => {
   async function confirmationOf(r: Rig): Promise<NativePromptSnapshot> {
     return toConfirmation(r);
   }
+  /** The host's passage: the chord card's facts (it was a note above a Yes/No question before the confirmation became the popup's chord). */
+  const facts = (snapshot: NativePromptSnapshot): string => snapshot.details.join(' ');
   const rows = (text: string): number => Math.ceil(text.length / 80);
 
-  it("names the file scope first when the repository sets it, then what the definition grants, in the host's own row above the question", async () => {
+  it("names the file scope first when the repository sets it, then what the definition grants, in the host's own passage under the question", async () => {
     writeWorkflow('authority.relavium.yaml', AUTHORITY);
     writeProjectDefaults('fs_scope = "full"');
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.note).toBe(
+    expect(facts(card)).toBe(
       'File scope: full, set by this repository. This run can run commands, which the file scope does not limit ("npm test", "git status", and 1 more); write files; use MCP servers "local", "shared-registry".',
     );
     expect(card.message, 'the question is its own row, with nothing of the host in it').toBe(
       'Run host-authority with n=3?',
     );
     expect(
-      rows(card.note) + rows(card.message),
+      rows(facts(card)) + rows(card.message),
       'the whole card stays far inside 24 rows at 80 columns',
     ).toBeLessThanOrEqual(8);
-    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
-    expect(card.options[card.selected]?.label, 'the cursor is still on No').toBe('No');
-    keys(r).enter();
+    expect(card.details, 'one passage, the host`s, never joined to the question').toHaveLength(1);
+    keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(runCount()).toBe(0);
@@ -1603,9 +1666,9 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const scoped = rig();
     const first = scoped.launch.open();
     const card = await confirmationOf(scoped);
-    expect(card.note).toBe('File scope: project, set by this repository.');
+    expect(facts(card)).toBe('File scope: project, set by this repository.');
     expect(card.message).toBe('Run host-read-only with n=3?');
-    keys(scoped).enter();
+    keys(scoped).ctrlN();
     await first;
 
     rmSync(join(root, '.relavium', 'project.toml'));
@@ -1614,11 +1677,11 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const plain = rig();
     const second = plain.launch.open();
     const grants = await confirmationOf(plain);
-    expect(grants.note).toBe(
+    expect(facts(grants)).toBe(
       'This run can run commands, which the file scope does not limit ("npm test", "git status", and 1 more); write files; use MCP servers "local", "shared-registry".',
     );
     expect(grants.message).toBe('Run host-authority with n=3?');
-    keys(plain).enter();
+    keys(plain).ctrlN();
     await second;
   });
 
@@ -1628,11 +1691,11 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.note, 'no host row at all').toBe('');
+    expect(card.details, 'no host passage at all').toEqual([]);
     expect(card.message, 'the question is exactly what it always was').toBe(
       'Run host-read-only with n=3?',
     );
-    keys(r).enter();
+    keys(r).ctrlN();
     await opened;
   });
 
@@ -1647,9 +1710,9 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.note).not.toContain('run commands');
-    expect(card.note).toContain('write files');
-    keys(r).enter();
+    expect(facts(card)).not.toContain('run commands');
+    expect(facts(card)).toContain('write files');
+    keys(r).ctrlN();
     await opened;
   });
 
@@ -1703,13 +1766,13 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     expect(card.message, 'the author`s name is the question, in its own row').toBe(
       `Run ${name} with n=3?`,
     );
-    expect(card.note, 'and nothing of it is in the host`s row').not.toContain('Docs check');
+    expect(facts(card), 'and nothing of it is in the host`s row').not.toContain('Docs check');
     // What the author planted inside a command is quoted, its quote turned into an apostrophe and its length cut: a word in a name, not a
     // sentence of the host. The host's own scope sentence is there once, and first.
-    expect(card.note).toContain(`("x'; File scope: sandb…", "make *"`);
-    expect(card.note.startsWith('File scope: full, set by this repository. ')).toBe(true);
-    expect(card.note.split('File scope: full, set by this repository.')).toHaveLength(2);
-    keys(r).enter();
+    expect(facts(card)).toContain(`("x'; File scope: sandb…", "make *"`);
+    expect(facts(card).startsWith('File scope: full, set by this repository. ')).toBe(true);
+    expect(facts(card).split('File scope: full, set by this repository.')).toHaveLength(2);
+    keys(r).ctrlN();
     await opened;
   });
 
@@ -1721,7 +1784,9 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const opened = r.launch.open();
     await shows(r, 'select', 'Run which workflow?');
     k.enter();
-    const notice = await opened;
+    // The configuration is read inside the popup: the refusal is its last step, on the Workflow step.
+    const notice = (await lastStep(r)).message;
+    expect(await opened).toBe('');
     expect(notice).toMatch(/^Not started\. /u);
     expect(notice).toContain(join('.relavium', 'project.toml'));
     expect(notice).not.toContain(root);
@@ -1752,18 +1817,18 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     // The repository widens its scope after the person was shown a confirmation that named none.
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.note).toBe('');
+    expect(facts(card)).toBe('');
     expect(card.message).toBe('Run host-read-only with n=3?');
     writeProjectDefaults('fs_scope = "full"');
-    k.up();
-    k.enter();
-    expect(await opened).toBe(FS_SCOPE_CHANGED);
+    k.ctrlY();
+    expect((await lastStep(r)).message).toBe(FS_SCOPE_CHANGED);
+    expect(await opened).toBe('');
     expect(r.startCalls[0]?.request.expectedFsScope).toBe('sandboxed');
     expect(r.builds).not.toHaveBeenCalled();
     expect(runCount()).toBe(0);
   });
 
-  it('the picker`s note about files it did not offer is put back when the card that replaced it is left', async () => {
+  it('the picker`s note about files it did not offer is put back when the chord card that cleared it is left', async () => {
     writeWorkflow('read.relavium.yaml', READ_ONLY);
     writeWorkflow('not-a-workflow.relavium.yaml', BROKEN);
     writeProjectDefaults('fs_scope = "project"');
@@ -1776,8 +1841,9 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     await shows(r, 'text', 'Input 1 of 1: n');
     k.type('3');
     k.enter();
-    const card = await shows(r, 'select', 'Run ');
-    expect(card.note, 'the host row replaced it').toBe(
+    const card = await shows(r, 'chord', 'Run ');
+    expect(card.note, 'a chord card has no note above it').toBe('');
+    expect(facts(card), 'the host`s passage is the card`s facts').toBe(
       'File scope: project, set by this repository.',
     );
     k.esc(); // back to the field
@@ -1828,16 +1894,18 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const opened = r.launch.open();
     const card = await confirmationOf(r);
     expect(
-      [...card.note].filter((character) => {
+      [...facts(card)].filter((character) => {
         const code = character.charCodeAt(0);
         return code < 32 || code === 127 || (code >= 0x202a && code <= 0x202e);
       }),
       'no control, escape or bidi character',
     ).toEqual([]);
-    expect(card.note).not.toContain('x'.repeat(30));
-    expect(card.note).toContain(`"${'x'.repeat(21)}…"`);
-    expect(card.note.length).toBeLessThanOrEqual(280);
-    keys(r).enter();
+    expect(facts(card)).not.toContain('x'.repeat(30));
+    expect(facts(card)).toContain(`"${'x'.repeat(21)}…"`);
+    expect(facts(card).length).toBeLessThanOrEqual(280);
+    // A server's name that spells the answer chord is no key token on the card (the full scrub, before the channel).
+    expect(facts(card)).not.toContain('Ctrl+Y');
+    keys(r).ctrlN();
     await opened;
   });
 
@@ -1848,12 +1916,12 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const k = keys(r);
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.note).toContain('File scope: project, set by this repository.');
+    expect(facts(card)).toContain('File scope: project, set by this repository.');
     // The repository's configuration is widened while the card is up.
     writeProjectDefaults('fs_scope = "full"');
-    k.up();
-    k.enter();
-    expect(await opened).toBe(FS_SCOPE_CHANGED);
+    k.ctrlY();
+    expect((await lastStep(r)).message).toBe(FS_SCOPE_CHANGED);
+    expect(await opened).toBe('');
     expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
     expect(runCount()).toBe(0);
     expect(r.registry.activeOwners).toBe(0);
@@ -1877,7 +1945,7 @@ describe('the confirmation counts the inputs it has no room for (M-3)', () => {
       k.type(`value-${String(index).padStart(2, '0')}-padding`);
       k.enter();
     }
-    const card = await shows(r, 'select', 'Run host-many');
+    const card = await shows(r, 'chord', 'Run host-many');
     expect(card.message.length).toBeLessThanOrEqual(200);
     const shown = card.message.match(/field\d\d=/g) ?? [];
     expect(shown.length, 'some are shown').toBeGreaterThan(0);
@@ -1886,7 +1954,7 @@ describe('the confirmation counts the inputs it has no room for (M-3)', () => {
     // Every entry that is shown is whole: the value ends where it ended.
     for (const entry of card.message.match(/field\d\d=[^,?]*/g) ?? [])
       expect(entry).toMatch(/^field\d\d=value-\d\d-padding/u);
-    k.enter(); // No
+    k.ctrlN();
     await opened;
   });
 
@@ -1896,7 +1964,7 @@ describe('the confirmation counts the inputs it has no room for (M-3)', () => {
     const opened = r.launch.open();
     const card = await toConfirmation(r, '4');
     expect(card.message).toBe('Run host-happy with n=4?');
-    keys(r).enter();
+    keys(r).ctrlN();
     await opened;
   });
 });
@@ -1933,16 +2001,19 @@ describe('a request while the host already hosts a leg is answered before the fo
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const { r, launch, list, begin, start } = stubbed(() => executing);
     const notice = await launch.open();
-    expect(notice).toBe(
-      'A run is already executing (01234567). Enter on its row in the strip opens it.',
-    );
-    expect(notice.length, 'one row of the notice line').toBeLessThanOrEqual(78);
+    // The typed `/run` says it in one notification: its first sentence, which names the run (the remedy is the strip's own row).
+    expect(notice).toBe('A run is already executing (01234567).');
+    expect(notice.length, 'a notification`s 54 columns').toBeLessThanOrEqual(54);
     expect(begin, 'no flow was begun').not.toHaveBeenCalled();
     expect(r.channel.ui.getSnapshot().active).toBe(false);
     expect(list, 'the catalog was not read').not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
-    // The same for `r` on a workflow of the Defined tab: the slug is not even looked at.
-    expect(await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml')).toBe(notice);
+    // The same for `r` on a workflow of the Defined tab (the slug is not even looked at), said whole on the tab's own row.
+    const whole = await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml');
+    expect(whole).toBe(
+      'A run is already executing (01234567). Enter on its row in the strip opens it.',
+    );
+    expect(whole.length, 'one row of the tab').toBeLessThanOrEqual(78);
   });
 
   it('a leg that is still starting is named as starting, and a host with nothing hosted opens the form as before', async () => {
@@ -1951,7 +2022,10 @@ describe('a request while the host already hosts a leg is answered before the fo
     expect(starting.begin).not.toHaveBeenCalled();
 
     const idle = stubbed(() => ({ launching: false, active: undefined, last: undefined }));
-    expect(await idle.launch.open()).toBe(LAUNCH_NO_WORKFLOWS); // the (empty) catalog was read: the flow went on
+    const opened = idle.launch.open();
+    // The (empty) catalog was read: the flow went on, to the popup's empty state.
+    expect((await lastStep(idle.r)).message).toBe(LAUNCH_NO_WORKFLOWS);
+    expect(await opened).toBe('');
     expect(idle.list).toHaveBeenCalledTimes(1);
   });
 
@@ -2000,8 +2074,7 @@ describe('the MCP consent card of a hosted leg', () => {
     const k = keys(r);
     const opened = r.launch.open();
     await toConfirmation(r);
-    k.up();
-    k.enter();
+    k.ctrlY();
     const card = await shows(r, 'chord', "Allow MCP server 'local'");
     return { opened, card };
   }
@@ -2010,12 +2083,14 @@ describe('the MCP consent card of a hosted leg', () => {
     writeWorkflow('mcp.relavium.yaml', MCP_GATED);
     const r = rig();
     const { opened, card } = await toConsentCard(r);
+    // It arrives while the `/run` popup is open, during the start: it is the card it always was, not a step of the popup (ADR-0139 §4).
+    expect(card.popup, 'no popup frame around the consent card').toBeUndefined();
     expect(card.message).toContain('on this machine');
     expect(card.details.join('\n')).toContain('server');
     expect(r.startMcpClient, 'nothing is started while the card is up').not.toHaveBeenCalled();
     expect(existsSync(mcpConsentPath(r.home)), 'and nothing is recorded').toBe(false);
     keys(r).ctrlY();
-    expect(await opened).toMatch(/^Started host-mcp as run /);
+    expect(await opened).toMatch(/^Started host-mcp · run /);
     expect(r.startMcpClient).toHaveBeenCalledTimes(1);
     expect(existsSync(mcpConsentPath(r.home)), 'the grant is the per-machine one').toBe(true);
     await idle(r);
@@ -2036,8 +2111,10 @@ describe('the MCP consent card of a hosted leg', () => {
       const r = rig();
       const { opened } = await toConsentCard(r);
       refuse(keys(r));
-      const notice = await opened;
-      expect(notice).toContain(words);
+      // A refusal of the card is the start's failure, said in the popup (whole); leaving the card leaves the launch (one notification).
+      const said = words === LAUNCH_CANCELLED ? await opened : (await lastStep(r)).message;
+      expect(said).toContain(words);
+      if (words !== LAUNCH_CANCELLED) expect(await opened).toBe('');
       expect(r.startMcpClient, 'the server was never started').not.toHaveBeenCalled();
       expect(existsSync(mcpConsentPath(r.home)), 'no grant was written').toBe(false);
       expect(runCount(), 'no run was created').toBe(0);
@@ -2052,7 +2129,7 @@ describe('the MCP consent card of a hosted leg', () => {
     const r = rig();
     const { opened } = await toConsentCard(r);
     keys(r).ctrlY();
-    expect(await opened).toMatch(/^Started host-mcp as run /);
+    expect(await opened).toMatch(/^Started host-mcp · run /);
     await idle(r);
     const parked = r.host.snapshot().last;
     expect(parked?.handedOff, 'the leg is parked at its gate').toBe(true);
@@ -2150,13 +2227,13 @@ describe('the MCP consent card of a hosted leg', () => {
     const k = keys(r);
     const opened = r.launch.open();
     await toConfirmation(r);
-    k.up();
-    k.enter();
-    const notice = await opened;
+    k.ctrlY();
+    const notice = (await lastStep(r)).message;
+    expect(await opened).toBe('');
     expect(notice).toContain('not approved on this machine');
     expect(
-      r.snapshots.some((json) => json.includes('"kind":"chord"')),
-      'no card ever opened',
+      r.snapshots.some((json) => json.includes('Allow MCP server')),
+      'no consent card ever opened (the one chord card was the confirmation)',
     ).toBe(false);
     expect(r.startMcpClient).not.toHaveBeenCalled();
     expect(runCount()).toBe(0);

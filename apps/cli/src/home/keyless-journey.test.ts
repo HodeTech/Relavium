@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -15,16 +15,26 @@ import { KEY_SHAPED_DRAFT_NOTICE } from '../render/tui/home-controller.js';
 import { keychainAccount } from '../secrets/keychain.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
+import {
+  acknowledgePopupFrames,
+  choose as choosePopup,
+  closeDone,
+  pasteKey,
+  POPUP_ANSWER_WAIT_MS,
+  sleep,
+} from './provider-popup.test-support.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
 
 /**
- * THE KEYLESS JOURNEY, through the real Home wiring (MVP-11 Step 2.4, ADR-0146 §6, OD-19): a clean home with no key anywhere, the real
- * native setup, the real wizard and the real provider setup coordinator; only the network (the key check), the OS keychain and the chat
- * session are fakes. No network, no real keychain, nothing outside a temporary directory.
+ * THE KEYLESS JOURNEY, through the real Home wiring (MVP-11 Step 2.4 and unit 6, ADR-0146 §6, OD-19): a clean home with no key anywhere,
+ * the real native setup drawn as the `/providers` POPUP (the renderer's part, acknowledging each frame, played by the mock), the real wizard
+ * and the real provider setup coordinator; only the network (the key check), the OS keychain and the chat session are fakes. No network, no
+ * real keychain, nothing outside a temporary directory.
  *
- *   keyless Home -> `Esc` skips (the notice is the skip note) -> type `hello` -> `Enter` opens the setup and the draft is still `hello`,
- *   nothing started -> the setup closes -> the draft is still `hello` and unsent -> a key is stored -> `Enter` starts the chat with that
- *   message; and a draft that is a key never lands in the editor or the history.
+ *   keyless Home -> `Esc` skips the first run (remembered in the global config, behind its rewrite disclosure on a hand-made one) -> type
+ *   `hello` -> `Enter` opens the popup and the draft is still `hello`, nothing started -> the popup closes -> the draft is still `hello` and
+ *   unsent -> a key is stored and the Done step names it -> `Enter` starts the chat with that message; and a draft that is a key never lands
+ *   in the editor or the history. Nothing the setup says is a Home notice: it is the popup's Done step or one notification.
  */
 
 // The key check never leaves the machine: the adapter the wizard probes answers at once.
@@ -78,7 +88,7 @@ const key = {
   capsLock: false,
   numLock: false,
 };
-const SKIP_NOTE = 'Setup skipped · /providers connects a provider any time';
+const SKIP_NOTE = 'Setup skipped · /providers connects a provider anytime';
 const SYNTHETIC_KEY = 'synthetic-journey-credential-5521';
 /** A draft shaped like a key of each of the four providers (each long enough to be one). */
 const KEY_SHAPED_DRAFTS = [
@@ -93,15 +103,30 @@ afterEach(() => {
   for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
+/**
+ * The global config a journey starts with: a hand-made one (the default), none at all, a symbolic link (which no writer follows), or one that
+ * already remembers a skipped first run.
+ */
+type StartingConfig = 'hand-made' | 'none' | 'symlink' | 'skipped';
+
 function journey(
   startSize: { cols: number; rows: number } = { cols: 80, rows: 24 },
   env: Record<string, string | undefined> = {},
   overrides: Partial<HomeDeps> = {},
+  config: StartingConfig | { readonly reuse: string } = 'hand-made',
 ) {
-  const cwd = mkdtempSync(join(tmpdir(), 'relavium-keyless-journey-'));
-  paths.push(cwd);
+  const cwd =
+    typeof config === 'object'
+      ? config.reuse
+      : mkdtempSync(join(tmpdir(), 'relavium-keyless-journey-'));
+  if (typeof config !== 'object') paths.push(cwd);
   const path = join(cwd, 'global.toml');
-  writeFileSync(path, baseline);
+  if (config === 'hand-made') writeFileSync(path, baseline);
+  if (config === 'skipped') writeFileSync(path, '[preferences]\nfirst_run_setup_skipped = true\n');
+  if (config === 'symlink') {
+    writeFileSync(join(cwd, 'real.toml'), baseline);
+    symlinkSync(join(cwd, 'real.toml'), path);
+  }
   const db = createClient(':memory:');
   runMigrations(db.db);
   const fixture = invocationFixture();
@@ -130,6 +155,8 @@ function journey(
   const close = vi.fn(() => db.sqlite.close());
   const stored = new Map<string, string>();
   const frames: string[] = [];
+  /** Every notification the Home's channel showed, in order (the mock mounts no root, so nothing holds the channel). */
+  const notified: string[] = [];
   let size = startSize;
   const resizeListeners = new Set<() => void>();
   const built: Array<{ model: string | undefined; provider: string | undefined }> = [];
@@ -152,9 +179,18 @@ function journey(
     },
     render: (captured) => {
       props = captured;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/doctor` popup opens on it).
+      captured.popups?.bindOpenGate(() => undefined);
       const ui = captured.nativePrompt;
       ui?.bindVisibility((expected) => ui.getSnapshot() === expected);
       ui?.subscribe(() => frames.push(JSON.stringify(ui.getSnapshot())));
+      // The renderer's acknowledgement of each popup frame (measured and flushed), which the popup's opening guard waits for.
+      if (ui !== undefined) acknowledgePopupFrames(ui);
+      const channel = captured.notifications;
+      channel?.subscribe(() => {
+        const text = channel.getSnapshot().current?.text;
+        if (text !== undefined && notified.at(-1) !== text) notified.push(text);
+      });
       return {
         unmount: () => {
           ui?.bindVisibility(undefined);
@@ -183,8 +219,10 @@ function journey(
   };
   const running = driveHome(deps);
   return {
+    cwd,
     path,
     running,
+    notified,
     resizeListeners,
     resize(next: { cols: number; rows: number }): void {
       size = next;
@@ -219,24 +257,35 @@ const type = (p: RootAppProps, text: string): void => {
   for (const ch of text) p.controller.handleKey(ch, {});
 };
 async function choose(p: RootAppProps, value: string): Promise<void> {
-  const card = ui(p);
-  await settled(() =>
-    expect(card.getSnapshot().options.some((option) => option.value === value)).toBe(true),
-  );
-  const snapshot = card.getSnapshot();
-  const at = snapshot.options.findIndex((option) => option.value === value);
-  for (
-    let step = 0;
-    step < (at - snapshot.selected + snapshot.options.length) % snapshot.options.length;
-    step += 1
-  )
-    card.input('', { ...key, downArrow: true });
-  card.input('\r', { ...key, return: true });
+  await choosePopup(ui(p), value);
 }
-async function skipFirstRun(p: RootAppProps): Promise<void> {
+/** The first-run popup is on screen: on its first step, `Which provider?`, its way back `skip for now`. */
+async function untilFirstRun(p: RootAppProps): Promise<void> {
   await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+  expect(ui(p).getSnapshot().popup).toMatchObject({
+    title: '/providers',
+    origin: 'home',
+    stepIndex: 0,
+    stepCount: 3,
+    stepNames: ['Provider', 'Key', 'Done'],
+    exitLabel: 'skip for now',
+  });
+}
+/**
+ * `Esc` on the first step skips the first run. On a hand-made config the skip is remembered behind the rewrite disclosure, drawn in the popup
+ * again, which ends in its Done step (`Setup skipped`): closed here with `Esc`.
+ */
+async function skipFirstRun(p: RootAppProps): Promise<void> {
+  await untilFirstRun(p);
   ui(p).input('', { ...key, escape: true });
+  await settled(() => expect(ui(p).getSnapshot().final).toBe('ok'));
+  expect(ui(p).getSnapshot().message).toBe('Setup skipped');
+  expect(ui(p).getSnapshot().note).toBe(
+    'Saving preferences rewrites the global config and removes its comments and ordering.',
+  );
+  await closeDone(ui(p), 'esc');
   await settled(() => expect(ui(p).getSnapshot().active).toBe(false));
+  await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
 }
 
 describe('the keyless journey', () => {
@@ -244,19 +293,20 @@ describe('the keyless journey', () => {
     const j = journey();
     const p = await j.ready();
     try {
-      // 1. The first-run card opens by itself; `Esc` skips, and the notice says so (it was the first-run sentence).
+      // 1. The first-run popup opens by itself; `Esc` skips, and the skip is remembered in the global config (a hand-made one: behind the
+      // rewrite disclosure, which ends in a Done step). Nothing is a Home notice.
       await settled(() => expect(ui(p).getSnapshot().active).toBe(true));
       expect(ui(p).getSnapshot().note).toContain('First-run setup');
       await skipFirstRun(p);
       expect(p.controller.getSnapshot().keyless).toBe(true);
-      expect(p.controller.getSnapshot().notice).toBe(SKIP_NOTE);
-      expect(p.controller.getSnapshot().notice).not.toContain('First-run setup');
-      expect(p.controller.getSnapshot().notice).not.toContain('Provider destination');
+      expect(p.controller.getSnapshot().notice).toBeUndefined();
+      expect(readFileSync(j.path, 'utf8')).toContain('first_run_setup_skipped = true');
 
       // 2. Type a message and press Enter: the explicit setup opens, the draft is still in the prompt, and nothing is started.
       type(p, 'hello');
       p.controller.handleKey('', { return: true });
-      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      expect(ui(p).getSnapshot().popup?.exitLabel, 'an explicit /providers closes').toBe('close');
       expect(p.controller.getSnapshot().nativeActionBusy).toBe(true);
       expect(p.controller.getSnapshot().input.text).toBe('hello');
       expect(p.controller.getSnapshot().historyEntries).toEqual([]);
@@ -273,29 +323,43 @@ describe('the keyless journey', () => {
         'no key yet · Enter add one',
       ]);
 
-      // 3. Close the setup (Esc): the draft is still `hello`, still unsent.
+      // 3. Close the setup (Esc): the draft is still `hello`, still unsent; the skip is one notification, never a Home notice.
       ui(p).input('', { ...key, escape: true });
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(p.controller.getSnapshot().input.text).toBe('hello');
-      expect(p.controller.getSnapshot().notice).toBe(SKIP_NOTE);
+      expect(p.controller.getSnapshot().notice).toBeUndefined();
+      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
       expect(p.controller.getSnapshot().keyless).toBe(true);
       expect(j.built).toEqual([]);
 
-      // 4. Enter again; this time store a key (the check is offline and passes).
+      // 4. Enter again; this time store a key (the check is offline and passes). The key step says what happens to the key before it is
+      // pasted, `Esc` there is a step back, and the Done step names the provider and the model and the next step, closed by `Enter`.
       p.controller.handleKey('', { return: true });
-      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
       await choose(p, 'anthropic');
       await settled(() => expect(ui(p).getSnapshot().kind).toBe('password'));
-      expect(ui(p).getSnapshot().note, 'a first run still says what it is').toContain(
-        'Provider destination',
+      expect(ui(p).getSnapshot().note).toBe(
+        'Stored in your OS keychain, never on disk. Sent only to https://api.anthropic.com, once, to check it.',
       );
-      ui(p).paste(SYNTHETIC_KEY);
-      ui(p).input('\r', { ...key, return: true });
+      expect(ui(p).getSnapshot().popup).toMatchObject({ stepIndex: 1, exitLabel: 'close' });
+      expect(ui(p).getSnapshot().escape, 'Esc steps back from the key').toBe('back');
+      await pasteKey(ui(p), SYNTHETIC_KEY);
+      await settled(() => expect(ui(p).getSnapshot().final).toBe('ok'));
+      expect(ui(p).getSnapshot().message).toBe(
+        `Connected · Anthropic · ${KNOWN_PROVIDERS.anthropic.starterModel}`,
+      );
+      expect(ui(p).getSnapshot().details).toEqual([
+        'Type a message to start, or /init to set up this folder',
+      ]);
+      expect(ui(p).getSnapshot().popup?.stepIndex, 'the Done step is the rail’s last').toBe(2);
+      await closeDone(ui(p), 'enter');
       await settled(() => expect(p.controller.getSnapshot().keyless).toBe(false));
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(j.stored.get(keychainAccount('anthropic'))).toBe(SYNTHETIC_KEY);
-      expect(p.controller.getSnapshot().notice).toContain('Verified and stored your Anthropic key');
-      expect(readFileSync(j.path, 'utf8')).toContain(KNOWN_PROVIDERS.anthropic.testModel);
+      expect(p.controller.getSnapshot().notice, 'the result is the Done step, not a notice').toBe(
+        undefined,
+      );
+      expect(readFileSync(j.path, 'utf8')).toContain(KNOWN_PROVIDERS.anthropic.starterModel);
 
       // 5. The key does not send the draft; it is still there, still unsent.
       expect(p.controller.getSnapshot().input.text).toBe('hello');
@@ -304,7 +368,7 @@ describe('the keyless journey', () => {
       // 6. The last Enter starts the chat with that message (the fake build refuses, so the failure shows whole and the message is back).
       p.controller.handleKey('', { return: true });
       await settled(() => expect(j.built).toHaveLength(1));
-      expect(j.built[0]?.model).toBe(KNOWN_PROVIDERS.anthropic.testModel);
+      expect(j.built[0]?.model).toBe(KNOWN_PROVIDERS.anthropic.starterModel);
       expect(j.built[0]?.provider).toBe('anthropic');
       await settled(() => expect(p.controller.getSnapshot().mode).toBe('home'));
       expect(p.controller.getSnapshot().notice?.startsWith('Couldn’t start the chat: ')).toBe(true);
@@ -316,9 +380,11 @@ describe('the keyless journey', () => {
         'hello',
       ]);
 
-      // The key is nowhere: not in a frame of the card, not in an output line, not in the controller's state.
+      // The key is nowhere: not in a frame of the card, not in an output line, not in the controller's state, not in a notification.
       expect(
-        [...j.frames, ...j.outputs, JSON.stringify(p.controller.getSnapshot())].join(' '),
+        [...j.frames, ...j.outputs, ...j.notified, JSON.stringify(p.controller.getSnapshot())].join(
+          ' ',
+        ),
       ).not.toContain('5521');
     } finally {
       await j.end(p);
@@ -337,14 +403,14 @@ describe('the keyless journey', () => {
         p.controller.handlePaste(keyShaped);
         expect(p.controller.getSnapshot().input.text).toBe(keyShaped);
         p.controller.handleKey('', { return: true });
-        await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
         const state = p.controller.getSnapshot();
         expect(state.input.text, 'cleared in the same change that opened the setup').toBe('');
         expect(state.historyEntries).toEqual([]);
-        expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
-        expect(ui(p).getSnapshot().note, 'the card says it where the person is looking').toBe(
-          KEY_SHAPED_DRAFT_NOTICE,
-        );
+        // One notification says why; nothing of it, or of the draft, is a Home notice or carried into the popup (MVP-11 unit 6).
+        expect(state.notice).toBeUndefined();
+        expect(ui(p).getSnapshot().note).not.toContain('API key');
+        await settled(() => expect(j.notified).toContain(KEY_SHAPED_DRAFT_NOTICE));
         expect(j.built).toEqual([]);
 
         // Close it: nothing of the key is left to recall.
@@ -353,7 +419,12 @@ describe('the keyless journey', () => {
         p.controller.handleKey('', { upArrow: true });
         expect(p.controller.getSnapshot().input.text).toBe('');
         expect(
-          [...j.frames, ...j.outputs, JSON.stringify(p.controller.getSnapshot())].join(' '),
+          [
+            ...j.frames,
+            ...j.outputs,
+            ...j.notified,
+            JSON.stringify(p.controller.getSnapshot()),
+          ].join(' '),
         ).not.toContain('journeyfake');
       } finally {
         await j.end(p);
@@ -447,7 +518,7 @@ describe('the keyless journey', () => {
     });
   });
 
-  describe('an environment key is a consent, and a reflex Enter does not grant it (ADR-0146 §6, the interim before the Step 6 guards)', () => {
+  describe('an environment key is a consent, and a reflex Enter does not grant it (ADR-0146 §6; the guarded row, MVP-11 unit 6)', () => {
     it('three Enters, each after its card was drawn, leave the source un-granted and the config as it was', async () => {
       const j = journey(
         { cols: 80, rows: 24 },
@@ -455,10 +526,22 @@ describe('the keyless journey', () => {
       );
       const p = await j.ready();
       try {
-        // The first-run card is the consent; its highlighted row is `Not now`.
-        await settled(() => expect(ui(p).getSnapshot().message).toContain('Allow this source?'));
+        // The first-run popup is the consent (it names the variable, the provider, the model and where it is saved); its highlighted row is
+        // `Not now`, and `Use it` is the guarded first row.
+        await settled(() =>
+          expect(ui(p).getSnapshot().message).toBe(
+            `ANTHROPIC_API_KEY is set for Anthropic. Use it, with ${KNOWN_PROVIDERS.anthropic.starterModel} as your default model? Saved to your global config; the variable stays yours.`,
+          ),
+        );
         const first = ui(p).getSnapshot();
+        expect(first.options.map((option) => option.label)).toEqual([
+          'Use it',
+          'Enter a different key',
+          'Not now',
+        ]);
+        expect(first.options[0]?.guarded).toBe(true);
         expect(first.options[first.selected]?.value, 'it opens on Not now').toBe('defer');
+        await sleep(POPUP_ANSWER_WAIT_MS);
         ui(p).input('\r', { ...key, return: true }); // Enter 1
         await settled(() => expect(ui(p).getSnapshot().active).toBe(false));
         expect(readFileSync(j.path, 'utf8'), 'nothing was written').toBe(baseline);
@@ -466,14 +549,20 @@ describe('the keyless journey', () => {
         // A message and Enter opens the explicit list, whose first row is Anthropic with the key set.
         type(p, 'hello');
         p.controller.handleKey('', { return: true }); // Enter 2
-        await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
         expect(ui(p).getSnapshot().options[0]?.value).toBe('anthropic');
+        await sleep(POPUP_ANSWER_WAIT_MS);
         ui(p).input('\r', { ...key, return: true }); // Enter 3: the row, which asks for the consent again
-        await settled(() => expect(ui(p).getSnapshot().message).toContain('Allow this source?'));
+        await settled(() =>
+          expect(ui(p).getSnapshot().message).toContain('ANTHROPIC_API_KEY is set for Anthropic.'),
+        );
         const again = ui(p).getSnapshot();
         expect(again.options[again.selected]?.value, 'again on Not now').toBe('defer');
         expect(readFileSync(j.path, 'utf8'), 'the config is unwritten').toBe(baseline);
         expect(p.controller.getSnapshot().keyless, 'no key became usable').toBe(true);
+        expect(again.escape, 'reached from the list, Esc steps back to it').toBe('back');
+        ui(p).input('', { ...key, escape: true });
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
         ui(p).input('', { ...key, escape: true });
         await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
         expect(readFileSync(j.path, 'utf8')).toBe(baseline);
@@ -481,7 +570,7 @@ describe('the keyless journey', () => {
       } finally {
         await j.end(p);
       }
-    });
+    }, 15_000);
   });
 
   it('a Home that closes while the offer waits for room leaves no listener behind', async () => {
@@ -503,10 +592,15 @@ describe('the offer that waited for room is spent by what happened meanwhile (ro
       p.controller.handleKey('/', {});
       type(p, 'providers');
       p.controller.handleKey('', { return: true });
-      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
       ui(p).input('', { ...key, escape: true });
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
-      expect(p.controller.getSnapshot().notice).toBe(SKIP_NOTE);
+      expect(p.controller.getSnapshot().notice).toBeUndefined();
+      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
+      expect(
+        existsSync(j.path) ? readFileSync(j.path, 'utf8') : '',
+        'an explicit close is no remembered skip',
+      ).not.toContain('first_run_setup_skipped');
       // Room, and the Home is clear: the first-run offer must not open over a person who has already been to the setup.
       j.resize({ cols: 80, rows: 24 });
       expect(ui(p).getSnapshot().active, 'no card opened by itself').toBe(false);
@@ -524,7 +618,7 @@ describe('the offer that waited for room is spent by what happened meanwhile (ro
     try {
       await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
       p.controller.handleKey('', { return: true }); // keyless: the empty Enter opens the explicit setup
-      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
       ui(p).input('', { ...key, escape: true });
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       j.resize({ cols: 80, rows: 24 });
@@ -604,4 +698,163 @@ describe('the offer that waited for room is spent by what happened meanwhile (ro
       spy.mockRestore();
     }
   });
+});
+
+describe('the first-run skip is remembered beyond the process (ADR-0146 §6, ruled 2026-11-24; MVP-11 unit 6)', () => {
+  it('a person with no config: Esc skips, the file is written with no card, one notification says so, and a second Home over the same home opens nothing by itself', async () => {
+    const first = journey({ cols: 80, rows: 24 }, {}, {}, 'none');
+    const p = await first.ready();
+    try {
+      await untilFirstRun(p);
+      ui(p).input('', { ...key, escape: true });
+      // The automatic offer is not a native action of the controller: what closes it is the setup ending, which says so in its notification.
+      await settled(() => expect(first.notified).toEqual([SKIP_NOTE]));
+      expect(ui(p).getSnapshot().active, 'no Done card: there was nothing to disclose').toBe(false);
+      expect(p.controller.getSnapshot().notice).toBeUndefined();
+      expect(readFileSync(first.path, 'utf8')).toBe(
+        '[preferences]\nfirst_run_setup_skipped = true\n',
+      );
+    } finally {
+      await first.end(p);
+    }
+    // The next launch, over the same home and config: the Home is clear and keyless, and the offer does not open by itself.
+    const second = journey({ cols: 80, rows: 24 }, {}, {}, { reuse: first.cwd });
+    const q = await second.ready();
+    try {
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(q.controller.getSnapshot().keyless).toBe(true);
+      expect(ui(q).getSnapshot().active, 'the remembered skip holds the offer back').toBe(false);
+      // `Enter` on the empty prompt still opens it: the skip holds back only the offer that opens by itself.
+      q.controller.handleKey('', { return: true });
+      await settled(() => expect(ui(q).getSnapshot().message).toBe('Which provider?'));
+      ui(q).input('', { ...key, escape: true });
+      await settled(() => expect(q.controller.getSnapshot().nativeActionBusy).toBe(false));
+    } finally {
+      await second.end(q);
+    }
+  });
+
+  it('a skip whose write fails (the config is a symbolic link) is one notification, writes nothing, and the offer returns next launch', async () => {
+    const first = journey({ cols: 80, rows: 24 }, {}, {}, 'symlink');
+    const p = await first.ready();
+    try {
+      await untilFirstRun(p);
+      ui(p).input('', { ...key, escape: true });
+      await settled(() =>
+        expect(first.notified).toEqual(['Setup skipped · not saved, it opens again next launch']),
+      );
+      expect(
+        readFileSync(join(first.cwd, 'real.toml'), 'utf8'),
+        'the link’s target is untouched',
+      ).toBe(baseline);
+    } finally {
+      await first.end(p);
+    }
+    const second = journey({ cols: 80, rows: 24 }, {}, {}, { reuse: first.cwd });
+    const q = await second.ready();
+    try {
+      await untilFirstRun(q);
+    } finally {
+      ui(q).input('', { ...key, escape: true });
+      await settled(() => expect(q.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await second.end(q);
+    }
+  });
+
+  it('`Ctrl+C` at the key step is a cancel, not a remembered skip; `Esc` there steps back to the provider list first', async () => {
+    const j = journey({ cols: 80, rows: 24 }, {}, {}, 'none');
+    const p = await j.ready();
+    try {
+      await untilFirstRun(p);
+      await choose(p, 'openai');
+      await settled(() => expect(ui(p).getSnapshot().kind).toBe('password'));
+      ui(p).paste('synthetic-held-secret-8841');
+      ui(p).input('', { ...key, escape: true }); // a step back: the key is cleared, the list is asked again
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      expect(ui(p).getSnapshot().popup?.stepIndex, 'the rail rewound to Provider').toBe(0);
+      expect(ui(p).getSnapshot().note).toContain('First-run setup');
+      await choose(p, 'openai');
+      await settled(() => expect(ui(p).getSnapshot().kind).toBe('password'));
+      expect(ui(p).getSnapshot().display, 'nothing of the old key survived the step back').toBe('');
+      ui(p).input('c', { ...key, ctrl: true });
+      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
+      expect(existsSync(j.path), 'a cancel writes no remembered skip').toBe(false);
+      expect([...j.frames, ...j.notified].join(' ')).not.toContain('8841');
+    } finally {
+      await j.end(p);
+    }
+  });
+
+  it('the Done step after a stored key closes with `Esc` as well as `Enter`, and the draft stays unsent', async () => {
+    const j = journey({ cols: 80, rows: 24 }, {}, {}, 'none');
+    const p = await j.ready();
+    try {
+      await untilFirstRun(p);
+      await choose(p, 'anthropic');
+      await pasteKey(ui(p), SYNTHETIC_KEY);
+      await settled(() => expect(ui(p).getSnapshot().final).toBe('ok'));
+      await closeDone(ui(p), 'esc');
+      await settled(() => expect(p.controller.getSnapshot().keyless).toBe(false));
+      expect(ui(p).getSnapshot().active).toBe(false);
+      expect(j.stored.get(keychainAccount('anthropic'))).toBe(SYNTHETIC_KEY);
+      expect(readFileSync(j.path, 'utf8')).toContain('default_model = "claude-haiku-5-5"');
+      expect(readFileSync(j.path, 'utf8'), 'a stored key is no skip').not.toContain(
+        'first_run_setup_skipped',
+      );
+      expect(j.notified, 'the Done step said it').toEqual([]);
+    } finally {
+      await j.end(p);
+    }
+  });
+});
+
+describe('the doctor’s remedy hands off to /providers (maintainer, 2026-11-25; MVP-11 unit 6)', () => {
+  it('Enter on the failing provider-keys row closes the doctor and opens the setup popup on the Home; Esc there returns to the Home', async () => {
+    // A home that already skipped the first run: nothing opens by itself, so the doctor is what the person opens.
+    const j = journey({ cols: 80, rows: 24 }, {}, {}, 'skipped');
+    const p = await j.ready();
+    const popups = p.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    try {
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(ui(p).getSnapshot().active, 'the remembered skip held the offer back').toBe(false);
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      const seen = async (): Promise<void> => {
+        popups.shown(popups.getSnapshot());
+        await sleep(POPUP_ANSWER_WAIT_MS);
+      };
+      p.controller.handlePaste('/doctor');
+      p.controller.handleKey('', { return: true });
+      await settled(() => expect(popups.getSnapshot().frame?.spec.id).toBe('doctor'));
+      await settled(() =>
+        expect(JSON.stringify(popups.getSnapshot().frame)).toContain('no provider has a key'),
+      );
+      await seen();
+      popups.input('', { end: true });
+      await seen();
+      popups.input('', { return: true });
+      await settled(() =>
+        expect(JSON.stringify(popups.getSnapshot().frame)).toContain(
+          'Press Enter to open /providers',
+        ),
+      );
+      await seen();
+      popups.input('', { return: true });
+      // The doctor is closed, and the setup is open on the Home through its own gate: the explicit `/providers`.
+      await settled(() => expect(popups.getSnapshot().open).toBe(false));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      expect(ui(p).getSnapshot().popup?.title).toBe('/providers');
+      expect(ui(p).getSnapshot().popup?.exitLabel).toBe('close');
+      expect(p.controller.getSnapshot().nativeActionBusy).toBe(true);
+      ui(p).input('', { ...key, escape: true });
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect(ui(p).getSnapshot().active).toBe(false);
+      expect(popups.getSnapshot().open, 'Esc returns to the Home, not to the doctor').toBe(false);
+      expect(p.controller.getSnapshot().notice).toBeUndefined();
+    } finally {
+      await j.end(p);
+    }
+  }, 20_000);
 });

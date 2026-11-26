@@ -34,6 +34,7 @@ import {
   reportsPortFor,
   type ReportState,
 } from './report-fixture.js';
+import { chatExportSurface } from './export-fixture.js';
 import {
   driveSettings,
   settingsPopupBox,
@@ -498,6 +499,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     'The /workflows popup over the chat: the catalog could not be listed',
   ),
   chatReportSurface('help', 'The /help popup over the chat: its commands and keys'),
+  chatExportSurface(SHORT_CONVERSATION),
   chatSettingsSurface('effort', 'The /effort popup over the chat: the tiers of the bound model'),
   chatSettingsSurface(
     'form',

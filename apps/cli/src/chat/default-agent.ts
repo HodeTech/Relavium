@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalogModel, type ProviderId } from '@relavium/llm';
 import type { Agent, ReasoningEffort } from '@relavium/shared';
 
+import { KNOWN_PROVIDERS } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 
 /**
@@ -15,8 +16,12 @@ import { CliError } from '../process/errors.js';
  * Egress and ambient OS tools require an explicitly bound agent. Missing host capabilities remain fail-closed.
  */
 
-/** The zero-config chat model when neither `--agent` nor `[chat].default_model` names one (config-spec.md). */
-export const DEFAULT_CHAT_MODEL = 'claude-sonnet-4-6';
+/**
+ * The zero-config chat model when neither `--agent` nor `[chat].default_model` names one and no other provider has a key (config-spec.md):
+ * Anthropic's STARTER model, read from the one starter table (`KNOWN_PROVIDERS`, ADR-0146 §6), never spelled here. A deliberate, user-visible
+ * default the maintainer ruled on 2026-11-24: a first chat starts on the current family (Haiku 5.5), the model a first setup also chooses.
+ */
+export const DEFAULT_CHAT_MODEL: string = KNOWN_PROVIDERS.anthropic.starterModel;
 
 /** The default chat agent's id (kebab) — recorded on `session:started`, and exported verbatim as `agent_ref` (1.Z). */
 export const DEFAULT_CHAT_AGENT_ID = 'relavium-chat';

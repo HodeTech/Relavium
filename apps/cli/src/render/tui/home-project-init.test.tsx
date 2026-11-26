@@ -1,10 +1,27 @@
+/**
+ * `/init` on the Home as a popup (MVP-11 unit 6, 6.3; ADR-0148 §1, §3, §6), mounted in the real Home with the real channel and the real
+ * `prepareProjectInit` over a temporary directory: the chord card that names every directory, `Ctrl+Y` as the only Yes (after the card's own
+ * guards), the write held behind the visibility proof, and the Done step that names what was created. Nothing is written to the Home's notice
+ * or a transcript: a cancel is one notification on the Home's channel.
+ *
+ * The channel runs on the real clock, so the waits are real and named.
+ */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { render } from 'ink';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
-import { runHomeProjectInit } from '../../home/project-init.js';
+import {
+  INIT_ALLOW_LABEL,
+  INIT_CANCELLED,
+  INIT_CREATED,
+  INIT_CREATING,
+  INIT_DENY_LABEL,
+  INIT_QUESTION,
+  runHomeProjectInit,
+} from '../../home/project-init.js';
+import { POPUP_SELECT_SETTLE_MS } from '../../popups/opening-guard.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import { createChatStore } from './chat-store.js';
 import { createHomeController } from './home-controller.js';
@@ -12,6 +29,17 @@ import { RootApp } from './home-app.js';
 import { createNativePromptChannel } from './native-prompt-channel.js';
 import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { bracketed, settleFrames } from './harness-util.js';
+import { APPROVAL_QUIET_MS, APPROVAL_SETTLE_MS } from './tool-review-model.js';
+
+/** A real wait past the flow's opening settle and the chord card's dwell and quiet gap (the channel's clock is the real one). */
+const PAST_THE_GUARDS_MS =
+  Math.max(POPUP_SELECT_SETTLE_MS, APPROVAL_SETTLE_MS) + APPROVAL_QUIET_MS + 150;
+/** How long a key that must change nothing is watched. */
+const WATCH_MS = 150;
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const CTRL_Y = '\u0019';
+const CTRL_N = '\u000e';
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -49,6 +77,7 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
   });
   let held = false;
   let flushes = 0;
+  const announced: string[] = [];
   const controller = createHomeController({
     startChat: () => Promise.resolve(session),
     homeStore: {
@@ -61,6 +90,7 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
         isEmpty: true,
       }),
     },
+    announce: (text) => announced.push(text),
     onExit: () => {},
     onError: (error) => {
       throw error;
@@ -124,6 +154,17 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
     if (flush === undefined) throw new Error('Renderer not mounted');
     await flush();
   };
+  /** Whether the prompt on the channel now is the frame on the terminal, measured and flushed. */
+  const shownNow = (): boolean => {
+    try {
+      channel.ui.assertVisible(channel.ui.getSnapshot());
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** Everything the renderer wrote (a frame can be written in several chunks). */
+  const frame = (): string => output.frames.join('');
   const open = async (): Promise<void> => {
     await vi.waitFor(() => expect(flush).toBeDefined());
     // The native parser treats a mixed text+CR chunk as editable multiline
@@ -131,31 +172,34 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
     input.push('/init');
     await vi.waitFor(() => expect(controller.getSnapshot().input.text).toBe('/init'));
     input.push('\r');
-    await vi.waitFor(() =>
-      expect(
-        channel.ui.getSnapshot().kind,
-        JSON.stringify({
-          notice: controller.getSnapshot().notice,
-          input: controller.getSnapshot().input.text,
-          palette: controller.getSnapshot().palette,
-          mode: controller.getSnapshot().mode,
-        }),
-      ).toBe('select'),
-    );
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'));
     await paint();
     const snapshot = channel.ui.getSnapshot();
-    expect(snapshot.options[snapshot.selected]?.value).toBe('no');
-    for (const path of ['.relavium', '.relavium/workflows', '.relavium/agents'])
-      expect(snapshot.note).toContain(path);
+    expect(snapshot.message).toBe(INIT_QUESTION);
+    expect(snapshot.popup?.title).toBe('/init');
+    expect(snapshot.popup?.stepIndex).toBe(1);
+    expect(snapshot.popup?.stepNames).toEqual(['Check', 'Confirm', 'Done']);
+    for (const path of ['.relavium/', '.relavium/workflows/', '.relavium/agents/'])
+      expect(snapshot.details.join(' ')).toContain(path);
+    expect(snapshot.options.map((option) => option.label)).toEqual([
+      INIT_ALLOW_LABEL,
+      INIT_DENY_LABEL,
+    ]);
+    await vi.waitFor(() => expect(shownNow()).toBe(true));
     expect(existsSync(join(cwd, '.relavium'))).toBe(false);
   };
+  /** `Ctrl+Y` once, after the card's guards: a key pressed inside them would be refused and restart the lockout. */
   const approve = async (): Promise<void> => {
-    input.push('\x1b[A');
-    await vi.waitFor(() => {
-      const snapshot = channel.ui.getSnapshot();
-      expect(snapshot.options[snapshot.selected]?.value).toBe('yes');
-    });
-    await paint();
+    await pause(PAST_THE_GUARDS_MS);
+    input.push(CTRL_Y);
+  };
+  /** The Done step, measured and flushed: what it says and what its one option names. */
+  const doneUp = async (): Promise<void> => {
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBeDefined());
+    await vi.waitFor(() => expect(shownNow()).toBe(true));
+  };
+  const closeDone = async (): Promise<void> => {
+    await doneUp();
     input.push('\r');
   };
   const finish = async (): Promise<void> => {
@@ -173,8 +217,12 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
     controller,
     input,
     output,
+    announced,
+    frame,
     open,
     approve,
+    doneUp,
+    closeDone,
     finish,
     release,
     resize,
@@ -189,24 +237,39 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
     await f.open();
     f.input.push(bracketed('yes\r/init'));
     await settleFrames();
-    const snapshot = f.channel.ui.getSnapshot();
-    expect(snapshot.kind).toBe('select');
-    expect(snapshot.options[snapshot.selected]?.value).toBe('no');
+    await pause(WATCH_MS);
+    expect(f.channel.ui.getSnapshot().kind).toBe('chord');
     expect(f.controller.getSnapshot().input.text).toBe('');
     expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
-    f.input.push('\r');
+    f.input.push('\x1b');
     await f.finish();
     expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
   });
   it.each([false, true])(
-    'lists directories and requires explicit yes (color=%s)',
+    'lists directories, creates them only on Ctrl+Y, and ends in a Done step that names them (color=%s)',
     async (color) => {
       const f = fixture(alternate, color);
       await f.open();
       await f.approve();
-      await f.finish();
+      await f.doneUp();
+      const done = f.channel.ui.getSnapshot();
+      expect(done.kind).toBe('select');
+      expect(done.final).toBe('ok');
+      expect(done.message).toBe(INIT_CREATED);
+      expect(done.popup?.stepIndex).toBe(2);
+      expect(done.details).toEqual(
+        expect.arrayContaining(['.relavium/', '.relavium/workflows/', '.relavium/agents/']),
+      );
+      expect(done.options[0]?.hint).toBe('.relavium/');
+      expect(f.frame()).toContain(INIT_CREATED);
+      // the write happened behind the Done step, before it closed
       expect(readdirSync(join(f.cwd, '.relavium')).sort()).toEqual(['agents', 'workflows']);
-      expect(f.controller.getSnapshot().notice).toContain('Created');
+      f.input.push('\r');
+      await f.finish();
+      // no residue: no Home notice, no transcript line, no notification (the Done step said it)
+      expect(f.controller.getSnapshot().notice).toBeUndefined();
+      expect(f.store.getSnapshot().state.transcript).toEqual([]);
+      expect(f.announced).toEqual([]);
     },
   );
   it('is the Home’s: in the chat the Home hosts, /init answers one line that names the Home, and no flow opens (ADR-0145 §7.5, OD-2)', async () => {
@@ -241,24 +304,41 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
         .map((entry) => entry.text),
     ).toEqual(['retained context']);
   });
-  it.each(['no', 'escape', 'ctrl-c'] as const)(
-    '%s cancels without any project write',
+  it.each(['ctrl-n', 'escape', 'ctrl-c'] as const)(
+    '%s cancels without any project write, in one notification and no notice',
     async (choice) => {
       const f = fixture(alternate, false);
       await f.open();
-      f.input.push(choice === 'no' ? '\r' : choice === 'escape' ? '\x1b' : '\x03');
+      await pause(PAST_THE_GUARDS_MS);
+      f.input.push(choice === 'ctrl-n' ? CTRL_N : choice === 'escape' ? '\x1b' : '\x03');
       await f.finish();
       expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
-      expect(f.controller.getSnapshot().notice).toContain('cancelled');
+      expect(f.controller.getSnapshot().notice).toBeUndefined();
+      expect(f.announced).toEqual([INIT_CANCELLED]);
     },
   );
+  it('a Ctrl+Y inside the card’s dwell creates nothing (the chord guard is the channel’s, unchanged)', async () => {
+    const f = fixture(alternate, false);
+    await f.open();
+    f.input.push(CTRL_Y);
+    await pause(WATCH_MS);
+    expect(f.channel.ui.getSnapshot().kind).toBe('chord');
+    expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
+    f.input.push('\x1b');
+    await f.finish();
+    expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
+  });
   it.each(['recover', 'cancel'] as const)(
-    'blocks publication after shrink and can %s',
+    'blocks publication after shrink and can %s (the write is behind the visibility proof of the framed wait)',
     async (action) => {
       const f = fixture(alternate, false, true);
       await f.open();
       await f.approve();
       await vi.waitFor(() => expect(f.held()).toBe(true));
+      expect(f.channel.ui.getSnapshot().kind).toBe('busy');
+      // the wait the visibility proof is held to says what it waits for, in the popup's frame
+      expect(f.channel.ui.getSnapshot().message).toBe(INIT_CREATING);
+      expect(f.channel.ui.getSnapshot().popup?.title).toBe('/init');
       f.resize(0.5);
       f.release();
       // At half a column even the resize instruction is physically clipped.
@@ -267,9 +347,13 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       expect(f.controller.getSnapshot().nativeActionBusy).toBe(true);
       expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
       if (action === 'cancel') f.input.push('\x1b');
-      else f.resize(80);
+      else {
+        f.resize(80);
+        await f.closeDone();
+      }
       await f.finish();
       expect(existsSync(join(f.cwd, '.relavium'))).toBe(action === 'recover');
+      expect(f.announced).toEqual(action === 'cancel' ? [INIT_CANCELLED] : []);
       expect(
         f.controller.getSnapshot().session,
         '/init is the Home’s: no chat is in front',

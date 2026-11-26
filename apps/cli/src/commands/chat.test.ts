@@ -37,6 +37,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
 import { createCommandGrantStore } from '../permissions/command-grants.js';
 import { NOT_WIRED_MARK } from '../render/tui/agent-sheet.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -1353,7 +1354,8 @@ describe('chatCommand', () => {
     expect(out).toContain('Agent · relavium-chat');
     expect(out).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
     expect(out).toMatch(/Provider\s+anthropic/u);
-    expect(out).toMatch(/Model\s+claude-sonnet-4-6/u);
+    // The zero-config model is the starter table's Anthropic entry since MVP-11 unit 6 (ADR-0146 §6, ruled: Haiku 5.5).
+    expect(out).toMatch(new RegExp(`Model\\s+${DEFAULT_CHAT_MODEL}`, 'u'));
     // A headless chat has no question card, so the grant's `ask_user` is not offered and the notice says so (the count leads).
     expect(out).toMatch(/Tools\s+\d+ of 9 offered: read_file, list_directory/u);
     expect(out).toContain(`ask_user ${NOT_WIRED_MARK}`);
@@ -1489,14 +1491,14 @@ describe('chatCommand', () => {
     expect(out()).not.toContain('Agent ·');
     expect(out()).not.toContain('System prompt'); // the model rides `session:started`, so a field label is the leak test
     expect(err()).toContain('Agent · relavium-chat');
-    expect(err()).toMatch(/Model\s+claude-sonnet-4-6/u);
+    expect(err()).toMatch(new RegExp(`Model\\s+${DEFAULT_CHAT_MODEL}`, 'u'));
   });
 
   it.each([
     {
       label: 'an interactive chat hands the driver',
       interactive: true,
-      expected: 'claude-sonnet-4-6',
+      expected: DEFAULT_CHAT_MODEL,
     },
     { label: 'a plain chat hands the driver no', interactive: false, expected: undefined },
   ])(
@@ -1524,7 +1526,7 @@ describe('chatCommand', () => {
 
   it('after a /models reseat the driver’s bound-agent view shows the reseated model, not the one the chat started on (ADR-0140 §3)', async () => {
     const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
-    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', DEFAULT_CHAT_MODEL);
     seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
     const interactiveIo = { ...d.io, stdoutIsTty: true };
     const views: (string | undefined)[] = [];
@@ -1545,7 +1547,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
     );
-    expect(views).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8']);
+    expect(views).toEqual([DEFAULT_CHAT_MODEL, 'claude-opus-4-8']);
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
@@ -3159,7 +3161,7 @@ describe('chatCommand', () => {
   it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
     const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
-    const sonnetId = seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    const sonnetId = seedCatalogModel(client.db, 'anthropic', DEFAULT_CHAT_MODEL);
     const opusId = seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
     // A live reseat is TTY-interactive only (like `/clear`), so `onReseat` is wired only on an interactive io.
     const interactiveIo = { ...d.io, stdoutIsTty: true };
@@ -3191,7 +3193,7 @@ describe('chatCommand', () => {
     expect(intros[0]).toBeUndefined(); // the original session has no intro
     // The marker names BOTH ends of the switch (2.6.C) — it now lands beneath a conversation the user can still see,
     // so "what changed" is the useful thing to say, not "here is your new model" to an empty screen.
-    expect(intros[1]).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    expect(intros[1]).toContain(`${DEFAULT_CHAT_MODEL} → claude-opus-4-8`);
     // ADR-0059 BINDS this disclosure clause: tool arguments and results do not cross a reseat. ADR-0128 (Accepted
     // 2026-11-15) refines it — content-free records of tool names and outcomes DO cross — and the notice must say
     // both, so each half is asserted, not just present.
@@ -3260,7 +3262,7 @@ describe('chatCommand', () => {
     // NOT reseated: id-0 kept its one 'hello' exchange, still bound to the ORIGINAL model.
     const full = store.loadFull('id-0');
     expect(full?.messages).toHaveLength(2);
-    expect(full?.session.agentSnapshot?.model).toBe('claude-sonnet-4-6');
+    expect(full?.session.agentSnapshot?.model).toBe(DEFAULT_CHAT_MODEL);
   });
 
   it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {
@@ -3946,8 +3948,10 @@ describe('chatResumeCommand (2.N)', () => {
 
     const panel = err();
     expect(panel).toContain('Session cost: $');
-    expect(panel).not.toContain('$0.0000'); // the prior process's spend is VISIBLE, not zeroed
-    expect(panel).toMatch(/\(\d+ calls?, \d+ tok\)/); // …and its per-model row survived the process boundary
+    // The prior process's spend is VISIBLE, not zeroed: its per-model row survived the process boundary with its calls and tokens. (Since
+    // MVP-11 unit 6 the zero-config model is Haiku 5.5, whose one short turn costs under $0.0001 and is drawn as $0.0000, so the money
+    // figure is no longer the evidence; the non-zero token count of the prior process is.)
+    expect(panel).toMatch(/\([1-9]\d* calls?, [1-9]\d* tok\)/);
   });
 
   it.each([0, 100_000_000])(

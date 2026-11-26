@@ -65,7 +65,12 @@ describe('in-tree onboarding', () => {
         io,
         store: createProviderStore(client.db, { uuid: () => 'id', now: () => 1 }),
         keychain: { get: () => null, set, delete: () => false },
-        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        // The key step names the origin the resolver pinned for the adapter (MVP-11 unit 6, G20), not a guess from the provider's name.
+        resolver: {
+          resolveProvider: () => undefined,
+          keyFor: () => '',
+          endpointContext: () => 'Custom endpoint: https://custom.example',
+        },
         validate: () =>
           Promise.resolve({
             ok: false,
@@ -74,7 +79,9 @@ describe('in-tree onboarding', () => {
           }),
         writeDefaultModel,
       });
-      expect(channel.ui.getSnapshot().note).toContain('https://custom.example');
+      expect(channel.ui.getSnapshot().note).toBe(
+        'Stored in your OS keychain, never on disk. Sent only to https://custom.example, once, to check it.',
+      );
       channel.ui.paste('synthetic-secret-4829');
       channel.ui.input('\r', { ...key, return: true });
       await next();
