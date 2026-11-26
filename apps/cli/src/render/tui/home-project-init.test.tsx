@@ -42,6 +42,8 @@ const PAST_THE_LOCKOUT_MS = APPROVAL_LOCKOUT_MS + 150;
 /** How long a key that must change nothing is watched. */
 const WATCH_MS = 150;
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** The bound of every `vi.waitFor` of this file: a step that needs more is a defect, not a slow machine (the default second is not a bound). */
+const STEP_WAIT_MS = 5000;
 
 const CTRL_Y = '\u0019';
 const CTRL_N = '\u000e';
@@ -171,13 +173,17 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
   /** Everything the renderer wrote (a frame can be written in several chunks). */
   const frame = (): string => output.frames.join('');
   const open = async (): Promise<void> => {
-    await vi.waitFor(() => expect(flush).toBeDefined());
+    await vi.waitFor(() => expect(flush).toBeDefined(), { timeout: STEP_WAIT_MS });
     // The native parser treats a mixed text+CR chunk as editable multiline
     // text. A separate Return event is the terminal's submit gesture.
     input.push('/init');
-    await vi.waitFor(() => expect(controller.getSnapshot().input.text).toBe('/init'));
+    await vi.waitFor(() => expect(controller.getSnapshot().input.text).toBe('/init'), {
+      timeout: STEP_WAIT_MS,
+    });
     input.push('\r');
-    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'));
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
+      timeout: STEP_WAIT_MS,
+    });
     await paint();
     const snapshot = channel.ui.getSnapshot();
     expect(snapshot.message).toBe(INIT_QUESTION);
@@ -190,7 +196,7 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
       INIT_ALLOW_LABEL,
       INIT_DENY_LABEL,
     ]);
-    await vi.waitFor(() => expect(shownNow()).toBe(true));
+    await vi.waitFor(() => expect(shownNow()).toBe(true), { timeout: STEP_WAIT_MS });
     expect(existsSync(join(cwd, '.relavium'))).toBe(false);
   };
   /** `Ctrl+Y` once, after the card's guards (its lockout the longest): a key pressed inside them would be refused and restart the lockout. */
@@ -200,15 +206,19 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
   };
   /** The Done step, measured and flushed: what it says and what its one option names. */
   const doneUp = async (): Promise<void> => {
-    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBeDefined());
-    await vi.waitFor(() => expect(shownNow()).toBe(true));
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBeDefined(), {
+      timeout: STEP_WAIT_MS,
+    });
+    await vi.waitFor(() => expect(shownNow()).toBe(true), { timeout: STEP_WAIT_MS });
   };
   const closeDone = async (): Promise<void> => {
     await doneUp();
     input.push('\r');
   };
   const finish = async (): Promise<void> => {
-    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false));
+    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     expect(channel.ui.getSnapshot().active).toBe(false);
   };
   const resize = (columns: number): void => {
@@ -284,20 +294,26 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
     await settleFrames();
     f.controller.handleKey('start', {});
     f.controller.handleKey('', { return: true });
-    await vi.waitFor(() => expect(f.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(f.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: STEP_WAIT_MS,
+    });
     f.store.appendUser('retained context');
     f.input.push('/init');
-    await vi.waitFor(() => expect(f.controller.getSnapshot().input.text).toBe('/init'));
+    await vi.waitFor(() => expect(f.controller.getSnapshot().input.text).toBe('/init'), {
+      timeout: STEP_WAIT_MS,
+    });
     f.input.push('\r');
-    await vi.waitFor(() =>
-      expect(
-        f.store
-          .getSnapshot()
-          .state.transcript.some(
-            (entry) =>
-              entry.role === 'notice' && entry.text === '/init is available from the Home.',
-          ),
-      ).toBe(true),
+    await vi.waitFor(
+      () =>
+        expect(
+          f.store
+            .getSnapshot()
+            .state.transcript.some(
+              (entry) =>
+                entry.role === 'notice' && entry.text === '/init is available from the Home.',
+            ),
+        ).toBe(true),
+      { timeout: STEP_WAIT_MS },
     );
     await settleFrames();
     expect(f.channel.ui.getSnapshot().active, 'no popup or prompt opened').toBe(false);
@@ -341,7 +357,7 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       const f = fixture(alternate, false, true);
       await f.open();
       await f.approve();
-      await vi.waitFor(() => expect(f.held()).toBe(true));
+      await vi.waitFor(() => expect(f.held()).toBe(true), { timeout: STEP_WAIT_MS });
       expect(f.channel.ui.getSnapshot().kind).toBe('busy');
       // the wait the visibility proof is held to says what it waits for, in the popup's frame
       expect(f.channel.ui.getSnapshot().message).toBe(INIT_CREATING);
@@ -350,7 +366,9 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       f.release();
       // At half a column even the resize instruction is physically clipped.
       // Observe the retried visibility wait, rather than treating fallback text as an ACK.
-      await vi.waitFor(() => expect(f.flushes()).toBeGreaterThanOrEqual(2));
+      await vi.waitFor(() => expect(f.flushes()).toBeGreaterThanOrEqual(2), {
+        timeout: STEP_WAIT_MS,
+      });
       expect(f.controller.getSnapshot().nativeActionBusy).toBe(true);
       expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
       if (action === 'cancel') f.input.push('\x1b');

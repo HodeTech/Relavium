@@ -1,5 +1,5 @@
-import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
-import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
+import { framedFlow } from '../../home/framed-flow.js';
+import { flowText } from './flow-text.js';
 import type { NativeChordPort, NativePromptFlow } from './native-prompt-channel.js';
 import { clipLine } from './sheet-frame.js';
 
@@ -50,18 +50,17 @@ export interface ExportPort {
   readonly prepare: (slug: string) => ExportPrepared;
 }
 
-export const EXPORT_TITLE = 'Export';
-export const EXPORT_STEPS = ['Review', 'Done'] as const;
+const EXPORT_TITLE = 'Export';
+const EXPORT_STEPS = ['Review', 'Done'] as const;
 const REVIEW = 0;
 
 export const EXPORT_ALLOW_LABEL = 'Write the file';
 export const EXPORT_DENY_LABEL = 'Write nothing';
-export const EXPORT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 /** The notification when the popup was answered with anything but a Yes. */
 export const EXPORT_NOT_WRITTEN = 'Nothing was written.';
 /** What the Done step says when the write itself was refused. */
 export const EXPORT_FAILED = 'Not exported.';
-export const EXPORT_CANONICAL =
+const EXPORT_CANONICAL =
   'Canonical YAML: comments are dropped and values are kept as written. Review it before sharing.';
 
 const DESTINATION_COLUMNS = 160;
@@ -106,18 +105,6 @@ export interface ExportCardDeps {
   readonly assertAdmitting?: (() => void) | undefined;
 }
 
-/** The refusal, where the question would have been: the reason, and one way to close it. Whatever closes it writes nothing. */
-async function refuse(flow: FramedChordFlow, slug: string, reason: string): Promise<undefined> {
-  await flow.at(REVIEW).select({
-    message: `Cannot export '${shown(slug, SLUG_COLUMNS)}'.`,
-    details: [shown(reason, REASON_COLUMNS)],
-    options: [{ value: 'close', label: EXPORT_CLOSE_LABEL }],
-    escape: 'cancel',
-    final: 'failed',
-  });
-  return undefined;
-}
-
 /**
  * Prepare the export of `slug`, ask, and write it only on a Yes. Resolves with the ONE notification the Home shows (nothing was written: a
  * No, an `Esc`, a cancel), or `undefined` when the popup itself said what happened (the Done step, a refusal). The flow is begun here and
@@ -137,7 +124,15 @@ export async function runExportCard(
   });
   const signal = flow.begin();
   try {
-    if (!prepared.ok) return await refuse(flow, slug, prepared.reason);
+    if (!prepared.ok) {
+      // The refusal, where the question would have been: the reason, and one way to close it. Whatever closes it writes nothing.
+      await flow.fail(
+        REVIEW,
+        `Cannot export '${shown(slug, SLUG_COLUMNS)}'.`,
+        shown(prepared.reason, REASON_COLUMNS),
+      );
+      return undefined;
+    }
     const answer = await flow
       .at(REVIEW)
       .chord({ ...exportCardText(prepared.offer), escape: 'cancel', signal });

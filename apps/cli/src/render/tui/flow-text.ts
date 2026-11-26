@@ -1,3 +1,4 @@
+import { foldLineSeparators } from '../../popups/frame-model.js';
 import { inertLegendText } from './legend.js';
 import { authorLine } from './run-card-model.js';
 
@@ -17,6 +18,15 @@ import { authorLine } from './run-card-model.js';
  */
 export function flowText(text: string): string {
   return inertLegendText(authorLine(text));
+}
+
+/**
+ * {@link flowText} for a word that is drawn as ONE row: its line and paragraph separators (U+2028 and U+2029) folded to a space too. The popup
+ * folds them as it draws a body, but a word that reaches a row of a list, a notification or the Defined tab's row (`/run`'s workflow list, the
+ * `/resume` picker, which the stand-alone chat draws unframed) would break one row in two.
+ */
+export function flowLine(text: string): string {
+  return foldLineSeparators(flowText(text));
 }
 
 /**

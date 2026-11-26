@@ -34,11 +34,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { prepareImport } from '../../commands/import.js';
 import { createImportPort } from '../../home/import-port.js';
 import type { GlobalOptions } from '../../process/options.js';
+import { FLOW_CLOSE_LABEL } from './flow-text.js';
 import { settleFrames, waitFor } from './harness-util.js';
 import {
   IMPORT_ALLOW_LABEL,
   IMPORT_CANNOT,
-  IMPORT_CLOSE_LABEL,
   IMPORT_DENY_LABEL,
   IMPORT_FAILED,
   IMPORT_NOT_WRITTEN,
@@ -492,6 +492,40 @@ describe('what an authored file says is drawn as text and never as a terminal co
   });
 });
 
+describe('a refusal’s reason is said through the full scrub and the bound, whoever wrote it (round 2: the refusal is `fail`)', () => {
+  const KEY = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
+  it.each([
+    ['an answer chord', 'Press [Ctrl+Y] now', '[Ctrl+Y]'],
+    ['a forged legend row', 'Write · [Ctrl+N] Write nothing · Esc denies', '[Ctrl+N]'],
+    ['a key-shaped string', `no file at ${KEY}`, KEY],
+  ])('%s is not drawn', async (_name, reason, forbidden) => {
+    const r = rig({
+      port: { pathIssue: () => undefined, prepare: () => ({ ok: false, reason }) },
+    });
+    await r.refusalUp('x');
+    const card = r.ui.getSnapshot();
+    expect(card.final).toBe('failed');
+    expect(card.details.join('\n')).not.toContain(forbidden);
+    r.ui.input('', enter);
+    await r.result;
+  });
+
+  it('a reason longer than the popup’s bound is cut to it', async () => {
+    const r = rig({
+      port: {
+        pathIssue: () => undefined,
+        prepare: () => ({ ok: false, reason: `no file at ${'d'.repeat(600)}` }),
+      },
+    });
+    await r.refusalUp('x');
+    const reason = r.ui.getSnapshot().details.join('');
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason.endsWith('…')).toBe(true);
+    r.ui.input('', enter);
+    await r.result;
+  });
+});
+
 describe('the default is No', () => {
   it('a bare letter, Enter, a paste and an arrow leave the confirmation open and write nothing; only a chord answers', async () => {
     const r = rig();
@@ -725,7 +759,7 @@ describe('a refusal is shown in the popup, and writes nothing', () => {
     ]);
     expect(card.final, 'drawn as what failed').toBe('failed');
     expect(card.popup?.stepIndex, 'on the Review step').toBe(1);
-    expect(card.options.map((option) => option.label)).toEqual([IMPORT_CLOSE_LABEL]);
+    expect(card.options.map((option) => option.label)).toEqual([FLOW_CLOSE_LABEL]);
     r.ui.input('', enter);
     expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
     expect(r.commits, 'there was nothing to commit').not.toHaveBeenCalled();
@@ -932,14 +966,14 @@ describe('the popup fits 80×24 and can be answered there', () => {
     channel.flow.begin();
     void channel.flow.select({
       message: `Cannot import: ${'x'.repeat(2000)}`.slice(0, 240),
-      options: [{ value: 'close', label: IMPORT_CLOSE_LABEL }],
+      options: [{ value: 'close', label: FLOW_CLOSE_LABEL }],
       escape: 'cancel',
     });
     const h = render(createElement(NativePromptHost, { ui: channel.ui, color: false }));
     Object.defineProperty(h.stdout, 'rows', { value: 24 });
     Object.defineProperty(h.stdout, 'columns', { value: 80 });
     h.stdout.emit('resize');
-    await waitFor(() => (h.lastFrame() ?? '').includes(IMPORT_CLOSE_LABEL));
+    await waitFor(() => (h.lastFrame() ?? '').includes(FLOW_CLOSE_LABEL));
     await settleFrames();
     const lines = (h.lastFrame() ?? '').split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);

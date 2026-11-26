@@ -26,7 +26,8 @@ import { writeFaultReasonOf } from './defined-port.js';
  * {@link prepareImport}, and written by its own {@link commitImport}, so the popup writes exactly the bytes and to exactly the place the
  * command would. What the port adds is the path as a person types it (bounded, `~` expanded, no control characters), the words the popup
  * needs where the command's say `--force`, the fixed sentences for a write the file system refuses, and a refusal's text as a person reads
- * it: the file named once, scrubbed, and cut at a word with its parentheses closed ({@link importReason}).
+ * it: the file named once and as the person knows it (a path outside the working directory as it was typed, not as a climb of `..`), scrubbed,
+ * a file both readings refused said as one issue each, and cut at a word with its parentheses closed ({@link importReason}).
  *
  * `/import` never overwrites, so it never asks for `--force`: every plan is prepared with it off and committed with it off.
  */
@@ -110,6 +111,71 @@ function sayPathOnce(text: string, source: string): string {
   );
 }
 
+/** The words that begin and join the command's sentence for a file that is neither a workflow nor an agent (`authoring.ts`, `detectAndParse`). */
+const WORKFLOW_READING = ' is not a valid workflow (';
+const AGENT_READING = ') or agent (';
+/** What the agent reading's own sentence starts with when it lists issues; the list is `; `-separated, and the join above already says `agent`. */
+const AGENT_ISSUES = 'invalid agent: ';
+/** What a YAML loader's error carries after its message when it knows where: the position the workflow reading's copy of it lacks. */
+const SYNTAX_POSITION = ' (line ';
+
+/** The agent reading's first issue and how many more it lists (`id: missing — expected string (and 3 more issues)`), or the reading as it is. */
+function firstIssueOf(reading: string): string {
+  if (!reading.startsWith(AGENT_ISSUES)) return reading;
+  const [first = '', ...rest] = reading.slice(AGENT_ISSUES.length).split('; ');
+  if (rest.length === 0) return first;
+  return `${first} (and ${rest.length} more issue${rest.length === 1 ? '' : 's'})`;
+}
+
+/**
+ * The command's sentence for a file that failed as a workflow AND as an agent, said once: when both readings are the same syntax error (the
+ * workflow's copy lacks the position the agent's has) it is one sentence about that error; when they fail on different grounds each reading is
+ * its first issue, so the agent's whole list is never cut in the middle of a phrase. Any other sentence, or one that does not have the command's
+ * exact shape (a file name that quotes the words), is returned as it is.
+ */
+function oneReadingEach(text: string, source: string): string {
+  const prefix = `${source}${WORKFLOW_READING}`;
+  const split = text.startsWith(prefix) ? text.indexOf(AGENT_READING, prefix.length) : -1;
+  if (split < 0 || !text.endsWith(').')) return text;
+  const workflow = text.slice(prefix.length, split);
+  const agent = text.slice(split + AGENT_READING.length, -2);
+  if (agent === workflow || agent.startsWith(`${workflow}${SYNTAX_POSITION}`))
+    return `${source} is not a valid workflow or agent (${agent}).`;
+  return `${prefix}${workflow}${AGENT_READING}${firstIssueOf(agent)}).`;
+}
+
+/** Whether the command names a file by climbing out of the working directory (`../../x.yaml`), or by a path that is not relative to it. */
+function outsideTheWorkingDirectory(source: string): boolean {
+  return source === '..' || source.startsWith(`..${sep}`) || isAbsolute(source);
+}
+
+/** What a refusal says for the working directory, which the command names with nothing (a directory is `is not a regular file`). */
+const THAT_PATH = 'That path';
+
+/** The sentence a person or a project wrote (or is quoted in) as the popup draws it: the sanitized untrusted text through the full scrub. */
+function scrubbed(text: string): string {
+  return flowText(sanitizeUntrustedInline(text));
+}
+
+/**
+ * What a refusal calls the file: the path as the person typed it where the command's name for it is a climb out of the working directory
+ * (`no file at ../../../../x.yaml` says nothing a person recognises), `That path` for the working directory itself (the command's name for it
+ * is empty), and the command's own relative name for anything inside it. Scrubbed, as everything a person or a project wrote is.
+ */
+function subjectOf(source: string, typed: string | undefined): string {
+  if (source === '') return THAT_PATH;
+  return scrubbed(
+    typed !== undefined && outsideTheWorkingDirectory(source) ? typed.trim() : source,
+  );
+}
+
+/** `text` with the first mention of `source` (the command's name for the file) said as `subject`; an empty name has no mention to find. */
+function namedAs(text: string, source: string, subject: string): string {
+  if (source === '') return text.startsWith(' ') ? `${subject}${text}` : text;
+  const first = text.indexOf(source);
+  return first < 0 ? text : `${text.slice(0, first)}${subject}${text.slice(first + source.length)}`;
+}
+
 /** How many parentheses `text` leaves open. */
 function openParentheses(text: string): number {
   let open = 0;
@@ -150,13 +216,15 @@ function cutAtWord(text: string, limit: number): string {
 
 /**
  * A refusal of the command as a person reads it: the sentence it raised, scrubbed as the popup draws it ({@link flowText}, BEFORE the cut,
- * so a cut can never leave a piece of a secret the scrub no longer recognises), the file named once, then cut at a word. Any other fault
- * is not a refusal: none. `source` is the file as the command names it (relative to the working directory).
+ * so a cut can never leave a piece of a secret the scrub no longer recognises), the file named once and as the person knows it
+ * ({@link subjectOf}), a file both readings refused said as one issue each ({@link oneReadingEach}), then cut at a word. Any other fault is
+ * not a refusal: none. `source` is the file as the command names it (relative to the working directory); `typed` is the path as it was typed.
  */
-function importReason(cause: unknown, source: string): string | undefined {
+function importReason(cause: unknown, source: string, typed?: string): string | undefined {
   if (!isCliError(cause)) return undefined;
-  const scrubbed = (text: string): string => flowText(sanitizeUntrustedInline(text));
-  return cutAtWord(sayPathOnce(scrubbed(cause.message), scrubbed(source)), REASON_LIMIT);
+  const named = scrubbed(source);
+  const once = oneReadingEach(sayPathOnce(scrubbed(cause.message), named), named);
+  return cutAtWord(namedAs(once, named, subjectOf(source, typed)), REASON_LIMIT);
 }
 
 /** The file as `relavium import` names it in its own sentences: relative to the working directory. */
@@ -248,7 +316,7 @@ export function createImportPort(deps: ImportPortDeps): ImportPort {
       } catch (cause) {
         const clash = clashReason(cause);
         if (clash !== undefined) return { ok: false, reason: clash };
-        const reason = importReason(cause, sourceOf(pathText, deps));
+        const reason = importReason(cause, sourceOf(pathText, deps), pathText);
         if (reason === undefined) throw cause;
         return { ok: false, reason };
       }

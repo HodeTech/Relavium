@@ -483,6 +483,8 @@ async function lastStep(r: Pick<Rig, 'channel'>): Promise<NativePromptSnapshot> 
     'the popup`s last step',
   );
   expect(step.options.map((option) => option.label)).toEqual(['Close']);
+  // A lone `Esc` closes it as a step back that aborts nothing (the empty state and a failed start alike: `FramedFlow.fail` with `back`).
+  expect(step.escape).toBe('back');
   keys(r).enter();
   return step;
 }

@@ -132,14 +132,13 @@ export const PRICING_OTHER_MODEL = 'Another model…';
 export const PRICING_SET_ALLOW_LABEL = 'Record the price';
 export const PRICING_CLEAR_ALLOW_LABEL = 'Remove the override';
 export const PRICING_DENY_LABEL = 'Write nothing';
-export const PRICING_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 export const PRICING_EDIT_LABEL = 'Change the prices';
 /** The notification when the card was answered with anything but a Yes, or the form was left. */
 export const PRICING_NOT_RECORDED = 'Nothing was written.';
 /** What the Done step says when the write itself was refused. */
 export const PRICING_FAILED = 'Not recorded.';
-export const PRICING_TITLE = '/pricing';
-export const PRICING_STEPS = ['Action', 'Model', 'Rates', 'Confirm', 'Done'] as const;
+const PRICING_TITLE = '/pricing';
+const PRICING_STEPS = ['Action', 'Model', 'Rates', 'Confirm', 'Done'] as const;
 /** The rail's step of each prompt of the form (the Done step is the rail's last). */
 const RAIL = { action: 0, model: 1, rates: 2, confirm: 3 } as const;
 /** The ownership sentence of a SET: the override is the operator's, on this machine, and it outranks the catalog. */
@@ -154,7 +153,7 @@ const DETAIL_COLUMNS = 160;
 const REASON_COLUMNS = 240;
 const HINT_COLUMNS = 80;
 /** The most code units of a model id the form takes, by hand or from a list. */
-export const PRICING_MODEL_ID_LIMIT = 200;
+const PRICING_MODEL_ID_LIMIT = 200;
 const OTHER_VALUE = 'other';
 
 const label = (name: string): string => name.padEnd(12);
@@ -225,13 +224,18 @@ export function pricingUnconnectedText(action: 'set' | 'clear', providerName: st
 
 /** The shell core's refusal of a provider that has no row (`unknown provider 'x' — register it first (e.g. `relavium provider add x` …)`). */
 const UNKNOWN_PROVIDER_REASON = /^unknown provider '/u;
-/** Any shell remedy for a provider (`relavium provider add`, `provider set-key`): a popup names none. */
-const SHELL_PROVIDER_REMEDY = /\brelavium\s+provider\b|\bprovider\s+(?:add|set-key)\b/u;
+/**
+ * A shell remedy for a provider as a command a person would type (`provider add <name>`, `provider set-key <name>`, with `relavium` before it
+ * or not): a popup names none. It is the verb AND the name after it, so a refusal that only QUOTES the words (`the price for 'relavium
+ * provider add' is above the ceiling`: a model id a person gave) is the core's own sentence and stays.
+ */
+const SHELL_PROVIDER_REMEDY = /\bprovider\s+(?:add|set-key)\s+[\p{L}\p{N}]/u;
 
 /**
- * A refusal of the core as the popup says it: the shell core's sentence about a provider that is not registered names `relavium provider …`,
- * which a person at this prompt cannot and should not type, so it is replaced by `unconnected` (the Home's own words for it). The ONE place
- * every reason passes through before it is drawn; any other refusal is the core's own sentence, which says why in the field's label.
+ * A refusal of the core as the popup says it: the shell core's sentence about a provider that is not registered (it BEGINS the reason) names
+ * `relavium provider …`, which a person at this prompt cannot and should not type, so it, and a reason that names such a command anywhere
+ * else, is replaced by `unconnected` (the Home's own words for it). The ONE place every reason passes through before it is drawn; any other
+ * refusal is the core's own sentence, which says why in the field's label. A refusal is only ever replaced by words: never turned into a write.
  */
 export function pricingRefusalText(reason: string, unconnected: string): string {
   return UNKNOWN_PROVIDER_REASON.test(reason) || SHELL_PROVIDER_REMEDY.test(reason)
@@ -240,17 +244,30 @@ export function pricingRefusalText(reason: string, unconnected: string): string 
 }
 
 /**
+ * The rail's steps a plan of this kind never did before its last step: a CLEAR asks for no price, so it passes `Rates` by. The Done step draws
+ * a step like that as not done (`○`), never `✓`, in either tone.
+ */
+function passedBy(kind: PricingOffer['kind']): { readonly skipped?: readonly number[] } {
+  return kind === 'clear' ? { skipped: [RAIL.rates] } : {};
+}
+
+/**
  * What the Done step says for a write that was made: what was recorded (or removed), and the core's own sentence under it, which carries the
  * rates (a price is said once: the sentence is the stored integers printed exactly, so a second copy in the headline could only drift).
  */
-export function pricingDoneText(
+function pricingDoneText(
   offer: PricingOffer,
   written: string,
-): { readonly message: string; readonly lines: readonly string[] } {
+): {
+  readonly message: string;
+  readonly lines: readonly string[];
+  readonly skipped?: readonly number[];
+} {
   const model = clipLine(flowText(offer.model), MODEL_COLUMNS);
   return {
     message: `${offer.kind === 'clear' ? 'Removed' : 'Recorded'} · ${model}`,
     lines: [clipLine(flowText(written), REASON_COLUMNS)],
+    ...passedBy(offer.kind),
   };
 }
 
@@ -509,13 +526,15 @@ async function walk(
 
 /**
  * The last step of a refusal that nothing the form asks can change (a clear with nothing to clear, a model whose provider is not
- * connected): a failed Done, so the result is read where results are, and the way out is to close it. Writes nothing.
+ * connected): a failed Done, so the result is read where results are, and the way out is to close it. Writes nothing. Both come before the
+ * card, so the rail draws `Rates` (a price was never asked for) and `Confirm` (nothing was shown) as not done.
  */
 async function failWith(flow: FramedChordFlow, reason: string): Promise<undefined> {
   await flow.done({
     message: PRICING_REFUSED,
     lines: [clipLine(flowText(reason), REASON_COLUMNS)],
     tone: 'failed',
+    skipped: [RAIL.rates, RAIL.confirm],
   });
   return undefined;
 }
@@ -530,7 +549,7 @@ async function askToChange(flow: FramedChordFlow, reason: string): Promise<boole
     details: [clipLine(flowText(reason), REASON_COLUMNS)],
     options: [
       { value: 'edit', label: PRICING_EDIT_LABEL },
-      { value: 'close', label: PRICING_CLOSE_LABEL },
+      { value: 'close', label: FLOW_CLOSE_LABEL },
     ],
     escape: 'cancel',
   });
@@ -564,6 +583,7 @@ async function confirmAndCommit(
       message: PRICING_FAILED,
       lines: [clipLine(flowText(say(attempt.reason)), REASON_COLUMNS)],
       tone: 'failed',
+      ...passedBy(prepared.offer.kind),
     });
   return undefined;
 }

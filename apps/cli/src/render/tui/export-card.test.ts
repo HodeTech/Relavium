@@ -33,7 +33,6 @@ import { createExportPort } from '../../home/defined-port.js';
 import type { GlobalOptions } from '../../process/options.js';
 import {
   EXPORT_ALLOW_LABEL,
-  EXPORT_CLOSE_LABEL,
   EXPORT_DENY_LABEL,
   EXPORT_FAILED,
   EXPORT_NOT_WRITTEN,
@@ -42,6 +41,7 @@ import {
   type ExportPort,
   type ExportPrepared,
 } from './export-card.js';
+import { FLOW_CLOSE_LABEL } from './flow-text.js';
 import { settleFrames, waitFor } from './harness-util.js';
 import { createNativePromptChannel } from './native-prompt-channel.js';
 import { NativePromptHost } from './native-prompt-host.js';
@@ -406,7 +406,7 @@ describe('a refusal is shown in the popup, and writes nothing', () => {
       `${DESTINATION} already exists, and this export never overwrites.`,
     );
     expect(card.final, 'drawn as what failed').toBe('failed');
-    expect(card.options.map((option) => option.label)).toEqual([EXPORT_CLOSE_LABEL]);
+    expect(card.options.map((option) => option.label)).toEqual([FLOW_CLOSE_LABEL]);
     r.ui.shown(card);
     r.at(10_000);
     r.ui.input('', { ...none, return: true });

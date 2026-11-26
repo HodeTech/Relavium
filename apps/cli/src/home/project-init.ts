@@ -4,7 +4,7 @@ import { prepareProjectInit, type ProjectInitResult } from '../authoring/project
 import type { NoticeFlush } from '../engine/effect-retention.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
 import { CliError } from '../process/cli-error.js';
-import { FLOW_CLOSE_LABEL, flowText } from '../render/tui/flow-text.js';
+import { flowText } from '../render/tui/flow-text.js';
 import {
   NativePromptVisibilityRefusedError,
   type NativeChordPort,
@@ -31,8 +31,8 @@ import { framedFlow, type FramedChordFlow } from './framed-flow.js';
  *   sentence this function resolves with. Nothing is written to the Home's notice or a transcript.
  */
 
-export const INIT_TITLE = '/init';
-export const INIT_STEPS = ['Check', 'Confirm', 'Done'] as const;
+const INIT_TITLE = '/init';
+const INIT_STEPS = ['Check', 'Confirm', 'Done'] as const;
 const CHECK = 0;
 const CONFIRM = 1;
 
@@ -55,7 +55,6 @@ export const INIT_CREATED = 'Created the project directories';
 export const INIT_NEXT = 'Next: /import brings a workflow or an agent into this project.';
 export const INIT_REFUSED = 'Cannot initialize this folder.';
 export const INIT_FAILED = 'Project initialization did not complete.';
-export const INIT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 
 /** `path` relative to the working directory, as a directory (`.relavium/`), through the full scrub; `undefined` when it is not relative there. */
 function directoryLabel(cwd: string, path: string): string | undefined {
@@ -89,18 +88,6 @@ export interface HomeProjectInitDeps {
   readonly ui: NativePromptUi;
   readonly flushVisible: NoticeFlush;
   readonly assertAdmitting: () => void;
-}
-
-/** The refusal, where the question would have been: what is wrong, in the product's words, with one way to close it. Writes nothing. */
-async function refuse(flow: FramedChordFlow, reason: string): Promise<undefined> {
-  await flow.at(CHECK).select({
-    message: INIT_REFUSED,
-    details: [flowText(reason)],
-    options: [{ value: 'close', label: INIT_CLOSE_LABEL }],
-    escape: 'cancel',
-    final: 'failed',
-  });
-  return undefined;
 }
 
 /**
@@ -223,7 +210,11 @@ export async function runHomeProjectInit(deps: HomeProjectInitDeps): Promise<str
   });
   const signal = flow.begin();
   try {
-    if (checked.kind === 'refused') return await refuse(flow, checked.reason);
+    if (checked.kind === 'refused') {
+      // The refusal, where the question would have been: what is wrong, in the product's words. Writes nothing.
+      await flow.fail(CHECK, INIT_REFUSED, flowText(checked.reason));
+      return undefined;
+    }
     return await confirmAndCreate(deps, flow, signal, checked.prepared);
   } catch (error) {
     if (signal.aborted && error === signal.reason) return INIT_CANCELLED;

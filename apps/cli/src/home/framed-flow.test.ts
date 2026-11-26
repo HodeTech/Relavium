@@ -440,6 +440,62 @@ describe('a raw prompt asked while a framed flow is open (`unframed`)', () => {
   });
 });
 
+describe('a refusal on a step (`fail`, MVP-11 unit 6 round 2: AR-7)', () => {
+  it('is a select ON THE STEP it names, never the Done step: the sentence, the reason under it, one option `Close`, marked failed', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const refused = r.flow.fail(1, 'Cannot import this file.', 'broken.yaml is not valid.');
+    const snapshot = r.snapshot();
+    expect(snapshot.popup?.stepIndex, 'the step it names, not the last').toBe(1);
+    expect(snapshot.kind).toBe('select');
+    expect(snapshot.message).toBe('Cannot import this file.');
+    expect(snapshot.details).toEqual(['broken.yaml is not valid.']);
+    expect(snapshot.options).toEqual([{ value: 'close', label: FRAMED_DONE_LABEL }]);
+    expect(snapshot.final).toBe('failed');
+    expect(snapshot.escape, 'a lone Esc leaves the flow, as a refusal always did').toBe('cancel');
+    r.answer();
+    await expect(refused).resolves.toBeUndefined();
+    expect(r.snapshot().final, 'the mark belongs to the step that set it').toBeUndefined();
+  });
+
+  it('names no reason when none is given: a sentence and its one option', () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    void r.flow.fail(0, 'Nothing to run.');
+    expect(r.snapshot().details).toEqual([]);
+    expect(r.snapshot().options).toEqual([{ value: 'close', label: FRAMED_DONE_LABEL }]);
+  });
+
+  it('can step back instead of leaving, and can be no failure (a last step that is only said): `Esc` aborts nothing', async () => {
+    const r = rig({ progress: 'manual' });
+    const signal = r.flow.begin();
+    const said = r.flow.fail(2, 'Nothing to run here.', undefined, { escape: 'back', tone: 'ok' });
+    expect(r.snapshot().escape).toBe('back');
+    expect(r.snapshot().final).toBe('ok');
+    r.settle();
+    r.key(ESC);
+    await expect(said).resolves.toBeUndefined();
+    expect(signal.aborted).toBe(false);
+  });
+
+  it('a lone `Esc` leaves the flow by default: the signal is aborted, as the refusals of /init, /import and /export always did', async () => {
+    const r = rig({ progress: 'manual' });
+    const signal = r.flow.begin();
+    const refused = r.flow.fail(0, 'Cannot initialize this folder.', 'It is not writable.');
+    r.settle();
+    r.key(ESC);
+    await expect(refused).resolves.toBeUndefined();
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('clamps the step to the steps there are, as `at` does', () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    void r.flow.fail(99, 'Too far.');
+    expect(r.step()).toBe(2);
+  });
+});
+
 describe('the Done step (ADR-0148 §6)', () => {
   it('is the last step: a select of one option `Close`, the target once and then its lines above it, marked final (ok), closed by `Enter`', async () => {
     const r = rig();
@@ -480,11 +536,11 @@ describe('the Done step (ADR-0148 §6)', () => {
   });
 
   it.each(['ok', 'failed'] as const)(
-    'ONE option label in the %s tone, whatever a caller passes (the deprecated `label` is ignored): the legend under it says `close`',
+    'ONE option label in the %s tone: the legend under it says `close`',
     (tone) => {
       const r = rig();
       r.flow.begin();
-      void r.flow.done({ message: 'Done.', label: 'Finish', tone });
+      void r.flow.done({ message: 'Done.', tone });
       expect(r.snapshot().options.map((option) => option.label)).toEqual([FRAMED_DONE_LABEL]);
       expect(FRAMED_DONE_LABEL).toBe('Close');
     },

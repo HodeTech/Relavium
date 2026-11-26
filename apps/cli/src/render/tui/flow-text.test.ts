@@ -10,13 +10,9 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { INIT_CLOSE_LABEL } from '../../home/project-init.js';
-import { RUN_FAILED_CLOSE } from '../../home/run-launch.js';
+import { FRAMED_DONE_LABEL } from '../../home/framed-flow.js';
 import { scrubPopupText } from '../../popups/popup-text.js';
-import { EXPORT_CLOSE_LABEL } from './export-card.js';
-import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
-import { IMPORT_CLOSE_LABEL } from './import-card.js';
-import { PRICING_CLOSE_LABEL } from './pricing-card.js';
+import { FLOW_CLOSE_LABEL, flowLine, flowText } from './flow-text.js';
 
 const KEY_SHAPED = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
 
@@ -67,25 +63,41 @@ describe('the word that closes a refusal', () => {
     expect(flowText(FLOW_CLOSE_LABEL)).toBe(FLOW_CLOSE_LABEL);
   });
 
-  it('is the word of every flow that closes with it, and no flow writes it again', () => {
-    for (const label of [
-      INIT_CLOSE_LABEL,
-      IMPORT_CLOSE_LABEL,
-      EXPORT_CLOSE_LABEL,
-      PRICING_CLOSE_LABEL,
-      RUN_FAILED_CLOSE,
-    ])
-      expect(label).toBe(FLOW_CLOSE_LABEL);
-    // A flow that wrote `'Close'` itself would pass the line above until the shared word changed: the sources say it is none.
+  it('is the word of the one option of a Done step and of a refusal (`framedFlow` says it for every flow), and no flow writes it again', () => {
+    expect(FRAMED_DONE_LABEL).toBe(FLOW_CLOSE_LABEL);
+    // A flow that wrote `'Close'` itself, or gave the word an alias of its own, would pass the line above until the shared word changed: the
+    // sources say it is none.
     const here = (path: string): string =>
       readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
     for (const source of [
+      here('../../home/framed-flow.ts'),
       here('../../home/project-init.ts'),
       here('../../home/run-launch.ts'),
       here('./import-card.ts'),
       here('./export-card.ts'),
       here('./pricing-card.ts'),
-    ])
+    ]) {
       expect(source).not.toMatch(/=\s*'Close'/u);
+      expect(source).not.toMatch(/(?:INIT|IMPORT|EXPORT|PRICING)_CLOSE_LABEL|RUN_FAILED_CLOSE/u);
+    }
+  });
+});
+
+describe('flowLine is the scrub of a word drawn as one row', () => {
+  const separators = `line${String.fromCharCode(0x2028)}para${String.fromCharCode(0x2029)}sep`;
+
+  it('is `flowText` with the line and paragraph separators folded to a space, and nothing else changed', () => {
+    for (const piece of [...HOSTILE.split(' '), HOSTILE, HOSTILE_LONG, separators, 'gpt-5']) {
+      const folded = flowText(piece).replace(/[\p{Zl}\p{Zp}]/gu, ' ');
+      expect(flowLine(piece), JSON.stringify(piece)).toBe(folded);
+    }
+    expect(flowLine(separators)).toBe('line para sep');
+    expect(flowText(separators), 'the scrub alone keeps them: a row would break in two').toMatch(
+      /[\p{Zl}\p{Zp}]/u,
+    );
+  });
+
+  it('leaves none of the hostile corpus', () => {
+    for (const bad of FORBIDDEN) expect(flowLine(HOSTILE), JSON.stringify(bad)).not.toContain(bad);
   });
 });

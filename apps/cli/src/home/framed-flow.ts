@@ -33,6 +33,10 @@
  * after its Done step must not take a completed write for a cancel); `Ctrl+C` still cancels. A step the flow passed without doing it (`skipped`:
  * the setup's `Key` step after a granted environment key) is drawn on its rail as not done, never `✓`.
  *
+ * **A refusal is a step too** (`fail`): where a flow cannot ask its next question (a path that cannot be read, a folder that cannot be made a
+ * project, a launch that cannot go on) it says why on the step it was on, with ONE option, `Close`, written here once so the flows cannot say it
+ * five ways. The rail stays where it was; nothing is written and nothing is answered.
+ *
  * **What a step's keys say.** `at(i, { exitLabel, enterVerb, escapeVerb })` gives that one step's prompts their own words: the way back, what
  * `Enter` does on a field (`check`), and what `Esc` does where it steps back and the step back is more than a step (`skip for now` on the first
  * run's first step, whose step back IS the skip). Product constants, never data.
@@ -41,11 +45,13 @@
  * where a framed prompt would draw nothing and every key would be dropped as unseen. That mount's coordinator receives the raw flow.
  */
 
+import { FLOW_CLOSE_LABEL } from '../render/tui/flow-text.js';
 import {
   NATIVE_PROMPT_BACK,
   type NativeChordPort,
   type NativeFinalTone,
   type NativePopupDescriptor,
+  type NativePromptEscape,
   type NativePromptFlow,
 } from '../render/tui/native-prompt-channel.js';
 
@@ -94,8 +100,6 @@ export interface FramedDone {
    * drawn a second time). A caller does not put it in the sentence as well. Absent ⇒ no row.
    */
   readonly target?: string;
-  /** @deprecated Ignored: the step has one option, worded {@link FRAMED_DONE_LABEL}, whatever the result (its legend says `Enter / Esc close`). */
-  readonly label?: string;
   /** `failed` draws the sentence as a failure (a write that did not happen); default `ok`. */
   readonly tone?: NativeFinalTone;
   /**
@@ -107,8 +111,18 @@ export interface FramedDone {
 
 /** The value the Done step's one option answers with. */
 export const FRAMED_DONE_VALUE = 'done';
-/** The words of the Done step's one option, in both tones: the legend under it says `Enter / Esc close`. */
-export const FRAMED_DONE_LABEL = 'Close';
+/** The value the one option of a refusal on a step answers with ({@link FramedFlow.fail}). */
+const FRAMED_FAIL_VALUE = 'close';
+/** The words of the one option of a Done step (in both tones) and of a refusal: the product's one word for it, the legend under it says `Enter / Esc close`. */
+export const FRAMED_DONE_LABEL = FLOW_CLOSE_LABEL;
+
+/** What a refusal on a step does beyond its sentence and its reason. */
+export interface FramedFailOptions {
+  /** What a lone `Esc` does: `cancel` leaves the flow (a refusal's default), `back` steps back and aborts nothing. */
+  readonly escape?: NativePromptEscape;
+  /** `failed` (the default) draws the sentence as a failure; `ok` is a last step that only says something (a project with nothing to run). */
+  readonly tone?: NativeFinalTone;
+}
 
 /** The prompts of a framed flow, on the step their caller names (`at`) or on the step the rail is on. */
 export type FramedPrompts = Pick<
@@ -126,6 +140,18 @@ export interface FramedFlow extends Omit<NativePromptFlow, 'popup'> {
    * or at once when the flow was already cancelled.
    */
   readonly done: (options: FramedDone) => Promise<void>;
+  /**
+   * A refusal where a question would have been (a path that cannot be imported, a folder that cannot be initialized, a launch that cannot
+   * go on): drawn on step `step` (clamped) with the sentence `message`, the `reason` under it (the CALLER's scrubbed words: nothing here
+   * scrubs it) and ONE option, `Close`, resolved by `Enter` or by the way out its options name. It is no Done step: the rail stays on the
+   * step it names. Writes nothing, and answers nothing.
+   */
+  readonly fail: (
+    step: number,
+    message: string,
+    reason?: string,
+    options?: FramedFailOptions,
+  ) => Promise<void>;
   /** Run `run` with the descriptor taken away (a raw prompt is drawn as the card it is), then put it back on the step the flow was on. */
   readonly unframed: <T>(run: () => Promise<T>) => Promise<T>;
 }
@@ -363,20 +389,50 @@ function doneRows(done: FramedDone): readonly string[] {
   return done.target === undefined || lines.includes(done.target) ? lines : [done.target, ...lines];
 }
 
+/** The one-option select every closing step is (a Done step, a refusal): the sentence, the rows under it, `Close`, and the tone it is marked with. */
+function closingStep(
+  message: string,
+  rows: readonly string[],
+  value: string,
+  escape: NativePromptEscape,
+  final: NativeFinalTone,
+): Parameters<NativePromptFlow['select']>[0] {
+  return {
+    message,
+    options: [{ value, label: FRAMED_DONE_LABEL }],
+    ...(rows.length === 0 ? {} : { details: rows }),
+    escape,
+    final,
+  };
+}
+
 /** The persistent last step (see {@link FramedFlow.done}). */
 async function doneStep(flow: NativePromptFlow, rail: Rail, done: FramedDone): Promise<void> {
   // The step starts with no note: what an earlier step said is not what this one reports (its own lines are the place for what must stay).
   rail.clearNote();
   rail.show(rail.last, done.skipped === undefined ? {} : { skipped: done.skipped });
-  const rows = doneRows(done);
-  await flow.select({
-    message: done.message,
-    options: [{ value: FRAMED_DONE_VALUE, label: FRAMED_DONE_LABEL }],
-    ...(rows.length === 0 ? {} : { details: rows }),
-    // A lone `Esc` closes it as a step back: the flow's signal is not aborted by closing what it already did.
-    escape: 'back',
-    final: done.tone ?? 'ok',
-  });
+  // A lone `Esc` closes it as a step back: the flow's signal is not aborted by closing what it already did.
+  await flow.select(
+    closingStep(done.message, doneRows(done), FRAMED_DONE_VALUE, 'back', done.tone ?? 'ok'),
+  );
+}
+
+/** A refusal on step `step` (see {@link FramedFlow.fail}). */
+async function failStep(
+  prompts: FramedPrompts,
+  message: string,
+  reason: string | undefined,
+  options: FramedFailOptions | undefined,
+): Promise<void> {
+  await prompts.select(
+    closingStep(
+      message,
+      reason === undefined ? [] : [reason],
+      FRAMED_FAIL_VALUE,
+      options?.escape ?? 'cancel',
+      options?.tone ?? 'failed',
+    ),
+  );
 }
 
 export function framedFlow(
@@ -409,6 +465,8 @@ export function framedFlow(
         escapeVerb: stepOptions?.escapeVerb,
       }),
     done: (done) => doneStep(flow, rail, done),
+    fail: (step, message, reason, failOptions) =>
+      failStep(stepPrompts(flow, rail, { step: rail.clamp(step) }), message, reason, failOptions),
     unframed: async (run) => {
       rail.suspend();
       try {

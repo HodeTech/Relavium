@@ -198,7 +198,8 @@ describe('prepare reads and validates through the command’s own first half, an
     // `~` alone is the home directory, which is not a file; ~other is a relative name.
     expect(refused('~')).toMatch(/is not a regular file$/u);
     expect(refused('~other/x.yaml')).toBe('no file at ~other/x.yaml');
-    expect(refused('~/missing.yaml')).toMatch(/^no file at \.\..*missing\.yaml$/u);
+    // a file outside the project is named as it was typed, not as the climb from the working directory (`import-port-refusals.test.ts`)
+    expect(refused('~/missing.yaml')).toBe('no file at ~/missing.yaml');
   });
 
   it.each([
@@ -248,7 +249,8 @@ describe('a refusal is said as a person reads it: the file once, scrubbed, cut a
   it('a YAML syntax error names the file once, not in every parenthesis the parser adds', () => {
     writeFileSync(join(root, 'bad-indent.yaml'), 'id: x\n  provider: [unclosed\nmodel: "abc\n');
     const reason = refused('bad-indent.yaml');
-    expect(reason.startsWith('bad-indent.yaml is not a valid workflow (')).toBe(true);
+    // both readings fail on the one syntax error, which is said once (`import-port-refusals.test.ts`)
+    expect(reason.startsWith('bad-indent.yaml is not a valid workflow or agent (')).toBe(true);
     expect(reason.split('bad-indent.yaml'), `the file is named once in: ${reason}`).toHaveLength(2);
     expect(reason).toMatch(/\(line 1, column \d+\)/u);
     expect(reason.length).toBeLessThanOrEqual(240);
@@ -258,7 +260,7 @@ describe('a refusal is said as a person reads it: the file once, scrubbed, cut a
     writeFileSync(join(root, 'not-map.yaml'), '- a\n- b\n');
     const reason = refused('not-map.yaml');
     expect(reason.split('not-map.yaml'), `the file is named once in: ${reason}`).toHaveLength(2);
-    expect(reason).toContain('invalid agent: agent: expected object');
+    expect(reason).toContain('or agent (agent: expected object, received array)');
   });
 
   it('a reason too long is cut where a word ends, never inside one, and says so with an ellipsis', () => {

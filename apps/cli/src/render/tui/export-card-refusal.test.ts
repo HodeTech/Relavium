@@ -4,10 +4,11 @@
  * popup's own words, so it goes through `flowText` before it reaches the channel, as the question's slug does. The popup is the real one (the Home's host,
  * the real channel), and what is read is what it draws.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { runExportCard, type ExportPort } from './export-card.js';
 import { flowText } from './flow-text.js';
+import { createNativePromptChannel } from './native-prompt-channel.js';
 import { mountHome } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 
@@ -45,5 +46,45 @@ describe('the export refusal quotes the slug through the full scrub', () => {
     } finally {
       m.unmount();
     }
+  });
+});
+
+/** The one bound of every `vi.waitFor` of this file. */
+const WAIT_MS = 5000;
+const KEY = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
+
+describe('the export refusal says its reason through the full scrub and the bound', () => {
+  it.each([
+    ['an answer chord', 'Press [Ctrl+Y] now', '[Ctrl+Y]'],
+    ['a forged legend row', 'Write · [Ctrl+N] Write nothing · Esc denies', '[Ctrl+N]'],
+    ['a key-shaped string', `cannot write ${KEY}`, KEY],
+  ])('%s is not drawn', async (_name, reason, forbidden) => {
+    const channel = createNativePromptChannel();
+    const running = runExportCard(
+      { flow: channel.flow, port: { prepare: () => ({ ok: false, reason }) } },
+      'wf',
+    );
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBe('failed'), {
+      timeout: WAIT_MS,
+    });
+    expect(channel.ui.getSnapshot().details.join('\n')).not.toContain(forbidden);
+    channel.flow.cancel();
+    await running;
+  });
+
+  it('a reason longer than the popup’s bound is cut to it', async () => {
+    const channel = createNativePromptChannel();
+    const running = runExportCard(
+      { flow: channel.flow, port: { prepare: () => ({ ok: false, reason: 'w'.repeat(600) }) } },
+      'wf',
+    );
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBe('failed'), {
+      timeout: WAIT_MS,
+    });
+    const reason = channel.ui.getSnapshot().details.join('');
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason.endsWith('…')).toBe(true);
+    channel.flow.cancel();
+    await running;
   });
 });

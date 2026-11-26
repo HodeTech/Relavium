@@ -15,11 +15,10 @@ import type { Key } from 'ink';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PROJECT_DIRECTORY_REMEDY } from '../config/project-directory.js';
-import { flowText } from '../render/tui/flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from '../render/tui/flow-text.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import {
   INIT_CANCELLED,
-  INIT_CLOSE_LABEL,
   INIT_CREATED,
   INIT_FAILED,
   INIT_REFUSED,
@@ -134,7 +133,7 @@ describe('a folder that cannot be made a project is a refusal step (J04)', () =>
     expect(step.details).toEqual([flowText(PROJECT_DIRECTORY_REMEDY)]);
     expect(step.details.join(' ')).toContain('global state');
     // One way to close it, and no way to go on.
-    expect(step.options.map((option) => option.label)).toEqual([INIT_CLOSE_LABEL]);
+    expect(step.options.map((option) => option.label)).toEqual([FLOW_CLOSE_LABEL]);
     // On the first step (Check) of the popup.
     expect(step.popup).toMatchObject({ title: '/init', stepIndex: 0, stepCount: 3 });
     r.channel.ui.input('', key);
@@ -194,7 +193,7 @@ describe('a write that is refused at the commit is a failed last step (J14)', ()
     expect(step.final, 'drawn as what failed').toBe('failed');
     expect(step.message).toBe(INIT_FAILED);
     expect(step.details.join(' ')).toContain('The project .relavium marker is not a directory');
-    expect(step.options.map((option) => option.label)).toEqual([INIT_CLOSE_LABEL]);
+    expect(step.options.map((option) => option.label)).toEqual([FLOW_CLOSE_LABEL]);
     r.channel.ui.input('', ENTER);
     expect(await r.result).toBeUndefined();
     expect(tree(r.project)).toEqual(['.relavium']);

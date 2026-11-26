@@ -27,7 +27,7 @@ import { KEYS, mountHome, type HomeMount } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
 
-/** Past the lockout the key that opened the flow (or answered the step before) starts, and the card's dwell, with room to spare. */
+/** Past the lockout (it runs from the moment the card appeared, not from the key that opened the flow or answered the step before) and the card's dwell, with room to spare. */
 const PAST_THE_LOCKOUT_MS = APPROVAL_LOCKOUT_MS + 300;
 /** Past the flow's opening settle. */
 const PAST_THE_SETTLE_MS = POPUP_SELECT_SETTLE_MS + 100;

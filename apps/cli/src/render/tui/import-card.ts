@@ -1,5 +1,5 @@
-import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
-import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
+import { framedFlow } from '../../home/framed-flow.js';
+import { flowText } from './flow-text.js';
 import type { NativeChordPort, NativePromptFlow } from './native-prompt-channel.js';
 import { clipLine } from './sheet-frame.js';
 
@@ -61,22 +61,21 @@ export interface ImportPort {
   readonly prepare: (pathText: string) => ImportPrepared;
 }
 
-export const IMPORT_TITLE = '/import';
-export const IMPORT_STEPS = ['Path', 'Review', 'Done'] as const;
+const IMPORT_TITLE = '/import';
+const IMPORT_STEPS = ['Path', 'Review', 'Done'] as const;
 const PATH = 0;
 const REVIEW = 1;
 
 export const IMPORT_PATH_MESSAGE = 'Path of the workflow or agent YAML to import (~ is your home)';
 export const IMPORT_ALLOW_LABEL = 'Write the file';
 export const IMPORT_DENY_LABEL = 'Write nothing';
-export const IMPORT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 /** The notification when the popup was answered with anything but a Yes, or the path was never given. */
 export const IMPORT_NOT_WRITTEN = 'Nothing was written.';
 /** What the refusal step says above the reason. */
 export const IMPORT_CANNOT = 'Cannot import this file.';
 /** What the Done step says when the write itself was refused. */
 export const IMPORT_FAILED = 'Not imported.';
-export const IMPORT_CANONICAL =
+const IMPORT_CANONICAL =
   'Canonical YAML: comments are dropped and values are kept as written. The file you named is not changed.';
 
 const SOURCE_COLUMNS = 120;
@@ -121,7 +120,7 @@ export function importCardText(offer: ImportOffer): ImportCardText {
 }
 
 /** What the Done step says for a file that was written: what was imported, and what to type next. */
-export function importDoneText(offer: ImportOffer): {
+function importDoneText(offer: ImportOffer): {
   readonly message: string;
   readonly lines: readonly string[];
   readonly target: string;
@@ -143,18 +142,6 @@ export interface ImportCardDeps {
   readonly port: ImportPort;
   /** Throws when the Home is closing; called before anything is asked or read. */
   readonly assertAdmitting?: (() => void) | undefined;
-}
-
-/** The refusal, where the question would have been: the reason, and one way to close it. Whatever closes it writes nothing. */
-async function refuse(flow: FramedChordFlow, reason: string): Promise<undefined> {
-  await flow.at(REVIEW).select({
-    message: IMPORT_CANNOT,
-    details: [shown(reason, REASON_COLUMNS)],
-    options: [{ value: 'close', label: IMPORT_CLOSE_LABEL }],
-    escape: 'cancel',
-    final: 'failed',
-  });
-  return undefined;
 }
 
 /**
@@ -180,7 +167,11 @@ export async function runImportCard(deps: ImportCardDeps): Promise<string | unde
     // `Esc` and `Ctrl+C` end the flow; nothing has been read.
     if (typeof typed !== 'string') return IMPORT_NOT_WRITTEN;
     const prepared = deps.port.prepare(typed);
-    if (!prepared.ok) return await refuse(flow, prepared.reason);
+    if (!prepared.ok) {
+      // The refusal, where the question would have been: the reason, and one way to close it. Whatever closes it writes nothing.
+      await flow.fail(REVIEW, IMPORT_CANNOT, shown(prepared.reason, REASON_COLUMNS));
+      return undefined;
+    }
     const answer = await flow
       .at(REVIEW)
       .chord({ ...importCardText(prepared.offer), escape: 'cancel', signal });

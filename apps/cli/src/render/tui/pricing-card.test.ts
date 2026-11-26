@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PRICING_FIELDS, type PricingFieldId } from '../../commands/pricing-fields.js';
 import { PRICING_WRITE_FAULT, createPricingPort } from '../../home/pricing-port.js';
+import { FLOW_CLOSE_LABEL } from './flow-text.js';
 import { createNativePromptChannel } from './native-prompt-channel.js';
 import {
   PRICING_ACTION_CLEAR,
@@ -39,7 +40,6 @@ import {
   PRICING_CLEAR_ALLOW_LABEL,
   PRICING_CANNOT_RECORD,
   PRICING_CLEAR_OWNERSHIP,
-  PRICING_CLOSE_LABEL,
   PRICING_DENY_LABEL,
   PRICING_EDIT_LABEL,
   PRICING_FAILED,
@@ -326,7 +326,7 @@ describe('the form asks one question per row of the field table', () => {
     // Nothing was given, so the core refuses: at least one price is needed. It is a sentence in the card's place.
     expect(await r.refusalUp()).toContain('Set at least one price');
     expect(r.snap().popup?.stepIndex, 'on the Confirm step').toBe(3);
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
     expect(catalog.listAll()).toHaveLength(0);
   });
@@ -377,7 +377,7 @@ describe('the form asks one question per row of the field table', () => {
       r.type('');
     }
     await r.refusalUp();
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     await r.result;
     expect(catalog.listAll()).toHaveLength(0);
   });
@@ -529,8 +529,8 @@ describe('the confirmation shows exactly what will be recorded, and whose overri
     expect(
       r.snap().options.map((option) => option.label),
       'there is nothing to change',
-    ).toEqual([PRICING_CLOSE_LABEL]);
-    r.choose(PRICING_CLOSE_LABEL);
+    ).toEqual([FLOW_CLOSE_LABEL]);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
   });
@@ -790,7 +790,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     expect(reason).not.toContain('--');
     expect(r.snap().options.map((option) => option.label)).toEqual([
       PRICING_EDIT_LABEL,
-      PRICING_CLOSE_LABEL,
+      FLOW_CLOSE_LABEL,
     ]);
     expect(catalog.listAll()).toHaveLength(0);
 
@@ -808,7 +808,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     await r.start(PRICING_ACTION_SET, 'gpt-5.5');
     await r.fill({ input: '3', image: '0.04' });
     expect(await r.refusalUp()).toContain('Input price and Output price are set together');
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll()).toHaveLength(0);
@@ -819,7 +819,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ image: '0.04' });
     expect(await r.refusalUp()).toContain('has no token price');
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     await r.result;
     expect(catalog.listAll()).toHaveLength(0);
   });
@@ -854,7 +854,7 @@ describe('Esc steps back, and leaving the first question leaves the form', () =>
     const r = rig();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
     expect(await r.failedUp()).not.toContain('Input price'); // no override: refused before any price is asked
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     await r.result;
   });
 });
@@ -961,7 +961,7 @@ describe('a model the list does not show', () => {
     r.ui.input('', enter);
     await r.fill({ input: '3', output: '9' });
     expect(await r.refusalUp()).toBe(PRICING_MODEL_ID_FAULTS.invisible);
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll(), 'the decoy was not written as a row of its own').toHaveLength(0);
@@ -988,7 +988,7 @@ describe('a model whose provider has no row is refused before any price is asked
     expect(r.snap().kind, 'no price field was asked').toBe('select');
     expect(r.snap().message).toBe(PRICING_REFUSED);
     expect(prepare, 'nothing was prepared: the form never reached the core').not.toHaveBeenCalled();
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result, 'the popup said what happened').toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll()).toHaveLength(0);
@@ -1000,7 +1000,7 @@ describe('a model whose provider has no row is refused before any price is asked
     expect(await r.failedUp()).toBe(
       'Anthropic is not connected, so there is no price of yours to clear.',
     );
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     expect(await r.result).toBeUndefined();
   });
 
@@ -1045,7 +1045,7 @@ describe('no engine message that names a shell command reaches the popup', () =>
     expect(reason).toBe('Connect OpenAI with /providers first, then set its prices.');
     for (const shell of ['relavium', 'set-key', 'provider add', 'unknown provider'])
       expect(reason, shell).not.toContain(shell);
-    r.choose(PRICING_CLOSE_LABEL);
+    r.choose(FLOW_CLOSE_LABEL);
     await r.result;
   });
 
@@ -1079,6 +1079,133 @@ describe('no engine message that names a shell command reaches the popup', () =>
       "'acme-custom-1' is already user-priced under 'deepseek'.",
     ])
       expect(pricingRefusalText(own, fallback), own).toBe(own);
+  });
+});
+
+describe('only the core’s own sentence about an unregistered provider, or a shell remedy for one, is replaced (round 2)', () => {
+  const fallback = 'Connect Acme with /providers first, then set its prices.';
+
+  it('the core’s "unknown provider" sentence is replaced only where it BEGINS the reason; the same words inside another sentence stay', () => {
+    expect(pricingRefusalText("unknown provider 'acme' — register it first", fallback)).toBe(
+      fallback,
+    );
+    const inside = "The catalogue lists an unknown provider 'acme' for this model.";
+    expect(pricingRefusalText(inside, fallback)).toBe(inside);
+  });
+
+  it('a `provider set-key` remedy with no `relavium` before it is a shell remedy too', () => {
+    expect(pricingRefusalText('Store its key with provider set-key acme first.', fallback)).toBe(
+      fallback,
+    );
+  });
+
+  it('a reason that merely QUOTES the words (a model or a name a person gave) is the core’s own sentence, not a remedy', () => {
+    for (const quoted of [
+      "the price for 'relavium provider add' is above the ceiling",
+      "'relavium provider set-key' is not a model the catalog lists",
+      'The input price for relavium provider add (a model id) is above its ceiling.',
+    ])
+      expect(pricingRefusalText(quoted, fallback), quoted).toBe(quoted);
+  });
+});
+
+/** The rail's steps the form names: `Action · Model · Rates · Confirm · Done` (`PRICING_STEPS`), by their place. */
+const RATES_STEP = 2;
+const CONFIRM_STEP = 3;
+
+describe('the rail of a last step draws what was never reached as not done (OB-3, CO-3)', () => {
+  const noRow = (): Rig =>
+    rig([entry('claude-haiku-5-5', { provider: 'anthropic' }), entry('acme-custom-1')]);
+  /** A prepared CLEAR whose write the store refuses: the form reached its confirmation, and there was no price to ask for. */
+  const clearOffer: PricingOffer = {
+    kind: 'clear',
+    model: 'gpt-5.5',
+    provider: 'openai',
+    providerName: 'OpenAI',
+    prices: [],
+    keeps: false,
+    replaces: undefined,
+    fallback: undefined,
+  };
+
+  it('a model whose provider is not connected: Rates and Confirm were never reached', async () => {
+    const r = noRow();
+    await r.start(PRICING_ACTION_SET, 'claude-haiku-5-5');
+    await r.failedUp();
+    expect(r.snap().popup?.skipped).toEqual([RATES_STEP, CONFIRM_STEP]);
+    r.choose(FLOW_CLOSE_LABEL);
+    await r.result;
+  });
+
+  it('the same refusal for a CLEAR: Rates and Confirm were never reached either', async () => {
+    const r = noRow();
+    await r.start(PRICING_ACTION_CLEAR, 'claude-haiku-5-5');
+    await r.failedUp();
+    expect(r.snap().popup?.skipped).toEqual([RATES_STEP, CONFIRM_STEP]);
+    r.choose(FLOW_CLOSE_LABEL);
+    await r.result;
+  });
+
+  it('a CLEAR with nothing to clear is refused before its confirmation: Rates (a clear passes it by) and Confirm were not reached', async () => {
+    const r = rig();
+    await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
+    await r.failedUp();
+    expect(r.snap().popup?.skipped).toEqual([RATES_STEP, CONFIRM_STEP]);
+    r.choose(FLOW_CLOSE_LABEL);
+    await r.result;
+  });
+
+  it('a write refused after the confirmation keeps Confirm done: a SET reached every step, a CLEAR passed Rates by', async () => {
+    const set = rig();
+    await atCard(set);
+    client.sqlite.pragma('query_only = ON');
+    set.ui.input('y', ctrl);
+    const setDone = await set.done();
+    client.sqlite.pragma('query_only = OFF');
+    expect(setDone.tone).toBe('failed');
+    expect(
+      Object.keys(setDone.step.popup ?? {}),
+      'every step before Done was done: no field',
+    ).not.toContain('skipped');
+
+    const clear = rig();
+    vi.spyOn(clear.port, 'prepare').mockReturnValue({
+      ok: true,
+      offer: clearOffer,
+      commit: () => ({ ok: false, reason: 'The database refused the write.' }),
+    });
+    await clear.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
+    await clear.cardUp();
+    clear.ui.input('y', ctrl);
+    const clearDone = await clear.done();
+    expect(clearDone.tone).toBe('failed');
+    expect(clearDone.step.popup?.skipped, 'Confirm was answered; Rates never asked').toEqual([
+      RATES_STEP,
+    ]);
+  });
+
+  it('a CLEAR that was done says the same: no price was asked for, so Rates is not drawn as done', async () => {
+    const r = rig();
+    vi.spyOn(r.port, 'prepare').mockReturnValue({
+      ok: true,
+      offer: clearOffer,
+      commit: () => ({ ok: true, written: 'Cleared the user price for gpt-5.5 (OpenAI).' }),
+    });
+    await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
+    await r.cardUp();
+    r.ui.input('y', ctrl);
+    const done = await r.done();
+    expect(done.tone).toBe('ok');
+    expect(done.step.popup?.skipped).toEqual([RATES_STEP]);
+  });
+
+  it('a SET that was done reached every step: no step is drawn as skipped', async () => {
+    const r = rig();
+    await atCard(r);
+    r.ui.input('y', ctrl);
+    const done = await r.done();
+    expect(done.tone).toBe('ok');
+    expect(Object.keys(done.step.popup ?? {})).not.toContain('skipped');
   });
 });
 

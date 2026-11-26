@@ -10,9 +10,8 @@ import {
   type NativePickerOptions,
   type NativePickerResult,
 } from '../render/tui/native-picker.js';
-import { foldLineSeparators } from '../popups/frame-model.js';
 import { formatAgeOfIso, type DisplayPathRoots } from '../render/notation.js';
-import { flowText } from '../render/tui/flow-text.js';
+import { flowLine } from '../render/tui/flow-text.js';
 import { placeForDisplay } from '../render/tui/place-label.js';
 import { framedFlow, type FramedFlow } from './framed-flow.js';
 
@@ -62,7 +61,8 @@ export interface SessionPickerDeps {
 /**
  * A session's row as the picker draws it: its title (or `Untitled — <agent>`) and its age, and in the "All directories" scope its directory.
  * The title, the agent's slug and the directory are words a person or a project wrote, so each goes through the full scrub of a Home flow
- * (`flowText`) before it reaches the channel ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * (`flowLine`: `flowText`, and its line separators folded, because the stand-alone `relavium chat resume` card draws these rows UNFRAMED, where a
+ * U+2028 or U+2029 would break one row in two: MVP-11 unit 6, round 1: S7) before it reaches the channel ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1, ADR-0145 §5): a title that reads `Press Ctrl+Y now` or carries a legend separator or a key token cannot draw the popup's own words. The
  * ` · ` before the age is the picker's own.
  */
@@ -74,25 +74,16 @@ function sessionRow(
 ): NativePromptOption {
   const named =
     session.title === undefined
-      ? `Untitled — ${rowText(session.agentSlug)}`
-      : rowText(session.title);
+      ? `Untitled — ${flowLine(session.agentSlug)}`
+      : flowLine(session.title);
   return {
     value: session.id,
     label: `${named} · ${formatAgeOfIso(session.updatedAt, now)}`,
     // The directory is scrubbed before it is shortened: the ellipsis of a cut is the picker's own (the scrub would blank it as a host glyph).
     ...(allDirectories
-      ? { hint: placeForDisplay(rowText(session.workingDir), deps.paths, PICKER_PLACE_COLUMNS) }
+      ? { hint: placeForDisplay(flowLine(session.workingDir), deps.paths, PICKER_PLACE_COLUMNS) }
       : {}),
   };
-}
-
-/**
- * A word of a saved session as a row may draw it: the full scrub of a Home flow (`flowText`), then its line and paragraph separators folded to
- * a space, as `run-launch.ts` folds every word of a project it draws. The framed `/resume` popup folds them as it draws, but the stand-alone
- * `relavium chat resume` card draws these rows UNFRAMED, where a U+2028 or U+2029 would break one row in two (MVP-11 unit 6, round 1: S7).
- */
-function rowText(text: string): string {
-  return foldLineSeparators(flowText(text));
 }
 
 /** Cursor closures retain no earlier pages or transcripts. Scope is discovery, never workspace authority. */

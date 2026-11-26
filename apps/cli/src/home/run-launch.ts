@@ -13,11 +13,10 @@ import { faultForTranscript } from '../config/config-error-text.js';
 import { ConfigError } from '../config/errors.js';
 import { loadResolvedConfig, type LoadedConfig } from '../config/load.js';
 import { shortRunId } from '../history/run-detail-model.js';
-import { foldLineSeparators } from '../popups/frame-model.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
-import { FLOW_CLOSE_LABEL, flowText } from '../render/tui/flow-text.js';
+import { flowLine } from '../render/tui/flow-text.js';
 import { keyToken } from '../render/tui/legend.js';
 import {
   NATIVE_PROMPT_BACK,
@@ -84,8 +83,6 @@ const STEP = { workflow: 0, inputs: 1, confirm: 2 } as const;
 /** The confirmation's answers, as its legend row names them (`[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies`, whole at 80×24). */
 export const RUN_CONFIRM_ALLOW = 'Start it';
 export const RUN_CONFIRM_DENY = 'Cancel';
-/** The words of the one option of the last step that says a start failed. */
-export const RUN_FAILED_CLOSE = FLOW_CLOSE_LABEL;
 
 /** A workflow the picker offers. */
 export interface LaunchChoice {
@@ -536,12 +533,7 @@ function workflowLabel(name: string | undefined, id: string): string {
  * reaches a notification or the Defined tab's row is one row too), then cut to `limit`.
  */
 function bounded(text: string, limit: number): string {
-  return cut(scrubbed(text), limit);
-}
-
-/** The full scrub of a Home flow, with the line separators folded: every word of a project this module puts on the channel goes through it. */
-function scrubbed(text: string): string {
-  return foldLineSeparators(flowText(text));
+  return cut(flowLine(text), limit);
 }
 
 /**
@@ -561,6 +553,24 @@ function fitted(...forms: readonly [string, ...string[]]): string {
 /** A notice's first sentence (what it says before the remedy that follows it), or the whole notice when it has one sentence. */
 function firstSentence(text: string): string {
   return /^.*?[.!?](?=\s|$)/u.exec(text)?.[0] ?? text;
+}
+
+/** Where the directory of `path` ends: just after its last separator (either kind), or at the start when it has none. */
+function directoryEnd(path: string): number {
+  return Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1;
+}
+
+/**
+ * The directory every path of `paths` begins with, with its separator: what a list of files in one place need not say on every row (`.relavium/
+ * workflows/` for the project's workflows). Nothing when they share none, or when there are none. It is cut at a separator, never inside a name.
+ */
+function sharedDirectory(paths: readonly string[]): string {
+  const [first, ...rest] = paths;
+  if (first === undefined) return '';
+  let shared = first.slice(0, directoryEnd(first));
+  for (const path of rest)
+    while (!path.startsWith(shared)) shared = shared.slice(0, directoryEnd(shared.slice(0, -1)));
+  return shared;
 }
 
 /** The valid entries as choices, and the invalid ones as one line saying why they are not offered. */
@@ -670,7 +680,7 @@ function formIssue(
   try {
     const admitted = resolveAndValidateWorkflowInputs(def, resolveInputs(def, values, secrets));
     // The validator's sentence may name what the workflow declares (an input, an enum value): through the scrub, as every word of the popup.
-    return admitted.ok ? undefined : scrubbed(inputAdmissionMessage(admitted.issues));
+    return admitted.ok ? undefined : flowLine(inputAdmissionMessage(admitted.issues));
   } catch (cause) {
     return isCliError(cause) ? bounded(cause.message, 240) : 'The inputs are not valid.';
   }
@@ -956,14 +966,14 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
  * the run alone). The run view opens on it at the same time, so it says nothing of where the run is.
  */
 export function startedNotice(label: string, runId: string): string {
-  const run = shortRunId(scrubbed(runId));
+  const run = shortRunId(flowLine(runId));
   return fitted(`Started ${bounded(label, LABEL_LIMIT)} · run ${run}`, `Started run ${run}`);
 }
 
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {
   if (launch.kind === 'started') return startedNotice(choice.label, launch.runId);
   // The host's sentence may quote what a project wrote (a server, an id): through the same scrub as every other word of this popup.
-  return scrubbed(launch.message);
+  return flowLine(launch.message);
 }
 
 const FIELD_PROMPT_ESCAPE = 'back';
@@ -1002,7 +1012,7 @@ function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | und
     entries = deps.catalog.list();
   } catch (cause) {
     if (isCliError(cause))
-      return { kind: 'refused', notice: scrubbed(cause.message), empty: false };
+      return { kind: 'refused', notice: flowLine(cause.message), empty: false };
     throw cause;
   }
   const { choices, skipped } = offeredWorkflows(entries);
@@ -1093,11 +1103,9 @@ async function refusedAdmission(
  * that aborts nothing), and so does `Ctrl+C`.
  */
 async function lastStep(flow: FramedChordFlow, failure: LaunchFailure): Promise<void> {
-  await flow.at(failure.step).select({
-    message: failure.notice,
-    options: [{ value: 'close', label: RUN_FAILED_CLOSE }],
+  await flow.fail(failure.step, failure.notice, undefined, {
     escape: 'back',
-    final: failure.tone ?? 'failed',
+    tone: failure.tone ?? 'failed',
   });
 }
 
@@ -1178,7 +1186,7 @@ function runSession(options: {
   function fail(cause: unknown): void {
     // An expected refusal is said in the popup; anything else is carried out to the caller, after the flow is closed.
     if (isCliError(cause) && cause.code === 'invalid_invocation') {
-      closeFailed(scrubbed(cause.message));
+      closeFailed(flowLine(cause.message));
       return;
     }
     run.fault = { cause };
@@ -1221,12 +1229,14 @@ function runSession(options: {
       answer = String(at);
     } else {
       preselected = false;
+      // Each row says its file, not the directory they all share: a name and its file are one row at 80 columns.
+      const shared = sharedDirectory(effect.choices.map((choice) => choice.path)).length;
       answer = await flow.at(STEP.workflow).select({
         message: 'Run which workflow?',
         options: effect.choices.map((choice, index) => ({
           value: String(index),
           label: choice.label,
-          hint: bounded(choice.path, REASON_LIMIT),
+          hint: bounded(choice.path.slice(shared), REASON_LIMIT),
         })),
         ...(at >= 0 ? { initialValue: String(at) } : {}),
         escape: 'cancel',
