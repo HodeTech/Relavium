@@ -22,12 +22,18 @@ import {
   createNativePromptChannel,
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
   type KeychainStore,
 } from '../secrets/keychain.js';
-import { runNativeSetup, SAVE_ANYWAY_HINT, type NativeSetupResult } from './wizard.js';
+import {
+  runNativeSetup,
+  SAVE_ANYWAY_HINT,
+  SAVE_ANYWAY_LABEL,
+  type NativeSetupResult,
+} from './wizard.js';
 
 const io: CliIo = {
   env: {},
@@ -109,10 +115,20 @@ async function journey(options: {
   readonly writeDefaultModel?: ReturnType<typeof vi.fn>;
   readonly initialProvider?: ProviderId;
 }): Promise<Journey> {
-  const channel = createNativePromptChannel();
+  // An injected clock and a host that acknowledges every frame it is given, as the card's host does (`native-prompt-host.tsx`): a GUARDED
+  // row (`Retry the check`, SE-L3) answers only on a frame that was shown, after its lockout.
+  let clock = 10_000;
+  const channel = createNativePromptChannel({ now: () => clock });
+  channel.ui.bindVisibility((expected) => channel.ui.getSnapshot() === expected);
   const signal = channel.flow.begin();
   const published: NativePromptSnapshot[] = [];
-  channel.ui.subscribe(() => published.push(channel.ui.getSnapshot()));
+  channel.ui.subscribe(() => {
+    const frame = channel.ui.getSnapshot();
+    published.push(frame);
+    queueMicrotask(() => {
+      if (channel.ui.getSnapshot() === frame) channel.ui.shown(frame);
+    });
+  });
   const running = runNativeSetup(
     {
       ...(options.initialProvider === undefined
@@ -168,6 +184,11 @@ async function journey(options: {
           downArrow: channel.ui.getSnapshot().selected < at,
           upArrow: channel.ui.getSnapshot().selected > at,
         });
+      // A guarded row is answered by ONE deliberate `Enter` after its lockout (the moved highlight's frame acknowledged first).
+      if (open.options[at]?.guarded === true) {
+        await Promise.resolve();
+        clock += APPROVAL_LOCKOUT_MS + 100;
+      }
       channel.ui.input('\r', { ...KEY, return: true });
     }
   }
@@ -351,7 +372,7 @@ describe('the check and the choices after it failed (ported)', () => {
   });
 
   it.each(['auth', 'other'] as const)(
-    'after a %s failure: Enter a different key (pre-selected), Save it anyway · not verified (its hint names the doctor), Skip setup; no retry of the check',
+    'after a %s failure: Enter a different key (pre-selected), Save it anyway (its hint says unverified and names the doctor), Skip setup; no retry of the check',
     async (reason) => {
       const { selects } = await journey({
         steps: [{ select: 'openai' }, { key: 'sk-x' }, { select: 'skip' }],
@@ -361,9 +382,10 @@ describe('the check and the choices after it failed (ported)', () => {
       if (open === undefined) throw new Error('no choices after the failed check');
       expect(open.options.map((o) => [o.value, o.label])).toEqual([
         ['retry', 'Enter a different key'],
-        ['continue', 'Save it anyway · not verified'],
+        ['continue', SAVE_ANYWAY_LABEL],
         ['skip', 'Skip setup'],
       ]);
+      expect(SAVE_ANYWAY_LABEL).toBe('Save it anyway');
       expect(open.options[open.selected]?.value).toBe('retry');
       expect(open.options.find((o) => o.value === 'continue')?.hint).toBe(SAVE_ANYWAY_HINT);
     },
@@ -399,6 +421,8 @@ describe('the check and the choices after it failed (ported)', () => {
     expect(check.checked).toEqual(['sk-held-twice', 'sk-held-twice', 'sk-held-twice']);
     expect(frames.split('"kind":"password"').length - 1, 'the key prompt').toBeGreaterThan(0);
     expect(selects.map((s) => s.options[s.selected]?.value)).toEqual(['recheck', 'recheck']);
+    // SE-L3: on the card too the row that re-sends the key is guarded (each deliberate `Enter` above came after its lockout).
+    expect(selects.map((s) => s.options[s.selected]?.guarded)).toEqual([true, true]);
     expect(keychain.stored.get(keychainAccount('anthropic'))).toBe('sk-held-twice');
   });
 

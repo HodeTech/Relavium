@@ -20,6 +20,7 @@ import {
   legend,
   legendItems,
   legendSpans,
+  waitMark,
   type LegendItem,
 } from './legend.js';
 import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
@@ -63,6 +64,16 @@ describe('the legend builder: a key that waits (LegendKey.wait)', () => {
 
   it('the word is `(wait)`, one fixed word and never a time', () => {
     expect(LEGEND_WAIT).toBe('(wait)');
+  });
+
+  it('`waitMark` is the one spelling of the mark every surface spreads into its item: `{ wait: true }` while locked, no field at all while free (AR-7)', () => {
+    expect(waitMark(true)).toEqual({ wait: true });
+    expect(waitMark(false)).toEqual({});
+    expect('wait' in waitMark(false)).toBe(false);
+    expect(keyHint([{ keys: 'Ctrl+Y', verb: 'Allow', ...waitMark(true) }])).toBe(
+      '[Ctrl+Y] Allow (wait)',
+    );
+    expect(keyHint([{ keys: 'Ctrl+Y', verb: 'Allow', ...waitMark(false) }])).toBe('[Ctrl+Y] Allow');
   });
 
   it('a waiting key reads `[Ctrl+Y] Create them (wait)` in the same text, and the rest of the legend is unchanged', () => {
@@ -259,13 +270,29 @@ describe('createLockDisplay: whether it is locked now, and one timer at the unlo
     expect(lock.read()).toBe(false);
   });
 
-  it('dispose: the timer is cleared, nobody is told again, and a later sync does nothing', () => {
+  it('R2-5 the timer is set for the whole millisecond at or after the instant, never before it (a fractional clock)', () => {
+    const asked: number[] = [];
+    const lock = createLockDisplay({
+      now: () => 100.4,
+      schedule: (_run, ms) => {
+        asked.push(ms);
+        return () => undefined;
+      },
+      until: () => 2100.9,
+    });
+    lock.sync();
+    expect(asked).toEqual([2001]); // ceil(2000.5): a floor would fire half a millisecond before the instant
+  });
+
+  it('dispose: the timer is cleared, nobody is told again, and a later sync arms no timer at all (R2-6: read before time moves, not after the timer would have fired)', () => {
     const r = rig(2000);
     r.lock.sync();
     r.lock.dispose();
     expect(r.time.due()).toEqual([]);
     r.setUntil(9000);
     r.lock.sync();
+    expect(r.time.due()).toEqual([]);
+    expect(r.lock.read()).toBe(true);
     r.time.advance(10_000);
     expect(r.time.due()).toEqual([]);
     expect(r.heard).toEqual([true]);

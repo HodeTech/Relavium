@@ -1,8 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render } from 'ink-testing-library';
+import { createElement } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { waitFor } from './harness-util.js';
 import { createNativePicker, type NativePickerSnapshot } from './native-picker.js';
-import type { NativePromptEscape, NativePromptSnapshot } from './native-prompt-channel.js';
+import {
+  createNativePromptChannel,
+  type NativePromptEscape,
+  type NativePromptSnapshot,
+} from './native-prompt-channel.js';
+import { NativePromptHost } from './native-prompt-host.js';
 import { pickerLegend } from './native-prompt-view.js';
+
+afterEach(cleanup);
 
 /**
  * The legend under the resume picker ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §2 and §3): `Tab` says
@@ -99,5 +109,32 @@ describe('the resume picker’s legend', () => {
     expect(pickerLegend(promptOf(failed))).toBe('Enter retry · Esc close');
     expect(pickerLegend(promptOf({ ...failed, retryable: false }))).toBe('Edit filter · Esc close');
     expect(pickerLegend(promptOf(failed, 'back'))).toBe('Enter retry · Esc back · [Ctrl+C] close');
+  });
+
+  it('OB-7: a page with no row names no `Enter resume`, while one that is still loading does', () => {
+    expect(pickerLegend(promptOf(picker({ options: [] })))).toBe(
+      '↑/↓ select · Tab all directories · PgUp/PgDn page · Esc close',
+    );
+    expect(pickerLegend(promptOf(picker({ options: [], loading: true })))).toContain(
+      'Enter resume',
+    );
+  });
+
+  it('OB-7: the card draws the framed picker’s words for an empty directory, and no `Enter resume`', async () => {
+    const { ui, flow } = createNativePromptChannel();
+    flow.begin();
+    const answer = flow.pick({ message: 'Resume', load: () => Promise.resolve({ options: [] }) });
+    const h = render(createElement(NativePromptHost, { ui, color: false }));
+    Object.defineProperty(h.stdout, 'rows', { value: 24 });
+    h.stdout.emit('resize');
+    await waitFor(() => (h.lastFrame() ?? '').includes('No sessions in this directory'));
+    const frame = h.lastFrame() ?? '';
+    expect(frame).toContain('No sessions in this directory · Tab shows all');
+    expect(frame).not.toContain('No matching sessions');
+    expect(frame).not.toContain('Enter resume');
+    flow.cancel();
+    await answer;
+    await flow.end();
+    ui.dispose();
   });
 });

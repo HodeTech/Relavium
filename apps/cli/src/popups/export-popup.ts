@@ -4,18 +4,21 @@
  * write to the popup's two steps, the confirmation and its result. The state machine that reads, answers the chord and writes is
  * `export-session.ts`; neither is loaded until the person first types `/export` in an interactive chat (`report-port.ts`).
  *
- * **The confirmation is a step, not a keystroke.** `/export` writes a file into the project, so it shows the file first (project-relative), says
- * whether it is a new file or this session's own earlier export rewritten in place (the one overwrite `/export` makes), and says what the
- * scaffold is and what to review before committing it (the review notice's sentence). Only `Ctrl+Y`, through the popup host's chord guard,
- * answers it; `Esc` refuses it. The result is a persistent step that `Enter` and `Esc` close: what was exported and the file under it, or that
- * nothing was and why, in the product's words. Nothing is written into the transcript or a notice (§6).
+ * **The confirmation is a step, not a keystroke.** `/export` writes a file into the project, so it asks its question first (the Defined
+ * export's, for a session: {@link EXPORT_QUESTION}), shows the file (project-relative), says whether it is a new file or this session's own
+ * earlier export rewritten in place (the one overwrite `/export` makes), and says what the scaffold is and what to review before committing it
+ * (the review notice's sentence). Only `Ctrl+Y`, through the popup host's chord guard, answers it; `[Ctrl+N] Write nothing` (the Defined
+ * export's explicit No) and `Esc` refuse it. The result is a persistent step in the flows' one Done shape (`frame-model.ts` `PopupDone`: `✓`
+ * or `✗` and the sentence, the file once, `› Close`) that `Enter` and `Esc` close: what was exported and the file under it, or that nothing was
+ * and why, in the product's words. Nothing is written into the transcript or a notice (§6).
  *
  * The target and every fault text are a file system's and a project's words, so each passes the FULL scrub ({@link scrubPopupText}).
  */
 
-import { EXPORT_ALLOW_LABEL, EXPORT_FAILED } from '../render/tui/export-card.js';
+import { EXPORT_ALLOW_LABEL, EXPORT_DENY_LABEL, EXPORT_FAILED } from '../render/tui/export-card.js';
+import { FLOW_CLOSE_LABEL } from '../render/tui/flow-text.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
-import type { PopupContent, PopupOrigin } from './frame-model.js';
+import type { PopupContent, PopupDone, PopupOrigin } from './frame-model.js';
 import type { ChordRefusal } from './popup-host.js';
 import type { PopupSpec } from './popup-reducer.js';
 import { scrubPopupText, wrapPopupText } from './popup-text.js';
@@ -29,6 +32,15 @@ export const EXPORT_LOADING_CONTENT: PopupContent = {
   kind: 'loading',
   what: 'Working out where the export goes',
 };
+
+/**
+ * The confirmation's question, its first line: what `Ctrl+Y` answers, as the Defined export asks it (`Write workflow 'x' to a file in this
+ * directory?`), for a session. A product constant: no data in it.
+ */
+export const EXPORT_QUESTION = 'Write this chat to a workflow file in the project?';
+
+/** What the person is told when the line was answered No (`Ctrl+N`): in the family of `Nothing exported: <why>.`, with nothing to add. */
+export const EXPORT_DENIED = 'Nothing exported.';
 
 /** What the second line of the confirmation says: a new file, or this session's own earlier export rewritten in place. */
 export const EXPORT_NEW_FILE = 'A new file in the project.';
@@ -55,11 +67,12 @@ export { EXPORT_FAILED };
 /** What the result says above the file when the write was made: the file is the row under it, as every flow's last step names its target. */
 export const EXPORT_DONE = 'Exported this chat as a workflow';
 
-/** The confirmation's lines: the file, whether it is new, then the review notice's sentence, each wrapped to the popup's width. */
+/** The confirmation's lines: its question, the file, whether it is new, then the review notice's sentence, each wrapped to the popup's width. */
 export function exportReviewContent(view: SessionExportView, review: string): PopupContent {
   return {
     kind: 'report',
     lines: [
+      ...wrapPopupText(EXPORT_QUESTION),
       ...wrapPopupText(scrubPopupText(view.target)),
       ...wrapPopupText(view.overwrites ? EXPORT_OVERWRITES : EXPORT_NEW_FILE),
       '',
@@ -73,14 +86,31 @@ export function exportPrepareFailedContent(reason: string): PopupContent {
   return { kind: 'error', what: EXPORT_FAILED, next: scrubPopupText(reason) };
 }
 
-/** The result of a write that was made: what was exported, and the file under it, project-relative (its own row, through the full scrub). */
+/** A Done step of the flows' one shape: its sentence (product words), the rows under it, and the flows' `Close`. */
+const doneOf = (tone: PopupDone['tone'], message: string, lines: readonly string[]): PopupDone => ({
+  kind: 'done',
+  tone,
+  message,
+  lines,
+  close: FLOW_CLOSE_LABEL,
+});
+
+/** The result of a write that was made: what was exported, and the file under it once, project-relative (its own row, through the full scrub). */
 export function exportDoneContent(target: string): PopupContent {
-  return { kind: 'report', lines: [EXPORT_DONE, ...wrapPopupText(scrubPopupText(target))] };
+  return doneOf('ok', EXPORT_DONE, [scrubPopupText(target)]);
 }
 
 /** The result of a write that failed, by the product's words for it. */
 export function exportFailedContent(reason: string): PopupContent {
-  return { kind: 'error', what: EXPORT_FAILED, next: scrubPopupText(reason) };
+  return doneOf('failed', EXPORT_FAILED, [scrubPopupText(reason)]);
+}
+
+/** The result when the answer found nothing it could write (a turn in flight, a target that moved): why, and what to do, in product words. */
+export function exportNotWrittenContent(words: {
+  readonly what: string;
+  readonly next: string;
+}): PopupContent {
+  return doneOf('failed', words.what, [words.next]);
 }
 
 /**
@@ -92,8 +122,8 @@ export function exportRefusedText(reason: ChordRefusal): string {
 }
 
 /**
- * The popup's spec: two steps, the confirmation line (answered by `Ctrl+Y`; its `Esc` cancels) and the persistent result (`Enter` and `Esc`
- * close it; there is nothing to go back to).
+ * The popup's spec: two steps, the confirmation line (answered by `Ctrl+Y`; its `Ctrl+N` and its `Esc` refuse it) and the persistent result
+ * (`Enter` and `Esc` close it; there is nothing to go back to).
  */
 export function exportSpec(origin: PopupOrigin): PopupSpec {
   return {
@@ -105,9 +135,9 @@ export function exportSpec(origin: PopupOrigin): PopupSpec {
         name: 'Export',
         content: EXPORT_LOADING_CONTENT,
         holds: 'chord',
-        // The words of the Defined tab's export and of `/init`, `/import` and `/pricing`: the same answer, and the same `Esc` (it refuses, and
-        // nothing is written), so the legend does not say one thing in four ways.
-        chord: { verb: EXPORT_ALLOW_LABEL },
+        // The words of the Defined tab's export and of `/init`, `/import` and `/pricing`: the same answer, the same explicit No (`[Ctrl+N]
+        // Write nothing`) and the same `Esc` (it refuses, and nothing is written), so the legend does not say one thing in four ways.
+        chord: { verb: EXPORT_ALLOW_LABEL, deny: EXPORT_DENY_LABEL },
         exitVerb: 'denies',
       },
       {

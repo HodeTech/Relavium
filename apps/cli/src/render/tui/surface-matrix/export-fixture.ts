@@ -14,6 +14,9 @@ export const EXPORT_LANDMARK = 'A new file in the project.';
 /** The confirmation's legend row: its one answer and its way back, in the words of every flow that writes a file (`Esc` refuses it). */
 export const EXPORT_LEGEND_ROW: readonly string[] = [
   // Captured while the line's lockout holds its `Ctrl+Y` (`(wait)`, dim); once the lock has opened, as it always read.
+  '[Ctrl+Y] Write the file (wait) · [Ctrl+N] Write nothing · Esc denies',
+  '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+  // Where the row is too narrow for the explicit No (80 columns while the line waits), the optional `[Ctrl+N]` is the one dropped: the key stays live.
   '[Ctrl+Y] Write the file (wait) · Esc denies',
   '[Ctrl+Y] Write the file · Esc denies',
 ];

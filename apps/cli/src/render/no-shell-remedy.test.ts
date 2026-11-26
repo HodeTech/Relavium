@@ -446,6 +446,8 @@ const FILE_SURFACES: Readonly<Record<string, readonly PaletteSurface[]>> = {
   'chat/starting-mode-hint.ts': ['standalone-chat', 'home-chat'],
   'commands/chat.ts': ['standalone-chat'],
   'home/provider-setup.ts': ['home', 'standalone-chat'],
+  // The setup's consent and keychain steps (MVP-11 unit 6, A3): their cards and notices are read on both surfaces, like the coordinator's.
+  'home/provider-setup-steps.ts': ['home', 'standalone-chat'],
   'home/run-launch.ts': ['home'],
   'home/hosted-run-terminal.ts': ['home'],
   // The Home's flows that write (MVP-11 unit 6, 6.3): their popups, and what each names next on its Done step, are read on the Home only.
@@ -483,11 +485,6 @@ const SURFACE_OVERRIDES: readonly {
   // chat), so a `/providers` written into THAT one is a failure here, not covered by these.
   {
     file: 'onboarding/wizard.ts',
-    includes: 'Add a provider anytime with /providers',
-    surfaces: ['home'],
-  },
-  {
-    file: 'onboarding/wizard.ts',
     includes: 'Open /providers to connect a key',
     surfaces: ['home'],
   },
@@ -504,17 +501,33 @@ const SURFACE_OVERRIDES: readonly {
     includes: 'or /init to set up this folder',
     surfaces: ['home'],
   },
+  // The keychain step's Done line: a Done step is the popup's alone (a card keeps its notice, which names no command).
   {
-    file: 'home/provider-setup.ts',
-    includes: '/providers connects a provider any time.',
-    surfaces: ['home'],
-  },
-  {
-    file: 'home/provider-setup.ts',
+    file: 'home/provider-setup-steps.ts',
     includes: '/providers retries the keychain any time.',
     surfaces: ['home'],
   },
 ];
+
+/**
+ * The entries of {@link FILE_SURFACES} and {@link SURFACE_OVERRIDES} that no longer match the sources (AR-3): a file that is gone, or an
+ * override whose sentence no literal of its file holds any more. Such an entry checks nothing, so a sentence that moved would go unchecked.
+ */
+function staleSurfaceEntries(files: ReadonlyMap<string, Scan>): string[] {
+  const stale: string[] = [];
+  for (const file of Object.keys(FILE_SURFACES))
+    if (!files.has(file)) stale.push(`FILE_SURFACES: ${file} does not exist`);
+  for (const entry of SURFACE_OVERRIDES) {
+    const used =
+      files.get(entry.file)?.literals.some((literal) => literal.text.includes(entry.includes)) ??
+      false;
+    if (!used)
+      stale.push(
+        `SURFACE_OVERRIDES: ${entry.file} no longer contains ${JSON.stringify(entry.includes)}`,
+      );
+  }
+  return stale;
+}
 
 const names = (commands: readonly { readonly name: string }[]): ReadonlySet<string> =>
   new Set(commands.map((command) => command.name));
@@ -807,7 +820,17 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
         if (!used) stale.push(`BUILDER_CALLS: ${entry.file} no longer calls ${builder}`);
       }
     }
+    stale.push(...staleSurfaceEntries(FILES));
     expect(stale).toEqual([]);
+  });
+
+  it('AR-3: a surface entry that names a file or a sentence that is gone is reported as stale', () => {
+    const files = new Map(FILES);
+    files.delete('home/provider-setup-steps.ts');
+    expect(staleSurfaceEntries(files)).toEqual([
+      'FILE_SURFACES: home/provider-setup-steps.ts does not exist',
+      `SURFACE_OVERRIDES: home/provider-setup-steps.ts no longer contains ${JSON.stringify('/providers retries the keychain any time.')}`,
+    ]);
   });
 
   it('scans the Home and chat sources: only the files that hold a shell line are exempt', () => {

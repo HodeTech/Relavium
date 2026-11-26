@@ -28,6 +28,8 @@
 import {
   exitKey,
   inertLegendText,
+  keyHint,
+  waitMark,
   type LegendExit,
   type LegendItem,
   type LegendKey,
@@ -86,8 +88,27 @@ const CHORD_ALLOW_KEY = 'Ctrl+Y';
 
 /** What the picker says while its page loads (static, as every popup's loading state). */
 export const NATIVE_PICKER_LOADING = 'Loading sessions…';
-/** What the picker says when its page has no row. */
+/** What the picker says when its page has no row for what is typed, or in any directory. */
 export const NATIVE_PICKER_EMPTY = 'No matching sessions';
+/**
+ * What the picker says when THIS directory has no session and nothing is typed: there is nothing to match, so it says where the others are
+ * (`Tab` flips to all directories; MVP-11 unit 6 round 2, OB-7: `No matching sessions` read as a filter that matched nothing).
+ */
+export const NATIVE_PICKER_NONE_HERE = keyHint([
+  { text: 'No sessions in this directory' },
+  { keys: 'Tab', verb: 'shows all' },
+]);
+
+/** What the picker's page says when it has no row: {@link NATIVE_PICKER_NONE_HERE} in this directory with nothing typed, else {@link NATIVE_PICKER_EMPTY}. */
+export function pickerEmptyText(snapshot: NativePromptSnapshot): string {
+  const here = snapshot.picker?.allDirectories !== true && snapshot.display === '';
+  return here ? NATIVE_PICKER_NONE_HERE : NATIVE_PICKER_EMPTY;
+}
+
+/** Whether the picker's page has no row to resume (it is not loading: the rows are known). Its legend then names no `Enter resume`. */
+function pickerHasNoRow(snapshot: NativePromptSnapshot): boolean {
+  return snapshot.options.length === 0 && snapshot.picker?.loading !== true;
+}
 
 /** The page a framed prompt's body is drawn on: its rows, the rows a list may use of them (ten inline), and the columns of each row. */
 export interface NativeBodyGeometry {
@@ -371,7 +392,7 @@ function pickerFilterRow(snapshot: NativePromptSnapshot, width: number): string 
 function pickerStateRows(snapshot: NativePromptSnapshot, width: number): SheetLine[] {
   if (snapshot.picker?.loading === true) return [{ kind: 'message', text: NATIVE_PICKER_LOADING }];
   if (snapshot.error !== '') return errorRows(snapshot, width);
-  if (snapshot.options.length === 0) return [{ kind: 'text', text: NATIVE_PICKER_EMPTY }];
+  if (snapshot.options.length === 0) return [{ kind: 'text', text: pickerEmptyText(snapshot) }];
   return [];
 }
 
@@ -532,18 +553,22 @@ function scopeKey(snapshot: NativePromptSnapshot): LegendKey {
 
 /**
  * The picker's legend, as parts: what its keys do, or, after a failed read, how to try again or change the filter. Its leaving keys are the
- * prompt's own ({@link nativeLeave}). The card's one-line legend (`native-prompt-view.tsx` `pickerLegend`) is this, joined.
+ * prompt's own ({@link nativeLeave}). The card's one-line legend (`native-prompt-view.tsx` `pickerLegend`) is this, joined. A page with no
+ * row (its rows known) names no `Enter resume`: nothing there can be resumed.
  */
 export function pickerLegendParts(snapshot: NativePromptSnapshot): {
   readonly items: readonly LegendItem[];
   readonly exit: LegendExit;
 } {
   const { before, exit } = nativeLeave(snapshot.escape === 'back');
+  const resume: readonly LegendItem[] = pickerHasNoRow(snapshot)
+    ? []
+    : [{ keys: 'Enter', verb: 'resume' }];
   if (snapshot.error === '')
     return {
       items: [
         { keys: '↑/↓', verb: 'select' },
-        { keys: 'Enter', verb: 'resume' },
+        ...resume,
         scopeKey(snapshot),
         { keys: 'PgUp/PgDn', verb: 'page' },
         ...before,
@@ -561,11 +586,6 @@ export function pickerLegendParts(snapshot: NativePromptSnapshot): {
 function enterVerbOf(snapshot: NativePromptSnapshot): string {
   const verb = snapshot.popup?.enterVerb;
   return verb === undefined || verb === '' ? 'continue' : verb;
-}
-
-/** The mark of a key its guard holds now ({@link LegendKey.wait}: dim, `(wait)`), or nothing. */
-function waiting(locked: boolean): { readonly wait?: true } {
-  return locked ? { wait: true } : {};
 }
 
 /** Whether the select's highlighted option is the guarded one: the only option whose `Enter` the lock holds (every other answers at once). */
@@ -595,7 +615,7 @@ export function nativeLegendParts(
         items: [
           { keys: '↑/↓', verb: 'select' },
           ...paging,
-          { keys: 'Enter', verb: 'choose', ...waiting(locked && onGuardedRow(snapshot)) },
+          { keys: 'Enter', verb: 'choose', ...waitMark(locked && onGuardedRow(snapshot)) },
           ...before,
         ],
         exit,
@@ -614,7 +634,7 @@ export function nativeLegendParts(
         snapshot.options.find((option) => option.value === value)?.label ?? value;
       return {
         items: [
-          { keys: CHORD_ALLOW_KEY, verb: label('allow'), role: 'ok', ...waiting(locked) },
+          { keys: CHORD_ALLOW_KEY, verb: label('allow'), role: 'ok', ...waitMark(locked) },
           { keys: 'Ctrl+N', verb: label('deny'), role: 'danger' },
           ...before,
         ],
@@ -625,7 +645,9 @@ export function nativeLegendParts(
       return pickerLegendParts(snapshot);
     case 'busy':
     case 'idle': {
-      const { before, exit } = nativeLeave(back, 'cancels it');
+      // A wait that steps back (the key check) leaves the flow on `Ctrl+C`, which closes it as on every other step: "cancels it" would name
+      // the wait while the whole flow closes (OB-5). A wait whose `Esc` leaves stops what it waits for, and says so.
+      const { before, exit } = nativeLeave(back, back ? undefined : 'cancels it');
       return { items: [...before], exit };
     }
   }

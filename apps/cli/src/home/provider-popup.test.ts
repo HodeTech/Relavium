@@ -37,6 +37,7 @@ import {
 } from '../engine/providers.js';
 import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
 import {
+  KEY_REQUIRED_TEXT,
   keyCheckText,
   keyStepNote,
   SETUP_SKIP_NOT_SAVED,
@@ -47,6 +48,7 @@ import {
 import {
   keyDestinationHost,
   SAVE_ANYWAY_HINT,
+  SAVE_ANYWAY_LABEL,
   scrubSetupText,
   UNVERIFIED_KEY_LINE,
 } from '../onboarding/wizard.js';
@@ -312,14 +314,31 @@ function rig(
   };
 }
 
+/** The rows of the frame the overlay draws for `snapshot` at 80×24 in the plain form, each trimmed (the frame is open-sided). */
+function frameRows(snapshot: NativePromptSnapshot): readonly string[] {
+  const { geometry, layout } = nativePopupGeometry(
+    snapshot,
+    'overlay',
+    { cols: 80, rows: 24 },
+    false,
+  );
+  if (!geometry.fits || layout === undefined || !layout.fits)
+    throw new Error('the frame does not fit 80x24');
+  return nativePopupFrameLines(snapshot, geometry, layout, false).map((line) => line.text.trim());
+}
+
 describe('the frame of the setup popup', () => {
-  it('the automatic first run is titled `Connect a provider` (O7), from the Home, on `Provider · Key · Done`; its first step steps back, so `Esc` (the skip) is told from `Ctrl+C` (close)', async () => {
+  it('the automatic first run is titled `Connect a provider` (O7), its origin `first run` (OB-5a), on `Provider · Key · Done`; its first step steps back, so `Esc` (the skip) is told from `Ctrl+C` (close)', async () => {
     const r = rig();
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
+    // The top edge says what the popup is: the first run, not a `/providers` the person opened from the Home.
+    const top = frameRows(r.snapshot())[0] ?? '';
+    expect(top).toContain('first run · step 1 of 3');
+    expect(top).not.toContain('from Home');
     expect(r.snapshot().popup).toEqual({
       title: FIRST_RUN_POPUP_TITLE,
-      origin: 'home',
+      origin: 'first-run',
       stepIndex: 0,
       stepCount: 3,
       stepNames: PROVIDER_STEP_NAMES,
@@ -342,6 +361,9 @@ describe('the frame of the setup popup', () => {
     await r.until((s) => s.message === 'Which provider?');
     expect(r.snapshot().popup?.exitLabel).toBe('close');
     expect(r.snapshot().popup?.title, 'the person typed `/providers`').toBe(PROVIDERS_POPUP_TITLE);
+    // OB-5a: `/providers` keeps its origin; only the automatic first run says `first run`.
+    expect(r.snapshot().popup?.origin).toBe('home');
+    expect(frameRows(r.snapshot())[0]).toContain('from Home · step 1 of 3');
     await r.choose('openai');
     await r.until((s) => s.message.startsWith('OPENAI_API_KEY is set for OpenAI.'));
     expect(r.snapshot().escape).toBe('back');
@@ -521,12 +543,20 @@ describe('the key step (ADR-0146 §6, G20) and its secret, inside the frame', ()
     expect(failed.options.map((option) => option.label)).toEqual([
       'Retry the check',
       'Enter a different key',
-      'Save it anyway · not verified',
+      SAVE_ANYWAY_LABEL,
       'Skip setup',
     ]);
     expect(failed.options[failed.selected]?.value).toBe('recheck');
     expect(failed.options.find((o) => o.value === 'continue')?.hint).toBe(SAVE_ANYWAY_HINT);
-    expect(SAVE_ANYWAY_HINT).toBe('not checked · verify later with /doctor, then [d]');
+    // OB-4: one label, one short hint that repeats none of its words, on ONE row of the popup at 80 columns.
+    const saveRows = frameRows(failed).filter(
+      (row) => row.includes(SAVE_ANYWAY_LABEL) || row.includes('[d]'),
+    );
+    expect(saveRows, 'the row and its hint, whole, on one row').toEqual([
+      `${SAVE_ANYWAY_LABEL}  ${SAVE_ANYWAY_HINT}`,
+    ]);
+    expect(SAVE_ANYWAY_LABEL).toBe('Save it anyway');
+    expect(SAVE_ANYWAY_HINT).toBe('unverified · /doctor, then [d] checks it later');
     expect(failed.popup?.stepIndex, 'the choices are the key step’s').toBe(1);
     r.key(ESC);
     await r.until((s) => s.kind === 'password');
@@ -1525,7 +1555,8 @@ describe('MVP-11 unit 6, round 1 second pass (W7): the first run’s ways out, i
       r.key(ENTER, '\r');
       await r.until((s) => s.kind === 'busy' && s.message.startsWith('Checking your OpenAI key'));
       expect(r.snapshot().escape, 'the wait steps back').toBe('back');
-      expect(legendOf(r.snapshot())).toBe('Esc back · [Ctrl+C] cancels it');
+      // OB-5: `Ctrl+C` there closes the whole setup, as on every other step; "cancels it" read as the check alone.
+      expect(legendOf(r.snapshot())).toBe('Esc back · [Ctrl+C] close');
       r.esc();
       await r.until((s) => s.kind === 'password');
       expect(r.snapshot().display, 'the key step again, empty').toBe('');
@@ -1743,7 +1774,9 @@ describe('MVP-11 unit 6, round 1 second pass (W7): the first run’s ways out, i
       r.key(ENTER, '\r');
       await r.flush();
       expect(r.snapshot().kind).toBe('password');
-      expect(r.snapshot().error).toBe('A valid value is required.');
+      // OB-5: the key step's own product sentence (it names no key), not the channel's generic one.
+      expect(r.snapshot().error).toBe(KEY_REQUIRED_TEXT);
+      expect(KEY_REQUIRED_TEXT).toBe('Paste your key to continue.');
       expect(checks).toBe(0);
       r.channel.flow.cancel();
       await running;

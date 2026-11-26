@@ -328,8 +328,8 @@ describe('every text the popup composes fits the popup at the 80-column floor', 
   });
 
   it.each([
-    ['unseen', 'Nothing released: too soon, wait 2 s. [r] asks again.'],
-    ['early', 'Nothing released: too soon, wait 2 s. [r] asks again.'],
+    ['unseen', 'Nothing released: too soon. [r] asks again.'],
+    ['early', 'Nothing released: too soon. [r] asks again.'],
     ['expired', 'Nothing released: time ran out. [r] asks again.'],
     ['typed', 'Nothing released: a key was typed. [r] asks again.'],
     ['cut', 'Nothing released: the line was cut. [r] asks again.'],

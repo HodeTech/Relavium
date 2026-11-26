@@ -57,6 +57,7 @@ import {
   checksContent,
   consentContent,
   detailContent,
+  detailEnter,
   doctorChecksControls,
   doctorCopyText,
   doctorRowId,
@@ -446,10 +447,17 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
         detail = found;
         const ageMs =
           found.tier === 'deep' && scope.kept !== undefined ? now() - scope.kept.at : undefined;
-        const offered = remedies && remedyOf(found.tier, found.check, port.surface) !== undefined;
+        // ONE decision for the row shown: its words say `Press Enter …` and its legend names `Enter` only where a remedy opens from it, and
+        // a healthy row's `Enter` answers nothing (no letter either: `[r]` and `[c]` belong to the checks step).
+        const remedy = remedies ? remedyOf(found.tier, found.check, port.surface) : undefined;
         context.setContent(
           DOCTOR_STEP.detail,
-          detailContent(found.tier, found.check, port.surface, { deepAgeMs: ageMs, offered }),
+          detailContent(found.tier, found.check, port.surface, {
+            deepAgeMs: ageMs,
+            offered: remedy !== undefined,
+          }),
+          [],
+          detailEnter(remedy),
         );
         context.goToStep(DOCTOR_STEP.detail);
         return;
@@ -491,7 +499,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
     },
   };
 
-  const opened = host.openForUser(doctorSpec(request.origin, request.deep, remedies), handlers);
+  const opened = host.openForUser(doctorSpec(request.origin, request.deep), handlers);
   if (!opened.opened) return opened;
   popupRun = opened.runId;
   runQuick(opened.context);

@@ -24,10 +24,10 @@ const REASONS = [
 ] as const satisfies readonly ChordRefusal[];
 
 describe('the phrases', () => {
-  it('are these words for the five guards of the host: a key that came before its frame was shown and one that came inside the dwell are both told to wait 2 s', () => {
+  it('are these words for the five guards of the host: a key that came before its frame was shown and one that came inside the dwell are both told `too soon`, with no time (CO-2)', () => {
     expect(CHORD_REFUSAL_PHRASE).toEqual({
-      unseen: 'too soon, wait 2 s',
-      early: 'too soon, wait 2 s',
+      unseen: 'too soon',
+      early: 'too soon',
       expired: 'time ran out',
       typed: 'a key was typed',
       cut: 'the line was cut',
@@ -37,8 +37,8 @@ describe('the phrases', () => {
 
 describe('the sentences built around them', () => {
   it.each([
-    ['unseen', 'too soon, wait 2 s'],
-    ['early', 'too soon, wait 2 s'],
+    ['unseen', 'too soon'],
+    ['early', 'too soon'],
     ['expired', 'time ran out'],
     ['typed', 'a key was typed'],
     ['cut', 'the line was cut'],
@@ -61,19 +61,17 @@ describe('the sentences built around them', () => {
   );
 });
 
-describe('the wait the sentence names is the one the host enforces', () => {
-  it('is the lockout a refused key restarts, in whole seconds', () => {
-    expect(APPROVAL_LOCKOUT_MS).toBe(2000);
-    expect(CHORD_REFUSAL_PHRASE.early).toBe(
-      `too soon, wait ${String(APPROVAL_LOCKOUT_MS / 1000)} s`,
-    );
+describe('the sentence names no wait, because no one wait is what the host enforces (CO-2)', () => {
+  it('names no time at all: no digit in either phrase a key that came too soon is told', () => {
+    expect(CHORD_REFUSAL_PHRASE.early).not.toMatch(/\d/u);
+    expect(CHORD_REFUSAL_PHRASE.unseen).not.toMatch(/\d/u);
   });
 
   /**
-   * Open `/cost`, arm its line, answer it too soon (refused: its words name the wait), ask again and answer `after` ms after that refusal.
-   * Returns how many releases happened.
+   * Open `/cost`, arm its line, answer it too soon (refused: `too soon`), ask again `askAgain` ms after that refusal and answer `after` ms after
+   * it. Returns how many releases happened.
    */
-  async function releasesAfterWaiting(after: number): Promise<number> {
+  async function releasesAfterWaiting(after: number, askAgain = 100): Promise<number> {
     const r = reportRig();
     const fake = fakeCost({ held: 450 });
     r.open({ cost: fake.port }, { kind: 'cost', release: false });
@@ -86,11 +84,10 @@ describe('the wait the sentence names is the one the host enforces', () => {
     r.clock.advance(100); // inside the dwell
     r.press('y', CTRL);
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Nothing released: too soon, wait 2 s. [r] asks again.',
+      'Nothing released: too soon. [r] asks again.',
     );
     const refusedAt = r.clock.now();
-    // The person asks again at once, and waits for the whole of what the sentence said, counted from the refused key.
-    r.clock.advance(100);
+    r.clock.advance(askAgain);
     r.press('r');
     await settleWork();
     r.show();
@@ -99,8 +96,14 @@ describe('the wait the sentence names is the one the host enforces', () => {
     return fake.release.mock.calls.length;
   }
 
-  it('an answer 1999 ms after the refused key is refused again, and one 2000 ms after it releases', async () => {
-    expect(await releasesAfterWaiting(1999)).toBe(0);
-    expect(await releasesAfterWaiting(2000)).toBe(1);
+  it('asked again at once, the wait is the lockout the refused key restarted: 1999 ms after it is refused again, 2000 ms after it releases', async () => {
+    expect(APPROVAL_LOCKOUT_MS).toBe(2000);
+    expect(await releasesAfterWaiting(APPROVAL_LOCKOUT_MS - 1)).toBe(0);
+    expect(await releasesAfterWaiting(APPROVAL_LOCKOUT_MS)).toBe(1);
+  });
+
+  it('asked again only once the lockout is over, the wait is the new line’s dwell: an answer 2.4 s after the refusal is refused, so "wait 2 s" would be untrue', async () => {
+    expect(await releasesAfterWaiting(APPROVAL_LOCKOUT_MS + 400, APPROVAL_LOCKOUT_MS)).toBe(0);
+    expect(await releasesAfterWaiting(APPROVAL_LOCKOUT_MS + 800, APPROVAL_LOCKOUT_MS)).toBe(1);
   });
 });

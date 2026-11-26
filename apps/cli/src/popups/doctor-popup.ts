@@ -425,11 +425,23 @@ export function doctorChecksControls(rows: boolean): readonly PopupControl[] {
   return rows ? [QUICK_CONTROL, DEEP_CONTROL, COPY_CONTROL] : [QUICK_CONTROL, DEEP_CONTROL];
 }
 
+/** What `Enter` says on the detail of a row whose remedy this surface opens (the hand-off to the provider setup). */
+export const DOCTOR_REMEDY_ENTER = 'open /providers';
+
 /**
- * The popup's spec: three steps, the later two reached from the first (`rail: 'path'`), opened on the line for a typed `/doctor --deep`. With
- * `remedies` (a host that wired the provider popup's seam) a row's detail offers `Enter` to open the remedy it names.
+ * What `Enter` does on a row's detail, set with the detail itself (`PopupContext.setContent`): it opens the remedy only for a row that has
+ * one on this surface, so a healthy row's detail names no `Enter` and its `Enter` answers nothing (MVP-11 unit 6 round 2, OB-1: a static
+ * verb named `open /providers` on every detail).
  */
-export function doctorSpec(origin: PopupOrigin, onLine: boolean, remedies = false): PopupSpec {
+export function detailEnter(remedy: DoctorRemedy | undefined): string | false {
+  return remedy === undefined ? false : DOCTOR_REMEDY_ENTER;
+}
+
+/**
+ * The popup's spec: three steps, the later two reached from the first (`rail: 'path'`), opened on the line for a typed `/doctor --deep`. A
+ * row's detail has no `Enter` of its own: the session sets it with each detail ({@link detailEnter}), from the row it shows.
+ */
+export function doctorSpec(origin: PopupOrigin, onLine: boolean): PopupSpec {
   return {
     id: 'doctor',
     title: '/doctor',
@@ -450,7 +462,6 @@ export function doctorSpec(origin: PopupOrigin, onLine: boolean, remedies = fals
         name: 'Detail',
         content: { kind: 'report', lines: [] },
         back: DOCTOR_STEP.checks,
-        ...(remedies ? { enter: 'open /providers' } : {}),
       },
       {
         name: 'Deep check',

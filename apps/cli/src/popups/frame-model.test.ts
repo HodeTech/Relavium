@@ -12,6 +12,7 @@ import { displayWidth } from '../render/tui/viewport.js';
 import {
   loadingElapsedText,
   naturalBodyRows,
+  originLabel,
   popupBody,
   popupFrameLines,
   popupNoticeLegend,
@@ -144,6 +145,18 @@ describe('the four parts, in order', () => {
     );
     expect(text[0]).toContain('from Home · step 2 of 3');
     expect(text[1]?.trim()).toBe('✓ Workflow ╌╌ ◉ Inputs ╌╌ ○ Confirm');
+  });
+
+  it('each origin has its own words on the top edge: `from Home`, `from chat`, and `first run` for the setup the Home opens by itself (OB-5a)', () => {
+    expect(originLabel('home')).toBe('from Home');
+    expect(originLabel('chat')).toBe('from chat');
+    expect(originLabel('first-run')).toBe('first run');
+    const { text } = frame(
+      { kind: 'list', rows: rows(2) },
+      { parts: { origin: 'first-run', steps: ['Provider', 'Key', 'Done'], stepIndex: 0 } },
+    );
+    expect(text[0]).toContain(' first run · step 1 of 3 ');
+    expect(text[0]).not.toContain('from');
   });
 
   it('the rail is drawn in the plain forms when colour is off', () => {

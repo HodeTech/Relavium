@@ -12,7 +12,11 @@ import { invocationFixture } from '../process/invocation.test-support.js';
 import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { KEY_SHAPED_DRAFT_NOTICE } from '../render/tui/home-controller.js';
-import { SETUP_SKIP_NOT_SAVED, setupClosedNotice } from '../onboarding/setup-notes.js';
+import {
+  CONFIG_REWRITTEN_LINE,
+  SETUP_SKIP_NOT_SAVED,
+  setupClosedNotice,
+} from '../onboarding/setup-notes.js';
 import { keychainAccount } from '../secrets/keychain.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
@@ -262,14 +266,14 @@ async function choose(p: RootAppProps, value: string): Promise<void> {
   await choosePopup(ui(p), value);
 }
 /**
- * The first-run popup is on screen: titled `Connect a provider` (O7), on its first step, `Which provider?`; that step is opened to step back,
- * so its `Esc` is the skip and `Ctrl+C` closes.
+ * The first-run popup is on screen: titled `Connect a provider` (O7), its top edge saying `first run` (OB-5a), on its first step, `Which
+ * provider?`; that step is opened to step back, so its `Esc` is the skip and `Ctrl+C` closes.
  */
 async function untilFirstRun(p: RootAppProps): Promise<void> {
   await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
   expect(ui(p).getSnapshot().popup).toMatchObject({
     title: FIRST_RUN_POPUP_TITLE,
-    origin: 'home',
+    origin: 'first-run',
     stepIndex: 0,
     stepCount: 3,
     stepNames: ['Provider', 'Key', 'Done'],
@@ -350,7 +354,9 @@ describe('the keyless journey', () => {
       expect(ui(p).getSnapshot().message).toBe(
         `Connected · Anthropic · ${KNOWN_PROVIDERS.anthropic.starterModel}`,
       );
+      // The starter default rewrote the journey's hand-made global config: the Done step keeps that fact, once, before the next step (CO-1).
       expect(ui(p).getSnapshot().details).toEqual([
+        CONFIG_REWRITTEN_LINE,
         'Type a message to start, or /init to set up this folder',
       ]);
       expect(ui(p).getSnapshot().popup?.stepIndex, 'the Done step is the rail’s last').toBe(2);

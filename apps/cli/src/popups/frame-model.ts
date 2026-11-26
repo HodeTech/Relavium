@@ -62,12 +62,22 @@ import {
   type PopupBoxGeometry,
 } from './geometry.js';
 
-/** Where the popup was opened from, said on its top edge. */
-export type PopupOrigin = 'home' | 'chat';
+/**
+ * Where the popup was opened from, said on its top edge: the Home, a chat, or the automatic first run (the provider setup the Home opens by
+ * itself, which no one opened from anywhere: MVP-11 unit 6 round 2, OB-5a).
+ */
+export type PopupOrigin = 'home' | 'chat' | 'first-run';
+
+/** The words of each origin: product constants. */
+const ORIGIN_LABEL: Readonly<Record<PopupOrigin, string>> = {
+  home: 'from Home',
+  chat: 'from chat',
+  'first-run': 'first run',
+};
 
 /** The words of an origin. */
 export function originLabel(origin: PopupOrigin): string {
-  return origin === 'home' ? 'from Home' : 'from chat';
+  return ORIGIN_LABEL[origin];
 }
 
 /** One row of a list the body draws. */
@@ -159,6 +169,7 @@ export interface PopupForm {
  *   under it ({@link PopupListRow.effect}).
  * - `report`: lines to read, windowed the same way.
  * - `form`: fields set together and applied by `Enter` ({@link PopupForm}).
+ * - `done`: a flow's persistent result ({@link PopupDone}), in the one shape every flow's last step has.
  */
 export type PopupContent =
   | { readonly kind: 'loading'; readonly what: string }
@@ -171,7 +182,24 @@ export type PopupContent =
       readonly heading?: PopupHeading | undefined;
     }
   | { readonly kind: 'report'; readonly lines: readonly string[] }
-  | PopupForm;
+  | PopupForm
+  | PopupDone;
+
+/**
+ * A flow's persistent result ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §6) in the
+ * ONE shape every flow's last step has, the native flows' (`native-popup-body.ts`, a `select` with `final`): its sentence led by its mark
+ * (`✓` for what was done, `✗` for what was not; `ok` and `x` in the plain form) in its tone's kind (`done`, `failed`), the rows under it (the
+ * target once, then what else stays), and the one option that closes it, highlighted (`› Close`). Drawn on a `final` step, which `Enter` and
+ * `Esc` close (MVP-11 unit 6 round 2, OB-2: the in-chat `/export`'s result had neither the mark nor the option).
+ */
+export interface PopupDone {
+  readonly kind: 'done';
+  readonly tone: 'ok' | 'failed';
+  readonly message: string;
+  readonly lines: readonly string[];
+  /** The words of the one option that closes it: a product constant (the flows' `FLOW_CLOSE_LABEL`), never data. */
+  readonly close: string;
+}
 
 /**
  * The line above a list's rows: the dominant outcome's glyph, then the text. A glyph whose plain form IS the status's word (`ok`, colour off) is
@@ -488,6 +516,38 @@ function stateRows(
 }
 
 /**
+ * The rows a `done` result ({@link PopupDone}) draws at `width`, in the native flows' shape: its sentence led by its mark, in its tone's kind;
+ * each of its lines (wrapped whole, a row of its own); and the one option that closes it, highlighted. One function for the count the
+ * geometry is asked for and for the rows drawn.
+ */
+function doneLines(content: PopupDone, width: number): SheetLine[] {
+  const failed = content.tone === 'failed';
+  const kind: SheetLine['kind'] = failed ? 'failed' : 'done';
+  const mark = glyph(failed ? 'failed' : 'completed');
+  return [
+    ...wrapRows(`${mark} ${popupText(content.message)}`, width).map((text) => ({ kind, text })),
+    ...content.lines.flatMap((line) =>
+      wrapRows(popupText(line), width).map((text): SheetLine => ({ kind: 'row', text })),
+    ),
+    bodyLine('selected', `${glyph('selection')} ${popupText(content.close)}`, width),
+  ];
+}
+
+/**
+ * A `done` result in a body of `rows` rows: whole when it fits; else its sentence and lines cut to the rows left above the option that closes
+ * it, the last one kept ending in the ellipsis (as a state's sentences are), so the way out is always drawn.
+ */
+function doneBody(content: PopupDone, rows: number, width: number): SheetLine[] {
+  const drawn = doneLines(content, width);
+  if (drawn.length <= rows) return drawn;
+  const close = drawn.at(-1);
+  const kept = drawn.slice(0, Math.max(0, rows - 1));
+  const last = kept.at(-1);
+  if (last !== undefined) kept[kept.length - 1] = bodyLine(last.kind, `${last.text}…`, width);
+  return close === undefined ? kept : [...kept, close];
+}
+
+/**
  * How many body rows `content` would like: what the geometry is asked for. A list or a report asks for every row it has, or `maxListRows`
  * (a block in the flow windows a list to ten rows, `INLINE_LIST_MAX_ROWS`), so the block is never padded with rows its list cannot use; a list
  * whose rows have an effect adds its paragraph (a blank row and the room of the longest effect at `innerWidth`). An `empty` or `error` state
@@ -529,6 +589,8 @@ export function naturalBodyRows(
         filterRows + (spacious <= maxListRows ? spacious : formRowCount(content, width, 'compact'))
       );
     }
+    case 'done':
+      return filterRows + doneLines(content, innerWidth ?? FLOOR_INNER_WIDTH).length;
   }
 }
 
@@ -559,6 +621,7 @@ export function bodyPageRows(
     case 'loading':
     case 'empty':
     case 'error':
+    case 'done':
       return geometry.listRows;
   }
 }
@@ -770,6 +833,9 @@ export function popupBody(
       break;
     case 'form':
       lines.push(...formBody(content, state, room, width));
+      break;
+    case 'done':
+      lines.push(...doneBody(content, room, width));
       break;
   }
   return { lines: lines.slice(0, geometry.bodyRows) };

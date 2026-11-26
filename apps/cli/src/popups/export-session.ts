@@ -21,15 +21,18 @@
  * 4. goes to the persistent result step that `Enter` and `Esc` close: the file written, project-relative, or that nothing was and why.
  *
  * A `Ctrl+Y` that does not count (too soon, typed over, the line cut) disarms the line; it has no step to go back to, so the host closes the
- * popup, and what nothing was exported and why is said on the host's channel. Nothing is written into the transcript or any notice.
+ * popup, and what nothing was exported and why is said on the host's channel. `Ctrl+N`, the line's explicit No, closes it the same way and is
+ * told as `Nothing exported.` (the host's one deny of a line that names one). Nothing is written into the transcript or any notice.
  */
 
 import {
+  EXPORT_DENIED,
   EXPORT_STEP,
   EXPORT_TARGET_CHANGED,
   EXPORT_TURN_IN_FLIGHT,
   exportDoneContent,
   exportFailedContent,
+  exportNotWrittenContent,
   exportPrepareFailedContent,
   exportRefusedText,
   exportReviewContent,
@@ -88,7 +91,7 @@ export function openExportPopup(
       // Every way through ends on the result step, which is no line: the host cannot hand this handler a second answer.
       // Nothing is written while a turn could still be adding to the transcript the scaffold is made from.
       if (request.turnInFlight()) {
-        finish(context, { kind: 'error', ...EXPORT_TURN_IN_FLIGHT });
+        finish(context, exportNotWrittenContent(EXPORT_TURN_IN_FLIGHT));
         return;
       }
       // The file is what the person confirmed: worked out again now, it must be the one the step showed, or nothing is written.
@@ -101,7 +104,7 @@ export function openExportPopup(
         return;
       }
       if (shown === undefined || !sameWrite(now, shown)) {
-        finish(context, { kind: 'error', ...EXPORT_TARGET_CHANGED });
+        finish(context, exportNotWrittenContent(EXPORT_TARGET_CHANGED));
         return;
       }
       let written: { readonly target: string };
@@ -117,6 +120,10 @@ export function openExportPopup(
     chordRefused: (context, reason) => {
       // Not an answer: the host disarmed the line (and, with no step to go back to, closes the popup). The person is told why, nothing more.
       context.notify(exportRefusedText(reason));
+    },
+    chordDenied: (context) => {
+      // The line's explicit No (`Ctrl+N`): the host closed the popup as `Esc` does, and nothing was written. The person is told so.
+      context.notify(EXPORT_DENIED);
     },
     // No `enter`: the result step is `final`, so the host closes it on `Enter` as on `Esc` (`popup-reducer.ts`).
   };

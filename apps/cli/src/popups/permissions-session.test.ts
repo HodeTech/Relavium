@@ -187,7 +187,7 @@ describe('a withdrawal: [d], then Enter through the host’s guard', () => {
     p.press('', ENTER);
     expect(withdraw).not.toHaveBeenCalled();
     expect(p.step()).toBe(PERMISSIONS_STEP.list);
-    expect(p.notice()).toBe('Nothing withdrawn: too soon, wait 2 s. [d] asks again.');
+    expect(p.notice()).toBe('Nothing withdrawn: too soon. [d] asks again.');
     expect(p.announced).toEqual([]);
   });
 

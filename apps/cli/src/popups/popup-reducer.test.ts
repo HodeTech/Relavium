@@ -748,3 +748,50 @@ describe('the reducer’s edges (round 3 mutation sweep)', () => {
     expect(reducePopupKey('d', {}, controlled)).toEqual({ kind: 'control', key: 'd' });
   });
 });
+
+describe('the `Enter` a step answers now, set with its content (OB-1: the doctor’s detail names its remedy only for a row that has one)', () => {
+  const REPORT: PopupContent = { kind: 'report', lines: ['one line'] };
+  const frameWith = (enter: string | false | undefined): PopupFrame =>
+    withContent(
+      openFrame(spec([step({ content: REPORT, enter: 'details' })]), 1),
+      0,
+      REPORT,
+      undefined,
+      enter,
+    );
+  const legendOf = (frame: PopupFrame): string => {
+    const parts = popupLegend(frame);
+    return legend(parts.items, parts.exit);
+  };
+
+  it('absent: the step keeps the spec’s own `Enter` (it is named, and it answers)', () => {
+    const frame = frameWith(undefined);
+    expect(currentStep(frame).spec.enter).toBe('details');
+    expect(legendOf(frame)).toBe('Enter details · Esc close');
+    expect(foldPopupAction(frame, { kind: 'enter' }, 10)).toEqual({
+      kind: 'enter',
+      row: undefined,
+    });
+  });
+
+  it('a verb: it replaces the spec’s, in the legend and in what the fold says', () => {
+    const frame = frameWith('open /providers');
+    expect(currentStep(frame).spec.enter).toBe('open /providers');
+    expect(legendOf(frame)).toBe('Enter open /providers · Esc close');
+  });
+
+  it('`false`: the step answers no `Enter` at all, even where its spec has one, and its legend names none', () => {
+    const frame = frameWith(false);
+    expect(currentStep(frame).spec.enter).toBeUndefined();
+    expect(legendOf(frame)).toBe('Esc close');
+    expect(foldPopupAction(frame, { kind: 'enter' }, 10)).toEqual({ kind: 'unchanged' });
+  });
+
+  it('a later content that sets none keeps the last one set; a step with no override is the very spec object (no copy)', () => {
+    const off = frameWith(false);
+    const kept = withContent(off, 0, { kind: 'report', lines: ['two'] });
+    expect(currentStep(kept).spec.enter).toBeUndefined();
+    const plain = openFrame(spec([step({ content: REPORT, enter: 'details' })]), 1);
+    expect(currentStep(plain).spec).toBe(plain.spec.steps[0]);
+  });
+});

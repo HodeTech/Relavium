@@ -537,7 +537,7 @@ describe('what the provider setup reports', () => {
       expect(f.policy.allows('openai', 'OPENAI_API_KEY')).toBe(false);
     });
 
-    it('`Use it for this invocation only` grants the source for this process and says nothing was saved', async () => {
+    it('`Use it for this invocation only` grants the source for this process and says the consent was not saved', async () => {
       const f = fixture({ answers: ['use', 'once'], env: ENV, publish: failing });
       const outcome = await createProviderSetupCoordinator(f.deps).run('automatic');
       expect(outcome.status).toBe('ready');

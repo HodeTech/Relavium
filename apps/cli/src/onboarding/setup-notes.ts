@@ -32,6 +32,28 @@ export function keyCheckText(provider: string, host: string): string {
   return `Checking your ${provider} key · one request to ${host}`;
 }
 
+/**
+ * The key step's wait once the check has answered (or the person chose to keep the key unchecked), while the key is stored in the OS keychain:
+ * what runs now, never the check's words (SE-L1). It does not step back: `Esc` there cancels, as a wait's `Esc` always did.
+ */
+export function keySavingText(provider: string): string {
+  return `Saving your ${provider} key…`;
+}
+
+/** The wait while a stored key's starter default is written to the global config (SE-L1: never the check's words, `Esc` cancels it). */
+export const STARTER_SAVING_TEXT = 'Saving your default model…';
+
+/**
+ * The Done step's one line when a write of the setup rewrote a global config that existed before the run and was not the run's own (CO-1):
+ * the rewrite's disclosure is drawn only while the write publishes, so the Done step keeps its fact. It says what that disclosure said would
+ * happen; it fits one row of the popup at 80 columns (its inner width, 66).
+ */
+export const CONFIG_REWRITTEN_LINE =
+  'Rewrote the global config, dropping its comments and ordering.';
+
+/** What the key prompt says when `Enter` finds nothing to check (an empty or blank field): a product sentence that names no key. */
+export const KEY_REQUIRED_TEXT = 'Paste your key to continue.';
+
 /** What the key step names when the resolver cannot say which origin the key would go to (a refused custom endpoint): never a guess. */
 export const UNKNOWN_KEY_HOST = 'the configured endpoint';
 

@@ -1,4 +1,5 @@
 import type { Key } from 'ink';
+import type { PopupOrigin } from '../../popups/frame-model.js';
 import type { Schedule } from '../../popups/notifications.js';
 import { sanitizeInline } from '../sanitize.js';
 import {
@@ -66,6 +67,8 @@ export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
  * §4): a fixed product text in the prompt's error row, so the person pastes again. Nothing of the old buffer survives the resize.
  */
 export const NATIVE_PROMPT_RESIZED = 'Resized · key cleared, paste it again';
+/** What a masked field says when its validator rejects a value and its flow named no sentence of its own: fixed, so it names no secret. */
+export const NATIVE_PROMPT_SECRET_REJECTED = 'A valid value is required.';
 /** The numbers behind a guarded option's `Enter` (`native-prompt-guards.ts`, where the rule is explained). */
 export { GUARDED_SELECT_GUARD } from './native-prompt-guards.js';
 export class NativePromptVisibilityRefusedError extends Error {
@@ -97,7 +100,8 @@ export interface NativePromptOption {
  */
 export interface NativePopupDescriptor {
   readonly title: string;
-  readonly origin: 'home' | 'chat';
+  /** Where the flow was opened from, as the top edge says it (`from Home`, `from chat`, `first run`): the frame's one origin type. */
+  readonly origin: PopupOrigin;
   readonly stepIndex: number;
   readonly stepCount: number;
   /** The rail's step names, in order (ADR-0148 §1: `✓ Provider ╌╌ ◉ Key ╌╌ ○ Done`); absent ⇒ the nodes are drawn without names. */
@@ -267,6 +271,11 @@ export interface NativePromptFlow {
     message: string;
     validate?: (value: string) => string | undefined;
     escape?: NativePromptEscape;
+    /**
+     * What the field says when `validate` rejects the value: a PRODUCT constant the flow writes for what its validator refuses (the key step:
+     * `Paste your key to continue.`, OB-5), never the validator's reason, which could echo the secret. Default {@link NATIVE_PROMPT_SECRET_REJECTED}.
+     */
+    rejected?: string;
   }) => Promise<string | symbol>;
 }
 /**
@@ -433,6 +442,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   let abort: AbortController | undefined;
   let settle: ((answer: string | symbol) => void) | undefined;
   let validate: ((value: string) => string | undefined) | undefined;
+  /** The open masked field's sentence for a rejected value (a product constant), or the channel's own. */
+  let secretRejected = NATIVE_PROMPT_SECRET_REJECTED;
   let disposed = false;
   /**
    * A note published while a chord card is open. The card draws its own rows behind the host gutter and a note above them would sit at
@@ -729,7 +740,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     if (error)
       publish({
         ...snapshot,
-        error: snapshot.kind === 'password' ? 'A valid value is required.' : sanitizeInline(error),
+        error: snapshot.kind === 'password' ? secretRejected : sanitizeInline(error),
       });
     else finish(secret);
   };
@@ -1006,10 +1017,14 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       prompt('text', options.message, [], undefined, options.validate, {
         escape: options.escape ?? 'cancel',
       }),
-    password: (options) =>
-      prompt('password', options.message, [], undefined, options.validate, {
+    password: (options) => {
+      const opened = prompt('password', options.message, [], undefined, options.validate, {
         escape: options.escape ?? 'cancel',
-      }),
+      });
+      // Set after `prompt`, so a call that throws (a prompt already open) leaves the open field's sentence as it was; every field sets its own.
+      secretRejected = sanitizeInline(options.rejected ?? NATIVE_PROMPT_SECRET_REJECTED);
+      return opened;
+    },
     chord: async (options) => {
       const before = settle;
       const pending = prompt(

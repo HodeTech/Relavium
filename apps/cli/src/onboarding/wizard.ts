@@ -28,10 +28,13 @@ import type { CliIo } from '../process/io.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 import {
   FIRST_RUN_NOTE_TITLE,
+  KEY_REQUIRED_TEXT,
   SAVED_UNCONFIRMED,
   SETUP_NEXT_STEP,
+  STARTER_SAVING_TEXT,
   UNKNOWN_KEY_HOST,
   keyCheckText,
+  keySavingText,
   keyStepNote,
   setupSkippedNotice,
   type SetupSurface,
@@ -55,8 +58,9 @@ import type { SessionWorkOwner } from '../chat/session-work-owner.js';
  *    in a snapshot, cleared on `Esc`, on a step back and on any resize.
  *  - Before it is stored, it is sent LIVE to the provider ONCE (the bounded, key-redacted {@link validateProviderKey} `maxTokens:1` ping against
  *    the provider's STARTER model) to verify it; the setup says so before the key is pasted and while the request runs, naming the host of the
- *    origin that receives it (G20). The key crosses the network only to its own provider, over the adapter's own transport. In the popup the
- *    pre-selected `Retry the check` (which sends it again) is GUARDED, so a held `Enter` does not re-send it at the key's repeat rate.
+ *    origin that receives it (G20). The key crosses the network only to its own provider, over the adapter's own transport. The pre-selected
+ *    `Retry the check` (which sends it again) is GUARDED, on the popup and on the card, so a held `Enter` does not re-send it at the key's
+ *    repeat rate.
  *  - It is then handed to the OS keychain. On a validation FAILURE the user may consciously "save it anyway": the key is then stored UNVERIFIED
  *    and the result says so (never claiming a verification we didn't do).
  *  - No part of the key is ever shown. Nothing is written to a file, a log, an error or a report.
@@ -172,8 +176,8 @@ export interface OnboardingDeps {
 }
 
 /**
- * The key prompt's validator: it rejects an empty or whitespace-only key. The masked field draws its own fixed sentence for a rejected value
- * (`A valid value is required.`), so the reason is drawn by no surface and names no key.
+ * The key prompt's validator: it rejects an empty or whitespace-only key, and nothing else. The masked field draws the key step's own fixed
+ * sentence for a rejected value ({@link KEY_REQUIRED_TEXT}: `Paste your key to continue.`, OB-5), never this reason, so it names no key.
  */
 const keyRequired = (value: string): string | undefined =>
   value.trim() === '' ? 'An API key is required.' : undefined;
@@ -272,8 +276,13 @@ function checkLifecycle(
   };
 }
 
-/** The hint of `Save it anyway · not verified`: how to verify the key later, on the surface where the doctor's deep tier is `[d]`. */
-export const SAVE_ANYWAY_HINT = `not checked · verify later with /doctor, then ${keyToken('d')}`;
+/** The row after a failed check that keeps the key anyway ({@link SAVE_ANYWAY_HINT} says the rest). */
+export const SAVE_ANYWAY_LABEL = 'Save it anyway';
+/**
+ * The hint of {@link SAVE_ANYWAY_LABEL} (OB-4): the key is kept without a check, and how to check it later, on the surface where the doctor's
+ * deep tier is `[d]`. One short hint that says nothing the label says, so label and hint share one row of the popup at 80 columns.
+ */
+export const SAVE_ANYWAY_HINT = `unverified · /doctor, then ${keyToken('d')} checks it later`;
 /** What the Done step of a key saved without a check says about it: not verified, and how to verify it (the doctor's deep tier). */
 export const UNVERIFIED_KEY_LINE = `Not verified · check it later with /doctor, then ${keyToken('d')}`;
 
@@ -289,34 +298,22 @@ interface RetryPrompt {
  * answered by a reflex `Enter` into an unverified key (ADR-0146 §6):
  *
  * - a TRANSIENT (`network`: offline, a timeout, rate limit, overloaded) failure puts `Retry the check` first and pre-selected: the same key
- *   is checked again, with nothing to paste, so a poor connection does not push toward saving it unverified. It SENDS the key again, so where
- *   the select can be guarded (`guardRecheck`: the popup, whose frames are acknowledged) it is: a held `Enter` (the one that submitted the key,
- *   still repeating) answers nothing, and a deliberate one counts after the lockout that runs from the moment the select appeared (S5);
+ *   is checked again, with nothing to paste, so a poor connection does not push toward saving it unverified. It SENDS the key again, so it is
+ *   GUARDED on every surface (S5 on the popup; SE-L3 on the stand-alone chat's card, whose host acknowledges its frames as the popup's does): a
+ *   held `Enter` (the one that submitted the key, still repeating) answers nothing, and a deliberate one counts after the lockout that runs
+ *   from the moment the select appeared;
  * - any other failure (a rejected key, a billing or account issue, an unexpected fault) puts `Enter a different key` first and
  *   pre-selected. It sends nothing (it opens the key step again, empty, whose `Enter` on an empty field is refused), so it is not guarded.
  *   `detail` (the setup's fixed word) is the neutral evidence: we do NOT assert "the key is bad" for the non-network case, since a 402/400
  *   may mean billing or a stale model rather than a wrong key.
  *
- * `Save it anyway · not verified` is never pre-selected and sits last but one, and `Skip setup` is last. Its hint names how to verify later:
- * the doctor's deep tier (`/doctor`, then `[d]`), which checks the stored key with the same request.
+ * `Save it anyway` is never pre-selected and sits last but one, and `Skip setup` is last. Its hint says the key is kept unverified and names
+ * how to verify it later: the doctor's deep tier (`/doctor`, then `[d]`), which checks the stored key with the same request.
  */
-function buildRetryPrompt(
-  isTransient: boolean,
-  displayName: string,
-  detail: string,
-  guardRecheck: boolean,
-): RetryPrompt {
-  const recheck: NativePromptOption = {
-    value: 'recheck',
-    label: 'Retry the check',
-    ...(guardRecheck ? { guarded: true as const } : {}),
-  };
+function buildRetryPrompt(isTransient: boolean, displayName: string, detail: string): RetryPrompt {
+  const recheck: NativePromptOption = { value: 'recheck', label: 'Retry the check', guarded: true };
   const enterDifferent = { value: 'retry', label: 'Enter a different key' };
-  const saveAnyway = {
-    value: 'continue',
-    label: 'Save it anyway · not verified',
-    hint: SAVE_ANYWAY_HINT,
-  };
+  const saveAnyway = { value: 'continue', label: SAVE_ANYWAY_LABEL, hint: SAVE_ANYWAY_HINT };
   const skipSetup = { value: 'skip', label: 'Skip setup' };
   return {
     message: isTransient
@@ -343,9 +340,11 @@ function failureWord(reason: ProviderKeyValidation['reason']): string {
   return 'verification failed';
 }
 
-/** The first-run sentence (only on a genuine first run: no usable source before this setup). */
-const FIRST_RUN_SENTENCE =
-  'Connect a model provider to start chatting.\nYour key is stored in your OS keychain — never on disk.';
+/**
+ * The first-run sentence (only on a genuine first run: no usable source before this setup). It says why the setup is there and nothing the
+ * popup's title (`Connect a provider`) says; where the key is kept is said once, by the key step, where the key is pasted (OB-5).
+ */
+export const FIRST_RUN_SENTENCE = 'A model provider is needed to start chatting.';
 
 /**
  * Where the key step says the key goes (ADR-0146 §6, G20): the ORIGIN the resolver pinned for this provider's adapter (a stored custom endpoint
@@ -470,6 +469,7 @@ async function keyStep(
     const raw = await (run.native.stages?.keyPrompt ?? prompts).password({
       message: `Paste your ${words.name} API key`,
       validate: keyRequired,
+      rejected: KEY_REQUIRED_TEXT,
       escape: run.escape,
     });
     if (raw === NATIVE_PROMPT_BACK) return { kind: 'back' };
@@ -498,12 +498,7 @@ async function checkKey(
     run.admit();
     if (result.ok) return { kind: 'key', key, verified: true };
     const choice = await prompts.select({
-      ...buildRetryPrompt(
-        result.reason === 'network',
-        words.name,
-        failureWord(result.reason),
-        run.native.stages !== undefined,
-      ),
+      ...buildRetryPrompt(result.reason === 'network', words.name, failureWord(result.reason)),
       escape: run.escape,
     });
     const answered = afterFailedCheck(run, choice, key);
@@ -613,6 +608,10 @@ async function storeKey(
   const { deps, native } = run;
   const displayName = providerDisplayName(provider);
   const name = scrubSetupText(displayName);
+  // The store phase starts here, after a check that answered or a key kept unchecked: its wait replaces the check's, so no step back out of
+  // a check that is over is left on screen (SE-L1: that stale `Esc back` swallowed an `Esc` while a config rewrite was disclosed). `Esc` on
+  // this wait cancels, as a wait's `Esc` always did, and the screen says what runs now.
+  (native.stages?.key ?? native.flow).busy(keySavingText(name));
   let keyStored = false;
   const keychain: KeychainStore = {
     get: (account) => deps.keychain.get(account),
@@ -832,6 +831,8 @@ async function chooseStarter(
   }
   try {
     run.admit();
+    // The key is stored: the wait says what runs now (a host that rewrites a config draws its disclosure above it), and `Esc` cancels it.
+    (run.native.stages?.key ?? run.native.flow).busy(STARTER_SAVING_TEXT);
     const result = nativeDefaultResult(
       await run.deps.writeDefaultModel(words.starterModel, provider, run.admit),
     );

@@ -32,6 +32,8 @@ import {
   type SetupStages,
 } from '../onboarding/wizard.js';
 import {
+  CONFIG_REWRITTEN_LINE,
+  SETUP_NEXT_STEP,
   SETUP_SKIP_NOT_SAVED,
   setupClosedNotice,
   setupSkippedNotice,
@@ -121,6 +123,7 @@ function setupStages(
   framed: FramedFlow | undefined,
   exit: StepExit,
   keyFirst: boolean,
+  done: (done: FramedDone) => Promise<void>,
 ): { readonly stages?: SetupStages } {
   if (framed === undefined) return {};
   const skip = exit === 'skip' ? { escapeVerb: FIRST_STEP_ESCAPE_VERB } : {};
@@ -133,7 +136,7 @@ function setupStages(
       ...(keyFirst && exit === 'skip'
         ? { keyPrompt: framed.at(KEY_STEP, { ...key, ...skip }) }
         : {}),
-      done: (done: FramedDone) => framed.done(done),
+      done,
     },
   };
 }
@@ -152,12 +155,19 @@ function firstStepExit(framed: boolean, firstRun: boolean): StepExit {
  * a granted consent) removes no comment and no order of theirs: it is published with no rewrite notice. A config that existed before the run
  * keeps the notice on every write, as does one another writer changed since; one changed after such a write was prepared is refused before it
  * is renamed over (a config fault, as a target that changed always is), never rewritten unannounced. `target` is the file the writes go to.
+ *
+ * What the run left is the text ITS write produced (`PreparedConfigWrite.text`), never a read-back after the rename: another writer landing
+ * between that rename and a read would be adopted as the run's own, and the next write onto their file would skip the notice (SE-L2).
+ * `rewrote` says whether a write of the run was published over a config that existed and was not the run's own (its notice was drawn): the
+ * Done step keeps that fact (CO-1). A write that was refused, cancelled or never made sets nothing.
  */
 function createRunWrites(target: string): {
   readonly view: (prepared: PreparedConfigWrite) => PreparedConfigWrite;
+  readonly rewrote: () => boolean;
 } {
-  /** What the run left in a config it created; `undefined` while it created none. */
+  /** What the run's own write put in a config it created; `undefined` while it created none. */
   let created: string | undefined;
+  let rewrote = false;
   const read = (): string | undefined => {
     try {
       return readFileSync(target, 'utf8');
@@ -169,21 +179,39 @@ function createRunWrites(target: string): {
     view: (prepared) => {
       const expected = created;
       const ours = expected !== undefined && read() === expected;
-      if (prepared.rewriteNeeded && !ours) return prepared;
+      const rewrite = prepared.rewriteNeeded && !ours;
       return {
-        rewriteNeeded: false,
+        rewriteNeeded: rewrite,
+        ...(prepared.text === undefined ? {} : { text: prepared.text }),
         publish: (assertAdmitting) => {
           const result = prepared.publish(() => {
             assertAdmitting?.();
             if (ours && read() !== expected)
               throw new ConfigError(target, 'changed before writing; prepare the write again.');
           });
-          created = read();
+          if (rewrite) rewrote = true;
+          else if (prepared.text !== undefined) created = prepared.text;
           return result;
         },
       };
     },
+    rewrote: () => rewrote,
   };
+}
+
+/**
+ * The Done step's lines with the rewrite's fact ({@link CONFIG_REWRITTEN_LINE}, CO-1) when a write of the run rewrote a config that existed:
+ * once, before the next step a connected setup names (the last line), else last.
+ */
+function withRewriteLine(done: FramedDone, rewrote: boolean): FramedDone {
+  if (!rewrote) return done;
+  const lines = done.lines ?? [];
+  const at = lines.indexOf(SETUP_NEXT_STEP);
+  const placed =
+    at < 0
+      ? [...lines, CONFIG_REWRITTEN_LINE]
+      : [...lines.slice(0, at), CONFIG_REWRITTEN_LINE, ...lines.slice(at)];
+  return { ...done, lines: placed };
 }
 
 /** The flow handed to the key setup, which records the note it COMMITTED (a fact, kept as the host's notice), as well as drawing it. */
@@ -244,12 +272,15 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
   const surface = deps.credentialSurface ?? 'home';
   const popup = deps.popup === true;
 
-  /** The popup frame of one run (its title, the rail, the Done step), or none for a card. Every step's `Ctrl+C` closes it. */
-  const frameFor = (title: string): FramedFlow | undefined =>
+  /**
+   * The popup frame of one run (its title and origin, the rail, the Done step), or none for a card. Every step's `Ctrl+C` closes it. The
+   * automatic first run is titled for what it is and its top edge says `first run` (OB-5a); a `/providers` the person opened is `from Home`.
+   */
+  const frameFor = (firstRun: boolean): FramedFlow | undefined =>
     popup
       ? framedFlow(deps.flow, {
-          title,
-          origin: 'home',
+          title: firstRun ? FIRST_RUN_POPUP_TITLE : PROVIDERS_POPUP_TITLE,
+          origin: firstRun ? 'first-run' : 'home',
           stepNames: PROVIDER_STEP_NAMES,
           progress: 'manual',
           exitLabel: 'close',
@@ -309,7 +340,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
      * announces how it ended.
      */
     const firstRun = mode === 'automatic' && firstUsable;
-    const framed = frameFor(firstRun ? FIRST_RUN_POPUP_TITLE : PROVIDERS_POPUP_TITLE);
+    const framed = frameFor(firstRun);
     const flow: NativePromptFlow = framed ?? deps.flow;
     /** The prompts of the `Provider` step: the list, the consent, the keychain step, a recovery, an action. */
     const entry: SetupPrompts = framed?.at(0) ?? deps.flow;
@@ -325,6 +356,10 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     const fromList: StepExit = framed === undefined ? 'cancel' : 'back';
     const first = firstStepExit(framed !== undefined, firstRun);
     const runWrites = createRunWrites(target);
+    /** The popup's Done step, keeping the fact of a rewrite when a write of this run rewrote a config that existed (CO-1). */
+    const showDone = async (done: FramedDone): Promise<void> => {
+      await framed?.done(withRewriteLine(done, runWrites.rewrote()));
+    };
     const signal = flow.begin();
     if (intro !== undefined) flow.note(intro);
     const assertAdmitting = (): void => {
@@ -388,7 +423,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           endpointContext: deps.endpointContext,
           selectStarterDefault: firstUsable,
           surface,
-          ...setupStages(framed, exit, id !== undefined),
+          ...setupStages(framed, exit, id !== undefined, showDone),
         },
       );
       if (result.kind === 'skipped' && firstRun) personSkipped = true;
@@ -414,7 +449,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         if (signal.aborted)
           return { status: outcome.status, changed: outcome.changed, notice: interrupted };
         // No key was entered on this road (a source granted, a keychain remembered): the rail does not tick the `Key` step.
-        await framed.done({ ...done, skipped: [KEY_STEP] });
+        await showDone({ ...done, skipped: [KEY_STEP] });
         return { status: outcome.status, changed: outcome.changed };
       },
       manual,

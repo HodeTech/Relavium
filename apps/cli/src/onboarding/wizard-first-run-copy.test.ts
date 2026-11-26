@@ -10,7 +10,7 @@ import type { CliIo } from '../process/io.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { KeychainUnavailableError } from '../secrets/keychain.js';
 import { keyStepNote, leftoverSetupNote, setupSkippedNotice } from './setup-notes.js';
-import { runNativeSetup, type OnboardingDefaultResult } from './wizard.js';
+import { FIRST_RUN_SENTENCE, runNativeSetup, type OnboardingDefaultResult } from './wizard.js';
 
 /**
  * What the native first run SAYS (MVP-11 Step 2.4, ADR-0146 §6), read from the native prompt channel the Home and a stand-alone chat both
@@ -158,12 +158,20 @@ async function run(options: {
 
 const NETWORK: ProviderKeyValidation = { ok: false, reason: 'network', detail: 'timeout' };
 const OK: ProviderKeyValidation = { ok: true, reason: 'ok', detail: 'ok' };
-const FIRST_RUN_SENTENCE = 'Connect a model provider to start chatting.';
-
 describe('the first-run sentence belongs to a genuine first run', () => {
   it('is shown on the provider list of a first run', async () => {
     const result = await run({ validation: OK, answers: [] });
     expect(result.notes.some((note) => note.includes(FIRST_RUN_SENTENCE))).toBe(true);
+  });
+
+  it('OB-5: it says why the setup is there, not the popup’s title again, and where the key is kept is said ONCE, by the key step', async () => {
+    const result = await run({ validation: OK, answers: [] });
+    expect(result.notes[0]).toBe(`First-run setup: ${FIRST_RUN_SENTENCE}`);
+    expect(FIRST_RUN_SENTENCE).toBe('A model provider is needed to start chatting.');
+    expect(FIRST_RUN_SENTENCE.toLowerCase()).not.toContain('connect a');
+    // The provider list's note promises nothing about the key; the key step's, which follows it, does.
+    expect(result.notes[0]?.toLowerCase()).not.toContain('keychain');
+    expect(result.notes[1]).toBe(keyStepNote('https://api.anthropic.com'));
   });
 
   it('is NOT shown when a key is added or replaced while another source already works (key maintenance)', async () => {

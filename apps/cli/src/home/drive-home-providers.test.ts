@@ -96,7 +96,7 @@ async function skipFirstRun(ui: PromptUi, path: string): Promise<string> {
   expect(text).toBe(before);
   return text;
 }
-/** Past the approval's lockout that runs from the key that opened a flow (`resolveOpeningKey`), and the chord card's dwell. */
+/** Past a chord card's lockout, which runs from the moment the card appeared (`createChordCardGuard`), and its dwell. */
 const OPENING_LOCKOUT_WAIT_MS = 2_300;
 const baseline = '# retained until actual publication\n[preferences]\ntheme = "dark"\n';
 const paths: string[] = [];
@@ -219,7 +219,7 @@ function setup(
   };
   const running = driveHome(deps);
   const ready = async (): Promise<RootAppProps> => {
-    await vi.waitFor(() => expect(props).toBeDefined());
+    await vi.waitFor(() => expect(props).toBeDefined(), { timeout: STEP_WAIT_MS });
     if (!props) throw new Error('missing Home mount');
     return props;
   };
@@ -263,16 +263,19 @@ describe('driveHome native provider setup', () => {
       if (!ui) throw new Error('Native prompt missing');
       try {
         f.announce(p);
-        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(true));
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(true), {
+          timeout: STEP_WAIT_MS,
+        });
         const skipped = await skipFirstRun(ui, f.path);
         for (const character of '/init') p.controller.handleKey(character, {});
         p.controller.handleKey('', { return: true });
-        await vi.waitFor(() =>
-          expect(ui.getSnapshot().message).toContain('Create these project directories'),
+        await vi.waitFor(
+          () => expect(ui.getSnapshot().message).toContain('Create these project directories'),
+          { timeout: STEP_WAIT_MS },
         );
         const marker = join(dirname(f.path), '.relavium');
         expect(existsSync(marker)).toBe(false);
-        // The confirmation is a `Ctrl+Y` chord (ADR-0148 §3), answered after the lockout that runs from the key that opened the flow.
+        // The confirmation is a `Ctrl+Y` chord (ADR-0148 §3), answered after the lockout that runs from the moment the card appeared.
         expect(ui.getSnapshot().kind).toBe('chord');
         await new Promise<void>((resolve) => {
           setTimeout(resolve, OPENING_LOCKOUT_WAIT_MS);
@@ -283,7 +286,9 @@ describe('driveHome native provider setup', () => {
           timeout: STEP_WAIT_MS,
         });
         await closeDone(ui, 'esc');
-        await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+        await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
         expect(readdirSync(marker).sort()).toEqual(['agents', 'workflows']);
         expect(readFileSync(f.path, 'utf8'), '/init writes no operator config').toBe(skipped);
         expect(p.controller.getSnapshot().notice).toBeUndefined();
@@ -303,7 +308,9 @@ describe('driveHome native provider setup', () => {
     try {
       f.announce(p);
       await choose(ui, 'defer');
-      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+        timeout: STEP_WAIT_MS,
+      });
       // The `/models` popup: the models a key would make usable are under the heading that names the Home's remedy, never a shell command.
       const popups = await openModelsPopup(p);
       const frame = popups.getSnapshot().frame;
@@ -335,8 +342,10 @@ describe('driveHome native provider setup', () => {
         symlinkSync(original, f.path);
         f.announce(p);
         const labelOf = async (value: string): Promise<string | undefined> => {
-          await vi.waitFor(() =>
-            expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
+          await vi.waitFor(
+            () =>
+              expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
+            { timeout: STEP_WAIT_MS },
           );
           return ui.getSnapshot().options.find((option) => option.value === value)?.label;
         };
@@ -352,13 +361,17 @@ describe('driveHome native provider setup', () => {
           `Use ${KNOWN_PROVIDERS.openai.starterModel} for this invocation only`,
         );
         await choose(ui, 'once'); // separate invocation model
-        // The popup's Done step says what was allowed and that nothing was saved.
-        await vi.waitFor(() => expect(ui.getSnapshot().final).toBe('ok'));
+        // The popup's Done step says what was allowed and that the consent was not saved.
+        await vi.waitFor(() => expect(ui.getSnapshot().final).toBe('ok'), {
+          timeout: STEP_WAIT_MS,
+        });
         expect(ui.getSnapshot().details).toContain(
-          'Allowed for this invocation only; nothing was saved.',
+          'Allowed for this invocation only; the consent was not saved.',
         );
         await closeDone(ui);
-        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
         rmSync(f.path);
         writeFileSync(f.path, baseline); // operator repairs the target before the next save
         let chosen: string;
@@ -388,7 +401,9 @@ describe('driveHome native provider setup', () => {
           await settleModelsForm(popups); // the form is a frame of its own, with its own settle
           popups.input('', { return: true });
           expect(popups.getSnapshot().open).toBe(false);
-          await vi.waitFor(() => expect(readFileSync(f.path, 'utf8')).toContain(chosen));
+          await vi.waitFor(() => expect(readFileSync(f.path, 'utf8')).toContain(chosen), {
+            timeout: STEP_WAIT_MS,
+          });
         } else {
           // The old source is gone: this is a new first-usable-source setup,
           // rather than key maintenance that must preserve the current model.
@@ -399,7 +414,9 @@ describe('driveHome native provider setup', () => {
           await pasteKey(ui, 'second-synthetic-provider-key');
           await choose(ui, 'continue'); // explicit save despite the offline validation fixture
           await closeDone(ui);
-          await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+          await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+            timeout: STEP_WAIT_MS,
+          });
           chosen = KNOWN_PROVIDERS.anthropic.starterModel;
         }
         expect(readFileSync(f.path, 'utf8')).toContain(chosen);
@@ -412,9 +429,11 @@ describe('driveHome native provider setup', () => {
         reopened.input('', { escape: true });
         for (const char of 'next chat') p.controller.handleKey(char, {});
         p.controller.handleKey('', { return: true });
-        await vi.waitFor(() => expect(f.built).toHaveLength(1));
+        await vi.waitFor(() => expect(f.built).toHaveLength(1), { timeout: STEP_WAIT_MS });
         expect(f.built[0]?.model).toBe(chosen);
-        await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+        await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'), {
+          timeout: STEP_WAIT_MS,
+        });
       } finally {
         ui.input('', { ...key, escape: true });
         p.controller.handleKey('', { escape: true });
@@ -422,7 +441,8 @@ describe('driveHome native provider setup', () => {
         await f.end(p);
       }
     },
-    20_000,
+    // ~10 s of real waits each (two guarded rows, two popup settles, the /models form) at low load; a loaded CI runner needs the margin (AR-2).
+    30_000,
   );
 
   it('waits for mounted renderer and paints rewrite notice before granting a standard source and starter default', async () => {
@@ -431,17 +451,20 @@ describe('driveHome native provider setup', () => {
     expect(p.nativePrompt?.getSnapshot().active).toBe(false);
     expect(p.controller.getSnapshot().keyless).toBe(true);
     f.announce(p);
-    await vi.waitFor(() =>
-      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
     );
     if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
     await choose(p.nativePrompt, 'use');
-    await vi.waitFor(() => expect(f.notices).toBe(1));
+    await vi.waitFor(() => expect(f.notices).toBe(1), { timeout: STEP_WAIT_MS });
     expect(p.nativePrompt.getSnapshot().note).toContain('rewrites the global config');
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
     f.release();
     await closeDone(p.nativePrompt);
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     const text = readFileSync(f.path, 'utf8');
     expect(text).toContain('OPENAI_API_KEY');
     expect(text).toContain(KNOWN_PROVIDERS.openai.starterModel);
@@ -457,19 +480,24 @@ describe('driveHome native provider setup', () => {
       const f = setup(false, false, project);
       const p = await f.ready();
       f.announce(p);
-      await vi.waitFor(() =>
-        expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      await vi.waitFor(
+        () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+        { timeout: STEP_WAIT_MS },
       );
       if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
       await choose(p.nativePrompt, 'use');
       await closeDone(p.nativePrompt);
-      await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+      await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+        timeout: STEP_WAIT_MS,
+      });
       p.controller.handleKey('h', {});
       p.controller.handleKey('i', {});
       p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(f.built).toHaveLength(1));
+      await vi.waitFor(() => expect(f.built).toHaveLength(1), { timeout: STEP_WAIT_MS });
       expect(f.built[0]?.model).toBe(project ?? KNOWN_PROVIDERS.openai.starterModel);
-      await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+      await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'), {
+        timeout: STEP_WAIT_MS,
+      });
       await f.end(p);
     },
     15_000,
@@ -480,8 +508,9 @@ describe('driveHome native provider setup', () => {
       const f = setup();
       const p = await f.ready();
       f.announce(p);
-      await vi.waitFor(() =>
-        expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      await vi.waitFor(
+        () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+        { timeout: STEP_WAIT_MS },
       );
       const ui = p.nativePrompt;
       if (ui === undefined) throw new Error('Native prompt missing');
@@ -491,7 +520,9 @@ describe('driveHome native provider setup', () => {
         expect(open.options[open.selected]?.value).toBe('defer');
         await sleep(POPUP_ANSWER_WAIT_MS);
         ui.input('\r', { ...key, return: true });
-        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
         expect(readFileSync(f.path, 'utf8'), '`Not now` is no remembered skip').toBe(baseline);
       } else {
         // `Esc` on the first step skips the first run; on this hand-made config the skip is not remembered (C-F3), and the consent is not.
@@ -506,7 +537,9 @@ describe('driveHome native provider setup', () => {
     const f = setup(false, true);
     const p = await f.ready();
     f.announce(p);
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().kind).toBe('password'));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().kind).toBe('password'), {
+      timeout: STEP_WAIT_MS,
+    });
     expect(p.nativePrompt?.getSnapshot().note).toContain('https://custom.example');
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('/private/path');
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('secret');
@@ -522,13 +555,16 @@ describe('driveHome native provider setup', () => {
     const f = setup(false, false, undefined, false, 'none');
     const p = await f.ready();
     f.announce(p);
-    await vi.waitFor(() =>
-      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
     );
     if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
     await choose(p.nativePrompt, 'use');
     await closeDone(p.nativePrompt);
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     const text = readFileSync(f.path, 'utf8');
     expect(text).toContain('OPENAI_API_KEY');
     expect(text).toContain(KNOWN_PROVIDERS.openai.starterModel);
@@ -539,15 +575,18 @@ describe('driveHome native provider setup', () => {
     const f = setup(true);
     const p = await f.ready();
     f.announce(p);
-    await vi.waitFor(() =>
-      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
     );
     if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
     await choose(p.nativePrompt, 'use');
-    await vi.waitFor(() => expect(f.notices).toBe(1));
+    await vi.waitFor(() => expect(f.notices).toBe(1), { timeout: STEP_WAIT_MS });
     p.nativePrompt.input('\x1b', { ...key, escape: true });
     f.release();
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
     expect(p.controller.getSnapshot().keyless).toBe(true);
     await f.end(p);

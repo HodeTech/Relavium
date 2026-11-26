@@ -24,6 +24,8 @@ import {
   checksContent,
   consentContent,
   detailContent,
+  detailEnter,
+  DOCTOR_REMEDY_ENTER,
   doctorChecksControls,
   doctorCopyText,
   doctorHeading,
@@ -637,11 +639,11 @@ describe('the letters of the checks step', () => {
     expect(spec.steps[DOCTOR_STEP.line]?.back).toBe(DOCTOR_STEP.checks);
   });
 
-  it('the detail step offers Enter only where a remedy opens', () => {
-    expect(doctorSpec('home', false, true).steps[DOCTOR_STEP.detail]?.enter).toBe(
-      'open /providers',
-    );
-    expect(doctorSpec('home', false, false).steps[DOCTOR_STEP.detail]?.enter).toBeUndefined();
+  it('the detail step offers Enter only where a remedy opens: the spec names none, the row’s remedy sets it (OB-1)', () => {
+    expect(doctorSpec('home', false).steps[DOCTOR_STEP.detail]?.enter).toBeUndefined();
+    expect(detailEnter({ kind: 'providers' })).toBe(DOCTOR_REMEDY_ENTER);
+    expect(DOCTOR_REMEDY_ENTER).toBe('open /providers');
+    expect(detailEnter(undefined)).toBe(false);
   });
 });
 

@@ -308,7 +308,7 @@ const GRANT_WORDS: Record<Granted, { readonly notice: string; readonly lines: re
     },
     once: {
       notice: 'Source allowed for this invocation only.',
-      lines: ['Allowed for this invocation only; nothing was saved.'],
+      lines: ['Allowed for this invocation only; the consent was not saved.'],
     },
   };
 

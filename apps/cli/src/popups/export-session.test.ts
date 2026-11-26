@@ -11,19 +11,26 @@ import { createChordGuard } from '../render/tui/chord-guard.js';
 import { CTRL, ENTER, ESC } from './doctor.test-support.js';
 import {
   EXPORT_ALLOW_LABEL,
+  EXPORT_DENY_LABEL,
   EXPORT_FAILED as HOME_EXPORT_FAILED,
 } from '../render/tui/export-card.js';
+import { FLOW_CLOSE_LABEL } from '../render/tui/flow-text.js';
+import { glyph, withGlyphForm } from '../render/tui/glyphs.js';
+import { legend } from '../render/tui/legend.js';
 import {
+  EXPORT_DENIED,
   EXPORT_DONE,
   EXPORT_FAILED,
   EXPORT_NEW_FILE,
   EXPORT_OVERWRITES,
+  EXPORT_QUESTION,
   EXPORT_STEP,
   EXPORT_TARGET_CHANGED,
   EXPORT_TURN_IN_FLIGHT,
 } from './export-popup.js';
-import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
-import { popupLegend } from './popup-reducer.js';
+import { fittedLegendItems, naturalBodyRows, popupBody } from './frame-model.js';
+import { POPUP_NOTICE_MAX_COLUMNS, popupInnerWidth } from './geometry.js';
+import { currentStep, popupLegend } from './popup-reducer.js';
 import type { SessionExportPort, SessionExportView } from './report-port.js';
 import { reportRig, settleWork, type ReportRig } from './report.test-support.js';
 
@@ -107,22 +114,31 @@ describe('the confirmation says where the scaffold goes before anything is writt
     expect(r.content().kind).toBe('report');
   });
 
-  it('names the file project-relative, says it is a new file, and states the review sentence; its legend is the Defined export’s: `Ctrl+Y Write the file · Esc denies`', async () => {
+  it('asks its question first (OB-2 b), then names the file project-relative, says it is a new file, and states the review sentence; its legend is the Defined export’s: `[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies`', async () => {
     const { r } = await opened();
     const words = r.words();
-    expect(words.split('\n')[0]).toBe(TARGET);
+    // The question the Defined export asks (`Write workflow 'x' to a file in this directory?`), for a session: what `Ctrl+Y` answers.
+    expect(words.split('\n')[0]).toBe(EXPORT_QUESTION);
+    expect(EXPORT_QUESTION).toBe('Write this chat to a workflow file in the project?');
+    expect(words.split('\n')[1]).toBe(TARGET);
     expect(words).toContain(EXPORT_NEW_FILE);
     expect(words).toContain(REVIEW);
     const frame = r.host.getSnapshot().frame;
     if (frame === undefined) throw new Error('no popup');
     expect(frame.spec.title).toBe('/export');
     expect(frame.spec.origin).toBe('chat');
-    const legend = popupLegend(frame);
-    // one answer, one way out, in the words of `/init`, `/import`, `/pricing` and the Defined tab's `x`: same effect, same legend
-    expect(legend.items).toEqual([{ keys: 'Ctrl+Y', verb: EXPORT_ALLOW_LABEL }]);
+    const parts = popupLegend(frame);
+    // one answer, its explicit No and one way out, in the words of `/init`, `/import`, `/pricing` and the Defined tab's `x`: same effect,
+    // same legend
+    expect(parts.items).toEqual([
+      { keys: 'Ctrl+Y', verb: EXPORT_ALLOW_LABEL },
+      { keys: 'Ctrl+N', verb: EXPORT_DENY_LABEL },
+    ]);
     expect(EXPORT_ALLOW_LABEL).toBe('Write the file');
-    expect(JSON.stringify(legend.exit)).toContain('denies');
-    expect(JSON.stringify(legend.exit)).not.toContain('cancel');
+    expect(EXPORT_DENY_LABEL).toBe('Write nothing');
+    expect(legend(parts.items, parts.exit)).toBe(
+      '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    );
   });
 
   it('says so when the write rewrites this session’s own earlier export', async () => {
@@ -147,12 +163,45 @@ describe('the confirmation says where the scaffold goes before anything is writt
     expect(fake.commit).not.toHaveBeenCalled();
   });
 
-  it('every untrusted fragment of the target and of a fault passes the full scrub', async () => {
+  it('every untrusted fragment of the target and of a fault passes the full scrub (the fault of the look and of the write: MU-1 R2-27, R2-28)', async () => {
     const hostile = `.relavium/workflows/\u001b]52;c;cGF5bG9hZA==\u0007x\u202e[Ctrl+Y]\u200by${'z'.repeat(200)} · Esc close.relavium.yaml`;
     const { r } = await opened(fakeExport({ target: hostile, overwrites: false }));
     const words = r.words();
     for (const bad of ['\u001b', '\u0007', '\u202e', '\u200b', '[Ctrl+Y]', ' · Esc close'])
       expect(words, JSON.stringify(bad)).not.toContain(bad);
+    // A fault's sentence, as the port says it, with an OSC, a bidi mark, a forged `[Ctrl+Y]`, a zero-width character and a forged way out: each
+    // is scrubbed, and the word before them stays.
+    const c = (code: number): string => String.fromCharCode(code);
+    const HOSTILE = `bad${c(0x1b)}]52;c;cGF5${c(0x07)}${c(0x20_2e)} [Ctrl+Y] ${c(0x20_0b)} · Esc close`;
+    const BAD = [c(0x1b), c(0x07), c(0x20_2e), c(0x20_0b), '[Ctrl+Y]', ' · Esc close'];
+    // R2-27: the look (where the export would go) fails: the confirmation's error state.
+    const look = fakeExport();
+    look.move(new Error('no project'));
+    look.failure.mockReturnValue(HOSTILE);
+    const first = (await opened(look)).r;
+    expect(first.content().kind).toBe('error');
+    for (const bad of BAD) expect(first.words(), JSON.stringify(bad)).not.toContain(bad);
+    expect(first.words()).toContain('bad');
+    // R2-28: the write the file system refused: the failed Done step's sentence.
+    const write = fakeExport(undefined, {
+      commit: () => {
+        throw new Error('read-only');
+      },
+    });
+    write.failure.mockReturnValue(HOSTILE);
+    const second = (await opened(write)).r;
+    ctrlY(second);
+    expect(second.step()).toBe(EXPORT_STEP.done);
+    expect(second.content()).toMatchObject({ kind: 'done', tone: 'failed' });
+    for (const bad of BAD) expect(second.words(), JSON.stringify(bad)).not.toContain(bad);
+    expect(second.words()).toContain('bad');
+  });
+
+  it('R2-29 a resize below the floor while the line is up closes the popup unanswered, and writes nothing (as the other confirmation lines do)', async () => {
+    const { r, fake } = await opened();
+    r.host.resized(79, 24);
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(fake.commit).not.toHaveBeenCalled();
   });
 });
 
@@ -200,7 +249,8 @@ describe('only Ctrl+Y answers it, through the host’s chord guard', () => {
     expect(fake.commit).not.toHaveBeenCalled();
     expect(r.host.getSnapshot().open).toBe(false);
     const said = r.notifications.getSnapshot().current?.text ?? '';
-    expect(said).toBe('Nothing exported: too soon, wait 2 s.');
+    // No time is named (OB-2 d, CO-2): the same layer as the doctor's and `/cost`'s lines, through the one phrase table.
+    expect(said).toBe('Nothing exported: too soon.');
     expect(said.length).toBeLessThanOrEqual(POPUP_NOTICE_MAX_COLUMNS);
   });
 
@@ -341,7 +391,7 @@ describe('the answer re-checks what it was asked for', () => {
     ctrlY(r);
     expect(owner.failure).toHaveBeenCalledTimes(1);
     expect(r.step()).toBe(EXPORT_STEP.done);
-    expect(r.content().kind).toBe('error');
+    expect(r.content()).toMatchObject({ kind: 'done', tone: 'failed' });
     expect(r.words()).toContain('the product’s words for RangeError');
     expect(r.words()).not.toContain('/Users/someone');
   });
@@ -354,5 +404,178 @@ describe('the answer re-checks what it was asked for', () => {
     await settleWork();
     expect(fake.prepare).not.toHaveBeenCalled();
     expect(r.host.getSnapshot().open).toBe(false);
+  });
+});
+
+/** The inner width of a standard popup at the floor (80 columns): the row the frame draws the body and the legend in. */
+const FLOOR_INNER = popupInnerWidth(80, 'standard');
+
+/** The current step's body rows, kind and text, as the frame draws them at the floor, in the plain glyph form or not. */
+function bodyRows(r: ReportRig, ascii = false): { readonly kind: string; readonly text: string }[] {
+  const frame = r.host.getSnapshot().frame;
+  if (frame === undefined) throw new Error('no popup');
+  const { spec, state } = currentStep(frame);
+  const page = { bodyRows: 18, listRows: 18, innerWidth: FLOOR_INNER };
+  // As the slot draws it: a filter line only on a step that has one.
+  const shown = { ...state, filter: spec.filter === true ? state.filter : undefined };
+  return withGlyphForm(ascii, () =>
+    popupBody(state.content, shown, page).lines.map(({ kind, text }) => ({ kind, text })),
+  );
+}
+
+/** The legend row of the current step at the floor, fitted as the frame fits it, with the host's lock as it is now. */
+function legendRow(r: ReportRig): string {
+  const frame = r.host.getSnapshot().frame;
+  if (frame === undefined) throw new Error('no popup');
+  const parts = popupLegend(frame, 18, FLOOR_INNER, r.host.lock.read());
+  return legend(fittedLegendItems(parts, FLOOR_INNER), parts.exit);
+}
+
+describe('the Done step has the one Done shape of the flows: a mark, the sentence, the file once, one `Close` (OB-2 a, CO-4)', () => {
+  it('a write that was made: `✓` and the sentence in the done tone, the file on a row of its own, once, and `› Close`; `ok` and `>` in the plain form', async () => {
+    const { r } = await opened();
+    ctrlY(r);
+    expect(r.step()).toBe(EXPORT_STEP.done);
+    expect(withGlyphForm(false, () => bodyRows(r))).toEqual([
+      { kind: 'done', text: `✓ ${EXPORT_DONE}` },
+      { kind: 'row', text: TARGET },
+      { kind: 'selected', text: `› ${FLOW_CLOSE_LABEL}` },
+    ]);
+    expect(bodyRows(r, true)).toEqual([
+      { kind: 'done', text: `ok ${EXPORT_DONE}` },
+      { kind: 'row', text: TARGET },
+      { kind: 'selected', text: `> ${FLOW_CLOSE_LABEL}` },
+    ]);
+    // The mark and the option are the native flows' (`native-popup-body.ts`): one glyph table, one word for the way out of a Done step.
+    expect(withGlyphForm(false, () => [glyph('completed'), glyph('selection')])).toEqual([
+      '✓',
+      '›',
+    ]);
+    expect(FLOW_CLOSE_LABEL).toBe('Close');
+    expect(legendRow(r)).toBe('Enter / Esc close');
+    r.press('', ENTER);
+    expect(r.host.getSnapshot().open).toBe(false);
+  });
+
+  it('a write that failed: `✗` and `Not exported.` in the failed tone, the reason in the product’s words, and `› Close`; `x` in the plain form', async () => {
+    const fake = fakeExport(undefined, {
+      commit: () => {
+        throw new RangeError('EACCES');
+      },
+    });
+    const { r } = await opened(fake);
+    ctrlY(r);
+    expect(withGlyphForm(false, () => bodyRows(r))).toEqual([
+      { kind: 'failed', text: `✗ ${EXPORT_FAILED}` },
+      { kind: 'row', text: 'the product’s words for RangeError' },
+      { kind: 'selected', text: `› ${FLOW_CLOSE_LABEL}` },
+    ]);
+    expect(bodyRows(r, true)[0]).toEqual({ kind: 'failed', text: `x ${EXPORT_FAILED}` });
+    r.press('', ESC);
+    expect(r.host.getSnapshot().open).toBe(false);
+  });
+
+  it.each([
+    ['a turn in flight', EXPORT_TURN_IN_FLIGHT],
+    ['a target that moved', EXPORT_TARGET_CHANGED],
+  ] as const)(
+    'nothing written because of %s: the same failed shape, its sentence and what to do, and `› Close`',
+    async (why, words) => {
+      const { r, fake } = await opened();
+      if (why === 'a turn in flight') r.setTurn(true);
+      else fake.move({ target: `${TARGET}.moved`, overwrites: false });
+      ctrlY(r);
+      expect(fake.commit).not.toHaveBeenCalled();
+      expect(withGlyphForm(false, () => bodyRows(r))).toEqual([
+        { kind: 'failed', text: `✗ ${words.what}` },
+        { kind: 'row', text: words.next },
+        { kind: 'selected', text: `› ${FLOW_CLOSE_LABEL}` },
+      ]);
+    },
+  );
+
+  it('asks the geometry for every row it draws, and, in a body too short for it, cuts the sentence and keeps `› Close` (the way out is always drawn)', async () => {
+    const fake = fakeExport(undefined, {
+      commit: () => {
+        throw new RangeError('EACCES');
+      },
+    });
+    fake.failure.mockReturnValue(`the write failed ${'because '.repeat(30)}`);
+    const { r } = await opened(fake);
+    ctrlY(r);
+    const frame = r.host.getSnapshot().frame;
+    if (frame === undefined) throw new Error('no popup');
+    const { state } = currentStep(frame);
+    const whole = bodyRows(r);
+    expect(whole.length).toBeGreaterThan(3);
+    expect(
+      naturalBodyRows(state.content, { ...state, filter: undefined }, undefined, FLOOR_INNER),
+    ).toBe(whole.length);
+    const short = withGlyphForm(false, () =>
+      popupBody(
+        state.content,
+        { ...state, filter: undefined },
+        { bodyRows: 2, listRows: 2, innerWidth: FLOOR_INNER },
+      ).lines.map(({ kind, text }) => ({ kind, text })),
+    );
+    expect(short).toEqual([
+      { kind: 'failed', text: `✗ ${EXPORT_FAILED}…` },
+      { kind: 'selected', text: `› ${FLOW_CLOSE_LABEL}` },
+    ]);
+  });
+});
+
+describe('`Ctrl+N` is the line’s explicit No: named on its legend, it writes nothing and is no key typed over it (OB-2 c)', () => {
+  it('after the guards: the popup closes, nothing is written, and it says `Nothing exported.` (never `a key was typed`)', async () => {
+    const { r, fake } = await opened();
+    r.press('n', CTRL);
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(fake.commit).not.toHaveBeenCalled();
+    expect(r.notifications.getSnapshot().current?.text).toBe(EXPORT_DENIED);
+    expect(EXPORT_DENIED).toBe('Nothing exported.');
+    // It answered the line (No), as an `Esc` that closes does: a resolution on the host's one key history, which locks a card that opens next.
+    expect(r.history.lastResolvedAt).toBe(r.clock.now());
+    // A Ctrl+Y after it finds no popup: nothing more is written.
+    ctrlY(r);
+    expect(fake.commit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['inside the dwell', 100, {}],
+    ['as a held key’s repeat', PAST_THE_DWELL_MS, { eventType: 'repeat' as const }],
+  ])('a No needs no wait: %s it denies the same way', async (_case, after, event) => {
+    const { r, fake } = await opened(fakeExport(), after);
+    r.press('n', { ...CTRL, ...event });
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(fake.commit).not.toHaveBeenCalled();
+    expect(r.notifications.getSnapshot().current?.text).toBe(EXPORT_DENIED);
+  });
+
+  it('on a frame nobody has seen yet (the opening guard drops every answer there): it still denies', async () => {
+    const r = reportRig();
+    const fake = fakeExport();
+    r.open({ export: fake.port }, { kind: 'export' });
+    await settleWork();
+    r.press('n', CTRL);
+    expect(r.host.getSnapshot().open).toBe(false);
+    expect(fake.commit).not.toHaveBeenCalled();
+    expect(r.notifications.getSnapshot().current?.text).toBe(EXPORT_DENIED);
+  });
+
+  it('at 80 columns the legend keeps `[Ctrl+Y] Write the file (wait)` and `Esc denies` while the lockout holds (`[Ctrl+N]` gives way first, as on the native chord cards), and names all three once it is over', async () => {
+    const r = reportRig();
+    const fake = fakeExport();
+    // The `Enter` that typed `/export`: the popup opens on its line, armed against it (the lockout runs 2 s from it).
+    composerKeys(r, [1000]);
+    r.open({ export: fake.port }, { kind: 'export' });
+    r.show();
+    await settleWork();
+    r.show();
+    r.clock.advance(PAST_THE_DWELL_MS);
+    expect(r.host.lock.read()).toBe(true);
+    expect(legendRow(r)).toBe('[Ctrl+Y] Write the file (wait) · Esc denies');
+    r.clock.advance(PAST_THE_LOCKOUT_MS - PAST_THE_DWELL_MS);
+    expect(r.host.lock.read()).toBe(false);
+    expect(legendRow(r)).toBe('[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies');
   });
 });

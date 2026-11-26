@@ -54,8 +54,11 @@
  * counts). A `Ctrl+Y` that does not count, the one the frame or the opening guard dropped and a held key's repeat or release included, DISARMS
  * the line at once, is stamped as a resolution and is told to the command (`chordRefused`, with why), so a held key's auto-repeat can never
  * answer it, nor a line it re-arms, and the person sees why. Every other key but the navigation keys, and a paste, disarms it too (a typed
- * one is told as `typed`; `Esc` and `Ctrl+C` are cancels and are not). When the window runs out the host disarms the line itself and tells it as
- * `expired`, so a line never offers an answer it can no longer take. Nothing but the command's own `chord` handler hears an answer.
+ * one is told as `typed`; `Esc` and `Ctrl+C` are cancels and are not). On a line that names an explicit No (`PopupStep.chord.deny`, the
+ * native chord cards' `[Ctrl+N]`), `Ctrl+N` is that No and no key typed over it: at once, behind no guard (it writes, sends and grants nothing),
+ * it disarms the line as `Esc` leaves it, is stamped as a resolution, and is told to the command (`chordDenied`). When the window runs out the
+ * host disarms the line itself and tells it as `expired`, so a line never offers an answer it can no longer take. Nothing but the command's
+ * own `chord` handler hears an answer.
  *
  * **The whole line, or no answer** (§8: the line names what leaves and to whom). The rule is the host's, for every line (`/doctor`'s and
  * `/cost`'s alike), whatever the command measured: a line offers its answer only while its report is WHOLLY on the page its frame is drawn on,
@@ -241,12 +244,14 @@ export interface PopupContext {
   /**
    * Put a result into a step of THIS popup. `false` (and nothing changes) when the popup is closed or replaced: a late result lands nowhere.
    * `controls`, when given, sets the letters the step answers to from now on (a control that exists only once the result is known); `[]` takes
-   * them away, and absent keeps the ones it has.
+   * them away, and absent keeps the ones it has. `enter`, when given, sets what `Enter` does there from now on, as the legend names it (an
+   * `Enter` that exists only for some results: the doctor's remedy on a row that has one); `false` takes it away, and absent keeps it.
    */
   readonly setContent: (
     stepIndex: number,
     content: PopupContent,
     controls?: readonly PopupControl[],
+    enter?: string | false,
   ) => boolean;
   /** Move THIS popup to a step. `false` when it is closed, or the step does not exist. */
   readonly goToStep: (stepIndex: number) => boolean;
@@ -282,6 +287,12 @@ export interface PopupHandlers {
    * a control letter that came after typing (`typed`): the control was not run, so no line was armed.
    */
   readonly chordRefused?: ((context: PopupContext, reason: ChordRefusal) => void) | undefined;
+  /**
+   * The line's explicit No (`Ctrl+N` on a line that names one, `PopupStep.chord.deny`) denied it: the line is already disarmed (back to the step
+   * it came from, or the popup closed with none to go back to, as `Esc` does). Never an answer. What the command says in this call is raised on
+   * the host's own channel when the popup closed with it (as for {@link chordRefused}).
+   */
+  readonly chordDenied?: ((context: PopupContext) => void) | undefined;
   /** A key moved the popup to another step (`Esc` back, a disarmed line). Not called for a step the command moved to itself. */
   readonly stepChanged?: ((context: PopupContext, from: number, to: number) => void) | undefined;
   /** The popup closed, however it closed. Never an answer. */
@@ -796,17 +807,20 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   };
 
   /**
-   * Tell the command why its line went away unanswered (never an answer). A line with no step to go back to closed its popup as it was
-   * disarmed: the closed popup's context says nothing more (its words would be discarded with it), so what the command says in THIS call is
-   * raised on the host's own channel, drawn on the hint row once the popup is gone, and nothing it says later through that context is.
+   * Tell the command what became of its line (never an answer): `hear` is its handler, called with the popup's context. A line with no step to
+   * go back to closed its popup as it was disarmed: the closed popup's context says nothing more (its words would be discarded with it), so
+   * what the command says in THIS call is raised on the host's own channel, drawn on the hint row once the popup is gone, and nothing it says
+   * later through that context is.
    */
-  const tellRefused = (record: FrameRecord, reason: ChordRefusal): void => {
-    const refused = record.handlers.chordRefused;
-    if (refused === undefined) return;
+  const tellCommand = (
+    record: FrameRecord,
+    hear: ((context: PopupContext) => void) | undefined,
+  ): void => {
+    if (hear === undefined) return;
     const { runId } = record.frame;
     const context = contextOf(runId);
     if (recordOf(runId) !== undefined) {
-      guarded(() => refused(context, reason));
+      guarded(() => hear(context));
       return;
     }
     let telling = true;
@@ -817,10 +831,16 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       },
     };
     try {
-      guarded(() => refused(closing, reason));
+      guarded(() => hear(closing));
     } finally {
       telling = false;
     }
+  };
+
+  /** Tell the command why its line went away unanswered ({@link tellCommand}). */
+  const tellRefused = (record: FrameRecord, reason: ChordRefusal): void => {
+    const refused = record.handlers.chordRefused;
+    tellCommand(record, refused === undefined ? undefined : (context) => refused(context, reason));
   };
 
   /** The window of the record's line runs from ITS acknowledged frame: when it runs out the host disarms the line and says so. */
@@ -901,6 +921,17 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   }
 
   /**
+   * The line's explicit No (`Ctrl+N` on a line that names one): an answer the person gave, so it is a resolution on the history, as an `Esc`
+   * that closes is; the line is disarmed as `Esc` leaves it (back, or the popup closes with no step to go back to), and the command is told. It
+   * needs no guard: it writes, sends and grants nothing. ONE place for every line that names a No.
+   */
+  const denyLine = (record: FrameRecord, stamp: ChordStamp): void => {
+    chord.resolved(stamp);
+    disarm(record);
+    tellCommand(record, record.handlers.chordDenied);
+  };
+
+  /**
    * A `Ctrl+Y` that reached the record's confirmation line and does not answer it: it is a resolution on the history (its auto-repeat cannot
    * answer a line it re-arms), the line is disarmed at once, and the command is told why, when the line offered (or was preparing) an answer.
    */
@@ -948,11 +979,11 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       runId,
       signal,
       stepIndex: () => recordOf(runId)?.frame.stepIndex,
-      setContent: (stepIndex, content, controls) => {
+      setContent: (stepIndex, content, controls, enter) => {
         const live = recordOf(runId);
         if (live === undefined || stepIndex < 0 || stepIndex >= live.frame.steps.length)
           return false;
-        live.frame = withContent(live.frame, stepIndex, content, controls);
+        live.frame = withContent(live.frame, stepIndex, content, controls, enter);
         if (stepIndex === live.frame.stepIndex)
           live.loadingSince = content.kind === 'loading' ? now() : undefined;
         publish();
@@ -1079,6 +1110,10 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   ): void => {
     if (action.kind === 'chord') {
       answerChord(record, action, stamp, typedBefore);
+      return;
+    }
+    if (action.kind === 'deny') {
+      denyLine(record, stamp);
       return;
     }
     const fold = foldPopupAction(record.frame, action, Math.max(1, pageRows?.() ?? 1));

@@ -48,6 +48,15 @@ export interface LegendKey {
 /** What a locked key's verb is followed by ({@link LegendKey.wait}): one fixed word, never a time. */
 export const LEGEND_WAIT = '(wait)';
 
+/**
+ * The mark of a key its guard holds now ({@link LegendKey.wait}), spread into the item a surface builds (`{ keys, verb, ...waitMark(locked) }`),
+ * or nothing while it is free: the ONE spelling of it, so the popup host's legend, the native prompt's legend and a chord card's answer row
+ * cannot mark a lock three ways.
+ */
+export function waitMark(locked: boolean): { readonly wait?: true } {
+  return locked ? { wait: true } : {};
+}
+
 /** Words between the keys, drawn dim: a status (`Starting chat…`), a reason, a position (`Notice 1–17 of 60`) or live text (a query echo). */
 export interface LegendText {
   readonly text: string;

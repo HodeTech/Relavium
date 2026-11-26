@@ -17,6 +17,7 @@ import {
   NATIVE_LIST_MIN_ROWS,
   NATIVE_PICKER_EMPTY,
   NATIVE_PICKER_LOADING,
+  NATIVE_PICKER_NONE_HERE,
   nativeFramed,
   nativeNaturalRows,
   nativeOptionWindow,
@@ -27,10 +28,12 @@ import {
   nativeRailDone,
   nativeWindowPage,
   nextPin,
+  pickerEmptyText,
   withLiveBullets,
   type NativeBodyGeometry,
   type NativePopupPin,
 } from './native-popup-body.js';
+import { createNativePicker, type NativePickerSnapshot } from '../render/tui/native-picker.js';
 import {
   nativeNoticeReason,
   nativePopupFrameLines,
@@ -528,6 +531,90 @@ describe('a field, a wait and the picker', () => {
         picker: { ...PICKER.picker!, retryable: true },
       }),
     ).toBe('Enter retry · Esc close');
+  });
+
+  it('OB-7: a picker with no row, through the real picker: this directory says where the others are, a filter or all directories says nothing matches, and no `Enter resume` is named where nothing can be resumed', async () => {
+    const abort = new AbortController();
+    let rows: NativePromptSnapshot['options'] = [];
+    let state: NativePickerSnapshot | undefined;
+    const controller = createNativePicker({
+      message: 'Resume a session',
+      load: () => Promise.resolve({ options: rows }),
+      signal: abort.signal,
+      onChoose: () => undefined,
+      onFailure: () => undefined,
+      onChange: (next) => {
+        state = next;
+      },
+    });
+    /** The real picker's state, framed as the `/resume` flow frames it. */
+    const framed = (): NativePromptSnapshot => {
+      if (state === undefined) throw new Error('no picker state');
+      return {
+        ...PICKER,
+        picker: state,
+        options: state.options,
+        selected: state.selected,
+        display: state.display,
+        error: state.error,
+      };
+    };
+    /** The legend row as the frame fits it at 80 columns. */
+    const row = (): string => {
+      const parts = nativePopupLegend(framed());
+      return legend(fittedLegendItems(parts, WIDTH), parts.exit);
+    };
+    try {
+      controller.start();
+      await controller.whenSettled();
+      // This directory, nothing typed, no session: where the others are, and no `Enter resume`.
+      expect(state?.allDirectories).toBe(false);
+      expect(texts(framed())).toContain(NATIVE_PICKER_NONE_HERE);
+      expect(NATIVE_PICKER_NONE_HERE).toBe('No sessions in this directory · Tab shows all');
+      expect(texts(framed())).not.toContain(NATIVE_PICKER_EMPTY);
+      expect(row()).toBe('↑/↓ select · Tab all directories · PgUp/PgDn page · Esc close');
+      // A filter typed: nothing matches it.
+      controller.input('z', {});
+      await controller.whenSettled();
+      expect(state?.display).toBe('z');
+      expect(texts(framed())).toContain(NATIVE_PICKER_EMPTY);
+      expect(texts(framed())).not.toContain(NATIVE_PICKER_NONE_HERE);
+      expect(row()).not.toContain('Enter resume');
+      // The filter cleared, and `Tab` to all directories: nothing anywhere matches, and it says so.
+      controller.input('', { backspace: true });
+      controller.input('', { tab: true });
+      await controller.whenSettled();
+      expect(state?.display).toBe('');
+      expect(state?.allDirectories).toBe(true);
+      expect(texts(framed())).toContain(NATIVE_PICKER_EMPTY);
+      expect(texts(framed())).not.toContain(NATIVE_PICKER_NONE_HERE);
+      expect(row()).toBe('↑/↓ select · Tab this directory · PgUp/PgDn page · Esc close');
+      // With a session to resume, `Enter resume` is named again (and the 66 columns drop `PgUp/PgDn page` first, as they always did).
+      rows = [{ value: 's1', label: 'Fix the flaky test' }];
+      controller.input('', { tab: true });
+      await controller.whenSettled();
+      expect(state?.options).toHaveLength(1);
+      expect(row()).toBe('↑/↓ select · Enter resume · Tab all directories · Esc close');
+    } finally {
+      controller.dispose();
+      abort.abort();
+    }
+  });
+
+  it('OB-7: the card draws the same words with the same rule (one legend for both surfaces)', () => {
+    const empty: NativePromptSnapshot = { ...PICKER, options: [], display: '' };
+    expect(pickerEmptyText(empty)).toBe(NATIVE_PICKER_NONE_HERE);
+    expect(pickerEmptyText({ ...empty, display: 'fix' })).toBe(NATIVE_PICKER_EMPTY);
+    expect(pickerEmptyText({ ...empty, picker: { ...empty.picker!, allDirectories: true } })).toBe(
+      NATIVE_PICKER_EMPTY,
+    );
+    const card = nativeLegendParts(empty, false, 'card');
+    expect(legend(card.items, card.exit)).toBe(
+      '↑/↓ select · Tab all directories · PgUp/PgDn page · Esc close',
+    );
+    // While it loads, the rows are not known yet: `Enter resume` stays named.
+    const loading = { ...empty, picker: { ...empty.picker!, loading: true } };
+    expect(legendText(loading)).toContain('Enter resume');
   });
 
   it('the picker inline: its rows in a window of ten rows or fewer, the highlighted one in it', () => {

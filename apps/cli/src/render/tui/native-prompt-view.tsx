@@ -9,7 +9,7 @@ import {
   type ReactElement,
 } from 'react';
 import { withGlyphForm } from './glyphs.js';
-import { keyHint, keyToken, legend } from './legend.js';
+import { keyHint, keyToken, legend, waitMark } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
@@ -17,9 +17,9 @@ import {
 } from './native-prompt-acknowledgement.js';
 import { dimProps } from './projection.js';
 import {
-  NATIVE_PICKER_EMPTY,
   nativeFramed,
   nativeLegendParts,
+  pickerEmptyText,
   pickerLegendParts,
   withLiveBullets,
 } from '../../popups/native-popup-body.js';
@@ -56,10 +56,10 @@ export function pickerLegend(snapshot: NativePromptSnapshot): string {
   return legend(items, exit);
 }
 
-/** What a picker with no row says, with the card's own leaving keys. */
+/** What a picker with no row says (the framed picker's words, `pickerEmptyText`), with the card's own leaving keys. */
 function pickerEmptyLegend(snapshot: NativePromptSnapshot): string {
   const { before, exit } = nativeLeave(snapshot.escape === 'back');
-  return legend([{ text: NATIVE_PICKER_EMPTY }, ...before], exit);
+  return legend([{ text: pickerEmptyText(snapshot) }, ...before], exit);
 }
 
 /**
@@ -85,7 +85,10 @@ export function chordRowText(
   locked: boolean,
 ): { readonly text: string; readonly dim: boolean } {
   if (locked && option.value === 'allow')
-    return { text: keyHint([{ keys: 'Ctrl+Y', verb: option.label, wait: true }]), dim: true };
+    return {
+      text: keyHint([{ keys: 'Ctrl+Y', verb: option.label, ...waitMark(locked) }]),
+      dim: true,
+    };
   return { text: `${CHORD_KEYS[option.value] ?? ''}${option.label}`, dim: false };
 }
 

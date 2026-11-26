@@ -169,6 +169,8 @@ export function reportRig(options: ReportRigOptions = {}) {
         return `${shown.what}\n${shown.next}`;
       case 'form':
         return [shown.summary ?? '', shown.warning ?? ''].join('\n');
+      case 'done':
+        return [shown.message, ...shown.lines].join('\n');
     }
   };
   return {

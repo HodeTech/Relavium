@@ -4,17 +4,17 @@
  * owns the line adds what that means for it (`Nothing was sent: <phrase>. [d] asks again.`, `Nothing released: <phrase>. [r] asks again.`: the
  * sentence says what did not happen, why, and what asks again, in the room a notification has beside the way back). The phrases are written ONCE here, so a popup that has a line cannot word a guard differently from another. The host tells
  * apart a key that came before its frame was shown and one that came inside the dwell (`unseen`, `early`); the person is told one thing for
- * both, "too soon, wait 2 s", because both are answered the same way: wait, then ask again. The wait is the real one: a refused key is itself a
- * resolution on the host's history, so it restarts the lockout (`APPROVAL_LOCKOUT_MS`), and an answer inside it is refused again with the same
- * sentence (that is what holds a key that stays down out of a line it re-arms, so the lockout is not shortened, it is named). A line the page
- * could no longer show whole (`cut`) is said as what happened to it.
+ * both, "too soon", because both are answered the same way: wait, then ask again. It names NO time (MVP-11 unit 6 round 2, CO-2): a refused key
+ * restarts the lockout (`APPROVAL_LOCKOUT_MS`), but the line asked for again has a dwell of its own from the moment it is drawn, so how long
+ * the next answer must wait depends on when the person asks again, and a number would be untrue on some of those paths (a person who waits
+ * the lockout out and only then asks again is refused by the new line's dwell). Where a lockout holds a line, its legend says so where the key
+ * is named (`[Ctrl+Y] send (wait)`, ADR-0145 §3). A line the page could no longer show whole (`cut`) is said as what happened to it.
  */
 
-import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import type { ChordRefusal } from './popup-host.js';
 
-/** What a key that came too soon is told: the seconds of the lockout it restarted, rounded up (a wait that is too short would be refused again). */
-const TOO_SOON = `too soon, wait ${String(Math.ceil(APPROVAL_LOCKOUT_MS / 1000))} s`;
+/** What a key that came too soon is told: no time, because no one time is the wait the host enforces (see the module header). */
+const TOO_SOON = 'too soon';
 
 /**
  * What each refusal says, short enough that the sentence a popup builds around it fits the room a notification has in the legend row of a popup at

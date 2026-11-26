@@ -221,6 +221,61 @@ describe('the consent line (ADR-0148 §8)', () => {
   });
 });
 
+describe('CO-2: an early answer is told `too soon` and no number, because no one number is the wait the host enforces', () => {
+  /** What the doctor says of an answer that came too soon: what did not happen, why, and what asks again; no wait it cannot keep. */
+  const TOO_SOON = 'Nothing was sent: too soon. [d] asks again.';
+  /** Past the quiet gap (300 ms) after the `[d]` that armed the line, and inside the line's dwell (800 ms from its acknowledged frame). */
+  const INSIDE_THE_DWELL_MS = 400;
+  /** Past the dwell of a line armed and acknowledged at once, and inside the lockout (2 s) the refused key restarted. */
+  const INSIDE_THE_LOCKOUT_MS = 1000;
+  /** The lockout a refused key restarts (`APPROVAL_LOCKOUT_MS`). */
+  const LOCKOUT_MS = 2000;
+
+  const said = (r: Rig): string | undefined => r.notifications.getSnapshot().current?.text;
+
+  it('refused inside the dwell: the sentence has no number, and a person who waited two seconds before asking again is refused by the new line’s own dwell', async () => {
+    const { r, anthropic } = await openedWithKey();
+    await arm(r);
+    r.clock.advance(INSIDE_THE_DWELL_MS);
+    ctrlY(r);
+    expect(anthropic.requests).toHaveLength(0);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(said(r)).toBe(TOO_SOON);
+    // Waiting out "2 s" first and then asking again is not enough: the line `[d]` arms then has a dwell of its own.
+    r.clock.advance(LOCKOUT_MS);
+    await arm(r);
+    r.clock.advance(INSIDE_THE_DWELL_MS);
+    ctrlY(r);
+    expect(
+      anthropic.requests,
+      'refused again, more than two seconds after the first refusal',
+    ).toHaveLength(0);
+    expect(said(r)).toBe(TOO_SOON);
+  });
+
+  it('refused inside the lockout: the same sentence; the re-armed line draws its wait while the lockout holds, and an answer once it is over sends', async () => {
+    const { r, anthropic } = await openedWithKey();
+    await arm(r);
+    r.clock.advance(INSIDE_THE_DWELL_MS);
+    ctrlY(r);
+    // Asked again at once: the refused key restarted the lockout, which now holds the line `[d]` arms (and the legend says it waits).
+    await arm(r);
+    const lockedFrom = r.clock.now();
+    expect(r.host.lock.read()).toBe(true);
+    r.clock.advance(INSIDE_THE_LOCKOUT_MS);
+    ctrlY(r);
+    const refusedAt = r.clock.now();
+    expect(lockedFrom + INSIDE_THE_LOCKOUT_MS).toBe(refusedAt);
+    expect(anthropic.requests).toHaveLength(0);
+    expect(said(r)).toBe(TOO_SOON);
+    // Asked again at once, and answered once the lockout of THIS refusal is over: sent.
+    await arm(r);
+    r.clock.advance(refusedAt + LOCKOUT_MS - r.clock.now());
+    ctrlY(r);
+    expect(anthropic.requests).toHaveLength(1);
+  });
+});
+
 describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
   it('does not count before its frame was acknowledged (drawn, measured and flushed)', async () => {
     const { r, anthropic } = await openedWithKey();
@@ -231,9 +286,7 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     ctrlY(r);
     expect(anthropic.requests).toHaveLength(0);
     expect(r.step()).toBe(DOCTOR_STEP.checks);
-    expect(r.notifications.getSnapshot().current?.text).toContain(
-      'Nothing was sent: too soon, wait 2 s.',
-    );
+    expect(r.notifications.getSnapshot().current?.text).toContain('Nothing was sent: too soon.');
   });
 
   it('does not count at 799 ms from the acknowledgement, though 1099 ms after the [d] that armed it', async () => {
@@ -245,8 +298,23 @@ describe('the Ctrl+Y of the line, guard by guard (ADR-0148 §8)', () => {
     expect(anthropic.requests).toHaveLength(0);
     // A refused chord disarms the line and says so.
     expect(r.step()).toBe(DOCTOR_STEP.checks);
-    expect(r.notifications.getSnapshot().current?.text).toContain(
-      'Nothing was sent: too soon, wait 2 s.',
+    expect(r.notifications.getSnapshot().current?.text).toContain('Nothing was sent: too soon.');
+  });
+
+  it('OB-2 c: this line names no explicit No, so its legend has no `[Ctrl+N]` and a `Ctrl+N` is a key typed over it (it disarms, nothing is sent)', async () => {
+    const { r, anthropic } = await openedWithKey();
+    await arm(r);
+    const frame = r.host.getSnapshot().frame;
+    if (frame === undefined) throw new Error('open');
+    expect(legend(popupLegend(frame).items, popupLegend(frame).exit)).toBe(
+      '[Ctrl+Y] send · Esc back',
+    );
+    r.clock.advance(900);
+    r.press('n', CTRL);
+    expect(anthropic.requests).toHaveLength(0);
+    expect(r.step()).toBe(DOCTOR_STEP.checks);
+    expect(r.notifications.getSnapshot().current?.text).toBe(
+      'Nothing was sent: a key was typed. [d] asks again.',
     );
   });
 
@@ -1162,8 +1230,8 @@ describe('what the person is told is short enough for the popup and in these wor
   const inner = POPUP_NOTICE_MAX_COLUMNS;
 
   it.each([
-    ['unseen', 'Nothing was sent: too soon, wait 2 s. [d] asks again.'],
-    ['early', 'Nothing was sent: too soon, wait 2 s. [d] asks again.'],
+    ['unseen', 'Nothing was sent: too soon. [d] asks again.'],
+    ['early', 'Nothing was sent: too soon. [d] asks again.'],
     ['expired', 'Nothing was sent: time ran out. [d] asks again.'],
     ['typed', 'Nothing was sent: a key was typed. [d] asks again.'],
     ['cut', 'Nothing was sent: the line was cut. [d] asks again.'],
@@ -1583,6 +1651,77 @@ describe('the seams of the doctor, each pinned by the line of code that removes 
     expect(r.step()).toBe(DOCTOR_STEP.detail);
     r.press('', ENTER);
     expect(calls).toEqual([]);
+  });
+
+  /** The legend of the step the doctor is on, as the one legend builder writes it (what the frame's legend row draws). */
+  const legendNow = (r: Rig): string => {
+    const frame = r.host.getSnapshot().frame;
+    if (frame === undefined) throw new Error('open');
+    const { items, exit } = popupLegend(frame);
+    return legend(items, exit);
+  };
+
+  /** From the checks, open the detail of the row `at` (`home`: the first, `end`: the last), through the keys a person presses. */
+  async function detailOf(r: Rig, at: 'home' | 'end'): Promise<void> {
+    r.press('', { [at]: true });
+    r.press('', ENTER);
+    await settleWork();
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+  }
+
+  it('OB-1: a detail names `Enter open /providers` only for a row that has a remedy; on a row without one `Enter` is unnamed and inert, whichever detail was opened before (the row decides)', async () => {
+    const calls: unknown[] = [];
+    const r = doctorRig();
+    // No key: the provider-keys row (the last) warns and has the remedy; the keychain row (the first) is fine and has none.
+    const seam = stubResolver({ keys: {}, providers: {} });
+    r.open({
+      probes: stubProbes(seam.resolver),
+      openRemedy: (remedy) => {
+        calls.push(remedy);
+        return true;
+      },
+    });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    const WITHOUT = '[Ctrl+C] close · Esc back';
+    const WITH = 'Enter open /providers · [Ctrl+C] close · Esc back';
+    // A row without a remedy, first.
+    await detailOf(r, 'home');
+    expect(r.words()).not.toContain('/providers');
+    expect(legendNow(r)).toBe(WITHOUT);
+    r.press('', ENTER);
+    expect(calls, 'Enter on a row without a remedy opens nothing').toEqual([]);
+    expect(r.step()).toBe(DOCTOR_STEP.detail);
+    // The row with the remedy: its detail names it, in the words and in the legend.
+    r.press('', ESC);
+    await detailOf(r, 'end');
+    expect(r.words()).toContain('Press Enter to open /providers');
+    expect(legendNow(r)).toBe(WITH);
+    // Back to a row without one: the remedy's `Enter` is not carried over to it.
+    r.press('', ESC);
+    await detailOf(r, 'home');
+    expect(legendNow(r)).toBe(WITHOUT);
+    r.press('', ENTER);
+    expect(calls).toEqual([]);
+    // And the remedy row's `Enter` still hands off, once.
+    r.press('', ESC);
+    await detailOf(r, 'end');
+    r.press('', ENTER);
+    expect(calls).toEqual([{ kind: 'providers' }]);
+  });
+
+  it('OB-1: with the seam unwired no detail names an `Enter`, the remedy row’s included', async () => {
+    const r = doctorRig();
+    r.open({ probes: stubProbes(stubResolver({ keys: {}, providers: {} }).resolver) });
+    r.show();
+    await settleWork();
+    r.clock.advance(600);
+    for (const at of ['end', 'home'] as const) {
+      await detailOf(r, at);
+      expect(legendNow(r)).toBe('[Ctrl+C] close · Esc back');
+      r.press('', ESC);
+    }
   });
 
   it('closing the popup stops the key presence reads: nothing reads the keychain after Esc', async () => {

@@ -174,10 +174,10 @@ describe.each(HOSTS)('/permissions in the %s host', (host) => {
         // cannot reach the line on its repeat), so this one withdraws nothing and says why.
         m.skip(900);
         m.key(KEYS.enter);
-        await vi.waitFor(
-          () => expect(m.text()).toContain('Nothing withdrawn: too soon, wait 2 s.'),
-          { timeout: WAIT_MS, interval: 15 },
-        );
+        await vi.waitFor(() => expect(m.text()).toContain('Nothing withdrawn: too soon.'), {
+          timeout: WAIT_MS,
+          interval: 15,
+        });
         expect(settings.withdrawn).toEqual([]);
         // Asked again once the lockout has passed: the patient Enter withdraws.
         m.skip(2100);
@@ -213,10 +213,10 @@ describe.each(HOSTS)('/permissions in the %s host', (host) => {
         await openList(m);
         await arm(m);
         m.key(KEYS.enter);
-        await vi.waitFor(
-          () => expect(m.text()).toContain('Nothing withdrawn: too soon, wait 2 s.'),
-          { timeout: WAIT_MS, interval: 15 },
-        );
+        await vi.waitFor(() => expect(m.text()).toContain('Nothing withdrawn: too soon.'), {
+          timeout: WAIT_MS,
+          interval: 15,
+        });
         expect(settings.withdrawn).toEqual([]);
         expect(settings.announced).toEqual([]);
       } finally {

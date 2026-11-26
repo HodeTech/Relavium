@@ -345,7 +345,7 @@ describe('the release is a confirmed step (ADR-0148 §3, §6)', () => {
     expect(fake.release).not.toHaveBeenCalled();
     expect(r.step()).toBe(COST_STEP.cost);
     expect(r.notifications.getSnapshot().current?.text).toBe(
-      'Nothing released: too soon, wait 2 s. [r] asks again.',
+      'Nothing released: too soon. [r] asks again.',
     );
   });
 
