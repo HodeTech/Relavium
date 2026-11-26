@@ -178,9 +178,9 @@ import {
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import { glyphOf, withGlyphForm } from './glyphs.js';
+import { chatStatusLine } from './chat-status.js';
 import { emphasize } from './emphasis.js';
 import {
-  chatStatusLine,
   formatBusyLine,
   formatReasoningPanel,
   formatToolCall,

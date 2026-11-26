@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { chatCostForms, chatStatusLine, contextFullnessPercent } from './chat-projection.js';
+import { chatCostForms, contextFullnessPercent } from './chat-projection.js';
+import { chatStatusLine } from './chat-status.js';
 import {
   initialSessionViewState,
   INLINE_TRANSCRIPT_BOUND,
