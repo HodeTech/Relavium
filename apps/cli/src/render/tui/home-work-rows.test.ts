@@ -82,8 +82,9 @@ describe('a failed run under Attention', () => {
     expect(failedRunLabel(run({ status: 'failed' }), NOW, AT_80)).toBe(
       '✗ release-notes · failed 2h ago · $0.0400 · 3f9a1c2e',
     );
+    // Without colour the glyphs are `||`, `x` and `!`: the lead is padded to the widest of the three, so the names start in one column (round 2).
     expect(withGlyphForm(true, () => failedRunLabel(run({ status: 'failed' }), NOW, AT_100))).toBe(
-      'x release-notes · failed 2h ago · $0.0400 · 3f9a1c2e',
+      'x  release-notes · failed 2h ago · $0.0400 · 3f9a1c2e',
     );
   });
 
@@ -102,11 +103,11 @@ describe('a run whose log cannot be read', () => {
     reason: 'corrupt-row',
     ...over,
   });
-  it('`⚠ id · workflow · cannot be read`, the workflow only when the summary read named it', () => {
+  it('`⚠ workflow · cannot be read · id`, the workflow only when the summary read named it, the id LAST like every other row', () => {
     expect(unreadableRunLabel(broken({ workflowSlug: 'release-notes' }), AT_80)).toBe(
-      '⚠ 3f9a1c2e · release-notes · cannot be read',
+      '⚠ release-notes · cannot be read · 3f9a1c2e',
     );
-    expect(unreadableRunLabel(broken(), AT_80)).toBe('⚠ 3f9a1c2e · cannot be read');
+    expect(unreadableRunLabel(broken(), AT_80)).toBe('⚠ cannot be read · 3f9a1c2e');
   });
 });
 

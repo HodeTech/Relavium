@@ -192,7 +192,7 @@ describe('a key held down on the row', () => {
   const HOLD_MS = 2_500;
   const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
 
-  /** The keys that, on this step, answer something: there are none, so every one of them is a no-op, the way out aside. */
+  /** The keys that answer nothing on this step: every one of them is a no-op, the way out and the copy (`c`, below) aside. */
   const ANSWERLESS_KEYS: readonly (readonly [string, string])[] = [
     ['Enter', KEYS.enter],
     ['↑', KEYS.up],
@@ -207,7 +207,7 @@ describe('a key held down on the row', () => {
     ['Ctrl+R', KEYS.ctrlR],
     ['Ctrl+G', KEYS.ctrlG],
     ['Backspace', String.fromCharCode(0x7f)],
-    ...['a', 'c', 'd', 'p', 'r', 'x', 'y', 'n', '1', ' ', '/'].map(
+    ...['a', 'd', 'p', 'r', 'x', 'y', 'n', '1', ' ', '/'].map(
       (letter) => [`“${letter}”`, letter] as const,
     ),
   ];
@@ -288,6 +288,31 @@ describe('a key held down on the row', () => {
       }
     },
   );
+
+  it('`c` copies the card and changes nothing else: this Home has no clipboard wired, and the host says so in its one notification', async () => {
+    const { m, started } = mount(variant, [unreadable(FIRST, 'corrupt-row', 'release-notes')]);
+    try {
+      await focusRow(m, FIRST, 1);
+      m.key(KEYS.enter);
+      await opens(m);
+      expect(m.text(), 'the legend offers it').toMatch(/\[c\] copy/u);
+      m.skip(5_000);
+      const shown = cardState(m);
+      const before = homeState(m);
+      m.key('c');
+      await m.settle();
+      expect(cardState(m), 'the card stays as it was').toEqual(shown);
+      expect({ ...homeState(m), notification: undefined }).toEqual({
+        ...before,
+        notification: undefined,
+      });
+      expect(m.text()).toContain('Run: copying is not available here.');
+      expect(started.launchRun).not.toHaveBeenCalled();
+      expect(started.resumeChat).not.toHaveBeenCalled();
+    } finally {
+      m.unmount();
+    }
+  });
 
   it('Esc is the way out, Ctrl+C is the other: each closes the card with the Home as it was', async () => {
     for (const out of [KEYS.escape, KEYS.ctrlC]) {

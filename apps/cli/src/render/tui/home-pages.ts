@@ -2,6 +2,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import type { EditorState } from './chat-input.js';
 import type { ParkedRunKind } from './home-attention.js';
 import { frameRows } from './home-layout.js';
+import { workListFloor } from './home-work-budget.js';
 import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 import { clipLine } from './sheet-frame.js';
 import {
@@ -372,11 +373,15 @@ const NEWLINE: LegendKey = { keys: 'Ctrl+J', verb: 'newline' };
 /**
  * What the draft's own hint says: a slash line is a command, which `Enter` RUNS with or without a key (a registry word answers, an unknown one
  * says so), so neither "start the chat" nor the keyless sentence would be true of it; a message starts the chat, or (no key) `Enter` connects a
- * provider and the message is kept. `newline` is the priority of `[Ctrl+J] newline` (not offered with no key: `Enter` connects first).
+ * provider and the message is kept. `newline` is the priority of `[Ctrl+J] newline` (not offered with no key: `Enter` connects first), and
+ * `kept` the priority of `your message is kept`: the landing gives it up BEFORE the `↓ N need you` cue (round 2, correctness F7: with a
+ * draft and no key the call to connect and the reassurance filled the row up to 86 columns and the cue, the landing's one sign of a gate that
+ * waits, was gone at 80), the docked prompt keeps it whole.
  */
 function draftItems(
   state: { readonly draft: string; readonly keyless: boolean },
   newline: number | 'required',
+  kept: number | 'required' = 'required',
 ): readonly HintPart[] {
   if (state.draft.trimStart().startsWith('/'))
     return [
@@ -386,7 +391,7 @@ function draftItems(
   if (state.keyless)
     return [
       { item: CONNECT_A_PROVIDER, priority: 'required' },
-      { item: { text: 'your message is kept' }, priority: 'required' },
+      { item: { text: 'your message is kept' }, priority: kept },
     ];
   return [
     { item: { keys: 'Enter', verb: 'start the chat' }, priority: 'required' },
@@ -414,13 +419,17 @@ export interface LandingHintState {
 
 /**
  * Page 1's most urgent item (MVP-11 unit 7, the maintainer's ruling 5): its name (stored text, scrubbed and bounded by its builder; none for a
- * run whose log cannot be read, whose words say so), the words of its kind, its deadline words, and whether the deadline has passed.
+ * run whose log cannot be read, whose words say so), the words of its kind, its deadline words (`expires in 5m`) and the same deadline compact
+ * (`5m left`; absent reads as the deadline itself: `expired` has no shorter form), whether the deadline has passed, and whether the item is only
+ * the most urgent of those READ (`partial`: more items wait than were read, and an unread one may outrank it; absent reads as no).
  */
 export interface UrgentHead {
   readonly name: string | undefined;
   readonly words: string;
   readonly deadline: string | undefined;
+  readonly deadlineCompact?: string | undefined;
   readonly overdue: boolean;
+  readonly partial?: boolean | undefined;
 }
 
 /** The fewest columns of the urgent item's name the hint keeps before it says the count instead (`↓ 3 need you`). */
@@ -468,10 +477,54 @@ function othersItem(others: number, short: boolean): readonly LegendItem[] {
   return [{ text: `+${String(others)} more ${others === 1 ? 'needs' : 'need'} you` }];
 }
 
+/** What one step of the named head keeps: the deadline in its long or compact form or not at all, the others of Attention in their long or short form or not at all, and whether the session and run counts ride along (they are droppable parts). */
+interface HeadStep {
+  readonly deadline: 'long' | 'compact' | 'none';
+  readonly others: 'long' | 'short' | 'none';
+  readonly counts: boolean;
+}
+
+/** `+2 more need you` with the counts that follow it; the fullest step, which every ladder starts from. */
+const FULL_STEP: HeadStep = { deadline: 'long', others: 'long', counts: true };
+
 /**
- * The indicators that name the most urgent item, from the fullest to the barest, in the order of what a narrow row gives up: the session and
- * run counts (they are droppable parts of the first), then the deadline, then `+N more need you` becomes `+N more`, then the name is cut, a
- * column at a time, down to {@link URGENT_NAME_FLOOR}. The `↓` and the count of the others stay in every one.
+ * The steps a named head gives things up in, fullest first, and what it keeps while its NAME is cut ({@link urgentIndicators}). The deadline
+ * outranks the count of the others (round 2, observation F3: page 1's head lost `expired` and the deadline at ordinary widths while `need you`
+ * outlived them, and under no colour nothing else says an item is overdue):
+ *
+ * - **A deadline that is ahead** (`expires in 5m`): the session and run counts go first (they are the droppable parts of the first step), then
+ *   `+2 more need you` becomes `+2 more`, then the others are given up whole (`↓ release-notes needs approval · expires in 5m`, the maintainer's
+ *   own example, whole wherever it fits), then the deadline becomes its compact form (`5m left`). The name is then cut around the compact
+ *   deadline, and the count of ALL of Attention is what the head says when the name cannot keep its floor.
+ * - **An overdue item** (`expired`, which has no shorter form): the same steps down to the others given up, and then it stays: the name is cut
+ *   around `expired`, which is never given up.
+ * - **No deadline** (a failed run, a run that cannot be read, a parked run with no deadline): the counts, `+2 more need you`, `+2 more`, which
+ *   stays through the cut name as it always has; there is no deadline for the others to give way to.
+ */
+function headSteps(urgent: UrgentHead): {
+  readonly steps: readonly HeadStep[];
+  readonly kept: HeadStep;
+} {
+  if (urgent.deadline === undefined) {
+    const cutName: HeadStep = { deadline: 'none', others: 'short', counts: false };
+    return { steps: [{ ...FULL_STEP, deadline: 'none' }, cutName], kept: cutName };
+  }
+  const alone: HeadStep = { deadline: 'long', others: 'none', counts: false };
+  const steps: HeadStep[] = [FULL_STEP, { ...FULL_STEP, others: 'short', counts: false }, alone];
+  if (urgent.overdue) return { steps, kept: alone };
+  const compact: HeadStep = { ...alone, deadline: 'compact' };
+  return { steps: [...steps, compact], kept: compact };
+}
+
+/**
+ * The indicators that name the most urgent item, from the fullest to the barest, in the order of what a narrow row gives up ({@link headSteps}),
+ * then the name cut a column at a time down to {@link URGENT_NAME_FLOOR}. The `↓` is in every one, and the count of ALL of Attention in the
+ * fallback the caller draws when none fits.
+ *
+ * With an item that is only the most urgent of those READ (`urgent.partial`, round 2: more paused runs wait than the Home reads, and an unread
+ * one may be overdue) the head does not call it the most urgent: it leads with the count of everything that needs the person and names the
+ * item after it as one of them: `↓ 16 need you · release-notes needs approval · expires in 5m`. The same steps apply, with no `+N more`, for
+ * the count already says them all.
  */
 function urgentIndicators(
   urgent: UrgentHead,
@@ -480,28 +533,41 @@ function urgentIndicators(
 ): readonly IndicatorParts[] {
   const others = Math.max(0, counts.attention - 1);
   const tone = urgent.overdue ? 'danger' : 'warn';
-  const head = (name: string | undefined): LegendKey => ({
-    keys: '↓',
-    verb: name === undefined ? urgent.words : `${name} ${urgent.words}`,
-    role: 'warn',
-  });
-  const deadline: readonly LegendItem[] =
-    urgent.deadline === undefined ? [] : [{ text: urgent.deadline }];
-  const none = { sessions: undefined, runs: undefined, tone } as const;
-  const name = urgent.name;
-  const all: IndicatorParts[] = [
-    {
-      head: head(name),
-      extras: [...deadline, ...othersItem(others, false)],
-      ...countItems(counts),
+  const partial = urgent.partial === true;
+  const deadlines = {
+    long: urgent.deadline,
+    compact: urgent.deadlineCompact ?? urgent.deadline,
+    none: undefined,
+  } as const;
+  const words = (name: string | undefined): string =>
+    name === undefined ? urgent.words : `${name} ${urgent.words}`;
+  const partsOf = (name: string | undefined, step: HeadStep): IndicatorParts => {
+    const text = deadlines[step.deadline];
+    const deadline: readonly LegendItem[] = text === undefined ? [] : [{ text }];
+    const rest = step.counts ? countItems(counts) : { sessions: undefined, runs: undefined };
+    if (partial)
+      return {
+        head: { keys: '↓', verb: needsYouWords(counts.attention), role: 'warn' },
+        extras: [{ text: words(name) }, ...deadline],
+        ...rest,
+        tone,
+      };
+    return {
+      head: { keys: '↓', verb: words(name), role: 'warn' },
+      extras: [
+        ...deadline,
+        ...(step.others === 'none' ? [] : othersItem(others, step.others === 'short')),
+      ],
+      ...rest,
       tone,
-    },
-    { head: head(name), extras: othersItem(others, false), ...none },
-    { head: head(name), extras: othersItem(others, true), ...none },
-  ];
+    };
+  };
+  const { steps, kept } = headSteps(urgent);
+  const all = steps.map((step) => partsOf(urgent.name, step));
+  const name = urgent.name;
   if (name !== undefined)
     for (let columns = width(name) - 1; columns >= URGENT_NAME_FLOOR; columns -= 1)
-      all.push({ head: head(clipLine(name, columns)), extras: othersItem(others, true), ...none });
+      all.push(partsOf(clipLine(name, columns), kept));
   return all;
 }
 
@@ -518,7 +584,7 @@ function urgentHint(
   for (const indicator of urgentIndicators(urgent, state.counts, width)) {
     const parts: readonly HintPart[] = hasDraft(state.draft)
       ? [
-          ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1),
+          ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1, 1),
           { item: indicator.head, priority: 'required' },
           ...indicator.extras.map((item): HintPart => ({ item, priority: 'required' })),
         ]
@@ -541,10 +607,14 @@ function urgentHint(
  * nothing to continue it is the empty Home's hint as it was.
  *
  * With an item under Attention (MVP-11 unit 7, the maintainer's ruling 5) the indicator's head NAMES the most urgent one instead of counting:
- * `↓ release-notes needs approval · expires in 5m · +2 more need you`, then the true session and run counts; at narrow widths the counts go
- * first, then the deadline, then `+2 more need you` shortens to `+2 more`, then the name is cut (down to {@link URGENT_NAME_FLOOR} columns),
- * and when even that does not fit the head says the count (`↓ 3 need you`) as before. The `↓` and the count of Attention never drop (`+N more`
- * is the count of the others, the named item the one more).
+ * `↓ release-notes needs approval · expires in 5m · +2 more need you`, then the true session and run counts. At narrow widths it gives up, in
+ * order ({@link headSteps}): the counts, `+2 more need you` as `+2 more`, the others whole, the deadline's long form for its compact one
+ * (`5m left`), the deadline itself (never `expired`, which stays with an overdue item), then the name's columns (down to
+ * {@link URGENT_NAME_FLOOR}), and when even that does not fit the head says the count (`↓ 3 need you`) as before. A head that is only the most
+ * urgent of the items READ leads with that count instead (`↓ 16 need you · release-notes needs approval · expires in 5m`, {@link urgentIndicators}).
+ * The `↓` always stays, and `+N more` is the count of the others, the named item the one more.
+ *
+ * With a draft and no key `your message is kept` gives way before the `↓ N need you` cue does, as `[Ctrl+J] newline` does ({@link draftItems}).
  */
 export function landingHint(state: LandingHintState, width: (text: string) => number): HintRow {
   if (state.interruptArmed) return { text: legend([], EXIT_AGAIN) };
@@ -556,7 +626,7 @@ export function landingHint(state: LandingHintState, width: (text: string) => nu
   const warnHead = indicator?.head.role === 'warn' ? [indicator.head] : [];
   const parts: readonly HintPart[] = hasDraft(state.draft)
     ? [
-        ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1),
+        ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1, 1),
         ...(indicator === undefined ? [] : [{ item: indicator.head, priority: 2 }]),
       ]
     : emptyLandingParts(state, indicator);
@@ -658,34 +728,47 @@ export function workHint(
 
 // ---- The work page's rows ------------------------------------------------------------------------------------------------------
 
-/** The rows above the work page's list: the way back (`↑ start page`) and a blank row. */
+/** The rows above the work page's list when the terminal has room: the way back (`↑ start page`) and a blank row. */
 export const WORK_HEAD_ROWS = 2;
+
+/** The terminal rows from which the blank row under the way back is drawn: below it whitespace gives way before words (`home-work-budget.ts`). */
+export const WORK_SPACIOUS_ROWS = 26;
+
+/** The rows above the work page's list in a terminal of `rows`: the way back and, from {@link WORK_SPACIOUS_ROWS}, the blank row under it. */
+export function workHeadRows(rows: number): number {
+  return Number.isFinite(rows) && rows >= WORK_SPACIOUS_ROWS ? WORK_HEAD_ROWS : 1;
+}
 
 /** The docked prompt block's rows besides the prompt's own: a blank lead row, the rule, the status line and the hint. */
 export const DOCKED_CHROME_ROWS = 4;
 
 /**
- * The rows the work page's list may take: `rows − 1` (no frame is taller) less the way back and its blank row, the block at the bottom (the
- * docked prompt, the palette or the exit-guard card) and the notice with its blank row. Never negative. At 80×24 with the resting block: 16.
+ * The rows the work page's list may take: `rows − 1` (no frame is taller) less the way back and its blank row (none under 26 rows), the block at
+ * the bottom (the docked prompt, the palette or the exit-guard card) and the notice with its blank row. Never negative. At 80×24 with the resting
+ * block: 17; at 100×30: 22.
  */
 export function workListRows(rows: number, bottomRows: number, noticeRows = 0): number {
   if (!Number.isFinite(rows)) return 0;
   const notice = noticeRows > 0 ? noticeRows + 1 : 0;
-  return Math.max(0, frameRows(rows) - WORK_HEAD_ROWS - bottomRows - notice);
+  return Math.max(0, frameRows(rows) - workHeadRows(rows) - bottomRows - notice);
 }
 
-/** The fewest list rows the work page keeps beside a long draft (OB71): the way back stays, and the Attention section and the first rows of Continue with it. */
-export const WORK_LIST_MIN_ROWS = 8;
+/**
+ * The fewest list rows the work page keeps beside a long draft (OB71): the first row and the marker of every section, Attention's heading,
+ * "Continue" and the titles with them (`workListFloor`, 10 with all three sections): no section with items is ever gone, whatever the draft
+ * and the notice. Below it (a notice that is more than its minimum, an open palette) the lowest sections go first.
+ */
+export const WORK_LIST_MIN_ROWS = workListFloor({ attention: true, sessions: true, runs: true });
 
 /**
  * The most rows the work page's docked prompt editor may take (OB71): what `rows − 1` leaves after the way back and its blank row, the docked
  * block's other four rows and {@link WORK_LIST_MIN_ROWS} of the list, never fewer than a window can have. A longer draft is drawn as a window
  * around the cursor (`▲/▼ N more`), so the way back, the list's first rows, the rule, the status line and the hint stay on the screen and the
- * frame is never as tall as the terminal. 9 at 80×24 (a list of 8 rows beside it), 15 at 100×30.
+ * frame is never as tall as the terminal. 8 at 80×24 (a list of 10 rows beside it), 13 at 100×30.
  */
 export function workEditorRows(rows: number): number {
   return Math.max(
     PROMPT_WINDOW_MIN_ROWS,
-    frameRows(rows) - WORK_HEAD_ROWS - DOCKED_CHROME_ROWS - WORK_LIST_MIN_ROWS,
+    frameRows(rows) - workHeadRows(rows) - DOCKED_CHROME_ROWS - WORK_LIST_MIN_ROWS,
   );
 }

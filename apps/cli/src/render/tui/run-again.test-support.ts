@@ -58,11 +58,17 @@ export function runDetailRead(
   over: {
     readonly directory?: RunDirectory | undefined;
     readonly workflowSlug?: string | undefined;
+    /** How the one node ended: `failed` (the default: the run has a failed node, `[n]` has a target) or `completed` (none did). */
+    readonly nodeStatus?: 'failed' | 'completed';
+    /** How many nodes the frozen snapshot listed (absent: the read could not say). */
+    readonly authoredNodeCount?: number | undefined;
   } = { directory: 'here', workflowSlug: 'nightly' },
 ): RunDetailRead {
   const at = new Date(T0).toISOString();
+  const status: RunStatus = over.nodeStatus === 'completed' ? 'completed' : 'failed';
   const run: RunDetailRecord = {
     ...SUMMARY,
+    status,
     outputJson: null,
     outputByteLength: null,
     errorJson: null,
@@ -72,7 +78,7 @@ export function runDetailRead(
     {
       nodeId: 'build',
       nodeType: 'agent',
-      status: 'failed',
+      status: over.nodeStatus ?? 'failed',
       attemptNumber: 1,
       startedAt: at,
       completedAt: at,
@@ -82,12 +88,12 @@ export function runDetailRead(
       outputTokens: 4,
     },
   ];
-  const status: RunStatus = 'failed';
   return {
     runId: RUN,
     status,
     ...(over.directory === undefined ? {} : { directory: over.directory }),
     ...(over.workflowSlug === undefined ? {} : { workflowSlug: over.workflowSlug }),
+    ...(over.authoredNodeCount === undefined ? {} : { authoredNodeCount: over.authoredNodeCount }),
     model: buildRunDetailModel({
       run,
       steps,
@@ -104,18 +110,25 @@ export function runDetailRead(
   };
 }
 
-/** The History list of this project holding the one run. */
-export function historyListOfRun(): HistoryRead {
+/** A run that started after `RUN` did: what the History list holds once `r` has started one. */
+export const NEWER_RUN = '0a1b2c3d-0000-4000-8000-000000000002';
+
+/**
+ * The History list of this project holding the one run, with the runs of `newer` listed ahead of it (the list is newest first) and `page` as
+ * the page it is (the first by default).
+ */
+export function historyListOfRun(newer: readonly string[] = [], page = 0): HistoryRead {
+  const later = new Date(T0 + 30_000).toISOString();
   return {
-    query: { scope: 'project', status: undefined, page: 0 },
+    query: { scope: 'project', status: undefined, page },
     pinned: [],
     rows: buildHistoryRows({
-      runs: [SUMMARY],
+      runs: [...newer.map((id) => ({ ...SUMMARY, id, createdAt: later })), SUMMARY],
       nowMs: T0 + 60_000,
       pinnedRunIds: new Set(),
       workflowLabels: new Map([['wf', 'nightly']]),
     }).map((row) => ({ kind: 'run' as const, row })),
-    hasPrev: false,
+    hasPrev: page > 0,
     hasNext: false,
   };
 }

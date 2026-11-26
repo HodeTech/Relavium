@@ -235,13 +235,14 @@ it('the strip of the Home the host mounts lists this directory’s sessions only
     try {
       // the sessions are the work page's rows (MVP-11 unit 7): down to them
       controller.handleKey('', { downArrow: true });
-      await mount.until(() => rowsOf(mount).join('\n').includes('hello · relavium-chat'));
+      await mount.until(() => rowsOf(mount).join('\n').includes('hello · just now'));
       await mount.settle();
       const rows = rowsOf(mount);
       // The Home lists this directory's work only (MVP-11 unit 7): the chat it hosted is here, one row with no directory line under it (every
       // row is this directory's); the sessions of a directory below it, of the home and of elsewhere are other directories', reachable in
       // `/resume` (the next test, which names each one's directory), not on the strip.
-      expect(rows.join('\n'), mount.frame().join('\n')).toContain('hello · relavium-chat');
+      // the built-in chat agent is not named on a session's row (round 2: it said nothing a row of a Home that mostly chats could use)
+      expect(rows.join('\n'), mount.frame().join('\n')).toContain('hello · just now');
       expect(rows, 'no directory line under a session').not.toContain('. (project root)');
       for (const away of ['packages/app', '~/other', '/opt/shared/tools'])
         expect(rows, away).not.toContain(away);

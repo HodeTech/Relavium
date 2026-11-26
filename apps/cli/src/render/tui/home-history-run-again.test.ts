@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type { HistoryRead } from '../../history/history-source.js';
+import type { HistoryQuery, HistoryRead } from '../../history/history-source.js';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { HomeSessionRow, HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
@@ -23,7 +23,12 @@ import {
   type HomeController,
   type HomeControllerDeps,
 } from './home-controller.js';
-import { definedPortOver, historyListOfRun, runDetailRead } from './run-again.test-support.js';
+import {
+  NEWER_RUN,
+  definedPortOver,
+  historyListOfRun,
+  runDetailRead,
+} from './run-again.test-support.js';
 import { RUN_AGAIN_NOT_DEFINED, RUN_AGAIN_OTHER_DIRECTORY } from './run-again.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import type { TabHostState } from './tab-host.js';
@@ -73,6 +78,8 @@ interface Options {
   readonly launch?: ((slug?: string, path?: string) => Promise<string>) | undefined;
   readonly host?: () => RunHostSnapshot;
   readonly snapshot?: HomeSnapshot;
+  /** What the History port answers a read with (default: the list holding the one run). */
+  readonly list?: (query: HistoryQuery) => HistoryRead;
 }
 
 function mount(options: Options = {}) {
@@ -98,7 +105,9 @@ function mount(options: Options = {}) {
   const loadDetail = vi.fn(() =>
     Promise.resolve<RunDetailLoad>(options.detail ?? { kind: 'ready', detail: runDetailRead() }),
   );
-  const read = vi.fn((): HistoryRead => historyListOfRun());
+  const read = vi.fn(
+    (query: HistoryQuery): HistoryRead => options.list?.(query) ?? historyListOfRun(),
+  );
   const history: HistoryPort = {
     read,
     cost: () => ({ kind: 'text', text: '$0.01' }),
@@ -137,6 +146,7 @@ function mount(options: Options = {}) {
     gateCards,
     cancel,
     loadDetail,
+    read,
     announced,
     session,
   };
@@ -299,6 +309,84 @@ describe('what the flow said is on the detail’s own message row, never in the 
     m.controller.handleKey('', ESC);
     expect(hostOf(m.controller)?.tab, 'back on the tab the key was pressed on').toBe('history');
     expect(m.announced).toEqual(['Started nightly as run run-0001. It runs in the background.']);
+  });
+});
+
+describe('the result of a run started from the detail is seen without a second key (round 2, observation F5)', () => {
+  const STARTED_SAID = 'Started nightly as run run-0002. It runs in the background.';
+
+  it('a run that ended before its view could open leaves the detail with its sentence, and Esc lands on a list that has the run', async () => {
+    let started = false;
+    const launch = vi.fn(() => {
+      started = true; // the run began and ended inside the form's own answer: the host has no leg to show
+      return Promise.resolve(STARTED_SAID);
+    });
+    const m = mount({
+      launch,
+      host: () => IDLE,
+      list: () => historyListOfRun(started ? [NEWER_RUN] : []),
+    });
+    await onDetail(m.controller);
+    m.controller.handleKey('r', {});
+    await flush();
+    expect(m.controller.getSnapshot().screen?.kind, 'no view: the run is over').toBe('tab-host');
+    expect(detailOf(m.controller)?.message, 'the detail says what started').toBe(STARTED_SAID);
+    const reads = m.read.mock.calls.length;
+    m.controller.handleKey('', ESC);
+    expect(detailOf(m.controller), 'back on the list').toBeUndefined();
+    expect(m.read.mock.calls.length, 'one read on the way back').toBe(reads + 1);
+    expect(
+      m.read.mock.calls.at(-1)?.[0],
+      'fresh: the source keeps the pages it fetched',
+    ).toMatchObject({ page: 0, fresh: true });
+    const rows = hostOf(m.controller)?.history?.read?.rows ?? [];
+    expect(
+      rows.map((entry) => (entry.kind === 'run' ? entry.row.id : undefined)),
+      'the new run is in the list, ahead of the run the person came from',
+    ).toEqual([NEWER_RUN, '0a1b2c3d-0000-4000-8000-000000000001']);
+  });
+
+  it('a run that is still executing shows its view, and Esc from it lands on the tab with the list read again', async () => {
+    let snapshot: RunHostSnapshot = IDLE;
+    const launch = vi.fn(() => {
+      snapshot = RUNNING;
+      return Promise.resolve(STARTED_SAID);
+    });
+    const m = mount({
+      launch,
+      host: () => snapshot,
+      list: () => historyListOfRun(snapshot === RUNNING ? [NEWER_RUN] : []),
+    });
+    await onDetail(m.controller);
+    m.controller.handleKey('r', {});
+    await flush();
+    expect(m.controller.getSnapshot().screen?.kind).toBe('run-view');
+    const reads = m.read.mock.calls.length;
+    m.controller.handleKey('', ESC);
+    expect(hostOf(m.controller)?.tab).toBe('history');
+    expect(m.read.mock.calls.length, 'the tab was entered again, and read').toBeGreaterThan(reads);
+    const ids = (hostOf(m.controller)?.history?.read?.rows ?? []).map((entry) =>
+      entry.kind === 'run' ? entry.row.id : undefined,
+    );
+    expect(ids).toContain(NEWER_RUN);
+  });
+
+  it('a detail whose catalog has the workflow is offered `r`, one whose catalog lacks it is not, and the controller’s catalog is what decides', async () => {
+    const offered = mount({ launch: vi.fn(() => Promise.resolve('')) });
+    await onDetail(offered.controller);
+    expect(detailOf(offered.controller)?.runAgain).toBe(true);
+    const lacking = mount({
+      launch: vi.fn(() => Promise.resolve('')),
+      detail: {
+        kind: 'ready',
+        detail: runDetailRead({ directory: 'here', workflowSlug: 'retired' }),
+      },
+    });
+    await onDetail(lacking.controller);
+    expect(detailOf(lacking.controller)?.runAgain).toBe(false);
+    const bare = mount({ launch: vi.fn(() => Promise.resolve('')), defined: undefined });
+    await onDetail(bare.controller);
+    expect(detailOf(bare.controller)?.runAgain, 'no catalog: nothing is offered').toBe(false);
   });
 });
 

@@ -98,32 +98,45 @@ function frame(draw: Draw): { readonly raw: string; readonly rows: readonly stri
   return { raw, rows: raw.replace(SGR, '').split('\n') };
 }
 
-/** The list region's rows: from the way back's blank row to the docked block (the frame less its first two rows and its last five). */
+/**
+ * The list region's rows: from under the way back to the docked block (the frame less its head and its last five rows). The head is the way
+ * back alone below 26 terminal rows and the way back and a blank row from 26 (whitespace gives way before words: `workHeadRows`); the blank
+ * row, when there is one, is the list's first row here.
+ */
 const listOf = (rows: readonly string[]): string[] =>
-  rows.slice(2, rows.length - 5).map((row) => row.trimEnd());
+  rows.slice(1, rows.length - 5).map((row) => row.trimEnd());
+
+/**
+ * A row with the runs of blanks inside its words made one: the rows' own words are the labels' (`home-projection.ts`, `home-attention.ts`),
+ * pinned by their own tests; what this file pins is which rows of which section are drawn and where, so the glyph column's padding (a
+ * plain `x` is one column and `||` two) is not part of it.
+ */
+const squash = (row: string): string => row.replace(/(?<=\S) {2,}(?=\S)/gu, ' ');
 
 describe('the (5, 5, 5) page as drawn', () => {
-  it('80×24: Attention keeps four rows and `▼ 1 more`; the sessions and the runs two each and their markers, every row one line at its column', () => {
+  it('80×24: Attention shows all five (a `▼ 1 more` would take the line the fifth row takes), the sessions and the runs three each and their markers; no blank row under the way back or above `Continue`; every row one line at its column', () => {
     const { rows } = frame({ cols: 80, rows: 24 });
     expect(rows).toHaveLength(23);
     const pad = ' '.repeat(6);
-    expect(listOf(rows)).toEqual([
+    expect(rows[0]).toBe(`${pad}↑ start page`);
+    expect(listOf(rows).map(squash)).toEqual([
       `${pad}Attention required`,
       `${pad}    || release-1 · approval · expires in 10m · p1000000`,
       `${pad}    || release-2 · approval · expires in 15m · p2000000`,
       `${pad}    || release-3 · approval · expires in 20m · p3000000`,
       `${pad}    x wf-f1 · failed 1h ago · $0.0400 · f1-0000-`,
-      `${pad}    v 1 more`,
-      '',
+      `${pad}    x wf-f2 · failed 2h ago · $0.0400 · f2-0000-`,
       `${pad}Continue`,
       `${pad}  Sessions`,
       `${pad}    Session 1 · chat · 10m ago · free`,
       `${pad}    Session 2 · chat · 20m ago · free`,
-      `${pad}    v 3 more`,
+      `${pad}    Session 3 · chat · 30m ago · free`,
+      `${pad}    v 2 more`,
       `${pad}  Runs`,
       `${pad}    wf-r1 · completed · 30m ago · $0.0400 · r1-0000-`,
       `${pad}    wf-r2 · completed · 1h ago · $0.0400 · r2-0000-`,
-      `${pad}    v 3 more`,
+      `${pad}    wf-r3 · completed · 1h ago · $0.0400 · r3-0000-`,
+      `${pad}    v 2 more`,
     ]);
   }); // prettier-ignore
 
@@ -196,10 +209,10 @@ describe('the (5, 5, 5) page as drawn', () => {
     const plain = frame({ cols: 80, rows: 24 });
     const coloured = frame({ cols: 80, rows: 24, color: true });
     const words = (rows: readonly string[]): string[] =>
-      rows.map((row) => row.replace(/[‖✗]/gu, '').replace(/\|\||\bx\b/gu, '').replace(/[▼v] /gu, 'M ').trimEnd());
+      rows.map((row) => row.replace(/[‖✗]/gu, '').replace(/\|\||\bx\b/gu, '').replace(/[▼v] /gu, 'M ').replace(/\s+/gu, ' ').trim());
     expect(words(listOf(coloured.rows))).toEqual(words(listOf(plain.rows)));
     // the marker column (two blanks) and the marker, dim
-    expect(coloured.raw).toContain(`${ESC}[2m  ▼ 1 more`);
+    expect(coloured.raw).toContain(`${ESC}[2m  ▼ 2 more`);
     expect(plain.raw).not.toContain('▼');
   }); // prettier-ignore
 });
@@ -211,22 +224,29 @@ describe('the marker counts the TRUE total and says where the rest are only wher
       row.trim(),
     );
     expect(list).toContain('v 28 more · /workflows');
-    expect(list).toContain('v 38 more · /resume');
-    expect(list).toContain('v 75 more · /workflows');
+    expect(list).toContain('v 37 more · /resume');
+    expect(list).toContain('v 74 more · /workflows');
     // the rows shown + N = the total, section by section
     const attention = list.filter((row) => row.startsWith('||') || row.startsWith('x ')).length;
     expect(attention + 28).toBe(32);
+    expect(list.filter((row) => row.startsWith('Session ')).length + 37).toBe(40);
+    expect(list.filter((row) => row.startsWith('wf-r')).length + 74).toBe(77);
   });
 
-  it('a window scrolled to the focus says `▲ N more` above it, and every Attention row the keys reach is drawn when focused', () => {
+  it('a window scrolled to the focus says `▲ N more` above it, and every row the keys reach is drawn when focused', () => {
     const rows = stripRows(PARKED, FIVE);
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < rows.length; index += 1) {
       const list = listOf(frame({ cols: 80, rows: 24, focus: focusAt(rows, index) }).rows).map((row) => row.trim());
       expect(list.filter((row) => row.startsWith('> ')), `focus on ${String(index)}`).toHaveLength(1);
     }
-    const last = listOf(frame({ cols: 80, rows: 24, focus: focusAt(rows, 4) }).rows).map((row) => row.trim());
-    expect(last).toContain('^ 1 more');
-    expect(last).toContain('> x wf-f2 · failed 2h ago · $0.0400 · f2-0000-');
+    // the last session (five rows, three drawn): the window ends at the last row with only the `▲`
+    const last = listOf(frame({ cols: 80, rows: 24, focus: focusAt(rows, 9) }).rows).map((row) => row.trim());
+    expect(last).toContain('^ 2 more');
+    expect(last).toContain('> Session 5 · chat · 50m ago · free');
+    // the Attention rows are all drawn (five rows, the cap four, the fifth takes the marker's line): there is nothing above to count
+    const attention = listOf(frame({ cols: 80, rows: 24, focus: focusAt(rows, 4) }).rows).map((row) => row.trim());
+    expect(attention.some((row) => /^\^ \d+ more/u.test(row))).toBe(false);
+    expect(attention.map(squash)).toContain('> x wf-f2 · failed 2h ago · $0.0400 · f2-0000-');
   }); // prettier-ignore
 
   it('the agents, which `↓` never reaches, say where they are when some are hidden', () => {
@@ -245,7 +265,7 @@ describe('the marker counts the TRUE total and says where the rest are only wher
 });
 
 describe('the rows the rulings word (ruling 4)', () => {
-  it('an unreadable run: `⚠ id · workflow · cannot be read`, its workflow only when the summary read named it', () => {
+  it('an unreadable run: `⚠ workflow · cannot be read · id`, its workflow only when the summary read named it', () => {
     const broken: HomeSnapshot = {
       ...FIVE,
       attention: { failedRuns: [] },
@@ -257,8 +277,8 @@ describe('the rows the rulings word (ruling 4)', () => {
     };
     const coloured = frame({ snapshot: broken, parked: [], cols: 100, rows: 30, color: true });
     const list = coloured.rows.map((row) => row.trim());
-    expect(list).toContain('⚠ u1000000 · nightly · cannot be read');
-    expect(list).toContain('⚠ u2000000 · cannot be read');
+    expect(list).toContain('⚠ nightly · cannot be read · u1000000');
+    expect(list).toContain('⚠ cannot be read · u2000000');
   }); // prettier-ignore
 
   it('no row of the page names a key: the hint row is the one place `Enter` is named', () => {
@@ -268,4 +288,180 @@ describe('the rows the rulings word (ruling 4)', () => {
     expect(list.join('\n')).not.toMatch(/Enter|↑\/↓|select/u);
     expect(drawn.at(-1)?.trim()).toBe('↑/↓ select · Enter open · type to chat · Esc start page');
   });
+});
+
+// ---- Round 2 (R2-W3a): 4/3/3 at 80×24, whitespace before words, no re-flow under the cursor, no section lost ------------------------
+
+/** A world of `a` Attention items (up to three parked, the rest failed), `s` sessions and `r` runs, every row loaded. */
+function worldOf(
+  a: number,
+  s: number,
+  r: number,
+): { snapshot: HomeSnapshot; parked: ParkedRunRow[] } {
+  const parkedCount = Math.min(a, 3);
+  return {
+    parked: Array.from({ length: parkedCount }, (_, index) => parked(index + 1)),
+    snapshot: {
+      attention: {
+        failedRuns: Array.from({ length: a - parkedCount }, (_, index) =>
+          run(`f${String(index + 1)}`, 'failed', 60 + index),
+        ),
+      },
+      recentSessions: Array.from({ length: s }, (_, index) => session(index + 1)),
+      recentRuns: Array.from({ length: r }, (_, index) =>
+        run(`r${String(index + 1)}`, 'completed', 30 + index * 30),
+      ),
+      recentAgents: [],
+      unreadableRuns: [],
+      totals: { attention: a, sessions: s, runs: r },
+      isEmpty: false,
+    },
+  };
+}
+
+const HEADINGS = ['Attention required', 'Continue', 'Sessions', 'Runs', 'Agents'] as const;
+
+/** The item rows and the marker row of each section of a drawn list: the lines under a heading up to the next heading, blank rows not counted. */
+function sectionsOf(
+  list: readonly string[],
+): Record<string, { items: number; marker: string | undefined }> {
+  const found: Record<string, { items: number; marker: string | undefined }> = {};
+  let current: string | undefined;
+  for (const raw of list.map((row) => row.trim())) {
+    if (raw === '') continue;
+    if ((HEADINGS as readonly string[]).includes(raw)) {
+      current = raw;
+      if (raw !== 'Continue') found[raw] = { items: 0, marker: undefined };
+      continue;
+    }
+    const section = current === undefined ? undefined : found[current];
+    if (section === undefined) continue;
+    if (/^[v^] \d+ more/u.test(raw)) section.marker = `${section.marker ?? ''}${raw}`;
+    else section.items += 1;
+  }
+  return found;
+}
+
+describe('the maintainer’s numbers: 4 / 3 / 3 at 80×24 (R2-W3a, observation F1)', () => {
+  const RICH = worldOf(12, 7, 8);
+
+  it('80×24 with twelve Attention items, seven sessions and eight runs: Attention 4 and `▼ 8 more`, Sessions 3 and `▼ 4 more`, Runs 3 and `▼ 5 more`', () => {
+    const { rows } = frame({ ...RICH, cols: 80, rows: 24 });
+    const sections = sectionsOf(listOf(rows));
+    expect(sections['Attention required']).toEqual({ items: 4, marker: 'v 8 more' });
+    expect(sections['Sessions']).toEqual({ items: 3, marker: 'v 4 more' });
+    expect(sections['Runs']).toEqual({ items: 3, marker: 'v 5 more' });
+    expect(rows).toHaveLength(23);
+  });
+
+  it('whitespace gives way first: at 24 rows neither blank row (under the way back, above `Continue`), the Continue blank back at 25, both from 26', () => {
+    const blanks = (terminalRows: number): { head: boolean; gap: boolean } => {
+      const { rows } = frame({ ...RICH, cols: 80, rows: terminalRows });
+      const text = rows.map((row) => row.trim());
+      return { head: text[1] === '', gap: text[text.indexOf('Continue') - 1] === '' };
+    };
+    expect(blanks(24)).toEqual({ head: false, gap: false });
+    expect(blanks(25)).toEqual({ head: false, gap: true });
+    expect(blanks(26)).toEqual({ head: true, gap: true });
+    // and the numbers are the same at the three sizes (the rows the blanks would have taken are not given to anything else)
+    for (const terminalRows of [24, 25, 26]) {
+      const sections = sectionsOf(listOf(frame({ ...RICH, cols: 80, rows: terminalRows }).rows));
+      expect([
+        sections['Attention required']?.items,
+        sections['Sessions']?.items,
+        sections['Runs']?.items,
+      ]).toEqual([4, 3, 3]);
+    }
+  });
+});
+
+describe('no re-flow under the cursor (R2-W3a, observation F4)', () => {
+  const RICH = worldOf(12, 7, 8);
+  const strip = stripRows(RICH.parked, RICH.snapshot);
+  /** The strip's section of row `index`: Attention first, then the sessions, then the runs. */
+  const sectionOf = (index: number): string =>
+    index < 12 ? 'Attention required' : index < 19 ? 'Sessions' : 'Runs';
+
+  it.each([
+    [80, 24],
+    [100, 30],
+  ] as const)('%i×%i: while `↓` walks inside one section no section takes more or fewer rows; the focused row is drawn once', (cols, rows) => {
+    const shapes = new Map<string, Set<string>>();
+    for (let index = 0; index < strip.length; index += 1) {
+      const { rows: drawn } = frame({ ...RICH, cols, rows, focus: focusAt(strip, index) });
+      const list = listOf(drawn);
+      expect(list.filter((row) => row.trim().startsWith('> ')), `focus on ${String(index)}`).toHaveLength(1);
+      const sections = sectionsOf(list);
+      // the rows each section takes, markers included: its items and its markers (`▲` and `▼` each one row)
+      const taken = ['Attention required', 'Sessions', 'Runs']
+        .map((name) => {
+          const section = sections[name];
+          const markers = (section?.marker?.match(/[v^] \d+ more/gu) ?? []).length;
+          return `${name}:${String((section?.items ?? 0) + markers)}`;
+        })
+        .join(' ');
+      const group = sectionOf(index);
+      shapes.set(group, (shapes.get(group) ?? new Set<string>()).add(taken));
+    }
+    for (const [group, seen] of shapes) expect([...seen], `the focus in ${group}`).toHaveLength(1);
+  }); // prettier-ignore
+
+  it('moving into Runs leaves the focused window two rows and its markers, not one row between a `▲` and a `▼` (rows are given back by the sections above)', () => {
+    for (const [cols, rows] of [[80, 24], [100, 30]] as const)
+      for (let index = 19; index < strip.length; index += 1) {
+        const sections = sectionsOf(listOf(frame({ ...RICH, cols, rows, focus: focusAt(strip, index) }).rows));
+        expect(sections['Runs']?.items, `${String(cols)}×${String(rows)} focus ${String(index)}`).toBeGreaterThanOrEqual(2);
+      }
+  }); // prettier-ignore
+});
+
+describe('no section with items is ever lost beside a notice and a long draft (R2-W3a, correctness F2)', () => {
+  const lines = (count: number, prefix: string): string =>
+    Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1)}`).join('\n');
+
+  it.each([
+    [80, 24],
+    [100, 30],
+  ] as const)('%i×%i: notices of 0, 1, 3 and 6 lines, drafts of 1, 5, 8 and 9 lines, the focus nowhere, on the first row and on the last: every heading is drawn and the focused row is marked', (cols, rows) => {
+    for (const [a, s, r] of [[5, 5, 5], [12, 7, 8]] as const) {
+      const { snapshot, parked: parkedRows } = worldOf(a, s, r);
+      const strip = stripRows(parkedRows, snapshot);
+      for (const notice of [0, 1, 3, 6])
+        for (const draft of [1, 5, 8, 9])
+          for (const focus of [undefined, focusAt(strip, 0), focusAt(strip, strip.length - 1)]) {
+            const view = render(
+              <HomeView
+                page="work"
+                snapshot={snapshot}
+                parkedRuns={parkedRows}
+                editor={{ text: lines(draft, 'd'), cursor: lines(draft, 'd').length }}
+                nowMs={NOW}
+                cols={cols}
+                rows={rows}
+                color={false}
+                alternateScreen
+                stripFocus={focus}
+                notice={notice === 0 ? undefined : lines(notice, 'note ')}
+              />,
+            );
+            const drawn = (view.lastFrame() ?? '').replace(SGR, '').split('\n');
+            view.unmount();
+            const label = `${String(cols)}×${String(rows)} (${String(a)},${String(s)},${String(r)}) notice ${String(notice)} draft ${String(draft)} focus ${focus?.id ?? 'none'}`;
+            const text = drawn.join('\n');
+            expect(text, label).toContain('Attention required');
+            expect(text, label).toContain('Sessions');
+            expect(text, label).toContain('Runs');
+            // the frame is exactly rows − 1 tall, the hint row is the last, and the notice keeps the blank row above it
+            expect(drawn.length, label).toBe(rows - 1);
+            expect(drawn.at(-1), label).toContain('Esc start page');
+            if (notice > 0) {
+              const first = drawn.findIndex((row) => row.trim() === 'note 1');
+              expect(first, label).toBeGreaterThan(0);
+              expect(drawn[first - 1]?.trim(), label).toBe('');
+            }
+            if (focus !== undefined)
+              expect(drawn.filter((row) => /^ *> (\|\||x |wf-|Session )/u.test(row)).length, label).toBe(1);
+          }
+    }
+  }, 120_000); // prettier-ignore
 });

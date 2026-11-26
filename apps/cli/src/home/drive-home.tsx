@@ -2082,9 +2082,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
         // `Enter` on an unreadable run's row opens its read-only card on the Home's host (MVP-11 unit 7): the run as the snapshot holds it, the
-        // Home's own clock for its age.
+        // Home's own clock for its age; `[c] copy` rides the Home's one clipboard closure, as the reports' and the doctor's do.
         openUnreadableRun: ({ run }) => {
-          openOnHome((host) => openUnreadableRun({ host, run, origin: 'home', now }));
+          openOnHome((host) =>
+            openUnreadableRun({
+              host,
+              run,
+              origin: 'home',
+              now,
+              clipboard,
+              plainGlyphs: !deps.global.color,
+            }),
+          );
         },
         // What a setting the bare Home applied says, and a chat's model switch that could not be built: the Home's own channel (ADR-0148 §6).
         announce: (text) => {

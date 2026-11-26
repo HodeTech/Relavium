@@ -1,8 +1,10 @@
 /**
  * Page 1's most urgent item and the work page's `Enter` per kind, as pure data (MVP-11 unit 7, the maintainer's rulings 4 and 5): the landing's
- * head names the item, and what a narrow row gives up is, in order, the session and run counts, the deadline, the long form of `+N more need
- * you`, then the name's columns; when the name cannot keep {@link URGENT_NAME_FLOOR} columns the head says the count. The `↓` and the count of
- * Attention never drop. The work page's hint names the focused row's `Enter` and gives up `type to chat` first.
+ * head names the item, and what a narrow row gives up is, in order (round 2: the deadline outranks the count of the others), the session and
+ * run counts, the long form of `+N more need you`, the others whole, the deadline's long form for its compact one (`5m left`), then the name's
+ * columns around the compact deadline; when the name cannot keep {@link URGENT_NAME_FLOOR} columns the head says the count of all of Attention.
+ * An overdue item never gives up `expired`. `home-pages-urgent-ladder.test.ts` walks the whole ladder over every width and shape. The work
+ * page's hint names the focused row's `Enter` and gives up `type to chat` first.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -23,6 +25,7 @@ const URGENT: UrgentHead = {
   name: 'release-notes',
   words: 'needs approval',
   deadline: 'expires in 5m',
+  deadlineCompact: '5m left',
   overdue: false,
 };
 const COUNTS: WorkCounts = { attention: 3, sessions: 4, runs: 5 };
@@ -60,17 +63,20 @@ describe('the landing names the most urgent item', () => {
     expect(row.warn?.tone).toBeUndefined();
   });
 
-  it('gives up, as the row narrows: the example, the runs, the sessions, the deadline, `need you`, then the name, column by column', () => {
-    const widths = [140, 126, 117, 104, 88, 79, 74, 69];
+  it('gives up, as the row narrows: the example, the runs, the sessions, `need you`, the others, the deadline’s long form, then the name, column by column', () => {
+    const widths = [140, 126, 117, 104, 100, 88, 79, 74, 69];
     const rows = widths.map((columns) => landing({ columns }).text);
     expect(rows).toEqual([
       '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more need you · 4 sessions · 5 runs · [Ctrl+C] exit (twice)',
       '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more need you · 4 sessions · 5 runs · [Ctrl+C] exit (twice)',
       '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more need you · 4 sessions · [Ctrl+C] exit (twice)',
       '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more need you · [Ctrl+C] exit (twice)',
-      '[/] commands · ↓ release-notes needs approval · +2 more need you · [Ctrl+C] exit (twice)',
-      '[/] commands · ↓ release-notes needs approval · +2 more · [Ctrl+C] exit (twice)',
-      '[/] commands · ↓ release… needs approval · +2 more · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more · [Ctrl+C] exit (twice)',
+      // the maintainer's own example, whole, once the others no longer fit beside it (85 columns)
+      '[/] commands · ↓ release-notes needs approval · expires in 5m · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ release-notes needs approval · 5m left · [Ctrl+C] exit (twice)',
+      // the name is cut around the compact deadline, which outranks the others
+      '[/] commands · ↓ release… needs approval · 5m left · [Ctrl+C] exit (twice)',
       // below the name's floor the head is the count indicator, as it was before it could name an item (its counts droppable as ever)
       '[/] commands · ↓ 3 need you · 4 sessions · [Ctrl+C] exit (twice)',
     ]);
@@ -79,8 +85,8 @@ describe('the landing names the most urgent item', () => {
   }); // prettier-ignore
 
   it('keeps the name to its floor and no shorter: below it the head says the true count instead', () => {
-    // `↓ ` + floor + ` needs approval` and `+2 more` beside the hint's own items
-    const floorRow = '[/] commands · ↓ relea… needs approval · +2 more · [Ctrl+C] exit (twice)';
+    // `↓ ` + floor + ` needs approval` and the compact deadline beside the hint's own items
+    const floorRow = '[/] commands · ↓ relea… needs approval · 5m left · [Ctrl+C] exit (twice)';
     expect(displayWidth('relea…')).toBe(URGENT_NAME_FLOOR);
     expect(landing({ columns: displayWidth(floorRow) }).text).toBe(floorRow);
     expect(landing({ columns: displayWidth(floorRow) - 1 }).text).toBe(
@@ -132,7 +138,7 @@ describe('the landing names the most urgent item', () => {
       'Enter start the chat · ↓ release-notes needs approval · expires in 5m · +2 more need you · [Ctrl+C] exit (twice)',
     );
     // 80: the name keeps exactly its floor; 74: below it, the count
-    expect(at(80)).toBe('Enter start the chat · ↓ relea… needs approval · +2 more · [Ctrl+C] exit (twice)');
+    expect(at(80)).toBe('Enter start the chat · ↓ relea… needs approval · 5m left · [Ctrl+C] exit (twice)');
     expect(at(74)).toBe('Enter start the chat · ↓ 3 need you · [Ctrl+C] exit (twice)');
     expect(at(60)).toBe('Enter start the chat · ↓ 3 need you · [Ctrl+C] exit (twice)');
     expect(at(40)).toBe('Enter start the chat · [Ctrl+C] exit (twice)');

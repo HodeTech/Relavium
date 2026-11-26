@@ -86,7 +86,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   it('a failed run takes the marker, and the hint bar says Enter opens its details (MVP-11 unit 7)', () => {
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 0));
-    expect(frame).toContain('> x wf-f1 · failed 1h ago · $0.0000');
+    expect(frame).toContain('> x  wf-f1 · failed 1h ago · $0.0000');
     expect(frame).toContain('↑/↓ select · Enter details · type to chat · Esc start page');
     expect(frame).not.toContain('Enter resume');
   });
@@ -136,7 +136,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
       'recent:run-r1',
     ]);
     const frame = draw(snapshot, [], focusAt(rows, 0));
-    expect(frame).toContain('> ! run-u1 · wf-u1 · cannot be read');
+    expect(frame).toContain('> !  wf-u1 · cannot be read · run-u1');
     expect(frame).toContain('↑/↓ select · Enter why · type to chat · Esc start page');
     expect(frame.match(/run-u1/gu)).toHaveLength(1);
   });
@@ -176,7 +176,7 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
     const row = rows[index];
     if (row === undefined) throw new Error(`no row ${String(index)}`);
     if (row.role === 'parked') return `> || approval · ${row.id}`;
-    if (row.role === 'failed') return `> x wf-${row.id.slice('run-'.length)}`;
+    if (row.role === 'failed') return `> x  wf-${row.id.slice('run-'.length)}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return `> wf-${row.id.slice('run-'.length)}`;
   };
@@ -218,8 +218,8 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     '> || approval · run-p0',
     '> || approval · run-p1',
     '> || approval · run-p2',
-    '> x wf-f0',
-    '> x wf-f1',
+    '> x  wf-f0',
+    '> x  wf-f1',
     '> Conversation 0',
     '> Conversation 1',
     '> wf-r0',
@@ -259,7 +259,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     if (row.role === 'parked') return `> || approval · ${row.id}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return row.role === 'failed'
-      ? `> x wf-${row.id.slice('run-'.length)}`
+      ? `> x  wf-${row.id.slice('run-'.length)}`
       : `> wf-${row.id.slice('run-'.length)}`;
   };
   const strips: readonly (readonly [string, HomeSnapshot, readonly ParkedRunRow[]])[] = [
@@ -364,7 +364,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     },
   );
 
-  it('the notice leaves the Attention rows three rows for a failed run, as for a parked one, and a recent run alone four', () => {
+  it('the notice leaves what the list keeps: Attention three rows for a failed run, as for a parked one, a session or a recent run alone four, all three ten', () => {
     const longNotice = indexes(60)
       .map((n) => `report line ${String(n + 1)}`)
       .join('\n');
@@ -382,9 +382,16 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     const plain = rowsOf({});
     const attention = rowsOf({ hasAttentionRuns: true });
     const recent = rowsOf({ hasRecentRuns: true });
+    const session = rowsOf({ hasSessions: true });
+    const all = rowsOf({ hasAttentionRuns: true, hasSessions: true, hasRecentRuns: true });
     expect(plain).toBeDefined();
+    // Attention: its heading, its first row and its marker
     expect((plain ?? 0) - (attention ?? 0)).toBe(3);
-    expect((plain ?? 0) - (recent ?? 0)).toBe(3); // the work page's Runs section: its two headings and its row
+    // a Sessions or a Runs section: "Continue", its title, its first row and its marker
+    expect((plain ?? 0) - (recent ?? 0)).toBe(4);
+    expect((plain ?? 0) - (session ?? 0)).toBe(4);
+    // all three: the floor of the list (`workListFloor`)
+    expect((plain ?? 0) - (all ?? 0)).toBe(10);
   });
 
   it('stripReach names what the strip lists that `↓` can focus', () => {

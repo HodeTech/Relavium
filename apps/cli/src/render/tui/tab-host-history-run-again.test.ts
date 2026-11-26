@@ -8,17 +8,24 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type { HistoryRead } from '../../history/history-source.js';
+import type { HistoryQuery, HistoryRead } from '../../history/history-source.js';
 import type { RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
 import {
+  RUN_AGAIN_CHANGED,
   RUN_AGAIN_DIRECTORY_UNKNOWN,
   RUN_AGAIN_FILE_INVALID,
   RUN_AGAIN_NOT_DEFINED,
   RUN_AGAIN_OTHER_DIRECTORY,
   RUN_AGAIN_UNLISTED,
 } from './run-again.js';
-import { RUN, definedPortOver, historyListOfRun, runDetailRead } from './run-again.test-support.js';
+import {
+  NEWER_RUN,
+  RUN,
+  definedPortOver,
+  historyListOfRun,
+  runDetailRead,
+} from './run-again.test-support.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   enterHistoryAtDetail,
@@ -51,13 +58,17 @@ const definedPort = definedPortOver;
 interface Options {
   readonly detail?: RunDetailLoad;
   readonly defined?: DefinedPort | undefined;
+  /** What the History port answers a read with (default: the list holding the one run). */
+  readonly list?: (query: HistoryQuery) => HistoryRead;
 }
 
 /** The History tab on `RUN`'s detail, over a port that counts every read it is asked for. */
 function rig(options: Options = {}) {
   const fake = definedPort();
   const defined = 'defined' in options ? options.defined : fake.port;
-  const read = vi.fn((): HistoryRead => historyListOfRun());
+  const read = vi.fn(
+    (query: HistoryQuery): HistoryRead => options.list?.(query) ?? historyListOfRun(),
+  );
   const cost = vi.fn(() => ({ kind: 'text' as const, text: '$0.01' }));
   const loadDetail = vi.fn(() => Promise.resolve<RunDetailLoad>({ kind: 'missing' }));
   const loadNode = vi.fn(() => ({ kind: 'unavailable' as const }));
@@ -78,7 +89,8 @@ function rig(options: Options = {}) {
   };
   const onDetail = (load: RunDetailLoad = { kind: 'ready', detail: detailRead() }): void => {
     state = enterHistoryAtDetail(freshTabMemory('history'), context(), RUN);
-    state = withHistoryLoad(state, RUN, load);
+    // The catalog is handed in with the load: it decides, once, whether the legend offers `[r]` (the controller does the same).
+    state = withHistoryLoad(state, RUN, load, defined);
   };
   /** Every read the port was asked for, by name: what the model asked of the world. */
   const calls = () => ({
@@ -93,6 +105,8 @@ function rig(options: Options = {}) {
     onDetail,
     calls,
     definedReads: fake.read,
+    /** The queries the History port was asked to read, in order. */
+    queries: (): readonly HistoryQuery[] => read.mock.calls.map(([query]) => query),
     get state(): TabHostState {
       return state;
     },
@@ -202,7 +216,7 @@ describe('r that cannot run says why on the tab’s own message row, in one clos
       definedPort().port,
       RUN_AGAIN_NOT_DEFINED,
     );
-    expect(RUN_AGAIN_NOT_DEFINED).toBe('This workflow is not defined in this project any more.');
+    expect(RUN_AGAIN_NOT_DEFINED).toBe('This workflow is not defined in this project.');
   });
 
   it('a workflow whose file does not parse now, without the parse error', () => {
@@ -246,10 +260,10 @@ describe('r that cannot run says why on the tab’s own message row, in one clos
 });
 
 describe('the legend names `[r] run again` only where `r` is available, and the way out stays whole at 80 columns', () => {
-  const OFFERED = '←/→ tab · ↑/↓ scroll · [n] first failed · [p] pin · [r] run again · Esc back';
+  const OFFERED = '←/→ tab · Enter open · [n] first failed · [p] pin · [r] run again · Esc back';
   const NOT_OFFERED = '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back';
 
-  it('names it for a run of this directory whose workflow the detail could name, last before the way out', () => {
+  it('names it for a run of this directory whose workflow the catalog has, last before the way out, with `Enter open` kept', () => {
     const r = rig();
     r.onDetail();
     expect(r.legend()).toBe(OFFERED);
@@ -306,12 +320,11 @@ describe('the legend names `[r] run again` only where `r` is available, and the 
 });
 
 describe('the line under the detail says the truth: this run is not changed, and what the keys do', () => {
-  it('says a new run is started through the form where `r` is available, and names the way into a node', () => {
+  it('says the run is not changed where `r` is available, and names the way into a node without repeating `[r]` from the legend', () => {
     const r = rig();
     r.onDetail();
-    expect(HISTORY_DETAIL_HINT_AGAIN).toBe(
-      'This run is not changed. Enter opens a node; [r] opens the run form.',
-    );
+    expect(HISTORY_DETAIL_HINT_AGAIN).toBe('This run is not changed. Enter opens a node.');
+    expect(HISTORY_DETAIL_HINT_AGAIN).not.toContain('[r]');
     expect(r.text()).toContain(HISTORY_DETAIL_HINT_AGAIN);
     expect(r.text()).not.toContain('No run is changed here');
   });
@@ -360,10 +373,11 @@ describe('r is a key of the ready detail alone', () => {
     r.onDetail();
     r.openNodePage();
     expect(r.state.history?.detail?.node).toBeDefined();
+    const reads = r.definedReads.mock.calls.length; // the load read the catalog once, to decide the legend
     const step = r.press('r');
     expect(step.kind).toBe('state');
     expect(r.state.history?.detail?.node, 'still the node page').toBeDefined();
-    expect(r.definedReads).not.toHaveBeenCalled();
+    expect(r.definedReads.mock.calls.length, 'the press read no catalog').toBe(reads);
     r.press('', ESC);
     expect(r.press('r').kind, 'back on the detail it answers again').toBe('run');
   });
@@ -371,11 +385,12 @@ describe('r is a key of the ready detail alone', () => {
   it('is not a chord, and not a chunk: `Ctrl+R`, `Alt+R` and a pasted `rr` ask for nothing', () => {
     const r = rig();
     r.onDetail();
+    const reads = r.definedReads.mock.calls.length; // the load read the catalog once, to decide the legend
     expect(r.press('r', { ctrl: true }).kind).toBe('state');
     expect(r.press('r', { meta: true }).kind).toBe('state');
     expect(r.press('rr').kind).toBe('state');
     expect(r.press('rn').kind).toBe('state');
-    expect(r.definedReads).not.toHaveBeenCalled();
+    expect(r.definedReads.mock.calls.length, 'none of them read the catalog').toBe(reads);
   });
 
   it('does not change what the other keys of the detail do', () => {
@@ -388,5 +403,321 @@ describe('r is a key of the ready detail alone', () => {
     ).toBeGreaterThan(0);
     expect(r.press('p').kind).toBe('state');
     expect(r.press('', ENTER).kind).toBe('state');
+  });
+});
+
+describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the one key with the least to say (round 2)', () => {
+  const FAILED_OFFERED =
+    '←/→ tab · Enter open · [n] first failed · [p] pin · [r] run again · Esc back';
+  const COMPLETED_OFFERED =
+    '←/→ tab · ↑/↓ scroll · Enter open · [p] pin · [r] run again · Esc back';
+  const WHOLE = '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back';
+  const FLOOR = usableColumns(80);
+
+  const cases = [
+    {
+      name: 'a failed run of this directory with `r` offered',
+      detail: () => detailRead(),
+      legend: FAILED_OFFERED,
+      gives: '↑/↓ scroll',
+    },
+    {
+      name: 'a completed run of this directory with `r` offered',
+      detail: () =>
+        detailRead({ directory: 'here', workflowSlug: 'nightly', nodeStatus: 'completed' }),
+      legend: COMPLETED_OFFERED,
+      gives: '[n] first failed',
+    },
+    {
+      name: 'a failed run with `r` not offered (another directory)',
+      detail: () => detailRead({ directory: 'elsewhere', workflowSlug: 'nightly' }),
+      legend: WHOLE,
+      gives: undefined,
+    },
+    {
+      name: 'a completed run with `r` not offered (another directory)',
+      detail: () =>
+        detailRead({ directory: 'elsewhere', workflowSlug: 'nightly', nodeStatus: 'completed' }),
+      legend: WHOLE,
+      gives: undefined,
+    },
+  ] as const;
+
+  // 78 is the usable width of the 80-column floor (`FLOOR`, below): a terminal narrower than the floor draws no tab host at all.
+  for (const columns of [80, 100, 120]) {
+    for (const one of cases) {
+      it(`${one.name}, at ${String(columns)} columns: the whole of it on the legend row, the way out last`, () => {
+        const r = rig();
+        r.onDetail({ kind: 'ready', detail: one.detail() });
+        const lines = tabHostLines(r.state, { columns, terminalRows: 24 });
+        const drawn = lines.at(-1);
+        expect(drawn?.kind).toBe('legend');
+        expect(drawn?.text, 'not one item was cut with an ellipsis').not.toContain('…');
+        expect(drawn?.text).toBe(one.legend);
+        expect(displayWidth(drawn?.text ?? ''), 'fits the floor').toBeLessThanOrEqual(FLOOR);
+        expect(drawn?.text).toMatch(/Esc back$/u);
+        if (one.gives !== undefined) expect(drawn?.text).not.toContain(one.gives);
+      });
+    }
+  }
+
+  it('measures what the comment says: 89 columns with every item, 76 without the scroll, 70 without `[n]`, 73 where `r` is not offered', () => {
+    expect(FLOOR).toBe(78);
+    const widths = [FAILED_OFFERED, COMPLETED_OFFERED, WHOLE].map((text) => displayWidth(text));
+    // The two offered legends and the one without `r` are what the detail draws; the fourth number is what both would be with every item.
+    expect(widths).toEqual([76, 70, 73]);
+    expect(
+      displayWidth(
+        '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · [r] run again · Esc back',
+      ),
+      'every item does not fit the floor',
+    ).toBe(89);
+  });
+
+  it('says on a failed run that the scroll keys still work, and on a completed one that `n` still answers', () => {
+    const failed = rig();
+    failed.onDetail();
+    const before = failed.state.history?.detail?.cursor ?? 0;
+    failed.press('', DOWN);
+    expect(failed.state.history?.detail?.cursor, 'the arrows scroll though unlisted').toBe(
+      before + 1,
+    );
+    const completed = rig();
+    completed.onDetail({
+      kind: 'ready',
+      detail: detailRead({ directory: 'here', workflowSlug: 'nightly', nodeStatus: 'completed' }),
+    });
+    completed.press('n');
+    expect(completed.message(), 'an unlisted key is still never silent').toBe(
+      'No node of this run ended failed.',
+    );
+  });
+
+  it('keeps `Enter open` working where it is named: it opens the node the cursor is on', () => {
+    const r = rig();
+    r.onDetail();
+    r.openNodePage();
+    expect(r.state.history?.detail?.node).toBeDefined();
+  });
+
+  it('the line under the legend is the hint where `r` is offered, and a message a key leaves takes its row only until the next key', () => {
+    const r = rig();
+    r.onDetail();
+    expect(r.text()).toContain(HISTORY_DETAIL_HINT_AGAIN);
+    expect(r.text(), 'the legend carries `[r]`, so the line under it does not').not.toContain(
+      '[r] opens',
+    );
+    r.press('p'); // no pin store: its sentence replaces the hint
+    expect(r.text()).not.toContain(HISTORY_DETAIL_HINT_AGAIN);
+    r.press('', DOWN);
+    expect(r.text(), 'the next key brings the hint back').toContain(HISTORY_DETAIL_HINT_AGAIN);
+  });
+});
+
+describe('what the legend offers is what `r` does: never a promise the press refuses', () => {
+  const directories = ['here', 'elsewhere', 'unrecorded', undefined] as const;
+  const slugs = ['nightly', 'code-review', 'broken', 'release-notes', undefined] as const;
+
+  it('over every directory, slug and catalog the detail can meet, `[r] run again` is named exactly where `r` makes a request', () => {
+    let offered = 0;
+    for (const directory of directories)
+      for (const workflowSlug of slugs)
+        for (const catalog of ['listed', 'none', 'throws'] as const) {
+          const defined: DefinedPort | undefined =
+            catalog === 'listed'
+              ? definedPort().port
+              : catalog === 'none'
+                ? undefined
+                : {
+                    read: () => {
+                      throw new Error('PRIVATE /secret/path');
+                    },
+                  };
+          const r = rig({ defined });
+          // The same catalog is what the load is handed and what `r` reads.
+          r.onDetail({ kind: 'ready', detail: detailRead({ directory, workflowSlug }) });
+          const named = r.legend().includes('[r] run again');
+          const step = r.press('r');
+          const label = `${String(directory)}/${String(workflowSlug)}/${catalog}`;
+          expect(named, label).toBe(step.kind === 'run');
+          if (named) offered += 1;
+        }
+    expect(offered, 'only nightly and code-review of this directory against a listed catalog').toBe(
+      2,
+    );
+  });
+
+  it('does not offer a workflow the catalog lacks, and the refusal says the truth for an ad-hoc file that was never in the project', () => {
+    const r = rig();
+    r.onDetail({
+      kind: 'ready',
+      detail: detailRead({ directory: 'here', workflowSlug: 'adhoc-script' }),
+    });
+    expect(r.legend()).not.toContain('run again');
+    r.press('r');
+    expect(r.message()).toBe('This workflow is not defined in this project.');
+    expect(r.message(), 'no claim that it ever was').not.toContain('any more');
+  });
+
+  it('does not offer a workflow whose file does not parse, and a load given no catalog offers nothing', () => {
+    const broken = rig();
+    broken.onDetail({
+      kind: 'ready',
+      detail: detailRead({ directory: 'here', workflowSlug: 'broken' }),
+    });
+    expect(broken.legend()).not.toContain('run again');
+    const none = rig({ defined: undefined });
+    none.onDetail();
+    expect(none.legend()).not.toContain('run again');
+    expect(none.text()).toContain(HISTORY_DETAIL_HINT);
+  });
+
+  it('reads the catalog once as the detail lands, and not on a render or a scroll', () => {
+    const r = rig();
+    const before = r.definedReads.mock.calls.length;
+    r.onDetail();
+    expect(r.definedReads.mock.calls.length, 'the load read it once').toBe(before + 1);
+    r.legend();
+    r.text();
+    r.press('', DOWN);
+    expect(r.definedReads.mock.calls.length, 'drawing and scrolling read nothing').toBe(before + 1);
+  });
+});
+
+describe('a workflow that changed since the run: the form still opens, and the detail says so first', () => {
+  it('asks for the run and leaves `This workflow changed since that run.` on the detail’s message row', () => {
+    const r = rig();
+    // The catalog's `nightly` has one node; the run froze three.
+    r.onDetail({
+      kind: 'ready',
+      detail: detailRead({ directory: 'here', workflowSlug: 'nightly', authoredNodeCount: 3 }),
+    });
+    const step = r.press('r');
+    expect(step).toMatchObject({ kind: 'run', slug: 'nightly', path: 'nightly.yaml' });
+    expect(r.message()).toBe(RUN_AGAIN_CHANGED);
+    expect(r.text()).toContain(RUN_AGAIN_CHANGED);
+    r.press('', DOWN);
+    expect(r.message(), 'the next key drops it, as every sentence a key leaves').toBeUndefined();
+  });
+
+  it('says nothing when the workflow has the nodes the run froze, or the run froze no figure', () => {
+    for (const authoredNodeCount of [1, undefined]) {
+      const r = rig();
+      r.onDetail({
+        kind: 'ready',
+        detail: detailRead({ directory: 'here', workflowSlug: 'nightly', authoredNodeCount }),
+      });
+      expect(r.press('r').kind).toBe('run');
+      expect(r.message(), String(authoredNodeCount)).toBeUndefined();
+    }
+  });
+
+  it('is still named on the legend: a changed workflow is not a refusal', () => {
+    const r = rig();
+    r.onDetail({
+      kind: 'ready',
+      detail: detailRead({ directory: 'here', workflowSlug: 'nightly', authoredNodeCount: 3 }),
+    });
+    expect(r.legend()).toContain('[r] run again');
+  });
+});
+
+describe('Esc from a detail reads the list again, so a run that ended before its view opened is in it (round 2, observation F5)', () => {
+  /** A History list that grows: the run `r` started is in it once `list.started` is set, and a read fails once `list.fails` is. */
+  const list = { started: false, fails: false, page: 0 };
+  const source = (query: HistoryQuery): HistoryRead => {
+    void query;
+    if (list.fails) throw new Error('PRIVATE /secret/path');
+    return historyListOfRun(list.started ? [NEWER_RUN] : [], list.page);
+  };
+  const fresh = (): void => {
+    list.started = false;
+    list.fails = false;
+    list.page = 0;
+  };
+  const ids = (r: ReturnType<typeof rig>): readonly string[] =>
+    (r.state.history?.read?.rows ?? []).flatMap((entry) =>
+      entry.kind === 'run' ? [entry.row.id] : [],
+    );
+
+  it('puts the new run in the list the person lands on, with the cursor still on the run they came from', () => {
+    fresh();
+    const r = rig({ list: source });
+    r.onDetail();
+    expect(ids(r), 'the list read as the detail opened has the one run').toEqual([RUN]);
+    list.started = true; // `r` + `Ctrl+Y` started a run that ended at once: the detail stays, and the list behind it is old
+    r.press('', ESC);
+    expect(r.state.history?.detail, 'back on the list').toBeUndefined();
+    expect(ids(r), 'the list read again has the run that started meanwhile').toEqual([
+      NEWER_RUN,
+      RUN,
+    ]);
+    const selected = r.state.history?.read?.rows[r.state.history.cursor];
+    expect(
+      selected?.kind === 'run' ? selected.row.id : undefined,
+      'the cursor follows the run',
+    ).toBe(RUN);
+    expect(r.text()).toContain(NEWER_RUN.slice(0, 8));
+  });
+
+  it('reads FRESH, once, and only for the first page: the source keeps the pages it fetched, and a later page is not what a new run changes', () => {
+    fresh();
+    const first = rig({ list: source });
+    first.onDetail();
+    const before = first.queries().length;
+    first.press('', ESC);
+    expect(first.queries().length, 'one read').toBe(before + 1);
+    expect(first.queries().at(-1)).toMatchObject({ scope: 'project', page: 0, fresh: true });
+    list.page = 2;
+    const later = rig({ list: source });
+    later.onDetail();
+    const reads = later.queries().length;
+    later.press('', ESC);
+    expect(later.queries().length, 'a later page is left as it was').toBe(reads);
+    fresh();
+  });
+
+  it('reads nothing for a detail that is missing or unreadable, and nothing for the node page’s own Esc', () => {
+    fresh();
+    for (const load of [{ kind: 'missing' }, { kind: 'unreadable' }] as const) {
+      const r = rig({ list: source });
+      r.onDetail(load);
+      const reads = r.queries().length;
+      r.press('', ESC);
+      expect(r.queries().length, load.kind).toBe(reads);
+    }
+    const r = rig({ list: source });
+    r.onDetail();
+    r.openNodePage();
+    const reads = r.queries().length;
+    r.press('', ESC);
+    expect(r.state.history?.detail?.node, 'the node page closed').toBeUndefined();
+    expect(r.state.history?.detail, 'and the detail stays').toBeDefined();
+    expect(r.queries().length, 'the node page’s Esc is one level, not the way to the list').toBe(
+      reads,
+    );
+  });
+
+  it('keeps the list as it was and says so when the read fails', () => {
+    fresh();
+    const r = rig({ list: source });
+    r.onDetail();
+    list.fails = true;
+    r.press('', ESC);
+    list.fails = false;
+    expect(r.state.history?.detail).toBeUndefined();
+    expect(ids(r)).toEqual([RUN]);
+    expect(r.state.history?.message).toBe('The history could not be read again.');
+    expect(r.text()).not.toContain('PRIVATE');
+  });
+
+  it('is the same for Backspace, the detail’s other way back', () => {
+    fresh();
+    const r = rig({ list: source });
+    r.onDetail();
+    list.started = true;
+    r.press('', { backspace: true });
+    expect(ids(r)).toEqual([NEWER_RUN, RUN]);
+    fresh();
   });
 });

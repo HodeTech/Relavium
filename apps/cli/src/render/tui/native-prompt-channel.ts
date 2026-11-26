@@ -12,6 +12,7 @@ import {
   type ChordHistory,
   type ChordStamp,
 } from './chord-guard.js';
+import { createHeldOpener, type HeldOpener } from './held-opener.js';
 import { exitKey, legend, type LegendExit, type LegendItem } from './legend.js';
 import {
   cancelsPrompt,
@@ -436,6 +437,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
    * that was measured and flushed, and asked about every key before it is routed. Per flow, not per step.
    */
   const opening = createOpeningAdmission({ now, settleMs: options?.settleMs });
+  /**
+   * The key that opened the flow, while its repeats may still arrive (`held-opener.ts`): taken from the shared history when the flow begins. A
+   * flow no key opened has none, and every key is typed.
+   */
+  let heldOpener: HeldOpener = createHeldOpener(undefined);
   let snapshot = initial;
   let secret = '';
   let invalid = false;
@@ -615,6 +621,23 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   /** What a text or password prompt shows of what is typed: bullets (at most 32) for a secret, the sanitized text otherwise. */
   const shownText = (): string =>
     snapshot.kind === 'password' ? '•'.repeat(Math.min(secret.length, 32)) : sanitizeInline(secret);
+  /**
+   * The one character a held opener key typed before its second repeat showed it was held (`held-opener.ts`) taken back, when it is the whole of
+   * an open text field. A field with anything else in it, or none, is left as it is.
+   */
+  const takeBackOpenerCharacter = (character: string | undefined): void => {
+    if (character === undefined || snapshot.kind !== 'text' || settle === undefined) return;
+    if (invalid || secret !== character) return;
+    secret = '';
+    publish({ ...snapshot, display: shownText(), error: '' });
+  };
+  /** The verdict of the held-opener rule on one key; `true` when the key is a repeat of the key that opened the flow and must type nothing. */
+  const heldOpenerDrops = (input: string, key: Key | undefined, at: number): boolean => {
+    const character = heldOpener.character();
+    const verdict = heldOpener.observe(input, key, at);
+    if (verdict === 'retract') takeBackOpenerCharacter(character);
+    return verdict !== 'type';
+  };
   const append = (text: string): void => {
     if (snapshot.kind === 'picker') {
       picker?.paste(text);
@@ -845,6 +868,13 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       // prompt this key settles starts the lockout that holds a repeating key off the card that follows it.
       const stamp = chord.stamp();
       const open = settle !== undefined;
+      // A repeat of the key that opened the flow types nothing: it is a key held down through the opening. It is still typing as far as the
+      // guards go, as every key the prompt has no use for is.
+      if (heldOpenerDrops(input, key, stamp.now)) {
+        chord.foreign(stamp);
+        lock.sync();
+        return true;
+      }
       if (!admitOpening(input, key, stamp)) {
         // A refused press inside the lockout moved its end: the lock's one timer moves with it.
         lock.sync();
@@ -859,6 +889,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (!snapshot.active) return false;
       const stamp = chord.stamp();
       chord.foreign(stamp);
+      heldOpener.end(); // a paste is the person's own typing: the opener's repeats are over
       // A paste is typing: in a framed flow it waits, as a key does, for the flow's first frame to be on screen.
       if (snapshot.popup !== undefined && !opening.admits('type', stamp.now)) return true;
       append(text);
@@ -868,6 +899,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (!snapshot.active) return;
       const stamp = chord.stamp();
       chord.foreign(stamp);
+      // A key the host dropped (the card is not visible yet) is still a repeat of the opener's chain, or the end of it.
+      if (input === undefined) heldOpener.end();
+      else heldOpenerDrops(input, key, stamp.now);
       // A dropped key that may be an `Enter` on a guarded option, or a `Ctrl+Y` on a chord card, is a refused affirmative too: inside the
       // lockout it restarts it (see the port's comment).
       const mayAnswer = key === undefined || key.return || firstBoundary(input ?? '') >= 0;
@@ -902,6 +936,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       abort = new AbortController();
       // A new flow is a new popup: its opening guard starts again at its own first frame.
       opening.begin();
+      // ... and the key that opened it, if one did, is the one whose repeats its first field must not type (taken once: it belongs to this flow).
+      heldOpener = createHeldOpener(history.openedBy);
+      history.openedBy = undefined;
       publish({ ...initial, active: true, kind: 'busy' });
       return abort.signal;
     },

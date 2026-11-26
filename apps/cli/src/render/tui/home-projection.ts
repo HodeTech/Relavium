@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_AGENT_ID } from '../../chat/default-agent.js';
 import type {
   HomeAgentRow,
   HomeRunRow,
@@ -45,6 +46,34 @@ export function expiryLabel(expiresAt: string | undefined, nowMs: number): strin
   return `expires ${formatTimeUntil(deadlineMs - nowMs)}`;
 }
 
+/**
+ * {@link expiryLabel} in its compact form, for the room a cramped line has (page 1's head, MVP-11 unit 7 round 2): `5m left`, `1h left`, and
+ * `expired` once the deadline has passed (the one word that stays whole: under no colour nothing else says overdue). The same moment, the
+ * same rounding, the same clock; only the words are shorter.
+ */
+export function compactExpiryLabel(
+  expiresAt: string | undefined,
+  nowMs: number,
+): string | undefined {
+  const label = expiryLabel(expiresAt, nowMs);
+  if (label === undefined || label === 'expired') return label;
+  return `${label.slice('expires in '.length)} left`;
+}
+
+/**
+ * How long a parked run has waited, as the words of its row (MVP-11 unit 7 round 2: a row with no deadline carried no time, so eight runs
+ * were told apart by their ids alone): `waiting 2h`, `waiting 5m`, `waiting 3d`, and `waiting <1m` inside the first minute. `since` is the
+ * moment the run's record last changed, which for a run that waits is when it parked (`RunGates.parkedSince`, `home/run-gates.ts`).
+ * No words for a time that does not parse or one more than a minute ahead of the clock (a clock behind the log: the row claims nothing).
+ */
+export function waitingLabel(since: string | undefined, nowMs: number): string | undefined {
+  if (since === undefined) return undefined;
+  const age = formatAgeOfIso(since, nowMs);
+  if (age === 'just now') return 'waiting <1m';
+  const waited = /^(\d+[mhd]) ago$/u.exec(age)?.[1];
+  return waited === undefined ? undefined : `waiting ${waited}`;
+}
+
 const SEP = '  ·  ';
 
 // ---- The work page's rows (MVP-11 unit 7: the rows simplified) --------------------------------------------------------------------
@@ -53,7 +82,9 @@ const SEP = '  ·  ';
 // characters, host glyphs, answer chords, and the legend's separators and key tokens made inert) and then the triangles that pass for the
 // page's own `▲`/`▼ N more` marker are blanked ({@link workRowText}) BEFORE it is cut, so the row's own
 // separators are the only ones on it and a cut never splits an escape. A run is named by the first eight characters of its id (`shortId`),
-// last on its row: the whole id is in its detail.
+// last on its row: the whole id is in its detail. A cut is ALWAYS the one ellipsis glyph `…` (the glyph table's), and a stored `…` is never
+// drawn as it is: the scrub's compatibility fold makes it three dots (`rec…` is drawn `rec...`, the rule the status line keeps too), so on one
+// screen a `…` is the Home's own cut and `...` is text a title or a name brought, and the two can never be mistaken for each other.
 
 /** The separator between a work-page row's fields. */
 export const ROW_SEP = ' · ';
@@ -256,9 +287,36 @@ export function workRowText(stored: string): string {
   return blankMarkerLookalikes(flowLine(stored));
 }
 
-/** A run's id as its row names it: the first eight characters of the scrubbed id. */
-function rowId(runId: string): string {
+/** A run's id as its row names it: the first eight characters of the scrubbed id. The work page dims it where a row ends with it. */
+export function rowId(runId: string): string {
   return shortId(workRowText(runId));
+}
+
+/**
+ * A row as a label drew it, split before the `id` it ends with (the id the work page draws dim, last): the row up to the id, and the id. A row
+ * that does not end with the id (the id was given up, or the row's own cut reached it) is all lead, with no id: only a whole id is dimmed.
+ */
+export function splitRowId(
+  text: string,
+  id: string | undefined,
+): { readonly lead: string; readonly id: string | undefined } {
+  if (id === undefined || id.length === 0 || !text.endsWith(id))
+    return { lead: text, id: undefined };
+  return { lead: text.slice(0, text.length - id.length), id };
+}
+
+/**
+ * The three glyphs that lead an Attention row (a parked run, a failed run, a run that cannot be read), each padded on the right to the width of
+ * the widest of the three IN THE FORM IN FORCE, so the names start in one column whichever kind leads (MVP-11 unit 7, round 2): the glyphs
+ * are one column each, but without colour `||` is two and `x` and `!` are one.
+ */
+const ATTENTION_LEADS = ['paused', 'failed', 'warning'] as const;
+
+/** The lead of an Attention row of `kind` ({@link ATTENTION_LEADS}): its glyph in the form in force, padded to the widest of the three. */
+export function attentionLead(kind: (typeof ATTENTION_LEADS)[number]): string {
+  const widest = Math.max(...ATTENTION_LEADS.map((name) => displayWidth(glyph(name))));
+  const lead = glyph(kind);
+  return `${lead}${' '.repeat(Math.max(0, widest - displayWidth(lead)))}`;
 }
 
 /** A stored name as a row draws it: scrubbed, or none when it is absent. */
@@ -272,25 +330,54 @@ function runAnchor(row: HomeRunRow): string {
   return anchor ?? row.createdAt;
 }
 
+/** What {@link formatReportedCost} puts between an amount and the one note a verified-nothing run has (`$0.0002 known; usage unverified`). */
+const KNOWN_UNVERIFIED = ' known; usage unverified';
+
+/**
+ * A row's cost: the Home's compact cost ({@link formatCostShort}), and for the one qualifier every unverified run carries SHORTER than the
+ * report's sentence: `$0.0002 usage unverified` (24 columns) for `$0.0002 known; usage unverified` (31). The qualifier's words stay (a qualified
+ * cost never reads as clean, ADR-0145; `free` is only ever a verified, fully priced zero): only the connective `known;` goes, and the full sentence
+ * is in the run's own views. Every other qualified cost (pending usage, unknown calls, unknown prices) keeps its words as they are.
+ */
+function rowCost(
+  microcents: number,
+  coverage: HomeRunRow['usageCoverage'],
+  unpricedCalls: number | undefined,
+): string {
+  const cost = formatCostShort(microcents, coverage, unpricedCalls);
+  return cost.endsWith(KNOWN_UNVERIFIED)
+    ? `${cost.slice(0, -KNOWN_UNVERIFIED.length)} usage unverified`
+    : cost;
+}
+
 function costOf(row: HomeRunRow | HomeSessionRow): string {
-  return formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls);
+  return rowCost(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls);
 }
 
 /**
- * A session row: `title · agent · age · cost`, one row (every session the Home lists is this directory's, so no directory line). An UNTITLED
- * session shows its agent ONCE, as its name. A narrow row gives up the cost, the age, the title's tail, then the agent
+ * The fields that name a session: its title, and the agent that ran it unless that is the built-in chat agent (MVP-11 unit 7, round 2: every
+ * row of a Home that mostly chats said `relavium-chat`, which tells the rows nothing). An UNTITLED session shows its agent ONCE, as its name,
+ * whichever agent it is: it is all the row has to be known by. The built-in agent is told by its id ({@link DEFAULT_CHAT_AGENT_ID}); a file
+ * of the repository that is named the same is shown as the built-in agent here, and is told apart in the chat's own views.
+ */
+function sessionHead(row: HomeSessionRow): readonly RowField[] {
+  const agent = workRowText(row.agentSlug);
+  const title = rowName(row.title);
+  if (title === undefined || title.trim().length === 0) return [{ text: agent, role: 'name' }];
+  if (row.agentSlug === DEFAULT_CHAT_AGENT_ID) return [{ text: title, role: 'name' }];
+  return [
+    { text: title, role: 'name' },
+    { text: agent, role: 'detail' },
+  ];
+}
+
+/**
+ * A session row: `title · agent · age · cost`, one row (every session the Home lists is this directory's, so no directory line; the built-in
+ * chat agent is not named, {@link sessionHead}). A narrow row gives up the cost, the age, the title's tail, then the agent
  * ({@link SESSION_ROW_FIT}).
  */
 export function sessionLabel(row: HomeSessionRow, nowMs: number, maxColumns?: number): string {
-  const agent = workRowText(row.agentSlug);
-  const title = rowName(row.title);
-  const head: readonly RowField[] =
-    title === undefined || title.trim().length === 0
-      ? [{ text: agent, role: 'name' }]
-      : [
-          { text: title, role: 'name' },
-          { text: agent, role: 'detail' },
-        ];
+  const head = sessionHead(row);
   return fitRow(
     undefined,
     [
@@ -321,10 +408,10 @@ export function runLabel(row: HomeRunRow, nowMs: number, maxColumns?: number): s
   );
 }
 
-/** A failed run under Attention: `✗ workflow · failed 2h ago · cost · id` (the glyph from the table, in the form in force). */
+/** A failed run under Attention: `✗ workflow · failed 2h ago · cost · id` (the glyph from the table, in the form in force, {@link attentionLead}). */
 export function failedRunLabel(row: HomeRunRow, nowMs: number, maxColumns?: number): string {
   return fitRow(
-    glyph('failed'),
+    attentionLead('failed'),
     [
       { text: rowName(row.workflowSlug) ?? '', role: 'name' },
       { text: 'failed', role: 'keep' },
@@ -337,16 +424,17 @@ export function failedRunLabel(row: HomeRunRow, nowMs: number, maxColumns?: numb
 }
 
 /**
- * A run whose event log could not be read (#W15-15): `⚠ id · workflow · cannot be read`, its workflow only when the summary read could name
- * it. `Enter` on it says why (a read-only card); the row says only that it cannot be read.
+ * A run whose event log could not be read (#W15-15): `⚠ workflow · cannot be read · id`, its workflow only when the summary read could name
+ * it, and the run's first eight characters LAST, as on every other row (round 2: it led this row alone). `Enter` on it says why (a read-only
+ * card); the row says only that it cannot be read. A narrow row gives up the workflow's tail, then the id; `cannot be read` never.
  */
 export function unreadableRunLabel(run: HomeUnreadableRun, maxColumns?: number): string {
   return fitRow(
-    glyph('warning'),
+    attentionLead('warning'),
     [
-      { text: rowId(run.runId), role: 'keep' },
       { text: rowName(run.workflowSlug) ?? '', role: 'name' },
       { text: 'cannot be read', role: 'keep' },
+      { text: rowId(run.runId), role: 'detail' },
     ],
     maxColumns,
   );

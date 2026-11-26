@@ -1,0 +1,399 @@
+/**
+ * `r` held down on a History run's detail does not type into the launch form's first field (MVP-11 unit 7, round 2: security F2). The
+ * controller is real, the launch flow is `createRunLaunch` over the real native prompt channel on an injected clock and the Home's shared chord
+ * history (which is where the controller leaves the key that opened the flow and the channel finds it), and the workflow asks one text input, so
+ * the first thing the key opens is a text field. The held-key grid is the flow test's own: five initial delays by two rates.
+ *
+ * What is proved: a held `r` leaves the field empty once its second repeat has shown it is held, at every cell of the grid (the one character
+ * its first repeat typed is taken back); a deliberate `r` typed after a pause still types, with or without letters after it; a terminal that reports
+ * the repeat and a read that coalesced several are dropped at once; the key held in a Home whose controller recorded nothing (a flow no key
+ * opened) types as it always did; and nothing starts.
+ */
+import { parseWorkflow } from '@relavium/core';
+import type { Key } from 'ink';
+import { describe, expect, it, vi } from 'vitest';
+
+import type { RunDetailLoad } from '../../history/run-detail-source.js';
+import type { HomeSnapshot } from '../../home/home-store.js';
+import type { HostedLaunch, HostedStartRequest, RunHostSnapshot } from '../../home/run-host.js';
+import { createRunLaunch, type LaunchCatalog } from '../../home/run-launch.js';
+import { createChordHistory } from './chord-guard.js';
+import { createHomeController, type HomeChatSession } from './home-controller.js';
+import { createNativePromptChannel, type NativePromptSnapshot } from './native-prompt-channel.js';
+import { definedPortOver, historyListOfRun, runDetailRead } from './run-again.test-support.js';
+
+const none: Key = {
+  upArrow: false,
+  downArrow: false,
+  leftArrow: false,
+  rightArrow: false,
+  pageDown: false,
+  pageUp: false,
+  home: false,
+  end: false,
+  return: false,
+  escape: false,
+  ctrl: false,
+  shift: false,
+  tab: false,
+  backspace: false,
+  delete: false,
+  meta: false,
+  super: false,
+  hyper: false,
+  capsLock: false,
+  numLock: false,
+};
+const ENTER = { return: true } as const;
+const CTRL: Key = { ...none, ctrl: true };
+
+/** No input at all: the form opens on its confirmation card. */
+const NO_INPUTS = `schema_version: '1.0'
+workflow:
+  id: nightly
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
+/** One text input: the form's first prompt is a text field. */
+const ONE_FIELD = `schema_version: '1.0'
+workflow:
+  id: nightly
+  inputs:
+    - { name: topic, type: string, required: true }
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
+const EMPTY: HomeSnapshot = {
+  attention: { failedRuns: [] },
+  recentSessions: [],
+  recentRuns: [],
+  recentAgents: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
+  isEmpty: true,
+};
+const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+
+/** When the person presses `r`, on the injected clock: well after the Home's first frame. */
+const PRESSED_AT = 10_000;
+/** The form's first frame is measured and flushed this long after the key. */
+const FRAME_AFTER_MS = 60;
+/** How long a key is held in the grid, and the initial repeat delays and rates it is held at. */
+const HOLD_MS = 4_000;
+const INITIAL_DELAYS_MS = [0, 250, 500, 660, 1_800] as const;
+const REPEAT_INTERVALS_MS = [30, 100] as const;
+
+const catalogOf = (yaml: string): LaunchCatalog => ({
+  list: () => [{ path: 'nightly.yaml', slug: 'nightly', name: undefined, tags: [], valid: true }],
+  load: (path) => ({
+    definition: parseWorkflow(yaml, { source: path }),
+    sourceDigest: 'd'.repeat(64),
+    fsScope: { tier: 'sandboxed', fromRepository: false },
+  }),
+});
+
+const STARTED: HostedLaunch = {
+  kind: 'started',
+  leg: 'start',
+  runId: '0123456789abcdef-run',
+  ended: new Promise(() => {}),
+};
+
+/** A Home on a History detail whose `r` opens the real launch flow, asking a text field first. */
+async function mount(
+  options: {
+    readonly recordOpener?: boolean;
+    /** The workflow has no input: the form opens on its confirmation card, not a text field. */
+    readonly card?: boolean;
+    /** A launch that opens no flow (a refusal found before anything was asked): the key's record is then still on the history. */
+    readonly launch?: (slug?: string, path?: string) => Promise<string>;
+  } = {},
+) {
+  let clock = PRESSED_AT - 1_000;
+  const chordHistory = createChordHistory();
+  const channel = createNativePromptChannel({ now: () => clock, history: chordHistory });
+  let visible: NativePromptSnapshot | undefined;
+  channel.ui.bindVisibility((snapshot) => snapshot === visible);
+  const host = {
+    start: vi.fn((request: HostedStartRequest) => (void request, Promise.resolve(STARTED))),
+  };
+  const launch = createRunLaunch({
+    flow: channel.flow,
+    host,
+    catalog: catalogOf(options.card === true ? NO_INPUTS : ONE_FIELD),
+  });
+  const open = vi.fn((slug?: string, path?: string) => {
+    if (options.launch !== undefined) return options.launch(slug, path);
+    // A Home whose controller left no opener on the history: a flow no key opened (`/run` typed, a palette entry).
+    if (options.recordOpener === false) chordHistory.openedBy = undefined;
+    return launch.open(slug, path);
+  });
+  const controller = createHomeController({
+    startChat: () => new Promise<HomeChatSession>(() => {}),
+    history: {
+      read: () => historyListOfRun(),
+      cost: () => ({ kind: 'text', text: '$0.01' }),
+      loadDetail: () => Promise.resolve<RunDetailLoad>({ kind: 'ready', detail: runDetailRead() }),
+    },
+    defined: definedPortOver([
+      { slug: 'nightly', name: undefined, nodeCount: 2, path: 'nightly.yaml', valid: true },
+    ]).port,
+    launchRun: open,
+    chordHistory,
+    homeStore: { read: () => EMPTY },
+    hostedRuns: { snapshot: () => IDLE, cancel: () => true, close: () => Promise.resolve() },
+    schedule: () => () => {},
+    now: () => clock,
+    onExit: () => {},
+    onError: (cause) => {
+      throw cause;
+    },
+  });
+  expect(controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
+  controller.handleKey('', ENTER);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const rig = {
+    controller,
+    channel,
+    chordHistory,
+    host,
+    open,
+    at: (time: number): void => {
+      clock = time;
+    },
+    display: (): string => channel.ui.getSnapshot().display,
+    snapshot: (): NativePromptSnapshot => channel.ui.getSnapshot(),
+    /** The host measured and flushed the frame on the channel now. */
+    show: (): void => {
+      visible = channel.ui.getSnapshot();
+      channel.ui.shown(visible);
+    },
+    /** `r` pressed, and the form's first text field up for it. */
+    pressR: async (): Promise<void> => {
+      clock = PRESSED_AT;
+      controller.handleKey('r', {});
+      const first = options.card === true ? 'chord' : 'text';
+      for (let turn = 0; turn < 50 && channel.ui.getSnapshot().kind !== first; turn += 1)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(channel.ui.getSnapshot().kind, 'the form’s first prompt is up').toBe(first);
+    },
+    /** A key reaches the open form at `time`. */
+    key: (time: number, input: string, key: Key = none): void => {
+      clock = time;
+      channel.ui.input(input, key);
+    },
+  };
+  return rig;
+}
+
+describe('a `r` held down on the detail types nothing into the form’s first field', () => {
+  for (const initial of INITIAL_DELAYS_MS) {
+    for (const interval of REPEAT_INTERVALS_MS) {
+      it(`first repeat after ${String(initial)} ms, then every ${String(interval)} ms: the field is empty once the key is known to be held, and a deliberate key after it types`, async () => {
+        const m = await mount();
+        await m.pressR();
+        expect(m.open).toHaveBeenCalledWith('nightly', 'nightly.yaml');
+        let shown = false;
+        let peak = 0;
+        let last = PRESSED_AT;
+        for (let at = PRESSED_AT + initial; at <= PRESSED_AT + initial + HOLD_MS; at += interval) {
+          if (!shown && at >= PRESSED_AT + FRAME_AFTER_MS) {
+            m.at(PRESSED_AT + FRAME_AFTER_MS);
+            m.show(); // the form's first frame is on screen before this repeat
+            shown = true;
+          }
+          m.key(at, 'r');
+          last = at;
+          peak = Math.max(peak, m.display().length);
+        }
+        expect(peak, 'at most the one character the first repeat typed, ever').toBeLessThanOrEqual(
+          1,
+        );
+        expect(m.display(), 'taken back, and nothing typed after it').toBe('');
+        expect(m.snapshot().kind, 'still the first field').toBe('text');
+        expect(m.host.start).not.toHaveBeenCalled();
+        // The key is let go: a deliberate `r` after a pause is the person’s own, and the letters after it follow.
+        m.key(last + 400, 'r');
+        expect(m.display()).toBe('r');
+        m.key(last + 700, 'x');
+        expect(m.display()).toBe('rx');
+      });
+    }
+  }
+});
+
+describe('a deliberate `r` still types', () => {
+  it.each([300, 700, 1_500])(
+    'one `r` typed %i ms after the form opened, with letters after it, is the first letter of the value',
+    async (pause) => {
+      const m = await mount();
+      await m.pressR();
+      m.at(PRESSED_AT + FRAME_AFTER_MS);
+      m.show();
+      m.key(PRESSED_AT + pause, 'r');
+      expect(m.display()).toBe('r');
+      m.key(PRESSED_AT + pause + 220, 'e');
+      m.key(PRESSED_AT + pause + 440, 'l');
+      expect(m.display()).toBe('rel');
+    },
+  );
+
+  it('two `r`s typed 400 ms apart are two letters', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 500, 'r');
+    m.key(PRESSED_AT + 900, 'r');
+    expect(m.display()).toBe('rr');
+  });
+
+  it('a different letter first ends the rule: an `r` held after it is the person’s own typing', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 400, 'x');
+    for (let n = 0; n < 4; n += 1) m.key(PRESSED_AT + 600 + n * 30, 'r');
+    expect(m.display()).toBe('xrrrr');
+  });
+
+  it('a paste ends the rule: what a person pastes is their own, and `r`s after it are typing', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.at(PRESSED_AT + 300);
+    m.channel.ui.paste('ab');
+    m.key(PRESSED_AT + 500, 'r');
+    m.key(PRESSED_AT + 530, 'r');
+    expect(m.display()).toBe('abrr');
+  });
+
+  it('a flow no key opened types every letter, however fast', async () => {
+    const m = await mount({ recordOpener: false });
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    for (let n = 0; n < 4; n += 1) m.key(PRESSED_AT + 500 + n * 30, 'r');
+    expect(m.display()).toBe('rrrr');
+  });
+});
+
+describe('what a terminal says, and what a busy loop coalesces', () => {
+  it('a repeat the terminal reports as one is dropped at once, from the first', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    for (let n = 0; n < 20; n += 1) {
+      m.key(PRESSED_AT + 500 + n * 33, 'r', { ...none, eventType: 'repeat' });
+      expect(m.display()).toBe('');
+    }
+  });
+
+  it('a read that holds the key several times over is dropped whole, and the repeats after it', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 900, 'rrrrrrrr');
+    expect(m.display()).toBe('');
+    m.key(PRESSED_AT + 933, 'r');
+    m.key(PRESSED_AT + 966, 'rrr');
+    expect(m.display()).toBe('');
+  });
+
+  it('repeats that arrive before the form’s first frame count toward the chain, so the first one typed afterwards is not mistaken for a letter', async () => {
+    const m = await mount();
+    await m.pressR();
+    // The frame is acknowledged late: every repeat of the first 400 ms was dropped unseen by the opening guard.
+    for (let at = PRESSED_AT + 30; at < PRESSED_AT + 400; at += 30) m.key(at, 'r');
+    expect(m.display()).toBe('');
+    m.at(PRESSED_AT + 400);
+    m.show();
+    for (let at = PRESSED_AT + 420; at < PRESSED_AT + 1_500; at += 30) {
+      m.key(at, 'r');
+      expect(m.display()).toBe('');
+    }
+  });
+
+  it('keys the host dropped unseen keep the chain going, and one of them takes back the character a seen repeat typed', async () => {
+    const m = await mount();
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 500, 'r'); // the candidate, typed
+    expect(m.display()).toBe('r');
+    m.at(PRESSED_AT + 533);
+    m.channel.ui.unseenInput('r', none); // the host could not show the frame for this one
+    expect(m.display(), 'the unseen repeat showed the key is held').toBe('');
+  });
+});
+
+describe('the key that opened the form is left on the Home’s key history, and taken once by the flow it opened', () => {
+  it('the controller leaves a plain `r` and the moment it was pressed, and the flow takes it when it begins', async () => {
+    const refused = await mount({ launch: () => Promise.resolve('A run is already executing.') });
+    expect(refused.chordHistory.openedBy, 'nothing before the key').toBeUndefined();
+    refused.at(PRESSED_AT);
+    refused.controller.handleKey('r', {});
+    expect(refused.chordHistory.openedBy, 'left for a flow that has not begun').toEqual({
+      input: 'r',
+      at: PRESSED_AT,
+    });
+    const m = await mount();
+    await m.pressR();
+    expect(m.chordHistory.openedBy, 'taken by the flow it opened, once').toBeUndefined();
+  });
+
+  it('a chord, an Alt chord and a chunk of text open nothing and leave nothing', async () => {
+    const m = await mount();
+    m.controller.handleKey('r', { ctrl: true });
+    m.controller.handleKey('r', { meta: true });
+    m.controller.handleKey('rr', {});
+    expect(m.chordHistory.openedBy).toBeUndefined();
+    expect(m.open).not.toHaveBeenCalled();
+  });
+
+  it('the Defined tab’s own `r` leaves the same record: the one rule covers both keys that open the form', async () => {
+    const refused = await mount({ launch: () => Promise.resolve('A run is already executing.') });
+    expect(refused.controller.openScreen('tab-host', { tab: 'defined' })).toBe(true);
+    const screen = refused.controller.getSnapshot().screen;
+    expect(screen?.kind === 'tab-host' ? screen.host.tab : undefined, 'the Defined tab').toBe(
+      'defined',
+    );
+    refused.at(PRESSED_AT);
+    refused.controller.handleKey('r', {});
+    expect(refused.chordHistory.openedBy).toEqual({ input: 'r', at: PRESSED_AT });
+  });
+});
+
+describe('the chain a held `r` makes is still typing for the confirmation card’s guards', () => {
+  it('a `Ctrl+Y` shortly after the last repeat of a held `r` answers nothing, though the chain typed nothing anywhere', async () => {
+    const m = await mount({ card: true });
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show(); // the card is on screen, and its dwell and lockout run out well before the chain does
+    let last = PRESSED_AT;
+    for (let at = PRESSED_AT + 1_600; at <= PRESSED_AT + 4_000; at += 30) {
+      m.key(at, 'r');
+      last = at;
+    }
+    expect(m.snapshot().kind, 'the held key answered nothing').toBe('chord');
+    // Past the quiet gap (300 ms), inside the typeahead window (1.5 s): only the chain counted as typing keeps the chord from answering.
+    m.key(last + 600, 'y', CTRL);
+    expect(m.snapshot().kind, 'the card is still asking').toBe('chord');
+    expect(m.host.start).not.toHaveBeenCalled();
+    // Left alone for the whole window, the patient press answers.
+    m.key(last + 600 + 2_100, 'y', CTRL);
+    await vi.waitFor(() => expect(m.host.start).toHaveBeenCalledTimes(1));
+  });
+});

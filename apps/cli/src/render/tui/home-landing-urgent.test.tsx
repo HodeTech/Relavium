@@ -186,19 +186,20 @@ describe('the head with a plain name', () => {
     expect(plain).toBe(
       '[/] commands · ↓ release-notes needs approval · expires in 5m · +2 more need you · [Ctrl+C] exit (twice)',
     );
-    // The drawn colour, at 100 columns (the head and the words that stay with it are one span in the warning colour).
+    // The drawn colour, at 100 columns (the head and the words that stay with it are one span in the warning colour): 92 columns after the margin
+    // leave room for the maintainer's own example (the deadline, whole) and not for the others beside it (round 2).
     const coloured = hintRow('release-notes', 100, '', true);
     expect(coloured).toContain(
-      `${ESC}[33m↓ release-notes needs approval · +2 more need you${ESC}[39m`,
+      `${ESC}[33m↓ release-notes needs approval · expires in 5m${ESC}[39m`,
     );
   });
 
-  it('gives way, as the row narrows, in this order: the counts, the deadline, then `need you`, then the name is cut; the `↓` and the count never', () => {
+  it('gives way, as the row narrows, in this order: the counts, the others, the deadline’s long form, then the name is cut around the compact deadline (round 2)', () => {
     const at = (cols: number): string => hintRow('release-notes', cols, '').replace(SGR, '').trim();
-    // 92 columns after the margin: with its deadline the head is 104 wide, so the counts go, then the deadline
-    expect(at(100)).toBe('[/] commands · ↓ release-notes needs approval · +2 more need you · [Ctrl+C] exit (twice)');
-    // 74: then `need you`, then the name is cut to the eight columns the row leaves it
-    expect(at(80)).toBe('[/] commands · ↓ release… needs approval · +2 more · [Ctrl+C] exit (twice)');
+    // 92 columns after the margin: with its deadline and the others the head is 95 wide, so the counts go, then the others
+    expect(at(100)).toBe('[/] commands · ↓ release-notes needs approval · expires in 5m · [Ctrl+C] exit (twice)');
+    // 74: the name is cut to the columns the row leaves it, the compact deadline beside it
+    expect(at(80)).toBe('[/] commands · ↓ release… needs approval · 5m left · [Ctrl+C] exit (twice)');
   }); // prettier-ignore
 
   it('an overdue item is drawn red, and says `expired` in words too', () => {

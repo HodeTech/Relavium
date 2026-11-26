@@ -9,6 +9,7 @@
  */
 
 import type { HomeUnreadableRun } from '../home/home-store.js';
+import type { ClipboardWriter } from '../render/clipboard.js';
 import type { PopupOrigin } from './frame-model.js';
 import type { PopupHost } from './popup-host.js';
 
@@ -20,6 +21,10 @@ export interface UnreadableRunOpenRequest {
   readonly origin: PopupOrigin;
   /** The clock (epoch ms) the run's age is measured against. */
   readonly now: () => number;
+  /** The host's one clipboard closure (OSC 52) that `[c] copy` writes through; absent, copying says it is not available here. */
+  readonly clipboard?: ClipboardWriter | undefined;
+  /** The copied card is written in the glyphs' plain forms (colour is off, ADR-0145 §5). */
+  readonly plainGlyphs?: boolean | undefined;
 }
 
 /**

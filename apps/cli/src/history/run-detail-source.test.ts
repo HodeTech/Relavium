@@ -297,6 +297,22 @@ describe('the node table follows the run`s frozen workflow', () => {
     expect(running.at(-1)).toMatchObject({ id: 'ship', status: 'pending', text: 'not yet run' });
   });
 
+  it('says how many nodes the frozen workflow lists, as a figure for `r` to compare, and none when the snapshot cannot be read (round 2)', async () => {
+    await seedFixtureRuns(client.db);
+    const read = async (loadSnapshot: ((runId: string) => string | undefined) | undefined) =>
+      ready(
+        await createRunDetailLoader({ reader, listHeld: noHeld, loadSnapshot })(
+          FIXTURE_RUN_IDS.failed,
+        ),
+      );
+    // `plan`, `build`, `review` and `ship`: the nodes the snapshot lists, the one that never ran included.
+    expect((await read(() => FIXTURE_SNAPSHOT)).authoredNodeCount).toBe(4);
+    for (const loadSnapshot of [undefined, () => 'not json', () => '{"workflow":{}}']) {
+      const detail = await read(loadSnapshot);
+      expect('authoredNodeCount' in detail).toBe(false);
+    }
+  });
+
   it('keeps the nodes that ran in the order they ran, not the order the workflow authored', async () => {
     await seedFixtureRuns(client.db);
     const load = createRunDetailLoader({

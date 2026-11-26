@@ -16,6 +16,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { ParkedRunRow } from './home-attention.js';
 import {
   createHomeController,
+  RELATIVE_WORDS_REPAINT_MS,
   STRIP_REFRESH_MS,
   type HomeChatSession,
   type HomeController,
@@ -123,7 +124,7 @@ function rig(options: RigOptions) {
   let closed = false;
   let now = 0;
   let nextTimer = 1;
-  const timers = new Map<number, { at: number; run: () => void }>();
+  const timers = new Map<number, { at: number; run: () => void; delayMs: number }>();
   let readsFail = false;
   const read = vi.fn(() => {
     if (options.commitDuringFirstRead === true && read.mock.calls.length === 1)
@@ -178,7 +179,7 @@ function rig(options: RigOptions) {
     schedule: (run, delayMs) => {
       const id = nextTimer;
       nextTimer += 1;
-      timers.set(id, { at: now + delayMs, run });
+      timers.set(id, { at: now + delayMs, run, delayMs });
       return () => {
         timers.delete(id);
       };
@@ -231,7 +232,10 @@ function rig(options: RigOptions) {
     failReads: (fails: boolean): void => {
       readsFail = fails;
     },
-    pending: (): number => timers.size,
+    // The strip's own timers: the repaint for the clock (`RELATIVE_WORDS_REPAINT_MS`, the Home's second timer while a relative word is on
+    // screen: `home-relative-words-tick.test.ts` owns it) is not the strip's, and every claim here is about the strip's tick.
+    pending: (): number =>
+      [...timers.values()].filter((timer) => timer.delayMs !== RELATIVE_WORDS_REPAINT_MS).length,
   };
 }
 type Rig = ReturnType<typeof rig>;
@@ -296,6 +300,16 @@ describe('the idle tick reads the strip only when the change token moved', () =>
     await r.advance(STRIP_REFRESH_MS);
     expect(r.controller.getSnapshot().parkedRuns).toEqual([row]);
   });
+
+  it('shows the later time of a run that parked again, though nothing else of its row moved (`parkedSince`, round 2)', async () => {
+    const before: ParkedRunRow = { runId: 'p1', kind: 'approval', gates: 1, parkedSince: '2026-11-23T00:00:00.000Z' };
+    const r = rig({ snapshot: strip([], ['s1']), parked: [before] });
+    const after: ParkedRunRow = { ...before, parkedSince: '2026-11-23T05:00:00.000Z' };
+    r.show(strip([], ['s1']), [after]);
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS);
+    expect(r.controller.getSnapshot().parkedRuns).toEqual([after]);
+  }); // prettier-ignore
 
   it('keeps the rows it has when a read fails, and reads again at the next tick', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });

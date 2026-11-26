@@ -91,10 +91,10 @@ describe('the work page’s session rows', () => {
   ] as const)('are one row each, with no directory line under them (%s)', (_name, paths) => {
     const rows = rowsOf(homeFrame(snapshotOf(...DIRS), paths));
     expect(sessionSection(rows)).toEqual([
-      'Conversation 0 · chat · 1h ago · $0.0000 known; usage unverified',
-      'Conversation 1 · chat · 1h ago · $0.0000 known; usage unverified',
-      'Conversation 2 · chat · 1h ago · $0.0000 known; usage unverified',
-      'Conversation 3 · chat · 1h ago · $0.0000 known; usage unverified',
+      'Conversation 0 · chat · 1h ago · $0.0000 usage unverified',
+      'Conversation 1 · chat · 1h ago · $0.0000 usage unverified',
+      'Conversation 2 · chat · 1h ago · $0.0000 usage unverified',
+      'Conversation 3 · chat · 1h ago · $0.0000 usage unverified',
     ]);
     const text = rows.join('\n');
     for (const words of ['. (project root)', 'packages/app', '~/other', '/opt/shared', '/work/'])

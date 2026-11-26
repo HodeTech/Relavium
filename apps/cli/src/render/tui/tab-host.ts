@@ -348,15 +348,17 @@ export function withActiveNote(host: TabHostState, text: string): TabHostState {
 
 /**
  * `host` with a run's detail the host loaded, on the History tab; the same object when that tab is not in front or is not waiting for
- * that run (a result that arrives after the person left the detail changes nothing).
+ * that run (a result that arrives after the person left the detail changes nothing). `defined` is the catalog `r` will look the run's
+ * workflow up in: it decides, once, whether the detail's legend offers `[r] run again` (see {@link withHistoryDetail}).
  */
 export function withHistoryLoad(
   host: TabHostState,
   runId: string,
   load: RunDetailLoad,
+  defined?: DefinedPort,
 ): TabHostState {
   if (host.history === undefined) return host;
-  const history = withHistoryDetail(host.history, runId, load);
+  const history = withHistoryDetail(host.history, runId, load, defined);
   return history === host.history ? host : { ...host, history };
 }
 

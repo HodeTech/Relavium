@@ -160,13 +160,15 @@ describe.each([
     expect(busy.length).toBeLessThanOrEqual(rows - 1);
   });
 
-  it('page 2 is the work page: the way back, a blank row, the sections, and the docked prompt block in the last five rows', () => {
+  it('page 2 is the work page: the way back, a blank row when there are 26 rows or more (whitespace gives way first), the sections, and the docked prompt block in the last five rows', () => {
     const page = rowsOf({ cols, rows, page: 'work', focus: FIRST_ROW });
     expect(page, 'exactly rows − 1 rows').toHaveLength(rows - 1);
     expect(page[0]).toBe(`${pad}↑ start page`);
-    expect(page[1]).toBe('');
-    expect(page[2]).toBe(`${pad}Attention required`);
-    expect(page[3], 'the parked row: its kind and its id, no key at its end').toBe(
+    // 80×24: no blank row under the way back; 100×30: the blank row is there
+    const heading = rows >= 26 ? 2 : 1;
+    if (rows >= 26) expect(page[1]).toBe('');
+    expect(page[heading]).toBe(`${pad}Attention required`);
+    expect(page[heading + 1], 'the parked row: its kind and its id, no key at its end').toBe(
       `${pad}  > || approval · run-gate`,
     );
     const block = page.slice(-5);
@@ -291,7 +293,7 @@ describe('the indicator and its colour', () => {
 });
 
 describe('a notice on the work page', () => {
-  it('takes what the list leaves under the way back once the rows the focus reaches are kept: at 80×24 seven of them, its footer included', () => {
+  it('takes what the list leaves under the way back once the rows the list keeps are counted: at 80×24 five lines and its footer', () => {
     const notice = Array.from({ length: 60 }, (_, n) => `line ${String(n)}`).join('\n');
     const view = render(
       <HomeView
@@ -311,10 +313,16 @@ describe('a notice on the work page', () => {
     const page = trimmed(plain(view.lastFrame() ?? ''));
     view.unmount();
     expect(page).toHaveLength(23);
-    // 16 rows of list less the notice's blank row less what the focus must reach (the Attention section's three, a session's four): 8 rows
+    // 17 rows of list (no blank row under the way back at 24 rows) less the notice's blank row less what the list keeps (ten: Attention's heading,
+    // row and marker, "Continue", and a title, a row and a marker each for the sessions and the runs): 6 rows
     const noticeRows = page.filter((row) => /^ {6}line \d+$/u.test(row) || row.includes('PgUp/PgDn'));
-    expect(noticeRows).toHaveLength(8);
-    expect(noticeRows.at(-1)).toContain('Notice 1–7 of 60');
+    expect(noticeRows).toHaveLength(6);
+    expect(noticeRows.at(-1)).toContain('Notice 1–5 of 60');
+    // and the sections it left room for are all there: no section with items is gone beside a notice
+    const text = page.join('\n');
+    expect(text).toContain('Attention required');
+    expect(text).toContain('Sessions');
+    expect(text).toContain('Runs');
     expect(page.at(-4)?.trim(), 'the docked prompt is still there').toBe('> type a message, or / for commands');
   }); // prettier-ignore
 });

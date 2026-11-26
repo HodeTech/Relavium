@@ -105,6 +105,12 @@ export interface RunGates {
    * the Home continues it with no decision ({@link isMediaOnlyPark}). Absent reads as none (a stand-in for a read that was not made).
    */
   readonly pendingMediaJobNodeIds?: readonly string[];
+  /**
+   * When the run last changed, as the run's own row says (`runs.updated_at`, an ISO timestamp): for a paused run the moment it parked (the
+   * park writes the status and this time together, and nothing touches a run that waits), so the Home can say how long it has waited with
+   * no read of the log beyond the one that finds its gates. Absent when the run record the read started from carries none.
+   */
+  readonly parkedSince?: string;
   /** The run's event log could not be read: `gates` is a stand-in, not an answer. */
   readonly degraded: boolean;
 }
@@ -152,7 +158,7 @@ function timeoutActions(events: readonly RunEvent[]): ReadonlyMap<string, RunGat
 /** One parked run's gates, read from its own log in one isolated read (a damaged log degrades this run only). */
 export function gatesOfRun(
   reader: Pick<RunGatesReader, 'loadRunStateEvents'>,
-  run: { readonly id: string; readonly workflowId: string },
+  run: { readonly id: string; readonly workflowId: string; readonly updatedAt?: string },
 ): RunGates {
   const read = readPerRunOrDegrade<Omit<RunGates, 'degraded'>>(
     {
@@ -187,7 +193,11 @@ export function gatesOfRun(
       };
     },
   );
-  return { ...read.value, degraded: read.degraded };
+  return {
+    ...read.value,
+    ...(run.updatedAt === undefined ? {} : { parkedSince: run.updatedAt }),
+    degraded: read.degraded,
+  };
 }
 
 /** What one scan of the parked runs has gathered so far. */

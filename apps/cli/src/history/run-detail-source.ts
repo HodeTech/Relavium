@@ -65,6 +65,12 @@ export interface RunDetailRead {
    * (the header draws its own scrubbed label). Absent when the workflow was deleted since: the run no longer names a workflow of a project.
    */
   readonly workflowSlug?: string | undefined;
+  /**
+   * How many nodes the run's frozen workflow snapshot lists (`runs.workflow_definition_snapshot`, already read for the node order); absent
+   * when the snapshot could not be read. `r` compares it with the node count of the catalog entry that holds the slug now, to say that the
+   * workflow changed since the run (`run-again.ts`): a figure, never the snapshot's text.
+   */
+  readonly authoredNodeCount?: number | undefined;
   readonly model: RunDetailModel;
   /** The run's end is held in the terminal outbox: it is over, and the page says `held`, never `in progress`. */
   readonly terminalHeld: boolean;
@@ -219,6 +225,7 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
       status: run.status,
       ...(directory === undefined ? {} : { directory }),
       ...(workflowSlug === undefined ? {} : { workflowSlug }),
+      ...(nodes === undefined ? {} : { authoredNodeCount: nodes.length }),
       model,
       terminalHeld,
       heldUnread: input.heldUnread === true && !finished && !terminalHeld,

@@ -19,6 +19,7 @@ import {
   slideOffsets,
   slideTravel,
   workCounts,
+  workHeadRows,
   workHint,
   workListRows,
   type HintRow,
@@ -515,13 +516,20 @@ describe('the work page’s hint', () => {
 });
 
 describe('the work page’s list region', () => {
-  it('is 16 rows at 80×24 with the docked prompt (the way back, its blank row and the five rows of the block are the rest of 23)', () => {
-    expect(workListRows(24, 5)).toBe(16);
+  it('is 17 rows at 80×24 with the docked prompt (the way back and the five rows of the block are the rest of 23: no blank row under the way back below 26 rows) and 22 at 100×30 (with it)', () => {
+    expect(workListRows(24, 5)).toBe(17);
+    expect(workListRows(25, 5)).toBe(18);
+    expect(workListRows(26, 5)).toBe(18);
     expect(workListRows(30, 5)).toBe(22);
   });
 
+  it('keeps the blank row under the way back from 26 terminal rows: whitespace gives way before words', () => {
+    expect([24, 25, 26, 30].map((rows) => workHeadRows(rows))).toEqual([1, 1, 2, 2]);
+    expect(workHeadRows(Number.NaN)).toBe(1);
+  });
+
   it('gives a notice its rows and its blank row, and is never negative', () => {
-    expect(workListRows(24, 5, 4)).toBe(11);
+    expect(workListRows(24, 5, 4)).toBe(12);
     expect(workListRows(24, 30)).toBe(0);
     expect(workListRows(Number.NaN, 5)).toBe(0);
   });

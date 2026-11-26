@@ -65,8 +65,8 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
   throw new Error(`${what} was not reached within ${String(WAIT_TURNS)} turns`);
 }
 
-/** The Home over an injected mount (no TTY), on `client`'s file, with only the controller's timers faked. */
-async function mountHome(seed?: () => Promise<void>) {
+/** The Home over an injected mount (no TTY), on `client`'s file, with only the controller's timers faked; `controls` collects what it writes to the terminal. */
+async function mountHome(seed?: () => Promise<void>, controls?: string[]) {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   await seed?.();
   const opened: OpenedSessionStore = {
@@ -130,7 +130,9 @@ async function mountHome(seed?: () => Promise<void>) {
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    writeControl: () => undefined,
+    writeControl: (sequence) => {
+      controls?.push(sequence);
+    },
     exit: () => undefined,
     firstRunSetup: 'off',
     // the keys are driven with no renderer: the Home's pages swap instead of sliding (MVP-11 unit 7)
@@ -190,6 +192,46 @@ describe('driveHome wires the card of an unreadable run to its row', () => {
     popups?.input('', { escape: true });
     expect(popups?.getSnapshot().open).toBe(false);
     expect(controller.getSnapshot().stripFocus?.id).toBe('damaged-run');
+    expect(await home.leave()).toBe(0);
+  });
+
+  it('offers `[c] copy` on the card, and the copy goes through the Home’s own clipboard: OSC 52 over its terminal sink, the whole run id in it', async () => {
+    const controls: string[] = [];
+    const home = await mountHome(async () => {
+      await seedRun(client.db, { slug: 'release-notes', runId: 'damaged-run', state: 'completed' });
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(realpathSync.native(root), 'damaged-run');
+      client.sqlite
+        .prepare(
+          'INSERT INTO run_events (id, run_id, seq, event_type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+        .run('damaged-row-1', 'damaged-run', 99, 'node:started', '{"type":"node:started"}', 0);
+    }, controls);
+    const { controller, popups } = home.props;
+    controller.handleKey('', { downArrow: true });
+    await until(() => controller.getSnapshot().stripFocus?.id === 'damaged-run', 'the focus');
+    controller.handleKey('', { return: true });
+    await until(() => popups?.getSnapshot().frame?.spec.id === 'unreadable-run', 'the card');
+    expect(popups?.getSnapshot().frame?.spec.steps[0]?.controls).toEqual([
+      { key: 'c', verb: 'copy' },
+    ]);
+    const before = controls.length;
+    // The popup's first frame is on screen (the renderer is injected, so the test says so), and its settle time has passed.
+    popups?.bindVisibility(() => true);
+    const shown = popups?.getSnapshot();
+    if (shown !== undefined) popups?.shown(shown);
+    const settledAt = performance.now() + 600;
+    while (performance.now() < settledAt) await turn();
+    popups?.input('c', {});
+    await until(() => controls.length > before, 'the copy');
+    const sequence = controls.at(-1) ?? '';
+    const payload = /\]52;c;([A-Za-z0-9+/=]+)/u.exec(sequence)?.[1] ?? '';
+    const text = Buffer.from(payload, 'base64').toString('utf8');
+    expect(text).toContain('Run id    damaged-run');
+    expect(text).toContain('Run damaged- cannot be read');
+    expect(text).toContain('Other runs are not affected.');
+    popups?.input('', { escape: true });
     expect(await home.leave()).toBe(0);
   });
 });

@@ -18,7 +18,7 @@ import {
   tooSmallMessage,
   type ExitGuardPhase,
 } from './home-projection.js';
-import { attentionOrder, urgentWords, type ParkedRunRow } from './home-attention.js';
+import { attentionOrder, urgentHeadOf, type ParkedRunRow } from './home-attention.js';
 import { keyHint, legend } from './legend.js';
 import { HomeLanding, LandingPalette, type LandingStatus } from './home-landing.js';
 import {
@@ -311,13 +311,14 @@ function landingGeometry(
 
 /**
  * The most urgent item of "Attention required" as page 1 names it (MVP-11 unit 7): the first of the one urgency order (`attentionOrder`), in
- * the words `urgentWords` builds (its stored name scrubbed and bounded there), or none with nothing to continue or nothing under Attention.
+ * the words `urgentHeadOf` builds (its stored name scrubbed and bounded there), marked as only the most urgent of those READ when more items
+ * wait than the Home read (the snapshot's true count against the items in hand), or none with nothing to continue or nothing under Attention.
  */
 function urgentOf(input: PageInput): UrgentHead | undefined {
   if (!input.canContinue) return undefined;
   const { view } = input;
-  const first = attentionOrder(view.parkedRuns ?? NO_PARKED, view.snapshot, view.nowMs)[0];
-  return first === undefined ? undefined : urgentWords(first, view.nowMs);
+  const items = attentionOrder(view.parkedRuns ?? NO_PARKED, view.snapshot, view.nowMs);
+  return urgentHeadOf(items, view.snapshot.totals.attention, view.nowMs);
 }
 
 /** The landing's hint row: the one notification of the Home's channel in its place for its few seconds, else the hint of the draft and the Home's state. */

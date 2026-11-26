@@ -202,7 +202,7 @@ import {
 import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
-import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
+import { hostedEndNotice, showsRelativeWords, type ParkedRunRow } from './home-attention.js';
 import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { chordOf, createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
@@ -1042,6 +1042,14 @@ const UNREADABLE_CARD_UNAVAILABLE = 'That run cannot be shown here. Nothing was 
 /** How often the strip looks at the change token while the landing is in front (ADR-0140 §6). */
 export const STRIP_REFRESH_MS = 5000;
 
+/**
+ * How often the Home repaints for the clock alone while a relative word (`expires in 5m`, `failed 2h ago`, `waiting 3h`) is on screen
+ * (ADR-0140 §6, MVP-11 unit 7 round 2): the words are worded from the clock when the frame is painted, and a landing nothing else repaints
+ * kept the words of its last paint (`expires in 13s` stood for 45 s, and `expires in 5m` for hours). Half a minute is the finest the words
+ * need above the first minute and the coarsest that keeps a minute's words within one minute of the truth.
+ */
+export const RELATIVE_WORDS_REPAINT_MS = 30_000;
+
 /** What one tick of the strip's refresh reads: the aggregation and the parked rows, taken together. */
 interface StripRead {
   readonly snapshot: HomeSnapshot;
@@ -1114,7 +1122,8 @@ function sameParkedRows(a: readonly ParkedRunRow[], b: readonly ParkedRunRow[]):
         row.kind === other.kind &&
         row.gates === other.gates &&
         row.workflow === other.workflow &&
-        row.expiresAt === other.expiresAt
+        row.expiresAt === other.expiresAt &&
+        row.parkedSince === other.parkedSince
       );
     })
   );
@@ -1214,6 +1223,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let activePoll: ActivePoll | undefined;
   // The strip's idle refresh (ADR-0140 §6): one poll for the life of the Home, created below once everything it asks about exists.
   let stripPoll: ActivePoll | undefined;
+  // The repaint for the clock alone (`RELATIVE_WORDS_REPAINT_MS`): the timer, armed by `syncWordsTick` after every state change while a relative
+  // word is on screen on the idle landing or work page, and whether the pause facts it reads exist yet (they are built with the strip, below:
+  // a state change before then, the first ones the controller makes, has nothing to ask).
+  let cancelWordsTick: (() => void) | undefined;
+  let wordsTickReady = false;
   // Set when the strip's idle refresh drops the focused strip row because another terminal removed it: the first `Enter` after it is ignored
   // once (the person's `Enter` was meant for that row), and any other key, and any screen that opens or closes, ends it. It is a flag of
   // the landing's key handling, not something a screen draws.
@@ -1393,6 +1407,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // back is the landing's own.
     if (before.screen !== state.screen) focusJustDropped = false;
     syncActivePoll();
+    syncWordsTick();
     // A chat comes in front (its build starts, a resumed one is adopted): the Home's own notifications are about the Home, and go (CO76).
     if (before.mode === 'home' && state.mode !== 'home') deps.withdrawAnnouncements?.();
     notify();
@@ -1509,6 +1524,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     activePollRunning = false;
     activePoll?.cancel(); // the Active tab's poll is a timer too: the Home ending, or a signal, leaves nothing scheduled
     stripPoll?.cancel(); // and so is the strip's idle refresh
+    cancelWordsTick?.(); // and the repaint for the clock (every way the Home ends has set `exiting`, so no later state change arms it again)
+    cancelWordsTick = undefined;
     cancelHostedPoll?.();
     cancelHostedPoll = undefined;
     cancelExitGrace?.();
@@ -2091,6 +2108,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     closeScreen();
     if (note !== undefined) set({ notice: note });
   };
+  /**
+   * The plain character that opens a native flow, left on the Home's shared key history for the flow to read when it begins (round 2, security
+   * F2: `r` held down on a run's detail sends the launch form's first text field its auto-repeats; the channel drops them, `held-opener.ts`).
+   * A chord, a named key and a chunk of text are no key a person holds into a field, so they leave nothing.
+   */
+  const noteOpeningKey = (input: string, key: HomeKeyEvent): void => {
+    if (key.ctrl === true || key.meta === true || Array.from(input).length !== 1) return;
+    chordHistory.openedBy = { input, at: (deps.now ?? ((): number => performance.now()))() };
+  };
   /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
   const routeTabHostKey = (screen: TabHostScreen, input: string, key: HomeKeyEvent): void => {
     const step = foldTabHostKey(screen.host, input, key, {
@@ -2123,8 +2149,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tabMemory = tabHostMemory(step.state);
     if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
     // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
-    if (step.kind === 'run') openDefinedRun(step.slug, step.path);
-    else if (step.kind === 'export') openDefinedExport(step.slug);
+    if (step.kind === 'run') {
+      noteOpeningKey(input, key);
+      openDefinedRun(step.slug, step.path);
+    } else if (step.kind === 'export') openDefinedExport(step.slug);
     // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
     else if (step.kind === 'open-view') openActiveView(step.runId);
     else if (step.kind === 'open-gate') openGateCard(step.runId, 'landing', 'tab-host');
@@ -2711,7 +2739,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     void history.loadDetail(runId).then(
       (load) => {
         try {
-          land((host) => withHistoryLoad(host, runId, load));
+          land((host) => withHistoryLoad(host, runId, load, deps.defined));
         } catch (error) {
           failHome(error);
         }
@@ -4416,8 +4444,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       intervalMs: STRIP_REFRESH_MS,
       // What the strip READS does not depend on the clock alone (ADR-0140 §6: it reads when the change token moved, and a read that matches what
       // is shown repaints nothing), so a token that has not moved is never a reason to read. Its relative words (`5m ago`, `expires in 5m`)
-      // are worded when the landing is painted from the clock then: a landing nothing repaints keeps the words of its last paint until the
-      // next key, read or resize repaints it. That is the contract as written, not a missed tick.
+      // are worded when the landing is painted from the clock then, and what repaints it for the clock alone is not this poll but its own
+      // timer ({@link RELATIVE_WORDS_REPAINT_MS}, below), which repaints with no read.
       maxAgeMs: Number.POSITIVE_INFINITY,
       // The strip was read as the Home was built, so the first tick compares with the token taken before that read instead of reading
       // again: a commit that landed in between is read at the first tick. A token that could not be taken makes the poll read at once.
@@ -4425,6 +4453,48 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
     stripPoll.start();
   }
+
+  // ---- The repaint for the clock (ADR-0140 §6, MVP-11 unit 7 round 2: F8) ---------------------------------------------------
+  // The relative words of the landing and the work page (`expires in 5m`, `failed 2h ago`, `waiting 3h`) are worded from the clock when a
+  // frame is painted, so a Home nothing touches kept the words of its last paint (`expires in 13s` stood for 45 s; `expires in 5m`, for hours,
+  // past the deadline). While such a word is on the idle landing or the work page, ONE timer repaints it every RELATIVE_WORDS_REPAINT_MS: a
+  // new state with the same rows, and no read. It is armed and cancelled by `syncWordsTick`, which `set` runs after every change, so it
+  // exists only while a word is on screen and the strip's own pause facts (not the landing: a chat, a screen, a card, a popup, a palette, a
+  // terminal under the floor) do not hold; and it is cancelled with the Home's other timers when the Home ends.
+  function wordsTickWanted(): boolean {
+    return (
+      wordsTickReady &&
+      !exiting &&
+      !stripPollPaused() &&
+      showsRelativeWords({
+        page: state.homePage,
+        snapshot: state.snapshot,
+        parked: state.parkedRuns,
+      })
+    );
+  }
+  function syncWordsTick(): void {
+    const wanted = wordsTickWanted();
+    if (wanted && cancelWordsTick === undefined)
+      cancelWordsTick = schedule(onWordsTick, RELATIVE_WORDS_REPAINT_MS);
+    else if (!wanted && cancelWordsTick !== undefined) {
+      cancelWordsTick();
+      cancelWordsTick = undefined;
+    }
+  }
+  function onWordsTick(): void {
+    cancelWordsTick = undefined;
+    // `set` arms the next tick while a relative word is still on screen; a tick that finds none repaints nothing and ends the chain. A timer
+    // callback has no input handler around it to route a listener's failure, so it is routed here, as the strip's tick routes its own.
+    if (!wordsTickWanted()) return;
+    try {
+      set({});
+    } catch (error) {
+      failHome(error);
+    }
+  }
+  wordsTickReady = true;
+  syncWordsTick();
 
   return {
     subscribe(listener) {
@@ -4471,6 +4541,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     setTerminalSize(columns, rows) {
       terminal = { columns, rows };
+      syncWordsTick(); // a terminal below the floor pauses the repaint for the clock, one big enough again arms it
       // A resize while the pages slide ends the slide where it would arrive (MVP-11 unit 7).
       if (state.slide !== undefined) arriveSlide(false);
     },

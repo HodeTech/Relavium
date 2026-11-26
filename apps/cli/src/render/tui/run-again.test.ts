@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
 import type { RunDetailRead } from '../../history/run-detail-source.js';
 import {
+  RUN_AGAIN_CHANGED,
   RUN_AGAIN_DIRECTORY_UNKNOWN,
   RUN_AGAIN_FILE_INVALID,
   RUN_AGAIN_NOT_DEFINED,
@@ -35,17 +36,19 @@ function portOf(list: readonly DefinedEntry[] = entries) {
   return { port: { read } satisfies DefinedPort, read };
 }
 
-/** What a detail read says of a run, and nothing else (the decision reads these two fields and no more). */
-const detail = (over: Partial<Pick<RunDetailRead, 'directory' | 'workflowSlug'>>): RunDetailRead =>
-  ({ directory: 'here', workflowSlug: 'nightly', ...over }) as RunDetailRead;
+/** What a detail read says of a run, and nothing else (the decision reads these three fields and no more). */
+const detail = (
+  over: Partial<Pick<RunDetailRead, 'directory' | 'workflowSlug' | 'authoredNodeCount'>>,
+): RunDetailRead => ({ directory: 'here', workflowSlug: 'nightly', ...over }) as RunDetailRead;
 
 describe('the run is run again only from the directory it was started in', () => {
-  it('offers `r` for a run of this directory whose workflow the read could name, and for no other', () => {
-    expect(runAgainOffered(detail({}))).toBe(true);
-    expect(runAgainOffered(detail({ directory: 'elsewhere' }))).toBe(false);
-    expect(runAgainOffered(detail({ directory: 'unrecorded' }))).toBe(false);
-    expect(runAgainOffered(detail({ directory: undefined }))).toBe(false);
-    expect(runAgainOffered(detail({ workflowSlug: undefined }))).toBe(false);
+  it('offers `r` for a run of this directory whose workflow the catalog has, and for no other', () => {
+    const { port } = portOf();
+    expect(runAgainOffered(detail({}), port)).toBe(true);
+    expect(runAgainOffered(detail({ directory: 'elsewhere' }), port)).toBe(false);
+    expect(runAgainOffered(detail({ directory: 'unrecorded' }), port)).toBe(false);
+    expect(runAgainOffered(detail({ directory: undefined }), port)).toBe(false);
+    expect(runAgainOffered(detail({ workflowSlug: undefined }), port)).toBe(false);
   });
 
   it('refuses a run of another directory with one line, and never reads the catalog for it', () => {
@@ -88,7 +91,7 @@ describe('the workflow must still be defined in this directory, by the slug the 
     const refused = { kind: 'refused', message: RUN_AGAIN_NOT_DEFINED };
     expect(decideRunAgain(detail({ workflowSlug: undefined }), port)).toEqual(refused);
     expect(decideRunAgain(detail({ workflowSlug: 'release-notes' }), port)).toEqual(refused);
-    expect(RUN_AGAIN_NOT_DEFINED).toBe('This workflow is not defined in this project any more.');
+    expect(RUN_AGAIN_NOT_DEFINED).toBe('This workflow is not defined in this project.');
   });
 
   it('matches the slug exactly: a longer or shorter name, another case and a path are not the workflow', () => {
@@ -176,5 +179,107 @@ describe('every line is closed words: no stored text can be in one', () => {
       expect(JSON.stringify(decision)).not.toContain('passwd');
       expect(JSON.stringify(decision)).not.toContain('evil');
     }
+  });
+});
+
+describe('the offer is the decision: `[r]` is named exactly where `r` would run', () => {
+  const throwing: DefinedPort = {
+    read: () => {
+      throw new Error('PRIVATE /secret/path');
+    },
+  };
+
+  it('offers nothing a press would refuse, over every directory, slug and catalog the detail can meet', () => {
+    const directories = ['here', 'elsewhere', 'unrecorded', undefined] as const;
+    const slugs = ['nightly', 'code-review', 'broken', 'release-notes', '', undefined] as const;
+    const ports: readonly (DefinedPort | undefined)[] = [portOf().port, undefined, throwing];
+    let offered = 0;
+    for (const directory of directories)
+      for (const workflowSlug of slugs)
+        for (const port of ports) {
+          const read = detail({ directory, workflowSlug });
+          const decision = decideRunAgain(read, port);
+          expect(runAgainOffered(read, port), `${String(directory)}/${String(workflowSlug)}`).toBe(
+            decision.kind === 'run',
+          );
+          if (decision.kind === 'run') offered += 1;
+        }
+    // `nightly` and `code-review` of this directory against the real catalog: the only two worlds in which the key answers.
+    expect(offered).toBe(2);
+  });
+
+  it('does not offer a workflow the catalog lacks or whose file does not parse, or a catalog that cannot be read, and says why when pressed', () => {
+    const { port } = portOf();
+    expect(runAgainOffered(detail({ workflowSlug: 'release-notes' }), port)).toBe(false);
+    expect(runAgainOffered(detail({ workflowSlug: 'broken' }), port)).toBe(false);
+    expect(runAgainOffered(detail({}), undefined)).toBe(false);
+    expect(runAgainOffered(detail({}), throwing)).toBe(false);
+    expect(decideRunAgain(detail({ workflowSlug: 'release-notes' }), port)).toEqual({
+      kind: 'refused',
+      message: RUN_AGAIN_NOT_DEFINED,
+    });
+  });
+
+  it('reads the catalog once for a run of this directory, and never for a run the directory alone refuses', () => {
+    const here = portOf();
+    runAgainOffered(detail({}), here.port);
+    expect(here.read).toHaveBeenCalledTimes(1);
+    const elsewhere = portOf();
+    runAgainOffered(detail({ directory: 'elsewhere' }), elsewhere.port);
+    runAgainOffered(detail({ workflowSlug: undefined }), elsewhere.port);
+    expect(elsewhere.read).not.toHaveBeenCalled();
+  });
+});
+
+describe('a workflow that changed since the run is said, never refused', () => {
+  it('answers `run` with `changed` when the nodes the run froze are not the nodes the catalog entry has now', () => {
+    const { port } = portOf();
+    // `nightly` has one node in the catalog and `code-review` has five.
+    expect(decideRunAgain(detail({ workflowSlug: 'nightly', authoredNodeCount: 2 }), port)).toEqual(
+      {
+        kind: 'run',
+        slug: 'nightly',
+        path: 'nightly.yaml',
+        changed: true,
+      },
+    );
+    expect(
+      decideRunAgain(detail({ workflowSlug: 'code-review', authoredNodeCount: 4 }), port),
+    ).toMatchObject({ kind: 'run', slug: 'code-review', changed: true });
+  });
+
+  it('says nothing of a workflow whose node count is the one the run froze, or when either side cannot say', () => {
+    const { port } = portOf();
+    const same = decideRunAgain(detail({ workflowSlug: 'nightly', authoredNodeCount: 1 }), port);
+    expect(same, 'no `changed` key at all').toEqual({
+      kind: 'run',
+      slug: 'nightly',
+      path: 'nightly.yaml',
+    });
+    expect('changed' in same).toBe(false);
+    // The snapshot could not be read: the run froze no figure to compare.
+    expect(decideRunAgain(detail({ workflowSlug: 'nightly' }), port)).toEqual({
+      kind: 'run',
+      slug: 'nightly',
+      path: 'nightly.yaml',
+    });
+    // The catalog entry carries no count: nothing to compare.
+    const bare = portOf([{ slug: 'nightly', name: undefined, path: 'nightly.yaml', valid: true }]);
+    expect(
+      decideRunAgain(detail({ workflowSlug: 'nightly', authoredNodeCount: 7 }), bare.port),
+    ).toEqual({ kind: 'run', slug: 'nightly', path: 'nightly.yaml' });
+  });
+
+  it('is still offered: a changed workflow is not a refusal, so the legend names `r` for it', () => {
+    const { port } = portOf();
+    expect(runAgainOffered(detail({ workflowSlug: 'nightly', authoredNodeCount: 2 }), port)).toBe(
+      true,
+    );
+  });
+
+  it('is one closed sentence that fits the message row of the 80-column floor', () => {
+    expect(RUN_AGAIN_CHANGED).toBe('This workflow changed since that run.');
+    expect(RUN_AGAIN_CHANGED.length).toBeLessThanOrEqual(78);
+    expect(RUN_AGAIN_CHANGED).toMatch(/^[A-Z][^\n]*\.$/u);
   });
 });

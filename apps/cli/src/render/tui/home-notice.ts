@@ -8,6 +8,7 @@ import {
   showsLandingBlock,
 } from './home-layout.js';
 import { DOCKED_CHROME_ROWS, workEditorRows, workListRows } from './home-pages.js';
+import { workListFloor } from './home-work-budget.js';
 import { keyHint } from './legend.js';
 import { PROMPT_WINDOW_MIN_ROWS, wrappedRowCount } from './prompt-window.js';
 import { wrapWords } from './viewport.js';
@@ -52,17 +53,21 @@ export interface HomeNoticeOptions {
    * list, the notice under it, the docked prompt block).
    */
   readonly onLanding: boolean;
+  /**
+   * The strip lists a session, which `↓` can focus: its section keeps its title, its first row and its marker (with "Continue", three rows
+   * and the heading), so a long notice pages instead of taking them (`workListFloor`).
+   */
   readonly hasSessions: boolean;
   /**
-   * The strip lists an Attention row that `↓` can focus (a run parked in this directory, or a failed run): the Attention rows come first
-   * and are what `↓` reaches first, so the notice leaves them the three rows they cost at the least (their heading, the gap under it and
-   * one row). Without it a long notice could leave no row drawn while `↓` still focused one, and `Enter` would open a run the person had
-   * not seen listed.
+   * The strip lists an Attention row that `↓` can focus (a run parked in this directory, a failed run, a run whose log cannot be read): the
+   * Attention rows come first and are what `↓` reaches first, so the notice leaves them the three rows they cost at the least (their heading,
+   * the first row and the marker). Without it a long notice could leave no row drawn while `↓` still focused one, and `Enter` would open a
+   * run the person had not seen listed.
    */
   readonly hasAttentionRuns?: boolean;
   /**
-   * The strip lists a recent run, which `↓` can focus too. With no session above it, its section costs the margin, the two headings and
-   * its row (four rows); with sessions the room is the sessions' own, which give way to the focused run.
+   * The strip lists a recent run, which `↓` can focus too: its section keeps its title, its first row and its marker, whether or not there
+   * are sessions above it (the three sections are kept in full, each at its first row: ten rows with "Continue" and the Attention section).
    */
   readonly hasRecentRuns?: boolean;
   readonly page?: number;
@@ -99,14 +104,19 @@ export function boundedNotice(notice: string): string {
 }
 
 /**
- * The rows the work page's Continue section takes at the least: one session needs the two headings and its title and directory lines; a recent
- * run alone needs the headings and its row. (Agents are listed only beside sessions.)
+ * The rows the work page's list keeps at the least, whatever the notice: every section the strip lists at its first row beside its marker, the
+ * headings and titles with them (`workListFloor`: Attention's heading, row and marker, 3; "Continue" and, per section, its title, row and marker,
+ * 1 + 3 each; 10 with all three). The blank row under Attention is not counted (it is the first to go when the list is short), and the agents,
+ * the last section, are not either. A notice longer than what is left pages instead of taking these rows.
  */
-function continueSectionRows(
-  options: Pick<HomeNoticeOptions, 'hasSessions' | 'hasRecentRuns'>,
+function listFloorRows(
+  options: Pick<HomeNoticeOptions, 'hasSessions' | 'hasRecentRuns' | 'hasAttentionRuns'>,
 ): number {
-  if (options.hasSessions) return 4;
-  return options.hasRecentRuns === true ? 3 : 0;
+  return workListFloor({
+    attention: options.hasAttentionRuns === true,
+    sessions: options.hasSessions,
+    runs: options.hasRecentRuns === true,
+  });
 }
 
 /**
@@ -177,7 +187,7 @@ function noticeEditorRows(
  * Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. On the landing
  * (page 1) the room is what `rows − 1` leaves after the head, the notice's blank row above it, the prompt and its four rows ({@link landingNoticeRoom});
  * on the work page (page 2) it is what the list leaves under the way back once the docked prompt block, the notice's blank row and the rows the
- * focus can reach are counted ({@link workListRows}).
+ * list keeps for its sections are counted ({@link workListRows}, {@link listFloorRows}); the notice is never fewer than two rows.
  */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
@@ -190,10 +200,9 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
     const showBlock = showsLandingBlock(options.showBanner);
     available = Math.max(2, landingNoticeRoom(options.rows, showBlock, { promptRows }) - reserved);
   } else {
-    const management = continueSectionRows(options) + (options.hasAttentionRuns === true ? 3 : 0);
     // the list's rows under the docked prompt block, less the notice's own blank row, less what the list must keep and what the caller holds
     const list = workListRows(options.rows, DOCKED_CHROME_ROWS + promptRows);
-    available = Math.max(2, list - 1 - reserved - management);
+    available = Math.max(2, list - 1 - reserved - listFloorRows(options));
   }
   const all = wrappedNotice(options.notice, width);
   const overflow = all.length > available;

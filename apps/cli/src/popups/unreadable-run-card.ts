@@ -5,9 +5,14 @@
  * `Enter` of its own, so the key that opened it, held down, answers nothing here, and `Esc` is the only key that does anything but scroll.
  *
  * **Its text is the snapshot's and nothing else.** It reads no log again, writes nothing, starts nothing and names no path, error message or stack:
- * the only stored words on it are the run's id, its workflow's slug and its status, each passed through the one scrub of every Home flow
- * (`flowLine`: secrets, control and bidirectional characters, host glyphs, answer chords, key tokens and legend separators made inert) and cut to a
- * bound, so a hostile name can neither forge a key hint or a row nor take more than its own line.
+ * the only stored words on it are the run's id, its workflow's slug and its status, each passed through the folds of the work page's rows and of
+ * page 1's hint ({@link stored}: the one scrub of every Home flow, `flowLine`, with secrets, control and bidirectional characters, host glyphs,
+ * answer chords, key tokens and legend separators made inert; the triangles that pass for the page's `▲`/`▼ N more` marker; the brackets and
+ * arrows that dress a name up as a key) and cut to a bound, so a hostile name can neither forge a key hint or a row nor take more than its own line.
+ * The title and the first line are made of the same text, so what the rows of the page fold, the card folds.
+ *
+ * **Its one control is `[c] copy`** (ADR-0148 §1: every report popup offers it): the card as drawn, the whole run id included, goes to the host's
+ * clipboard as plain text. It changes nothing and answers nothing, so a key held down on it does no harm; `Esc` (and `Ctrl+C`) close it.
  *
  * A data module ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §10): pure, the clock passed in. Loaded the first time
  * a card is asked for (`unreadable-run-port.ts`), as every popup's code is.
@@ -15,10 +20,12 @@
 
 import type { HomeUnreadableRun, UnreadableRunReason } from '../home/home-store.js';
 import { formatAgeOfIso, shortId } from '../render/notation.js';
-import { flowLine } from '../render/tui/flow-text.js';
+import { foldKeyLookalikes } from '../render/tui/home-attention.js';
+import { workRowText } from '../render/tui/home-projection.js';
 import { clipLine } from '../render/tui/sheet-frame.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
-import type { PopupOpenResult } from './popup-host.js';
+import { copyControlsFor, copyReport } from './popup-copy.js';
+import type { PopupHandlers, PopupOpenResult } from './popup-host.js';
 import type { PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, wrapHanging, wrapPopupText } from './popup-text.js';
 import type { UnreadableRunOpenRequest } from './unreadable-run-port.js';
@@ -41,7 +48,7 @@ const REASON_WORDS: Readonly<Record<UnreadableRunReason, readonly string[]>> = {
     "This run's log has a row written by a newer version of Relavium.",
     'Update Relavium and it reads.',
   ],
-  'corrupt-row': ["This run's log has a damaged row."],
+  'corrupt-row': ["This run's log has a damaged row.", 'Other runs are not affected.'],
   'could-not-read': ["This run's log could not be read just now. Try again."],
 };
 
@@ -51,12 +58,16 @@ const NOTHING_CHANGED = 'Nothing was changed or started.';
 /** The label column of the facts. */
 const LABEL_WIDTH = 8;
 
-/** A stored value as the card draws it: read to a bound, scrubbed, cut to `columns`, and `unknown` when nothing of it is left. */
+/**
+ * A stored value as the card draws it: read to a bound, then folded as the work page's rows fold a name (`workRowText`: the full scrub, and the
+ * marker's lookalikes blanked) and as page 1's hint does (`foldKeyLookalikes`: brackets and arrows a name could pass for a key with), cut to
+ * `columns`, and `unknown` when nothing of it is left.
+ */
 function stored(text: string, columns: number): string {
   const read = Array.from(text.slice(0, READ_CODE_POINTS * 2))
     .slice(0, READ_CODE_POINTS)
     .join('');
-  const shown = clipLine(flowLine(read).trim(), columns);
+  const shown = clipLine(foldKeyLookalikes(workRowText(read)), columns);
   return shown === '' ? UNKNOWN : shown;
 }
 
@@ -98,7 +109,10 @@ export function unreadableRunContent(run: HomeUnreadableRun, nowMs: number): Pop
   return { kind: 'report', lines: unreadableRunLines(run, nowMs) };
 }
 
-/** The popup's spec: one read-only step with no control, so `Esc` is the one key that does more than scroll. */
+/**
+ * The popup's spec: one read-only step whose only control is `[c] copy`, kept on the legend row ahead of the scroll hint, so `Esc` and the copy
+ * are the keys that do more than scroll.
+ */
 export function unreadableRunSpec(
   origin: PopupOrigin,
   run: HomeUnreadableRun,
@@ -108,15 +122,33 @@ export function unreadableRunSpec(
     id: 'unreadable-run',
     title: `Run ${titleId(run)}`,
     origin,
-    steps: [{ name: 'Run', content }],
+    steps: [{ name: 'Run', content, controls: copyControlsFor(content), legendKeep: ['c'] }],
+  };
+}
+
+/** The one handler: `[c]` sends what the card draws (the lines passed through the popup's own last step) to the host's clipboard. */
+function copyHandlers(request: UnreadableRunOpenRequest, content: PopupContent): PopupHandlers {
+  return {
+    control: (context, key) => {
+      if (key === 'c' && content.kind === 'report')
+        copyReport(
+          context,
+          { clipboard: request.clipboard, plainGlyphs: request.plainGlyphs },
+          'Run',
+          content.lines,
+        );
+    },
   };
 }
 
 /**
- * Open the card over `host`. It has no handlers: `Esc` and `Ctrl+C` close it through the host's own keys, and nothing else answers. A refused open
+ * Open the card over `host`. `Esc` and `Ctrl+C` close it through the host's own keys, `[c]` copies it, and nothing else answers. A refused open
  * (a card is waiting, a turn is running) is said by the host in one notification.
  */
 export function openUnreadableRunCard(request: UnreadableRunOpenRequest): PopupOpenResult {
   const content = unreadableRunContent(request.run, request.now());
-  return request.host.openForUser(unreadableRunSpec(request.origin, request.run, content));
+  return request.host.openForUser(
+    unreadableRunSpec(request.origin, request.run, content),
+    copyHandlers(request, content),
+  );
 }

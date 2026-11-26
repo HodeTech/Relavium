@@ -63,10 +63,14 @@ describe('one row per paused run of this project', () => {
     await park('run-a', HERE, [{ gateId: 'g-a', gateType: 'approval' }], T0);
     await park('run-b', HERE, [{ gateId: 'g-b', gateType: 'review' }], T0 + 1);
     await park('run-c', HERE, [{ gateId: 'g-c', gateType: 'input' }], T0 + 2);
+    // Each row also carries when its run parked (the run record's own time: R2 round 2, `parkedSince`): the seed parks at `atMs`.
+    const parked = (atMs: number): { readonly parkedSince: string } => ({
+      parkedSince: new Date(atMs).toISOString(),
+    });
     expect(readParkedRuns(reader, HERE)).toEqual([
-      { runId: 'run-c', kind: 'input', gates: 1, workflow: 'wf' },
-      { runId: 'run-b', kind: 'review', gates: 1, workflow: 'wf' },
-      { runId: 'run-a', kind: 'approval', gates: 1, workflow: 'wf' },
+      { runId: 'run-c', kind: 'input', gates: 1, workflow: 'wf', ...parked(T0 + 2) },
+      { runId: 'run-b', kind: 'review', gates: 1, workflow: 'wf', ...parked(T0 + 1) },
+      { runId: 'run-a', kind: 'approval', gates: 1, workflow: 'wf', ...parked(T0) },
     ]);
   });
 

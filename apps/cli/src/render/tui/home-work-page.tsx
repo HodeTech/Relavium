@@ -26,6 +26,7 @@ import {
   DOCKED_PLACEHOLDER,
   WAY_BACK_LINE,
   workEditorRows,
+  workHeadRows,
   workListRows,
   type HintRow,
 } from './home-pages.js';
@@ -33,8 +34,10 @@ import {
   agentLabel,
   exitGuardLines,
   failedRunLabel,
+  rowId,
   runLabel,
   sessionLabel,
+  splitRowId,
   unreadableRunLabel,
   type ExitGuardPhase,
 } from './home-projection.js';
@@ -54,7 +57,7 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
  * The Home's WORK PAGE (page 2, MVP-11 unit 7): what `↓` from the landing goes down to. Left-hung at the Home's margin and exactly `rows − 1` rows
  * tall, top to bottom:
  *
- * - the way back, dim (`↑ start page`), and a blank row;
+ * - the way back, dim (`↑ start page`), and a blank row (from 26 terminal rows: whitespace gives way before words, `workHeadRows`);
  * - the sections, all of them this directory's: "Attention required" (the parked runs, the failed runs of the window and the runs whose log
  *   cannot be read, in their urgency order, `attentionOrder`), then "Continue": Sessions, Runs and Agents, newest first. Each is windowed to the
  *   rows the page leaves it by the allocation (`home-work-budget.ts`: the caps, the priority, the `▲`/`▼ N more` markers whose N is the TRUE
@@ -87,6 +90,8 @@ type SectionLine =
       readonly selected: boolean;
       /** An Attention row's colour (amber, red when overdue or failed): its selected look is the tinted one (`TintedSelectableText`). */
       readonly tint?: StatusColor;
+      /** The first eight characters of the run's id the row ends with, drawn dim on a row at rest when the row still ends with it whole. */
+      readonly id?: string;
     }
   | { readonly kind: 'more'; readonly key: string; readonly text: string };
 
@@ -114,6 +119,8 @@ export interface SectionsModel {
   readonly sessions: readonly SectionLine[];
   readonly runs: readonly SectionLine[];
   readonly agents: readonly SectionLine[];
+  /** Whether the blank row under Attention is drawn: the allocation keeps it only while it costs no row (`WorkAllocation.gap`). */
+  readonly gap: boolean;
 }
 
 export function buildSections(input: SectionsInput): SectionsModel {
@@ -152,11 +159,13 @@ function attentionLine(
   nowMs: number,
 ): SectionLine {
   const key = `${item.kind}:${item.runId}`;
+  const id = rowId(item.runId);
   switch (item.kind) {
     case 'parked':
       return {
         kind: 'row',
         key,
+        id,
         selected,
         text: parkedRunLabel(item.row, room, nowMs),
         tint: item.overdue ? 'red' : 'yellow',
@@ -165,6 +174,7 @@ function attentionLine(
       return {
         kind: 'row',
         key,
+        id,
         selected,
         text: failedRunLabel(item.run, nowMs, room),
         tint: 'red',
@@ -173,6 +183,7 @@ function attentionLine(
       return {
         kind: 'row',
         key,
+        id,
         selected,
         text: unreadableRunLabel(item.run, room),
         tint: 'yellow',
@@ -211,6 +222,7 @@ function sectionsIn(input: SectionsInput): SectionsModel {
   });
   const room = Math.max(1, input.columns - ROW_INDENT_COLUMNS);
   return {
+    gap: windows.gap,
     attention: linesOf(
       windows.attention,
       attention,
@@ -234,6 +246,7 @@ function sectionsIn(input: SectionsInput): SectionsModel {
       (run) => ({
         kind: 'row',
         key: run.runId,
+        id: rowId(run.runId),
         text: runLabel(run, nowMs, room),
         selected: runFocused(run.runId),
       }),
@@ -268,16 +281,22 @@ function SectionLineView(props: Readonly<{ line: SectionLine; color: boolean }>)
         {line.text}
       </Text>
     );
+  // The id a run's row ends with is dim on a row at rest (the way back and the titles are dim too; without colour nothing is, `dimProps`), drawn
+  // apart from the words before it. Only a row that still ends with the WHOLE id has one, and a SELECTED row is drawn whole in its selected look
+  // (bold, with its inverse or its tint): a dimmed stretch inside bold would contradict it, since both close with `ESC[22m`.
+  const split = splitRowId(sanitizeInline(line.text), line.selected ? undefined : line.id);
   const words = (
     <>
       {`${selectionMarker(line.selected, color)} `}
-      {sanitizeInline(line.text)}
+      {split.lead}
     </>
   );
+  const tail = split.id === undefined ? null : <Text {...dimProps(color)}>{split.id}</Text>;
   if (line.tint === undefined)
     return (
       <Text wrap="truncate-end">
         <SelectableText selected={line.selected}>{words}</SelectableText>
+        {tail}
       </Text>
     );
   return (
@@ -285,6 +304,7 @@ function SectionLineView(props: Readonly<{ line: SectionLine; color: boolean }>)
       <TintedSelectableText selected={line.selected} color={color}>
         {words}
       </TintedSelectableText>
+      {tail}
     </Text>
   );
 }
@@ -319,7 +339,8 @@ function Section(
 
 /**
  * The work page's list in a region of exactly `budget` rows, drawn as the allocation counted it (`workListChrome`): "Attention required" and its
- * lines; then, when a Continue section has lines, a blank row (only under Attention), the dim "Continue", and each section's title and lines.
+ * lines; then, when a Continue section has lines, a blank row (only under Attention, and only when the allocation kept it: `model.gap`), the dim
+ * "Continue", and each section's title and lines.
  */
 function WorkSections(
   props: Readonly<{ model: SectionsModel; budget: number; color: boolean }>,
@@ -337,7 +358,7 @@ function WorkSections(
           <Box marginLeft={2} flexDirection="column">
             <SectionLines lines={model.attention} color={color} />
           </Box>
-          {hasContinue && <Box height={1} />}
+          {hasContinue && model.gap && <Box height={1} />}
         </>
       )}
       {hasContinue && (
@@ -510,10 +531,13 @@ export function HomeWorkPage(props: Readonly<HomeWorkPageProps>): ReactElement {
       marginLeft={homeMargin(cols)}
       flexShrink={0}
     >
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {WAY_BACK_LINE}
-      </Text>
-      <Box height={1} />
+      {/* nothing in the head shrinks: whether the blank row under the way back is drawn is the page's own decision (`workHeadRows`, from 26 rows), not Yoga's */}
+      <Box flexShrink={0}>
+        <Text {...dimProps(color)} wrap="truncate-end">
+          {WAY_BACK_LINE}
+        </Text>
+      </Box>
+      {workHeadRows(rows) > 1 && <Box height={1} flexShrink={0} />}
       <WorkSections model={props.sections} budget={props.budget} color={color} />
       {notice !== undefined && (
         <Box flexDirection="column" flexShrink={0} marginTop={1}>

@@ -19,6 +19,7 @@
  */
 
 import type { ChatKey } from './chat-input.js';
+import type { OpenerKey } from './held-opener.js';
 import {
   approvalKeyRefusal,
   resolveApprovalGuard,
@@ -84,6 +85,12 @@ export interface ChordHistory {
   previousKeyAt: number;
   lastForeignKeyAt: number;
   lastResolvedAt: number;
+  /**
+   * The plain key that opened the native flow now beginning (the History detail's `r`), left by the surface that took it and taken by the
+   * channel when the flow begins, so that the flow's first text field does not type the key's auto-repeats (`held-opener.ts`). No time of the
+   * hands: no guard reads it, and a flow that no key opened leaves it unset.
+   */
+  openedBy?: OpenerKey | undefined;
 }
 
 export function createChordHistory(): ChordHistory {

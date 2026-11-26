@@ -34,8 +34,8 @@ const SNAPSHOT: HomeSnapshot = {
 /** The words only the card has: the closing line of every reason's text. */
 export const UNREADABLE_LANDMARK = 'Nothing was changed or started.';
 
-/** The legend row of the card: its one key. */
-export const UNREADABLE_LEGEND_ROW = 'Esc close';
+/** The legend row of the card: the copy, and the way out. */
+export const UNREADABLE_LEGEND_ROW = '[c] copy · Esc close';
 
 /** The box of the card the host has open in this cell. */
 export const unreadableRunBox = (variant: Variant, live?: PopupFrame, locked = false): PopupBox =>

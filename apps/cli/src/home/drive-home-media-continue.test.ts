@@ -209,9 +209,13 @@ async function mountHome() {
 describe('driveHome asks about a media park, and a Yes is the run host`s media resume', () => {
   it('the row says it waits for media, `Enter` opens the question on the prompt channel, and a Yes sends the media form for that run', async () => {
     const h = await mountHome();
-    expect(h.props.controller.getSnapshot().parkedRuns).toEqual([
-      { runId: RUN, kind: 'media', gates: 0, workflow: 'wf' },
-    ]);
+    // the row also carries when the run parked (the run record's own time, `parkedSince`: round 2)
+    expect(
+      h.props.controller.getSnapshot().parkedRuns.map(({ parkedSince, ...rest }) => ({
+        ...rest,
+        timed: typeof parkedSince === 'string',
+      })),
+    ).toEqual([{ runId: RUN, kind: 'media', gates: 0, workflow: 'wf', timed: true }]);
 
     h.ask();
     await until(() => h.props.nativePrompt?.getSnapshot().active === true, 'the question');

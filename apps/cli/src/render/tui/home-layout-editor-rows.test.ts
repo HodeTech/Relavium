@@ -38,7 +38,7 @@ describe('frameRows: one row short of the terminal, written once', () => {
     for (const rows of [24, 25, 30, 40, 80]) {
       expect(chatFrameRows(rows)).toBe(frameRows(rows));
       expect(slideTravel(rows)).toBe(frameRows(rows));
-      expect(workListRows(rows, 5)).toBe(Math.max(0, frameRows(rows) - 2 - 5));
+      expect(workListRows(rows, 5)).toBe(Math.max(0, frameRows(rows) - (rows >= 26 ? 2 : 1) - 5));
     }
   });
 });
@@ -82,10 +82,12 @@ describe('landingEditorRows: what rows − 1 leaves the landing’s prompt', () 
 });
 
 describe('workEditorRows: what rows − 1 leaves the work page’s docked prompt beside its list’s least', () => {
-  it('is 9 rows at 24 (a list of 8 beside it) and 15 at 30', () => {
-    expect(workEditorRows(24)).toBe(9);
-    expect(workEditorRows(30)).toBe(15);
+  it('is 8 rows at 24 (a list of 10, the floor, beside it) and 13 at 30', () => {
+    expect(workEditorRows(24)).toBe(8);
+    expect(workEditorRows(30)).toBe(13);
     expect(workListRows(24, 4 + workEditorRows(24))).toBe(WORK_LIST_MIN_ROWS);
+    expect(workListRows(30, 4 + workEditorRows(30))).toBe(WORK_LIST_MIN_ROWS);
+    expect(WORK_LIST_MIN_ROWS).toBe(10);
   });
 
   it('is never fewer than a window can have', () => {

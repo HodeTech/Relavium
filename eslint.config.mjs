@@ -337,6 +337,7 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/render/tui/chat-layout.ts',
   'apps/cli/src/render/tui/prompt-window.ts',
   'apps/cli/src/render/tui/home-floor.ts',
+  'apps/cli/src/render/tui/held-opener.ts',
   'apps/cli/src/render/tui/transcript-guard.ts',
   'apps/cli/src/home/home-status-facts.ts',
   'apps/cli/src/render/tui/home-pages.ts',

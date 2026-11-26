@@ -11,9 +11,11 @@
  * - **A run whose log cannot be read gets no parked row.** Its gates are unknown, so there is no kind to name and no gate card to open; it is
  *   the snapshot's unreadable item instead, whose `Enter` says why.
  * - **Bounded.** At most {@link PARKED_RUNS_MAX} runs are read, newest first, as the other strip lists are.
- * - **What the row says is what the person needs to pick a run** ({@link parkedRunLabel}): its workflow, the kind of gate, the earliest
- *   deadline of its open gates, and the first eight characters of its id. The key that opens it is named on the work page's hint row, for the
- *   focused row only, never at the row's end.
+ * - **What the row says is what the person needs to pick a run** ({@link parkedRunLabel}): its workflow, the kind of gate, its time (the
+ *   earliest deadline of its open gates, or with none how long the run has waited), and the first eight characters of its id. The key that
+ *   opens it is named on the work page's hint row, for the focused row only, never at the row's end.
+ * - **Page 1 names the first item** ({@link urgentHeadOf}), and says so only when it is the most urgent of ALL: the Home reads the newest
+ *   {@link PARKED_RUNS_MAX} paused runs, so with more waiting the head leads with the count of everything instead ({@link attentionIsPartial}).
  */
 
 import type { RunHistoryReader } from '@relavium/db';
@@ -35,10 +37,13 @@ import { formatAgeOfIso, shortId } from '../notation.js';
 import { flowLine } from './flow-text.js';
 import { glyph } from './glyphs.js';
 import {
+  attentionLead,
   classOfRanges,
+  compactExpiryLabel,
   expiryLabel,
   fitRow,
   MARKER_LOOKALIKE_RANGES,
+  waitingLabel,
   workRowText,
   type CodeRange,
 } from './home-projection.js';
@@ -72,6 +77,11 @@ export interface ParkedRunRow {
   readonly workflow?: string | undefined;
   /** The earliest deadline among the run's open gates (an ISO timestamp), when any gate has one. */
   readonly expiresAt?: string | undefined;
+  /**
+   * When the run parked, as its record says (an ISO timestamp; `RunGates.parkedSince`): what a row with no deadline says instead of one
+   * (`waiting 2h`). DISPLAY ONLY: it never changes the Attention order ({@link attentionOrder}).
+   */
+  readonly parkedSince?: string | undefined;
 }
 
 function kindOf(run: ProjectRunGates['runs'][number]): ParkedRunKind {
@@ -113,6 +123,7 @@ export function parkedRunRows(
         gates: run.gates.length + run.budgetGates.length,
         ...(workflow === undefined ? {} : { workflow }),
         ...(expiresAt === undefined ? {} : { expiresAt }),
+        ...(run.parkedSince === undefined ? {} : { parkedSince: run.parkedSince }),
       };
     });
 }
@@ -176,7 +187,9 @@ function newestFirst<T extends { readonly runId: string; readonly at: number }>(
  *
  * 1. the parked runs whose deadline has passed, the longest overdue first, then those whose deadline is still ahead, the soonest first (one
  *    ascending sort of the deadline is both: a passed deadline is an earlier one);
- * 2. the parked runs with no deadline, in the read's order, which is newest first (`readParkedRuns`; the row carries no time of its own);
+ * 2. the parked runs with no deadline, in the read's order, which is newest first (`readParkedRuns`; the time a row now carries,
+ *    `parkedSince`, is for its words only and takes no part in the order: the maintainer's ruling names this order, and a tie-break by it
+ *    would reorder runs the read already ranks);
  * 3. the failed runs of the window, newest first;
  * 4. the runs whose log cannot be read, newest first (one with no creation time last).
  *
@@ -272,10 +285,21 @@ export function parkedRunOverdue(row: ParkedRunRow, nowMs: number): boolean {
 }
 
 /**
- * The work page's row of a parked run: `‖ workflow · kind · deadline · id` (`‖ release-notes · approval · expires in 5m · 3f9a1c2e`), the
- * workflow only when the read could name it, the deadline only with a clock and a gate that has one, and the run's first eight characters
- * last. No key is named on the row: the hint row names the focused row's `Enter`. `maxColumns` is the room the row has; what a narrow row
- * gives up, in order, is the workflow's tail, the deadline, the id, then the workflow; the kind never ({@link fitRow}).
+ * The TIME a parked row carries (the row's `age` slot): its deadline when a gate has one (`expires in 5m`, `expired`: the more urgent fact, so
+ * it wins the slot), else how long the run has waited (`waiting 2h`, {@link waitingLabel}); nothing without a clock or without either.
+ */
+function parkedRunTime(row: ParkedRunRow, nowMs: number | undefined): string {
+  if (nowMs === undefined) return '';
+  return expiryLabel(row.expiresAt, nowMs) ?? waitingLabel(row.parkedSince, nowMs) ?? '';
+}
+
+/**
+ * The work page's row of a parked run: `‖ workflow · kind · time · id` (`‖ release-notes · approval · expires in 5m · 3f9a1c2e`, or with no
+ * deadline `‖ review-docs · review · waiting 2h · b1cf9111`), the workflow only when the read could name it, the time only with a clock
+ * ({@link parkedRunTime}), and the run's first eight characters last. No key is named on the row: the hint row names the focused row's
+ * `Enter`. `maxColumns` is the room the row has; what a narrow row gives up, in order, is the workflow's tail, the time (deadline or
+ * waiting), the id, then the workflow; the kind never ({@link fitRow}). The lead glyph is padded to the one column the other Attention rows
+ * share ({@link attentionLead}).
  */
 export function parkedRunLabel(
   row: ParkedRunRow,
@@ -283,14 +307,11 @@ export function parkedRunLabel(
   nowMs?: number,
 ): string {
   return fitRow(
-    glyph('paused'),
+    attentionLead('paused'),
     [
       { text: row.workflow === undefined ? '' : workRowText(row.workflow), role: 'name' },
       { text: parkedKindWords(row), role: 'keep' },
-      {
-        text: (nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs)) ?? '',
-        role: 'age',
-      },
+      { text: parkedRunTime(row, nowMs), role: 'age' },
       { text: shortId(workRowText(row.runId)), role: 'detail' },
     ],
     maxColumns,
@@ -374,13 +395,18 @@ export const URGENT_NAME_COLUMNS = 24;
 /**
  * What page 1's hint says of the most urgent item: its name (`release-notes`, or `run 3f9a1c2e` when the workflow cannot be named; none for
  * a run whose log cannot be read, whose words say it), the words of its kind (`needs approval`, `failed 2h ago`, `a run cannot be read`, …),
- * its deadline words (`expires in 5m`, `expired`) when it has one, and whether it is overdue (the view draws it red).
+ * its deadline words (`expires in 5m`, `expired`) when it has one and the same deadline in its compact form (`5m left`, `expired`) for the room
+ * a cramped hint has, whether it is overdue (the view draws it red), and whether it is only the most urgent of the items that were READ
+ * ({@link attentionIsPartial}).
  */
 export interface UrgentWords {
   readonly name: string | undefined;
   readonly words: string;
   readonly deadline: string | undefined;
+  readonly deadlineCompact: string | undefined;
   readonly overdue: boolean;
+  /** More attention items exist than were read, and the ones not read may be more urgent: the hint must not call this one the most urgent. */
+  readonly partial: boolean;
 }
 
 /** The words of a parked run's kind as page 1 says them: `needs approval`, `hit a budget limit`, `has 3 open gates`, `is parked`, … */
@@ -402,21 +428,27 @@ function parkedHeadWords(row: ParkedRunRow): string {
 }
 
 /**
- * A stored name as page 1's hint draws it, on a sink of its own: the Home's full row scrub (`flowLine`) FIRST, then every bracket a
- * parenthesis (the scrub makes a chord token inert, but a bracketed universal key such as `[Enter]` is not the grammar's and it leaves it, so a
- * name could still dress up as a key beside the real ones: the CJK and mathematical brackets too, {@link BRACKET_PAIR_RANGES}, and the fullwidth
- * ones, which the scrub has already folded to the ASCII pair), then
- * every arrow, arrowhead, triangle and return key a space (the hint's own `↓` is the only one on the row, {@link ARROW_LOOKALIKE_RANGES}), then
- * every run of whitespace ONE space, then bounded to {@link URGENT_NAME_COLUMNS} columns, by display width. The legend's separator a name
- * brings is already inert (` - `).
+ * A name already through the Home's full row scrub (`flowLine`) as page 1's hint folds it, on a sink of its own: every bracket a parenthesis
+ * (the scrub makes a chord token inert, but a bracketed universal key such as `[Enter]` is not the grammar's and it leaves it, so a name could
+ * still dress up as a key beside the real ones: the CJK and mathematical brackets too, {@link BRACKET_PAIR_RANGES}, and the fullwidth ones,
+ * which the scrub has already folded to the ASCII pair), then every arrow, arrowhead, triangle and return key a space (the hint's own `↓` is the
+ * only one on the row, {@link ARROW_LOOKALIKE_RANGES}), then every run of whitespace ONE space. Exported so that every other place that draws
+ * a stored name beside real keys (the card of an unreadable run) folds it the same way.
  */
-export function urgentName(stored: string): string {
-  const scrubbed = flowLine(stored)
+export function foldKeyLookalikes(scrubbed: string): string {
+  return scrubbed
     .replace(BRACKETS, (bracket) => (OPENING_BRACKETS.has(bracket) ? '(' : ')'))
     .replace(ARROWS, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
-  return clipLine(scrubbed, URGENT_NAME_COLUMNS);
+}
+
+/**
+ * A stored name as page 1's hint draws it: the Home's full row scrub (`flowLine`) FIRST, then {@link foldKeyLookalikes}, then bounded to
+ * {@link URGENT_NAME_COLUMNS} columns, by display width. The legend's separator a name brings is already inert (` - `).
+ */
+export function urgentName(stored: string): string {
+  return clipLine(foldKeyLookalikes(flowLine(stored)), URGENT_NAME_COLUMNS);
 }
 
 /** The name of a run on page 1: its workflow, else `run` and the first eight characters of its id; empty after the scrub counts as absent. */
@@ -433,7 +465,9 @@ export function urgentWords(item: AttentionItem, nowMs: number): UrgentWords {
         name: urgentRunName(item.workflow, item.runId),
         words: parkedHeadWords(item.row),
         deadline: expiryLabel(item.row.expiresAt, nowMs),
+        deadlineCompact: compactExpiryLabel(item.row.expiresAt, nowMs),
         overdue: parkedRunOverdue(item.row, nowMs),
+        partial: false,
       };
     case 'failed': {
       const age = formatAgeOfIso(
@@ -444,7 +478,9 @@ export function urgentWords(item: AttentionItem, nowMs: number): UrgentWords {
         name: urgentRunName(item.workflow, item.runId),
         words: age === '' ? 'failed' : `failed ${age}`,
         deadline: undefined,
+        deadlineCompact: undefined,
         overdue: false,
+        partial: false,
       };
     }
     case 'unreadable':
@@ -452,9 +488,75 @@ export function urgentWords(item: AttentionItem, nowMs: number): UrgentWords {
         name: undefined,
         words: 'a run cannot be read',
         deadline: undefined,
+        deadlineCompact: undefined,
         overdue: false,
+        partial: false,
       };
   }
+}
+
+/**
+ * Whether the Attention items that were read may leave out one that is MORE urgent than the first of them (round 2, correctness F1). The
+ * Home reads the newest {@link PARKED_RUNS_MAX} paused runs and no more (a gate's deadline is in its run's log, and a log is one read each),
+ * and the oldest paused runs are the likeliest to have expired. So the first item is the most urgent of the ones read, and the most urgent of
+ * all only when every paused run was read. That is known without a read: the parked rows and the unreadable paused runs together are the newest
+ * paused runs, and fewer than {@link PARKED_RUNS_MAX} of them means the list reached its end; and `total` (the snapshot's true count) not
+ * exceeding the items read means nothing is unread at all. A failed run beyond the failed rows read, or an unreadable one, never outranks what
+ * was read (both are newest first and rank after every parked run), so they raise no doubt of their own; a Home with exactly
+ * {@link PARKED_RUNS_MAX} paused runs and more failed ones than it lists says "partial" without a gate it missed, the one false alarm, rare and harmless.
+ */
+export function attentionIsPartial(items: readonly AttentionItem[], total: number): boolean {
+  const paused = items.filter(
+    (item) =>
+      item.kind === 'parked' ||
+      (item.kind === 'unreadable' &&
+        (item.run.status === undefined || item.run.status === 'paused')),
+  ).length;
+  return paused >= PARKED_RUNS_MAX && total > items.length;
+}
+
+/**
+ * What page 1 says of the first of `items` ({@link urgentWords}), marked {@link UrgentWords.partial} when unread items may outrank it
+ * ({@link attentionIsPartial}; `total` is the snapshot's true Attention count); `undefined` with no item.
+ */
+export function urgentHeadOf(
+  items: readonly AttentionItem[],
+  total: number,
+  nowMs: number,
+): UrgentWords | undefined {
+  const first = items[0];
+  if (first === undefined) return undefined;
+  return { ...urgentWords(first, nowMs), partial: attentionIsPartial(items, total) };
+}
+
+/**
+ * Whether a relative word is on screen, so that the clock alone changes what the Home would draw (round 2, observation F8: `expires in 13s`
+ * stood byte for byte for 45 seconds, and a head reading `expires in 5m` stayed so for hours on an idle landing): a work page that lists a
+ * parked run (its deadline, or how long it has waited), a failed run, a session, a run or an agent (their ages); a landing whose head names a
+ * failed run (`failed 2h ago`) or a parked run with a deadline (`expires in 5m`). The page-1 head with nothing time-bound in it and the calm
+ * landing say nothing relative and are never repainted for the clock. A superset by design: a row the page leaves out for want of room still
+ * counts, which costs one repaint a minute and never a missed one.
+ */
+export function showsRelativeWords(input: {
+  readonly page: 'start' | 'work';
+  readonly snapshot: Pick<
+    HomeSnapshot,
+    'attention' | 'recentSessions' | 'recentRuns' | 'recentAgents' | 'unreadableRuns'
+  >;
+  readonly parked: readonly ParkedRunRow[];
+}): boolean {
+  const { snapshot, parked } = input;
+  if (input.page === 'work')
+    return (
+      parked.length +
+        snapshot.attention.failedRuns.length +
+        snapshot.recentSessions.length +
+        snapshot.recentRuns.length +
+        snapshot.recentAgents.length >
+      0
+    );
+  const first = attentionOrder(parked, snapshot)[0];
+  return first?.kind === 'failed' || first?.deadlineMs !== undefined;
 }
 
 /**
