@@ -7,7 +7,7 @@ import type {
 } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { formatAgeOfIso, formatElapsed, formatTimeUntil, shortId } from '../notation.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { formatCostShort } from './format.js';
 import { glyph, glyphOf } from './glyphs.js';
 import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
