@@ -105,6 +105,8 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/models-popup.ts',
   'apps/cli/src/popups/permissions-popup.ts',
   'apps/cli/src/popups/export-popup.ts',
+  'apps/cli/src/popups/unreadable-run-card.ts',
+  'apps/cli/src/popups/unreadable-run-port.ts',
   'apps/cli/src/home/framed-flow.ts',
   'apps/cli/src/render/tui/flow-text.ts',
   'apps/cli/src/render/tui/home-layout.ts',
@@ -115,6 +117,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/render/tui/transcript-guard.ts',
   'apps/cli/src/home/home-status-facts.ts',
   'apps/cli/src/render/tui/home-pages.ts',
+  'apps/cli/src/render/tui/home-work-budget.ts',
   DATA_MODULE,
 ];
 

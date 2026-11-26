@@ -3,6 +3,7 @@ import type { EditorState } from './chat-input.js';
 import type { ParkedRunKind } from './home-attention.js';
 import { frameRows } from './home-layout.js';
 import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
+import { clipLine } from './sheet-frame.js';
 import {
   exitKey,
   keyHint,
@@ -11,6 +12,7 @@ import {
   type LegendExit,
   type LegendItem,
   type LegendKey,
+  type LegendText,
 } from './legend.js';
 
 /**
@@ -27,8 +29,10 @@ import {
  * - **The slide** ({@link slideOffsets}): in the alternate screen the two pages are one document two screens tall and the screen is a window
  *   onto it; the window travels `rows − 1` rows in four equal steps (three frames between, then the arrival). Inline the pages swap.
  *
- * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), only the legend builder and types. Every count it words
- * is a number the caller computed from the rows it draws, never text from a store, so nothing here needs sanitising.
+ * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), only the legend builder, the line cut and types. Every
+ * count it words is a number the caller computed (the snapshot's true totals). The one stored text it draws is the most urgent item's name on
+ * the landing's hint ({@link UrgentHead}), which arrives scrubbed, its brackets and arrows made inert and bounded by its builder
+ * (`home-attention.ts`'s `urgentName`); here it is only cut further to fit the row.
  */
 
 /** The Home's two pages: the landing, and the work page under it. */
@@ -201,9 +205,6 @@ export interface WorkCounts {
   readonly runs: number;
 }
 
-/** The most runs whose log cannot be read the Attention section lists (each says which run it is; more would push the rest off the page). */
-export const UNREADABLE_ROWS_SHOWN = 3;
-
 /**
  * {@link WorkCounts} of a snapshot: this directory's true totals (`HomeSnapshot.totals`), each run counted once by the store (a parked run is
  * not also a run, an unreadable run is one Attention item), however many rows a list loaded or a section draws. The agents are not counted:
@@ -228,33 +229,52 @@ export function needsYouWords(attention: number): string {
 }
 
 /**
- * The indicator's parts, in the order the hint draws them: the head carries the `↓` (the attention count when there is one, in the warning role,
- * else the sessions, else the runs), and the counts after it are words. A zero count is not drawn. Nothing when there is nothing to count.
+ * The indicator as the hint draws it: the head that carries the `↓`, the words that stay with it (`expires in 5m`, `+2 more need you`: drawn in
+ * the head's role and never dropped by themselves), the session and run counts after it, and the head's tone (`danger` for an overdue item: red).
  */
-export function indicatorParts(counts: WorkCounts):
-  | {
-      readonly head: LegendKey;
-      readonly sessions: LegendItem | undefined;
-      readonly runs: LegendItem | undefined;
-    }
-  | undefined {
-  const sessions =
-    counts.sessions > 0 ? counted(counts.sessions, 'session', 'sessions') : undefined;
-  const runs = counts.runs > 0 ? counted(counts.runs, 'run', 'runs') : undefined;
+export interface IndicatorParts {
+  readonly head: LegendKey;
+  readonly extras: readonly LegendItem[];
+  readonly sessions: LegendItem | undefined;
+  readonly runs: LegendItem | undefined;
+  readonly tone?: 'warn' | 'danger' | undefined;
+}
+
+/** The session and run counts of the indicator: words, a zero count not drawn. */
+function countItems(counts: WorkCounts): {
+  readonly sessions: LegendText | undefined;
+  readonly runs: LegendText | undefined;
+} {
+  return {
+    sessions:
+      counts.sessions > 0 ? { text: counted(counts.sessions, 'session', 'sessions') } : undefined,
+    runs: counts.runs > 0 ? { text: counted(counts.runs, 'run', 'runs') } : undefined,
+  };
+}
+
+/**
+ * The indicator's parts by the counts alone, in the order the hint draws them: the head carries the `↓` (the attention count when there is one,
+ * in the warning role, else the sessions, else the runs), and the counts after it are words. A zero count is not drawn. Nothing when there is
+ * nothing to count. (Page 1 names the most urgent item instead when it has one, {@link LandingHintState.urgent}; this is its last fallback.)
+ */
+export function indicatorParts(counts: WorkCounts): IndicatorParts | undefined {
+  const { sessions, runs } = countItems(counts);
   if (counts.attention > 0)
     return {
       head: { keys: '↓', verb: needsYouWords(counts.attention), role: 'warn' },
-      sessions: sessions === undefined ? undefined : { text: sessions },
-      runs: runs === undefined ? undefined : { text: runs },
+      extras: [],
+      sessions,
+      runs,
     };
   if (sessions !== undefined)
-    return {
-      head: { keys: '↓', verb: sessions },
-      sessions: undefined,
-      runs: runs === undefined ? undefined : { text: runs },
-    };
+    return { head: { keys: '↓', verb: sessions.text }, extras: [], sessions: undefined, runs };
   if (runs !== undefined)
-    return { head: { keys: '↓', verb: runs }, sessions: undefined, runs: undefined };
+    return {
+      head: { keys: '↓', verb: runs.text },
+      extras: [],
+      sessions: undefined,
+      runs: undefined,
+    };
   return undefined;
 }
 
@@ -289,23 +309,39 @@ function fitInOrder(
   return build();
 }
 
-/** A hint row: its text and, when part of it is drawn in the warning role (the attention count), where that part is. */
+/**
+ * A hint row: its text and, when part of it is drawn in the warning role (the attention count, or page 1's most urgent item with the words that
+ * stay with it), where that part is, and its tone: `danger` (red) for an item whose deadline has passed, else the warning colour.
+ */
 export interface HintRow {
   readonly text: string;
-  readonly warn?: { readonly from: number; readonly to: number } | undefined;
+  readonly warn?:
+    | { readonly from: number; readonly to: number; readonly tone?: 'warn' | 'danger' | undefined }
+    | undefined;
 }
 
-/** The hint row for `items` and `exit`, with the span of `warnItem` (when it is one of the items) for the view to draw in the warning role. */
+/**
+ * The hint row for `items` and `exit`, with the span from the first to the last of `warnItems` that are among the items (they stand together)
+ * for the view to draw in the warning role, in `tone`.
+ */
 function hintRow(
   items: readonly LegendItem[],
   exit: LegendExit,
-  warnItem: LegendItem | undefined,
+  warnItems: readonly LegendItem[],
+  tone?: 'warn' | 'danger',
 ): HintRow {
   const text = legend(items, exit);
-  const at = warnItem === undefined ? -1 : items.indexOf(warnItem);
-  if (warnItem === undefined || at < 0) return { text };
+  const at = items.findIndex((item) => warnItems.includes(item));
+  if (at < 0) return { text };
+  let last = at;
+  const warned = (index: number): boolean => {
+    const item = items[index];
+    return item !== undefined && warnItems.includes(item);
+  };
+  while (warned(last + 1)) last += 1;
   const from = at === 0 ? 0 : keyHint(items.slice(0, at)).length + LEGEND_SEPARATOR.length;
-  return { text, warn: { from, to: from + keyHint([warnItem]).length } };
+  const to = from + keyHint(items.slice(at, last + 1)).length;
+  return { text, warn: tone === 'danger' ? { from, to, tone } : { from, to } };
 }
 
 /** `Ctrl+C` twice leaves the Home (ADR-0115): the key that leaves the landing, last in every state of its hint. */
@@ -367,9 +403,28 @@ export interface LandingHintState {
   readonly runCanBeShown: boolean;
   /** What the work page lists; all zero when there is nothing to continue (no `↓` at all). */
   readonly counts: WorkCounts;
+  /**
+   * The most urgent item of "Attention required", as page 1 names it (`home-attention.ts`'s `urgentWords`: its name already scrubbed and
+   * bounded there), or none: the indicator then counts (`↓ 2 need you`).
+   */
+  readonly urgent?: UrgentHead | undefined;
   /** The row's columns: the terminal less the margin. */
   readonly columns: number;
 }
+
+/**
+ * Page 1's most urgent item (MVP-11 unit 7, the maintainer's ruling 5): its name (stored text, scrubbed and bounded by its builder; none for a
+ * run whose log cannot be read, whose words say so), the words of its kind, its deadline words, and whether the deadline has passed.
+ */
+export interface UrgentHead {
+  readonly name: string | undefined;
+  readonly words: string;
+  readonly deadline: string | undefined;
+  readonly overdue: boolean;
+}
+
+/** The fewest columns of the urgent item's name the hint keeps before it says the count instead (`↓ 3 need you`). */
+export const URGENT_NAME_FLOOR = 6;
 
 /**
  * The parts of the landing's hint with nothing typed (see {@link landingHint}), around the very `indicator` the caller marks for the warning
@@ -377,7 +432,7 @@ export interface LandingHintState {
  */
 function emptyLandingParts(
   state: LandingHintState,
-  indicator: ReturnType<typeof indicatorParts>,
+  indicator: IndicatorParts | undefined,
 ): readonly HintPart[] {
   // No key and no run to show: `Enter` connects one. With an indicator beside it the call gives way before the counts do (the status line
   // above says it too).
@@ -388,6 +443,7 @@ function emptyLandingParts(
   parts.push({ item: SLASH_COMMANDS, priority: 'required' });
   if (indicator !== undefined) {
     parts.push({ item: indicator.head, priority: 'required' });
+    for (const extra of indicator.extras) parts.push({ item: extra, priority: 'required' });
     if (indicator.sessions !== undefined) parts.push({ item: indicator.sessions, priority: 3 });
     if (indicator.runs !== undefined) parts.push({ item: indicator.runs, priority: 2 });
   } else if (!connects) parts.push({ item: TYPE_A_MESSAGE, priority: 1 });
@@ -405,6 +461,75 @@ function hasDraft(draft: EditorState): boolean {
   return draft.text.trim().length > 0;
 }
 
+/** `+2 more need you`, or (short) `+2 more`: the others of Attention, the count never dropped while there are any. */
+function othersItem(others: number, short: boolean): readonly LegendItem[] {
+  if (others <= 0) return [];
+  if (short) return [{ text: `+${String(others)} more` }];
+  return [{ text: `+${String(others)} more ${others === 1 ? 'needs' : 'need'} you` }];
+}
+
+/**
+ * The indicators that name the most urgent item, from the fullest to the barest, in the order of what a narrow row gives up: the session and
+ * run counts (they are droppable parts of the first), then the deadline, then `+N more need you` becomes `+N more`, then the name is cut, a
+ * column at a time, down to {@link URGENT_NAME_FLOOR}. The `↓` and the count of the others stay in every one.
+ */
+function urgentIndicators(
+  urgent: UrgentHead,
+  counts: WorkCounts,
+  width: (text: string) => number,
+): readonly IndicatorParts[] {
+  const others = Math.max(0, counts.attention - 1);
+  const tone = urgent.overdue ? 'danger' : 'warn';
+  const head = (name: string | undefined): LegendKey => ({
+    keys: '↓',
+    verb: name === undefined ? urgent.words : `${name} ${urgent.words}`,
+    role: 'warn',
+  });
+  const deadline: readonly LegendItem[] =
+    urgent.deadline === undefined ? [] : [{ text: urgent.deadline }];
+  const none = { sessions: undefined, runs: undefined, tone } as const;
+  const name = urgent.name;
+  const all: IndicatorParts[] = [
+    {
+      head: head(name),
+      extras: [...deadline, ...othersItem(others, false)],
+      ...countItems(counts),
+      tone,
+    },
+    { head: head(name), extras: othersItem(others, false), ...none },
+    { head: head(name), extras: othersItem(others, true), ...none },
+  ];
+  if (name !== undefined)
+    for (let columns = width(name) - 1; columns >= URGENT_NAME_FLOOR; columns -= 1)
+      all.push({ head: head(clipLine(name, columns)), extras: othersItem(others, true), ...none });
+  return all;
+}
+
+/**
+ * The landing's hint naming the most urgent item (MVP-11 unit 7): the first of {@link urgentIndicators} for which the whole row fits, its head
+ * and the words that stay with it in the warning role (red when the deadline has passed), or `undefined` when none fits (the caller then says
+ * the count, `↓ 3 need you`, which a draft may still give way to).
+ */
+function urgentHint(
+  state: LandingHintState,
+  urgent: UrgentHead,
+  width: (text: string) => number,
+): HintRow | undefined {
+  for (const indicator of urgentIndicators(urgent, state.counts, width)) {
+    const parts: readonly HintPart[] = hasDraft(state.draft)
+      ? [
+          ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1),
+          { item: indicator.head, priority: 'required' },
+          ...indicator.extras.map((item): HintPart => ({ item, priority: 'required' })),
+        ]
+      : emptyLandingParts(state, indicator);
+    const items = fitInOrder(parts, EXIT_TWICE, state.columns, width);
+    if (width(legend(items, EXIT_TWICE)) <= state.columns)
+      return hintRow(items, EXIT_TWICE, [indicator.head, ...indicator.extras], indicator.tone);
+  }
+  return undefined;
+}
+
 /**
  * The landing's hint (page 1). Armed, only the second `Ctrl+C`. With a draft, the draft's own keys and then the indicator's head; what gives
  * way first is `[Ctrl+J] newline`, then the head (OB73: the `↓ N need you` cue is the landing's one sign of a gate that waits, and it stays at 80
@@ -414,11 +539,21 @@ function hasDraft(draft: EditorState): boolean {
  * message to chat`, then `Tab fill the example`; `[Ctrl+C] exit (twice)` last. What does not fit the row is dropped: the example first, then the
  * call to connect (the status line says it), then the runs, then the sessions; never `[/] commands`, never the `↓`, never the exit. With
  * nothing to continue it is the empty Home's hint as it was.
+ *
+ * With an item under Attention (MVP-11 unit 7, the maintainer's ruling 5) the indicator's head NAMES the most urgent one instead of counting:
+ * `↓ release-notes needs approval · expires in 5m · +2 more need you`, then the true session and run counts; at narrow widths the counts go
+ * first, then the deadline, then `+2 more need you` shortens to `+2 more`, then the name is cut (down to {@link URGENT_NAME_FLOOR} columns),
+ * and when even that does not fit the head says the count (`↓ 3 need you`) as before. The `↓` and the count of Attention never drop (`+N more`
+ * is the count of the others, the named item the one more).
  */
 export function landingHint(state: LandingHintState, width: (text: string) => number): HintRow {
   if (state.interruptArmed) return { text: legend([], EXIT_AGAIN) };
+  if (state.urgent !== undefined) {
+    const named = urgentHint(state, state.urgent, width);
+    if (named !== undefined) return named;
+  }
   const indicator = indicatorParts(state.counts);
-  const warnHead = indicator?.head.role === 'warn' ? indicator.head : undefined;
+  const warnHead = indicator?.head.role === 'warn' ? [indicator.head] : [];
   const parts: readonly HintPart[] = hasDraft(state.draft)
     ? [
         ...draftItems({ draft: state.draft.text, keyless: state.keyless }, 1),
@@ -431,18 +566,39 @@ export function landingHint(state: LandingHintState, width: (text: string) => nu
 /** What a focused row is, for what `Enter` says on it (`strip-focus.ts` roles; a parked row says what it waits on). */
 export type WorkRowCue =
   | { readonly role: 'session' }
-  | { readonly role: 'failed' | 'recent' }
+  | { readonly role: 'failed' | 'recent' | 'unreadable' }
   | { readonly role: 'parked'; readonly waits: ParkedRunKind | undefined };
 
-/** What `Enter` does on a focused row, in the same words as the row's own cue: the hint must not promise a gate where there is none. */
+/** What `Enter` does on a focused parked row, by what it waits on (a run whose kind is not read yet opens its card, as a gate's does). */
+const PARKED_ENTER_VERB: Readonly<Record<ParkedRunKind, string>> = {
+  approval: 'open',
+  // The card of an input gate takes no typed value: it shows the shell command that does, and offers a rejection.
+  input: 'show how to answer',
+  review: 'open',
+  budget: 'open',
+  several: 'open',
+  media: 'ask to continue',
+  none: 'say why',
+};
+
+/**
+ * What `Enter` does on the focused row (MVP-11 unit 7: the rows carry no key any more; the hint row names the focused row's): a parked run
+ * opens its gate or budget card (`open`), or, for an input gate whose card takes no typed value, shows how to answer it; a run parked on media
+ * jobs asks to continue it; a run with nothing to answer says why; a failed or recent run opens its details; a session is resumed; a run whose
+ * log cannot be read says why (a read-only card). The hint must not promise a gate where there is none.
+ */
 export function rowEnterItem(cue: WorkRowCue): LegendKey {
-  if (cue.role === 'session') return { keys: 'Enter', verb: 'resume' };
-  if (cue.role !== 'parked') return { keys: 'Enter', verb: 'open the run' };
-  if (cue.waits === 'none') return { keys: 'Enter', verb: 'say why' };
-  if (cue.waits === 'media') return { keys: 'Enter', verb: 'continue it' };
-  // An input gate's card takes no typed value: it shows how to answer in a shell, and offers a rejection.
-  if (cue.waits === 'input') return { keys: 'Enter', verb: 'show how' };
-  return { keys: 'Enter', verb: 'open the gate' };
+  switch (cue.role) {
+    case 'session':
+      return { keys: 'Enter', verb: 'resume' };
+    case 'unreadable':
+      return { keys: 'Enter', verb: 'why' };
+    case 'failed':
+    case 'recent':
+      return { keys: 'Enter', verb: 'details' };
+    case 'parked':
+      return { keys: 'Enter', verb: PARKED_ENTER_VERB[cue.waits ?? 'approval'] };
+  }
 }
 
 /** What the work page's hint row reads (page 2). */

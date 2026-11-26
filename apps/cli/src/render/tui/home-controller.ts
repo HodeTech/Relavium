@@ -75,7 +75,7 @@ import {
   type HomeStatusFacts,
   type HomeStatusReader,
 } from '../../home/home-status-facts.js';
-import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import type { HomeSnapshot, HomeStore, HomeUnreadableRun } from '../../home/home-store.js';
 import type {
   HostedLaunch,
   HostedLegEnd,
@@ -814,6 +814,13 @@ export interface HomeControllerDeps {
     | ((request: { readonly command: SettingsKind; readonly chat: SettingsPort }) => void)
     | undefined;
   /**
+   * Open the read-only card of a run whose log could not be read (MVP-11 unit 7): `Enter` on an `unreadable` row of the work page. The controller
+   * finds the run BY ITS ID in the snapshot it holds, never by the row's position, and hands it over; the host opens the popup on the Home's popup
+   * host (`popups/unreadable-run-port.ts`). The card changes nothing, starts nothing and reads no log. Absent (a test's Home) ⇒ `Enter` on such a
+   * row says the card is not available here.
+   */
+  readonly openUnreadableRun?: ((request: { readonly run: HomeUnreadableRun }) => void) | undefined;
+  /**
    * One transient notification on the Home's own channel (`NotificationChannel.notify`, no popup as its source; ADR-0148 §2, §6): what a
    * setting the bare Home applied says once its popup has closed (`/models`: the default of new chats), and what a chat's model switch that
    * could not be built says. Never the Home's notice, never a transcript. Absent ⇒ the bare Home's `/models` has no popup (a test's Home).
@@ -1027,6 +1034,9 @@ export const RESUME_ALREADY_OPEN = 'This conversation is already open.';
 
 /** What `Enter` says on a focused row the strip no longer lists: nothing was opened. */
 const STRIP_ROW_GONE = 'That row is no longer on the strip. Nothing was opened.';
+
+/** What `Enter` says on an unreadable run's row on a Home that has no card to open (only a test's Home: `driveHome` always wires one). */
+const UNREADABLE_CARD_UNAVAILABLE = 'That run cannot be shown here. Nothing was opened.';
 
 /** How often the strip looks at the change token while the landing is in front (ADR-0140 §6). */
 export const STRIP_REFRESH_MS = 5000;
@@ -4096,6 +4106,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
+   * `Enter` on an unreadable run's row: its read-only card, over the run the snapshot holds under that id (never the run at the row's position:
+   * a refresh may have moved it). A run the snapshot no longer lists says so, as every row that is gone does, and nothing is opened.
+   */
+  const openUnreadableCard = (runId: string): void => {
+    const run = state.snapshot.unreadableRuns.find((candidate) => candidate.runId === runId);
+    if (run === undefined) {
+      set({ stripFocus: undefined, notice: STRIP_ROW_GONE });
+      return;
+    }
+    if (deps.openUnreadableRun === undefined) {
+      set({ notice: UNREADABLE_CARD_UNAVAILABLE });
+      return;
+    }
+    deps.openUnreadableRun({ run });
+  };
+
+  /**
    * What `Enter` does on a focused strip row (ADR-0140 §6): a parked run opens its gate or budget card, a session is resumed, and a failed or
    * recent run opens its detail in History (nothing is resumed or answered from it). The run this Home hosts opens its view instead, as the run row does.
    */
@@ -4106,6 +4133,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (row.role === 'parked') {
       openGateCard(row.id, 'landing');
+      return;
+    }
+    if (row.role === 'unreadable') {
+      openUnreadableCard(row.id);
       return;
     }
     const hosted = deps.hostedRuns?.snapshot().active?.runId === row.id;

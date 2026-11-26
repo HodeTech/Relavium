@@ -18,7 +18,6 @@ import {
   slideOffsetAt,
   slideOffsets,
   slideTravel,
-  UNREADABLE_ROWS_SHOWN,
   workCounts,
   workHint,
   workListRows,
@@ -296,8 +295,8 @@ describe('the indicator says the true totals of this directory (MVP-11 unit 7)',
       totals: { attention: 40, sessions: 12, runs: 9 },
     });
     expect(workCounts(snapshot)).toEqual({ attention: 40, sessions: 12, runs: 9 });
-    // More unreadable runs than the section lists (UNREADABLE_ROWS_SHOWN) are still each counted.
-    expect(snapshot.unreadableRuns.length).toBeGreaterThan(UNREADABLE_ROWS_SHOWN);
+    // More unreadable runs than the section draws at 80×24 (its cap is four rows) are still each counted.
+    expect(snapshot.unreadableRuns.length).toBeGreaterThan(4);
   });
 
   it('says `1 needs you` for one and `2 need you` for two', () => {
@@ -457,13 +456,19 @@ const work = (over: {
 
 describe('the work page’s hint', () => {
   it.each([
+    // MVP-11 unit 7: the rows name no key; the hint names the focused row's `Enter` in the maintainer's words, per kind.
     [{ role: 'session' as const }, '↑/↓ select session · Enter resume · type to chat · Esc start page'],
-    [{ role: 'failed' as const }, '↑/↓ select · Enter open the run · type to chat · Esc start page'],
-    [{ role: 'recent' as const }, '↑/↓ select · Enter open the run · type to chat · Esc start page'],
-    [{ role: 'parked' as const, waits: 'approval' as const }, '↑/↓ select · Enter open the gate · type to chat · Esc start page'],
-    [{ role: 'parked' as const, waits: 'input' as const }, '↑/↓ select · Enter show how · type to chat · Esc start page'],
-    [{ role: 'parked' as const, waits: 'media' as const }, '↑/↓ select · Enter continue it · type to chat · Esc start page'],
+    [{ role: 'failed' as const }, '↑/↓ select · Enter details · type to chat · Esc start page'],
+    [{ role: 'recent' as const }, '↑/↓ select · Enter details · type to chat · Esc start page'],
+    [{ role: 'unreadable' as const }, '↑/↓ select · Enter why · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'approval' as const }, '↑/↓ select · Enter open · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'review' as const }, '↑/↓ select · Enter open · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'budget' as const }, '↑/↓ select · Enter open · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'several' as const }, '↑/↓ select · Enter open · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'input' as const }, '↑/↓ select · Enter show how to answer · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: 'media' as const }, '↑/↓ select · Enter ask to continue · type to chat · Esc start page'],
     [{ role: 'parked' as const, waits: 'none' as const }, '↑/↓ select · Enter say why · type to chat · Esc start page'],
+    [{ role: 'parked' as const, waits: undefined }, '↑/↓ select · Enter open · type to chat · Esc start page'],
   ])('on a row (%j) names the arrows, what `Enter` does there, and the way back last', (row, text) => {
     expect(work({ row })).toBe(text);
   }); // prettier-ignore

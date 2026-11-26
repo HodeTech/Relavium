@@ -98,8 +98,9 @@ describe('the landing hint while a leg executes', () => {
   // The run's own row says `Enter show it` (between the status line and the hint: MVP-11 unit 7, the study's frame 21), so the hint does not say
   // it a second time: it keeps its own doors (the indicator, or the empty Home's sentence).
   it.each([
-    // FULL holds 50 unreadable runs under Attention (the store's true total; the section lists 3 of them) and 8 sessions
-    ['a Home with sessions', FULL, '↓ 50 need you · 8 sessions', 80],
+    // FULL holds 50 unreadable runs under Attention (the store's true total) and 8 sessions: page 1 names the most urgent item (MVP-11 unit 7)
+    // and counts the others; at 80 columns the session count and the long form of `+49 more` give way.
+    ['a Home with sessions', FULL, '↓ a run cannot be read · +49 more', 80],
     ['an empty Home at 100 columns', EMPTY, 'type a message to chat', 100],
   ] as const)(
     'leaves `Enter show it` to the run row, and keeps its own door (%s)',

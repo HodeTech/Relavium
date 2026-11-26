@@ -101,13 +101,10 @@ describe('row labels', () => {
   });
 
   it('sessionLabel: title · agent · when · cost; falls back to the agent slug when untitled', () => {
-    expect(sessionLabel(sessionRow(), NOW)).toBe(
-      'Plan the launch  ·  planner  ·  5m ago  ·  $1.2000',
-    );
+    // MVP-11 unit 7: the work page's rows are joined by the legend's own ` · ` (the maintainer's simplified rows).
+    expect(sessionLabel(sessionRow(), NOW)).toBe('Plan the launch · planner · 5m ago · $1.2000');
     // Untitled ⇒ the agent slug is the label, shown ONCE (not doubled as title-fallback + trailing field).
-    expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe(
-      'planner  ·  5m ago  ·  $1.2000',
-    );
+    expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe('planner · 5m ago · $1.2000');
   });
 
   it.each([0, 120_000_000])('qualifies both Home monetary leaves at %i microcents', (amount) => {
@@ -154,7 +151,8 @@ describe('row labels', () => {
       runLabel(runRow(verified), NOW),
       sessionLabel(sessionRow(verified), NOW),
     ]) {
-      expect(label.endsWith(amount === 0 ? 'free' : '$1.2000')).toBe(true);
+      // a field of its own (a run row ends with its short id since MVP-11 unit 7, so the cost is no longer last)
+      expect(label.split(' · ')).toContain(amount === 0 ? 'free' : '$1.2000');
     }
   });
 
@@ -167,21 +165,22 @@ describe('row labels', () => {
   });
 
   it('runLabel: completed anchors on completedAt; falls back to a short id with no slug', () => {
-    expect(runLabel(runRow(), NOW)).toBe('deploy  ·  completed  ·  1h ago  ·  free');
+    // MVP-11 unit 7: every run row ends with its short id, so a run with no slug is named by that id alone (not twice).
+    expect(runLabel(runRow(), NOW)).toBe('deploy · completed · 1h ago · free · aabbccdd');
     expect(runLabel(runRow({ workflowSlug: undefined }), NOW)).toBe(
-      `${shortId(runRow().runId)}  ·  completed  ·  1h ago  ·  free`,
+      `completed · 1h ago · free · ${shortId(runRow().runId)}`,
     );
   });
 
   it('runLabel: a paused run anchors on startedAt and carries no project marker (every run the Home lists is this directory’s)', () => {
     const paused = runRow({ status: 'paused', startedAt: ago(1 * HR), completedAt: undefined });
-    expect(runLabel(paused, NOW)).toBe('deploy  ·  paused  ·  1h ago  ·  free');
+    expect(runLabel(paused, NOW)).toBe('deploy · paused · 1h ago · free · aabbccdd');
     expect(runLabel(paused, NOW)).not.toContain('other project');
   });
 
   it('runLabel: a RUNNING run anchors on startedAt (not completedAt/createdAt)', () => {
     const run = runRow({ status: 'running', startedAt: ago(10 * MIN), completedAt: undefined });
-    expect(runLabel(run, NOW)).toBe('deploy  ·  running  ·  10m ago  ·  free');
+    expect(runLabel(run, NOW)).toBe('deploy · running · 10m ago · free · aabbccdd');
   });
 
   it('runLabel: a queued run (no started/completed) falls back to createdAt', () => {
@@ -191,12 +190,12 @@ describe('row labels', () => {
       startedAt: undefined,
       completedAt: undefined,
     });
-    expect(runLabel(run, NOW)).toBe('deploy  ·  pending  ·  3m ago  ·  free');
+    expect(runLabel(run, NOW)).toBe('deploy · pending · 3m ago · free · aabbccdd');
   });
 
   it('agentLabel: slug · last used', () => {
     expect(agentLabel({ agentSlug: 'coder', lastUsedAt: ago(3 * DAY) }, NOW)).toBe(
-      'coder  ·  3d ago',
+      'coder · 3d ago',
     );
   });
 });

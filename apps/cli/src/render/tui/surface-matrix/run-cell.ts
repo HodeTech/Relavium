@@ -53,7 +53,12 @@ const matches = (text: string, pattern: string | RegExp): boolean =>
   typeof pattern === 'string' ? text.includes(pattern) : pattern.test(text);
 
 /** What a popup's box asks of a cell: its own rows over an unchanged body (`popup-box`), and the backdrop dimmed behind it (`backdrop-dim`). */
-function popupViolations(mount: Observable, observation: Observation, box: PopupBox): Violation[] {
+function popupViolations(
+  mount: Observable,
+  observation: Observation,
+  box: PopupBox,
+  bodyHasNoInverse: boolean,
+): Violation[] {
   const before = baselineOf(mount);
   if (before === undefined)
     return [
@@ -68,7 +73,13 @@ function popupViolations(mount: Observable, observation: Observation, box: Popup
   const cellsNow = mount.cells?.();
   if (cellsBefore !== undefined && cellsNow !== undefined)
     violations.push(
-      ...checkBackdropDim({ variant: mount.variant, before: cellsBefore, now: cellsNow, box }),
+      ...checkBackdropDim({
+        variant: mount.variant,
+        before: cellsBefore,
+        now: cellsNow,
+        box,
+        bodyHasNoInverse,
+      }),
     );
   return violations;
 }
@@ -126,7 +137,10 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
   violations.push(
     ...checkOverlayLayer(mount.root?.(), entry.popup !== undefined && variant.renderer === 'alt'),
   );
-  if (box !== undefined) violations.push(...popupViolations(mount, observation, box));
+  if (box !== undefined)
+    violations.push(
+      ...popupViolations(mount, observation, box, entry.backdropHasNoInverse !== undefined),
+    );
   violations.push(...shownViolations(entry, text, below));
   return { observation, violations };
 }

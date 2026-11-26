@@ -451,6 +451,11 @@ export interface BackdropObservation {
   readonly before: readonly (readonly ScreenCell[])[];
   readonly now: readonly (readonly ScreenCell[])[];
   readonly box: PopupBox;
+  /**
+   * The surface says its body holds no inverse cell by design (`SurfaceBase.backdropHasNoInverse`): the one demand it drops is that the body held an
+   * inverse cell before the popup opened. Absent or `false`: the whole demand.
+   */
+  readonly bodyHasNoInverse?: boolean | undefined;
 }
 
 /** A cell that shows something: a character, or an inverse or background block (a cursor, a selected row's blank tail). A plain space shows nothing. */
@@ -490,12 +495,12 @@ function cellsOutside(
 /**
  * (10) The backdrop (ADR-0148 §4). In the alternate screen with colour on, every cell outside the popup's box that shows something is dim,
  * on a body that is not vacuous: before the popup opened the same screen held a bold cell, an inverse cell and a coloured one (so the check
- * cannot pass on a plain body), and a dim cell that the popup's own rows hold is a popup that was drawn inside the dimmed subtree. With colour
- * off no cell outside the box is dimmer than it was (chalk prints no dim, and the backdrop is simply not dimmed); inline there is no backdrop and
- * nothing is checked. A row the box crosses must be read soundly (`cellsAreSound`): a column of the emulator is a column of the terminal.
+ * cannot pass on a plain body; a surface that says its body has no inverse cell by design drops that one demand, and no other), and a dim cell
+ * that the popup's own rows hold is a popup that was drawn inside the dimmed subtree. With colour off no cell outside the box is dimmer than it
+ * was (chalk prints no dim, and the backdrop is simply not dimmed); inline there is no backdrop and nothing is checked. A row the box crosses must be read soundly (`cellsAreSound`): a column of the emulator is a column of the terminal.
  */
 export function checkBackdropDim(observation: BackdropObservation): Violation[] {
-  const { variant, before, now, box } = observation;
+  const { variant, before, now, box, bodyHasNoInverse } = observation;
   if (variant.renderer !== 'alt' || box.placement !== 'overlay') return [];
   const problems: string[] = [];
   if (!variant.color) {
@@ -516,7 +521,7 @@ export function checkBackdropDim(observation: BackdropObservation): Violation[] 
     problems.push(
       'the body behind the popup held no bold cell before it opened: the check would pass on a plain body',
     );
-  if (!before.some((row) => row.some((cell) => cell.style.inverse)))
+  if (bodyHasNoInverse !== true && !before.some((row) => row.some((cell) => cell.style.inverse)))
     problems.push(
       'the body behind the popup held no inverse cell before it opened: the check would pass on a plain body',
     );

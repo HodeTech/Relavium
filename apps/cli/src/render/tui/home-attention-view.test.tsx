@@ -99,17 +99,19 @@ describe('the hint bar on a focused input gate', () => {
   const hint = (frame: string): string =>
     frame.split('\n').find((line) => line.includes('Esc start page')) ?? '';
 
-  it('says `Enter` shows how to answer it, where a gate that a key answers says it opens the gate', () => {
+  it('says `Enter` shows how to answer it, where a gate that a key answers says it opens (MVP-11 unit 7: the row’s old cue, now the hint’s)', () => {
     const input = frameOf([{ runId: 'in-run', kind: 'input', gates: 1 }], {
       focus: 'in-run',
       color: false,
     });
-    expect(hint(input)).toContain('↑/↓ select · Enter show how · type to chat · Esc start page');
+    expect(hint(input)).toContain(
+      '↑/↓ select · Enter show how to answer · type to chat · Esc start page',
+    );
     expect(hint(input).length, 'it fits 80 columns').toBeLessThanOrEqual(80);
     const approval = frameOf([{ runId: 'ap-run', kind: 'approval', gates: 1 }], {
       focus: 'ap-run',
       color: false,
     });
-    expect(hint(approval)).toContain('Enter open the gate');
+    expect(hint(approval)).toContain('↑/↓ select · Enter open · type to chat · Esc start page');
   });
 });

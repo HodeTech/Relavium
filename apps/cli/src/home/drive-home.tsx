@@ -110,6 +110,7 @@ import { createChordHistory } from '../render/tui/chord-guard.js';
 import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
 import { openReport } from '../popups/report-port.js';
 import { openSettings } from '../popups/settings-port.js';
+import { openUnreadableRun } from '../popups/unreadable-run-port.js';
 import { createNotificationChannel, type NotificationSource } from '../popups/notifications.js';
 import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
 import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
@@ -2072,6 +2073,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               origin: chat.surface === 'home' ? 'home' : 'chat',
             }),
           );
+        },
+        // `Enter` on an unreadable run's row opens its read-only card on the Home's host (MVP-11 unit 7): the run as the snapshot holds it, the
+        // Home's own clock for its age.
+        openUnreadableRun: ({ run }) => {
+          openOnHome((host) => openUnreadableRun({ host, run, origin: 'home', now }));
         },
         // What a setting the bare Home applied says, and a chat's model switch that could not be built: the Home's own channel (ADR-0148 §6).
         announce: (text) => {

@@ -12,7 +12,7 @@ import {
   hostedRunLabel,
   type ExitGuardPhase,
 } from '../../home-projection.js';
-import { parkedRunLabel, type ParkedRunKind, type ParkedRunRow } from '../../home-attention.js';
+import type { ParkedRunKind, ParkedRunRow } from '../../home-attention.js';
 import { HomeView } from '../../home-view.js';
 import { projectRunCard, type RunCardPhase, type RunCardSnapshot } from '../../run-card-model.js';
 import { runScreenModel, type RunScreenInput } from '../../run-screen.js';
@@ -20,9 +20,10 @@ import type { StripFocus } from '../../strip-focus.js';
 
 /**
  * The Home's own hints and the cards a hosted run raises ([ADR-0139](../../../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md),
- * ADR-0140): the hint bar under the prompt in every state it has, the exit-guard card, the run view's key line, the gate and budget
- * card's key line and the cue each parked row carries. The hint bar is not exported, so the Home view is mounted and the hint-shaped
- * rows of its frame are the recording.
+ * ADR-0140): the hint bar under the prompt in every state it has (on page 1 the most urgent item it names, by kind; on the work page the
+ * focused row's `Enter`, by kind: a row names no key of its own since MVP-11 unit 7), the exit-guard card, the run view's key line and the
+ * gate and budget card's key line. The hint bar is not exported, so the Home view is mounted and the hint-shaped rows of its frame are the
+ * recording.
  */
 
 export const HOME_RUN_PRODUCERS: readonly Producer[] = [
@@ -31,12 +32,6 @@ export const HOME_RUN_PRODUCERS: readonly Producer[] = [
     file: 'render/tui/home-view.tsx',
     describe:
       'the hint bar under the Home’s prompt (and its focused-row cues) by page x focus x draft x key x run x sessions x parked runs x armed, and the below-80x24 exit line',
-  },
-  {
-    id: 'home-attention-cue',
-    file: 'render/tui/home-attention.ts',
-    describe:
-      'the key a parked run’s row names (`Enter opens`, `↓ selects`, …) by the kind of gate it waits on',
   },
   {
     id: 'home-exit-guard',
@@ -79,23 +74,36 @@ const sessionRow = (n: number): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 
-/** A snapshot of this directory; `parked` is how many parked runs the store counts (their rows are the controller's own read). */
+/**
+ * A snapshot of this directory; `parked` is how many parked runs the store counts (their rows are the controller's own read), `failed` a failed
+ * run of the window (`run-f1`, `wf-f1`) and `unreadable` a run whose log cannot be read (`run-u1`), each counted under Attention.
+ */
 const snapshotOf = (over: {
   sessions?: boolean | undefined;
   runs?: boolean | undefined;
   parked?: number | undefined;
+  failed?: boolean | undefined;
+  unreadable?: boolean | undefined;
 }): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  attention: { failedRuns: over.failed === true ? [runRow('f1', 'failed')] : [] },
   recentSessions: over.sessions === true ? [sessionRow(1)] : [],
   recentRuns: over.runs === true ? [runRow('1', 'completed')] : [],
   recentAgents: [],
-  unreadableRuns: [],
+  unreadableRuns:
+    over.unreadable === true
+      ? [{ runId: 'run-u1', workflowSlug: 'wf-u1', reason: 'corrupt-row' }]
+      : [],
   totals: {
-    attention: over.parked ?? 0,
+    attention:
+      (over.parked ?? 0) + (over.failed === true ? 1 : 0) + (over.unreadable === true ? 1 : 0),
     sessions: over.sessions === true ? 1 : 0,
     runs: over.runs === true ? 1 : 0,
   },
-  isEmpty: over.sessions !== true && over.runs !== true,
+  isEmpty:
+    over.sessions !== true &&
+    over.runs !== true &&
+    over.failed !== true &&
+    over.unreadable !== true,
 });
 
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -116,6 +124,16 @@ const PREPARING: RunHostSnapshot = {
 };
 
 const parked = (kind: ParkedRunKind, gates = 1): ParkedRunRow => ({ runId: 'run-p1', kind, gates });
+/** A parked run with its workflow named and a deadline 5 minutes after the recorder's clock (or 30 minutes before it: overdue). */
+const namedParked = (expiresAt: string): ParkedRunRow => ({
+  runId: 'run-p2',
+  kind: 'approval',
+  gates: 1,
+  workflow: 'release-notes',
+  expiresAt,
+});
+const IN_FIVE_MINUTES = '2026-11-23T01:05:00.000Z';
+const HALF_AN_HOUR_AGO = '2026-11-23T00:30:00.000Z';
 
 interface HomeCase {
   readonly state: string;
@@ -126,6 +144,8 @@ interface HomeCase {
   readonly armed?: boolean;
   readonly hostedRun?: RunHostSnapshot;
   readonly parked?: readonly ParkedRunRow[];
+  readonly failed?: boolean;
+  readonly unreadable?: boolean;
   readonly focus?: StripFocus;
   readonly exitGuard?: ExitGuardPhase;
   readonly size?: { cols: number; rows: number };
@@ -149,6 +169,47 @@ const HOME_CASES: readonly HomeCase[] = [
   { state: 'idle, nothing to continue, 80x24', size: { cols: 80, rows: 24 } },
   { state: 'idle, saved sessions', sessions: true },
   { state: 'idle, a parked run', parked: [parked('approval')] },
+  // Page 1 names the most urgent item (MVP-11 unit 7): its words by kind, its deadline, the others, and the drop order at 80 columns.
+  {
+    state: 'idle, a named parked run with a deadline, sessions and runs',
+    parked: [namedParked(IN_FIVE_MINUTES)],
+    sessions: true,
+    runs: true,
+  },
+  { state: 'idle, an overdue parked run', parked: [namedParked(HALF_AN_HOUR_AGO)] },
+  {
+    state: 'idle, three need you, sessions and runs',
+    parked: [namedParked(IN_FIVE_MINUTES)],
+    failed: true,
+    unreadable: true,
+    sessions: true,
+    runs: true,
+  },
+  {
+    state: 'idle, three need you, sessions and runs, 80x24',
+    parked: [namedParked(IN_FIVE_MINUTES)],
+    failed: true,
+    unreadable: true,
+    sessions: true,
+    runs: true,
+    size: { cols: 80, rows: 24 },
+  },
+  {
+    state: 'idle, three need you, a draft, 80x24',
+    parked: [namedParked(IN_FIVE_MINUTES)],
+    failed: true,
+    unreadable: true,
+    text: 'hello',
+    size: { cols: 80, rows: 24 },
+  },
+  { state: 'idle, a failed run', failed: true },
+  { state: 'idle, an unreadable run', unreadable: true },
+  ...(['input', 'review', 'budget', 'several', 'media', 'none'] as const).map(
+    (kind): HomeCase => ({
+      state: `idle, a parked run, kind=${kind}`,
+      parked: [parked(kind, kind === 'several' ? 3 : 1)],
+    }),
+  ),
   { state: 'idle, a draft', text: 'hello' },
   { state: 'idle, a slash draft', text: '/mod' },
   { state: 'idle, keyless', keyless: true },
@@ -167,6 +228,12 @@ const HOME_CASES: readonly HomeCase[] = [
     focus: { kind: 'session', id: 'session-1' },
   },
   { state: 'a recent run row is focused', runs: true, focus: { kind: 'run', id: 'run-1' } },
+  { state: 'a failed run row is focused', failed: true, focus: { kind: 'run', id: 'run-f1' } },
+  {
+    state: 'an unreadable run row is focused',
+    unreadable: true,
+    focus: { kind: 'run', id: 'run-u1' },
+  },
   ...PARKED_KINDS.map(
     (kind): HomeCase => ({
       state: `a parked run row is focused, kind=${kind}`,
@@ -240,6 +307,8 @@ const homeView = (item: HomeCase, color: boolean) => {
         sessions: item.sessions,
         runs: item.runs,
         parked: item.parked?.length,
+        failed: item.failed,
+        unreadable: item.unreadable,
       })}
       editor={{ text: item.text ?? '', cursor: (item.text ?? '').length }}
       nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
@@ -265,22 +334,6 @@ const homeHint: Recorder = () => {
     for (const [name, rows] of Object.entries(states))
       out[name] = isLeftHung(item) ? rows.map((row) => row.trimStart()) : rows;
   }
-  return out;
-};
-
-const attentionCue: Recorder = () => {
-  const out: Record<string, string> = {};
-  for (const kind of PARKED_KINDS) {
-    const row = parked(kind, kind === 'several' ? 3 : 1);
-    out[label({ kind, focused: true })] = parkedRunLabel(row, true, 120, 0);
-    out[label({ kind, focused: false })] = parkedRunLabel(row, false, 120, 0);
-  }
-  out[label({ kind: 'approval', focused: true, columns: 40 })] = parkedRunLabel(
-    parked('approval'),
-    true,
-    40,
-    0,
-  );
   return out;
 };
 
@@ -455,7 +508,6 @@ const runCardKeys: Recorder = () => {
 
 export const HOME_RUN_RECORDERS = {
   'home-view-hint': homeHint,
-  'home-attention-cue': attentionCue,
   'home-exit-guard': exitGuard,
   'run-screen-keys': runScreenKeys,
   'run-card-keys': runCardKeys,

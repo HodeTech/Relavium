@@ -227,8 +227,9 @@ describe('the Home hint bar at the prompt', () => {
       id: 'session-1',
     });
     const parked = rig({ parked: [parkedRow('approval')] });
+    // A parked run is named (MVP-11 unit 7): page 1 says what the most urgent item is, not only how many there are.
     expect(hintOf(parked.controller)).toBe(
-      '[/] commands · ↓ 1 needs you · Tab fill the example · [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ run run-0001 needs approval · Tab fill the example · [Ctrl+C] exit (twice)',
     );
     parked.controller.handleKey('', DOWN);
     expect(parked.controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: RUN });
@@ -236,10 +237,10 @@ describe('the Home hint bar at the prompt', () => {
 
   it('at 80 columns the key that leaves is never the part that is cut: the lowest-priority item of a line that does not fit is dropped (ADR-0145 §3)', () => {
     const parked = rig({ parked: [parkedRow('approval')] });
-    // 75 columns written whole against the 74 the margin leaves: the example's `Tab` goes, the indicator and the exit stay, nothing is cut
-    // inside a word.
+    // Written whole it is wider than the 74 columns the margin leaves: the example's `Tab` goes, the indicator and the exit stay, nothing is
+    // cut inside a word.
     expect(hintOf(parked.controller, IDLE, { cols: 80, rows: 24 })).toBe(
-      '[/] commands \u00b7 \u2193 1 needs you \u00b7 [Ctrl+C] exit (twice)',
+      '[/] commands · ↓ run run-0001 needs approval · [Ctrl+C] exit (twice)',
     );
     expect(hintOf(parked.controller, IDLE, { cols: 100, rows: 30 })).toContain(
       'Tab fill the example',
@@ -376,7 +377,7 @@ describe('the Home hint bar on a focused strip row', () => {
     const { controller } = rig({ snapshot: snapshotOf({ runs: 2 }) });
     controller.handleKey('', DOWN);
     const hint = hintOf(controller);
-    expect(hint).toBe('↑/↓ select · Enter open the run · type to chat · Esc start page');
+    expect(hint).toBe('↑/↓ select · Enter details · type to chat · Esc start page');
     controller.handleKey('', DOWN);
     expect(controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: 'run-2' });
     controller.handleKey('', ESC);
@@ -384,23 +385,21 @@ describe('the Home hint bar on a focused strip row', () => {
   });
 
   it.each([
-    ['approval', 'Enter open the gate'],
-    ['input', 'Enter show how'],
+    ['approval', 'Enter open'],
+    ['input', 'Enter show how to answer'],
   ] as const)(
     'a parked %s row lists %s, and Enter on it opens the gate card the word names',
     (kind, cue) => {
       const { controller } = rig({ parked: [parkedRow(kind)] });
       controller.handleKey('', DOWN);
-      expect(hintOf(controller)).toBe(
-        `↑/↓ select \u00b7 ${cue} \u00b7 type to chat \u00b7 Esc start page`,
-      );
+      expect(hintOf(controller)).toBe(`↑/↓ select · ${cue} · type to chat · Esc start page`);
       controller.handleKey('', ENTER);
       expect(controller.getSnapshot().screen?.kind).toBe('gate-card');
     },
   );
 
   it.each([
-    ['media', 'Enter continue it'],
+    ['media', 'Enter ask to continue'],
     ['none', 'Enter say why'],
   ] as const)(
     'a parked %s row lists %s, and Enter on it opens no gate card where the log names no gate',
@@ -410,9 +409,7 @@ describe('the Home hint bar on a focused strip row', () => {
         gates: { ...APPROVAL, gates: [] },
       });
       controller.handleKey('', DOWN);
-      expect(hintOf(controller)).toBe(
-        `↑/↓ select \u00b7 ${cue} \u00b7 type to chat \u00b7 Esc start page`,
-      );
+      expect(hintOf(controller)).toBe(`↑/↓ select · ${cue} · type to chat · Esc start page`);
       controller.handleKey('', ENTER);
       expect(controller.getSnapshot().screen?.kind).not.toBe('gate-card');
     },

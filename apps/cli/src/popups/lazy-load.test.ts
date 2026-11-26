@@ -50,6 +50,7 @@ const LAZY = [
   'mode-popup',
   'permissions-session',
   'permissions-popup',
+  'unreadable-run-card',
 ].map((name) => `popups/${name}.ts`);
 
 /** Every source file of the CLI (tests and their support excluded), by its path under `src`. */
@@ -203,10 +204,14 @@ describe('the popups load on first use', () => {
     expect(readFileSync(join(SRC, 'popups/settings-port.ts'), 'utf8')).toContain(
       "import('./settings-session.js')",
     );
+    expect(readFileSync(join(SRC, 'popups/unreadable-run-port.ts'), 'utf8')).toContain(
+      "import('./unreadable-run-card.js')",
+    );
     const reached = closure('render/tui/home-controller.ts');
     expect(reached.has('popups/doctor-port.ts')).toBe(true);
     expect(reached.has('popups/report-port.ts')).toBe(true);
     expect(reached.has('popups/settings-port.ts')).toBe(true);
+    expect(closure('home/drive-home.tsx').has('popups/unreadable-run-port.ts')).toBe(true);
   });
 
   it.each(ENTRIES)('%s reaches no lazy module through a static value import', (entry) => {

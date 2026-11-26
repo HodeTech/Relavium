@@ -238,16 +238,17 @@ async function toWorkPagePrompt(m: Mounted): Promise<void> {
 }
 
 describe('the Attention rows', () => {
-  it('a paused run of this project is one row: its id, its gate kind and the key that selects it, under the heading', async () => {
+  it('a paused run of this project is one row: its gate kind and its short id, and no key of its own, under the heading', async () => {
     const m = mount();
     await settleFrames();
-    // the landing counts it (MVP-11 unit 7): the rows themselves are the work page's
-    expect(m.frame()).toContain('↓ 1 needs you');
-    expect(m.frame()).not.toContain('|| run-0001');
+    // the landing names it (MVP-11 unit 7, `run` and its id when no workflow names it): the rows themselves are the work page's
+    expect(m.frame()).toContain('↓ run run-0001 needs approval');
+    expect(m.frame()).not.toContain('|| approval');
     await toWorkPagePrompt(m);
     const frame = m.frame();
     expect(frame).toContain('Attention required');
-    expect(frame).toContain('|| run-0001  ·  approval gate  ·  ↑/↓ select');
+    expect(frame).toContain('|| approval · run-0001');
+    expect(frame).not.toContain('|| approval · run-0001 ·');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
   });
 
@@ -265,12 +266,13 @@ describe('the Attention rows', () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('> || run-0001  ·  approval gate  ·  Enter open'));
-    expect(m.frame()).toContain('Enter open the gate');
+    await eventually(() => m.frame().includes('> || approval · run-0001'));
+    // the row names no key; the hint names the focused row's `Enter` (MVP-11 unit 7)
+    expect(m.frame()).toContain('↑/↓ select · Enter open · type to chat · Esc start page');
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(RUN);
     m.harness.stdin.write(ESC);
     await eventually(() => m.controller.getSnapshot().stripFocus?.id === undefined);
-    await eventually(() => m.frame().includes('↓ 1 needs you'));
+    await eventually(() => m.frame().includes('↓ run run-0001 needs approval'));
     expect(m.frame()).not.toContain('Enter open');
   });
 
@@ -294,7 +296,7 @@ describe('the Attention rows', () => {
     await toWorkPagePrompt(m);
     await eventually(() => m.frame().includes('Continue'), 'the Continue list');
     const frame = m.frame();
-    expect(frame, 'the parked row, once').toContain('|| run-0001  ·  approval gate');
+    expect(frame, 'the parked row, once').toContain('|| approval · run-0001');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
     expect(frame, 'its recent-run row is not repeated under Runs').not.toContain('deploy-flow');
     expect(frame, 'a recent run that is not parked still is').toContain('nightly-flow');
@@ -317,7 +319,7 @@ describe('the Attention rows', () => {
       .split('\n')
       .filter((line) => /^\s*(?:> )?(?:!|\|\|) /u.test(line));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('|| run-0001');
+    expect(lines[0]).toContain('|| approval · run-0001');
     expect(m.frame()).not.toContain('Ship the release?');
   });
 });
@@ -345,7 +347,7 @@ describe('the Attention rows keep a row on screen at 80×24, whatever else the H
         `focus on ${expected.runId}`,
       );
       await eventually(
-        () => m.frame().includes(`> || ${expected.runId}`),
+        () => m.frame().includes(`> || approval · ${expected.runId}`),
         `the row of ${expected.runId} drawn when it is focused`,
       );
       seen.push(expected.runId);
@@ -619,7 +621,7 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     expect(m.resume, 'Esc decides nothing').not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().screen).toBeUndefined();
     await eventually(() => m.frame().includes('Attention required'));
-    expect(m.frame()).toContain('|| run-0001');
+    expect(m.frame()).toContain('|| approval · run-0001');
     expect(m.controller.getSnapshot().parkedRuns).toEqual([ROW]);
   });
 
@@ -784,8 +786,9 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
       () => m.frame().includes('Enter show how to answer') && m.homePainted(),
       'the focused input row, which says what Enter does',
     );
-    expect(m.frame()).toContain('> || run-0001  ·  input gate  ·  Enter show how to answer');
-    expect(m.frame()).toContain('Enter show how');
+    // the row names its kind; the hint says what `Enter` does on it (MVP-11 unit 7)
+    expect(m.frame()).toContain('> || input · run-0001');
+    expect(m.frame()).toContain('Enter show how to answer');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
     await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
@@ -805,13 +808,13 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
 describe('what an Attention row says of the run it names', () => {
   const UUID = '0b8f3a52-9d41-4c6e-8a07-5e2d1c9b7f64';
 
-  // The work page is left-hung at the Home's margin (MVP-11 unit 7): at 80 columns a row has 70 for its label, so after the id the workflow
-  // gives way too; the kind, the deadline and the key never do. At 100 columns the workflow is back beside them.
+  // MVP-11 unit 7 (the maintainer's simplified rows): `workflow · kind · deadline · short id`, no key on the row (the hint names the focused
+  // row's `Enter`), the same words at 80 and 100 columns: the row fits both whole.
   it.each([
-    [80, '|| 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  ↑/↓ select', '> || 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  Enter open'],
-    [100, '|| 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↑/↓ select', '> || 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open'],
+    [80, '|| deploy · approval · expires in 5m · 0b8f3a52', '> || deploy · approval · expires in 5m · 0b8f3a52'],
+    [100, '|| deploy · approval · expires in 5m · 0b8f3a52', '> || deploy · approval · expires in 5m · 0b8f3a52'],
   ] as const)(
-    'at %i columns it keeps the deadline beside the kind and the key, and the id and then the workflow give way',
+    'at %i columns it keeps the workflow, the kind, the deadline and the short id',
     async (cols, unfocused, focusedRow) => {
       const m = mount({
         size: { cols, rows: 24 },
@@ -860,8 +863,6 @@ describe('what an Attention row says of the run it names', () => {
       ],
     });
     await toWorkPagePrompt(m);
-    expect(m.frame()).toContain(
-      '|| run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↑/↓ select',
-    );
+    expect(m.frame()).toContain('|| deploy · approval · expired · run-0001');
   });
 });

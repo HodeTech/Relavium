@@ -18,7 +18,7 @@ import {
   tooSmallMessage,
   type ExitGuardPhase,
 } from './home-projection.js';
-import type { ParkedRunRow } from './home-attention.js';
+import { attentionOrder, urgentWords, type ParkedRunRow } from './home-attention.js';
 import { keyHint, legend } from './legend.js';
 import { HomeLanding, LandingPalette, type LandingStatus } from './home-landing.js';
 import {
@@ -37,6 +37,7 @@ import {
   workHint,
   type HintRow,
   type HomePage,
+  type UrgentHead,
   type WorkCounts,
   type WorkRowCue,
 } from './home-pages.js';
@@ -103,7 +104,10 @@ interface HomeViewProps {
   readonly interruptArmed?: boolean | undefined;
   /** The run host's snapshot (ADR-0139 §3): the landing's run row shows the active run, and nothing when none is active. */
   readonly hostedRun?: RunHostSnapshot | undefined;
-  /** What a session's directory is shortened against (ADR-0145 §8). Absent ⇒ the directory is drawn as it was stored. */
+  /**
+   * What a path is shortened against (ADR-0145 §8). The work page no longer draws a session's directory (MVP-11 unit 7: every session it
+   * lists is this directory's, one row each), so the view reads it nowhere now; the Home's host still hands it in with its other props.
+   */
   readonly paths?: DisplayPathRoots | undefined;
   /** The exit-guard card (ADR-0139 §6): it takes the place of the prompt block of the page in front and holds the notice back. */
   readonly exitGuard?: ExitGuardPhase | undefined;
@@ -305,6 +309,17 @@ function landingGeometry(
   };
 }
 
+/**
+ * The most urgent item of "Attention required" as page 1 names it (MVP-11 unit 7): the first of the one urgency order (`attentionOrder`), in
+ * the words `urgentWords` builds (its stored name scrubbed and bounded there), or none with nothing to continue or nothing under Attention.
+ */
+function urgentOf(input: PageInput): UrgentHead | undefined {
+  if (!input.canContinue) return undefined;
+  const { view } = input;
+  const first = attentionOrder(view.parkedRuns ?? NO_PARKED, view.snapshot, view.nowMs)[0];
+  return first === undefined ? undefined : urgentWords(first, view.nowMs);
+}
+
 /** The landing's hint row: the one notification of the Home's channel in its place for its few seconds, else the hint of the draft and the Home's state. */
 function landingHintOf(input: PageInput, editor: EditorState): HintRow {
   const { view } = input;
@@ -316,6 +331,7 @@ function landingHintOf(input: PageInput, editor: EditorState): HintRow {
       keyless: view.keyless === true,
       runCanBeShown: input.runCanBeShown,
       counts: input.counts,
+      urgent: urgentOf(input),
       columns: homeContentColumns(view.cols),
     },
     displayWidth,
@@ -480,7 +496,6 @@ function workPage(input: PageInput, frame: RefObject<DOMElement | null> | undefi
     budget,
     columns: homeContentColumns(cols),
     nowMs: view.nowMs,
-    paths: view.paths,
     color,
   });
   return (

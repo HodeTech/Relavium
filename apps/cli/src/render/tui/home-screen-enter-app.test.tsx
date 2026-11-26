@@ -142,8 +142,8 @@ const until = (predicate: () => boolean, timeout = 4000): Promise<void> =>
 describe('Enter on a screen opened from a focused failed run', () => {
   it('reaches the screen: the run detail opens a node page, though the strip focus stayed through it', async () => {
     const m = mount();
-    // the landing counts the failed run (MVP-11 unit 7); its row is the work page's
-    await until(() => m.frame().includes('need'));
+    // the landing names the failed run (MVP-11 unit 7: `↓ ship-it failed 1h ago`); its row is the work page's
+    await until(() => m.frame().includes('ship-it failed'));
 
     // `↓` onto the failed run: the row is drawn with its marker before `Enter` is sent, so this one is a row the person has seen.
     m.harness.stdin.write(DOWN);
@@ -182,7 +182,7 @@ describe('Enter on a screen opened from a focused failed run', () => {
 
   it('still holds back a coalesced ↓ + Enter on the landing: a row the person has not seen is not opened', async () => {
     const m = mount();
-    await until(() => m.frame().includes('need'));
+    await until(() => m.frame().includes('ship-it failed'));
     // One chunk: the focus moves onto the row and `Enter` arrives with it, before that frame can be on screen.
     m.harness.stdin.write(`${DOWN}\r`);
     await until(() => m.controller.getSnapshot().stripFocus?.id === FIXTURE_RUN_IDS.failed);

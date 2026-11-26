@@ -405,6 +405,9 @@ const POPUP_SURFACES = ALL_SURFACES.filter(
     !surface.id.includes('.permissions-') &&
     !surface.id.includes('.native-popup-') &&
     !surface.id.includes('.export-confirm') &&
+    // The unreadable run's card is a report popup whose box exists only while the card is open (its body has no inverse cell by design: the
+    // surface declares it, and the matrix's own backdrop check, with its self-tests, covers every cell of it).
+    !surface.id.includes('.unreadable-run-card') &&
     // The flows of unit 6 are framed native prompts too (a field, a wait, a chord step or a Done step): their box is where the live flow
     // draws it, so it exists only while a surface has the flow open, and the matrix's own backdrop check covers every cell of each.
     !FRAMED_FLOW_SURFACE.test(surface.id),

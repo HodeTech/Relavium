@@ -158,23 +158,23 @@ async function focusRow(m: Mounted, cue: string): Promise<void> {
 }
 
 describe('the row of a media park', () => {
-  it('says it waits for media, and its focused key says it asks: not "no gate to decide", not "Enter say why"', async () => {
+  it('says it waits for media, and its focused key says it asks: not "no gate", not "Enter say why"', async () => {
     const m = mount();
     await settleFrames();
-    // The row is the work page's (MVP-11 unit 7): down onto it, then past it onto the docked prompt, where it says how to select it.
+    // The row is the work page's (MVP-11 unit 7): down onto it, then past it onto the docked prompt. The row names no key of its own; the hint
+    // row names the focused row's `Enter`.
     m.harness.stdin.write(DOWN);
     await eventually(() => m.controller.getSnapshot().stripFocus !== undefined);
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('|| run-0001  ·  waiting for media  ·  ↑/↓ select'));
-    expect(m.frame()).not.toContain('no gate to decide');
+    await eventually(() => m.controller.getSnapshot().stripFocus === undefined && m.frame().includes('|| waiting for media · run-0001'));
+    expect(m.frame()).not.toContain('no gate');
+    expect(m.frame()).not.toContain('Enter ask to continue');
     m.harness.stdin.write('\x1b[A');
-    await eventually(() =>
-      m.frame().includes('> || run-0001  ·  waiting for media  ·  Enter ask to continue'),
-    );
-    expect(m.frame()).toContain('Enter continue it');
+    await eventually(() => m.frame().includes('> || waiting for media · run-0001'));
+    expect(m.frame()).toContain('Enter ask to continue');
     expect(m.frame()).not.toContain('Enter say why');
-    expect(m.frame()).not.toContain('Enter open the gate');
-  });
+    expect(m.frame()).not.toContain('Enter open');
+  }); // prettier-ignore
 
   it('fits 80 columns: the hint bar is not cut short of the way out', async () => {
     const m = mount({ size: { cols: 80, rows: 24 } });
@@ -185,9 +185,11 @@ describe('the row of a media park', () => {
       m
         .frame()
         .split('\n')
-        .find((line) => line.includes('Enter continue it')) ?? '';
-    // the work page's hint, at its margin (MVP-11 unit 7)
-    expect(bar.trimStart()).toBe('↑/↓ select · Enter continue it · type to chat · Esc start page');
+        .find((line) => line.includes('Enter ask to continue')) ?? '';
+    // the work page's hint, at its margin (MVP-11 unit 7), in the words the row's cue had
+    expect(bar.trimStart()).toBe(
+      '↑/↓ select · Enter ask to continue · type to chat · Esc start page',
+    );
     expect(bar.length).toBeLessThanOrEqual(80);
   });
 });

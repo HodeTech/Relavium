@@ -3,6 +3,7 @@ import type {
   HomeRunRow,
   HomeSessionRow,
   HomeSnapshot,
+  HomeUnreadableRun,
 } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { formatAgeOfIso, formatElapsed, formatTimeUntil, shortId } from '../notation.js';
@@ -11,15 +12,16 @@ import { flowLine } from './flow-text.js';
 import { formatCostShort } from './format.js';
 import { glyph, glyphOf } from './glyphs.js';
 import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
+import { clipLine } from './sheet-frame.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * Pure projection helpers for the 2.5.B Home strip (ADR-0054) — the read-only display of recent sessions /
  * runs / agents + an "attention" section. Like the chat projection, all logic lives here (clock-injected, no
- * ink) so the `HomeView` is a thin render and every label is unit-tested. Every model/user-derived free-form
- * string (a session title, a gate message) goes through `sanitizeInline` at this display boundary — which strips
- * control sequences AND collapses any newline/tab to a space, so the value cannot spoof extra rows/columns in a
- * one-line strip row; the kebab slugs (`workflowSlug` / `agentSlug`) and the closed enums (`status` / `gateType`)
- * are safe by construction. Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
+ * ink) so the `HomeView` is a thin render and every label is unit-tested. Every stored string a work-page row draws (a
+ * session title, an agent, a workflow, a run id) goes through the Home's full row scrub (`flowLine`) before the row is cut
+ * to its width (MVP-11 unit 7: see "The work page's rows" below); the closed enums (`status`) are safe by construction.
+ * Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
  */
 
 // The Home's terminal floor lives in a leaf (`home-floor.ts`), so the run cards can read it without importing this module; it is found here too.
@@ -44,49 +46,252 @@ export function expiryLabel(expiresAt: string | undefined, nowMs: number): strin
 
 const SEP = '  ·  ';
 
-/** A recent session row → its glanceable line: title · agent · when · cost. An UNTITLED session shows the agent
- *  slug ONCE (the slug is its own label) rather than doubling it as a title fallback AND the trailing field. */
-export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
-  // Titled: the user-derived label, then the agent it ran. Untitled: just the agent slug (shown once).
-  const head =
-    row.title === undefined ? [row.agentSlug] : [sanitizeInline(row.title), row.agentSlug];
-  return [
-    ...head,
-    formatAgeOfIso(row.updatedAt, nowMs),
-    formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls),
-  ]
-    .filter((s) => s.trim().length > 0) // a sanitized-to-whitespace field must not leave a dangling separator
-    .join(SEP);
+// ---- The work page's rows (MVP-11 unit 7: the rows simplified) --------------------------------------------------------------------
+// One row per item, its fields joined by the legend's own ` · `, cut at its width and never wrapped. Every stored field (a title, an agent,
+// a workflow, a run id) passes the Home's full row scrub (`flowLine`: secrets, control, bidirectional, invisible and line-separator
+// characters, host glyphs, answer chords, and the legend's separators and key tokens made inert) BEFORE it is cut, so the row's own
+// separators are the only ones on it and a cut never splits an escape. A run is named by the first eight characters of its id (`shortId`),
+// last on its row: the whole id is in its detail.
+
+/** The separator between a work-page row's fields. */
+export const ROW_SEP = ' · ';
+
+/**
+ * What a field of a row is, for the order a narrow row gives its fields up in ({@link fitRow}): its `name` (cut at its tail), its `cost`, its
+ * `age`, a `detail` (a run's id, a session's agent), or a field it `keep`s whatever the width (the status word, the gate's kind).
+ */
+export type RowFieldRole = 'name' | 'cost' | 'age' | 'detail' | 'keep';
+
+export interface RowField {
+  readonly text: string;
+  readonly role: RowFieldRole;
+  /** Joined to the field before it by a space, not the separator: `failed 2h ago`. */
+  readonly glued?: boolean;
 }
 
-/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost. Every run the strip lists is this directory's. */
-export function runLabel(row: HomeRunRow, nowMs: number): string {
-  const name = row.workflowSlug ?? shortId(row.runId);
-  const anchor = row.status === 'running' ? row.startedAt : (row.completedAt ?? row.startedAt);
-  return [
-    name,
-    row.status,
-    formatAgeOfIso(anchor ?? row.createdAt, nowMs),
-    formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls),
-  ]
-    .filter((s) => s.trim().length > 0)
-    .join(SEP);
+/** The most columns a row's name takes, however wide the terminal: a long name never pushes the row's facts off it. */
+export const ROW_NAME_COLUMNS = 40;
+
+/** The fewest columns a name keeps once its tail is given up, before the row gives up what comes after the tail in its order. */
+export const ROW_NAME_FLOOR = 12;
+
+/** One step of what a narrow row gives up: its name's tail (down to {@link ROW_NAME_FLOOR}), or every field of a role. */
+type GiveUp = 'name-tail' | 'cost' | 'age' | 'detail';
+
+/** How a kind of row fits its width: the order it gives its fields up in, and the most columns its name takes however wide the row. */
+export interface RowFit {
+  readonly order: readonly GiveUp[];
+  readonly nameColumns: number;
 }
 
 /**
- * A run whose event log could not be read (#W15-15) → a short id plus what is missing. There is no workflow
- * slug to fall back on here: the snapshot only carries the id, because the read that would have named the run
- * is the one that failed.
+ * How a RUN's row fits (a parked, a failed, a recent run; an agent): the workflow's tail first, then the cost (before the status word, which
+ * stays: colour is never the only carrier), then the age (or the deadline), then the id. The id and the status word survive the longest: the
+ * id is how two runs of one workflow are told apart, so the workflow is bounded to {@link ROW_NAME_COLUMNS} even on a wide row.
  */
-export function unreadableRunLabel(runId: string): string {
-  return `${shortId(runId)}${SEP}event log unreadable${SEP}gate detail unavailable`;
+export const RUN_ROW_FIT: RowFit = {
+  order: ['name-tail', 'cost', 'age', 'detail'],
+  nameColumns: ROW_NAME_COLUMNS,
+};
+
+/**
+ * How a SESSION's row fits: the cost first, then the age, then the title's tail, then the agent. A session is known by its title, so the title
+ * is the last thing cut and is bounded only by the row (two titles that differ at their end must not read the same: `…, part 1`, `…, part 2`).
+ */
+export const SESSION_ROW_FIT: RowFit = {
+  order: ['cost', 'age', 'name-tail', 'detail'],
+  nameColumns: Number.POSITIVE_INFINITY,
+};
+
+/** What joins `field` to the field before it: a space for a glued one (`failed 2h ago`), else the separator. */
+function joinerOf(field: RowField): string {
+  return field.glued === true ? ' ' : ROW_SEP;
 }
 
-/** A recently-used agent → slug · when last used. */
-export function agentLabel(row: HomeAgentRow, nowMs: number): string {
-  return [row.agentSlug, formatAgeOfIso(row.lastUsedAt, nowMs)]
-    .filter((s) => s.trim().length > 0)
-    .join(SEP);
+/** The words a field draws: the name as the row has it now for the name field, else its own. */
+function wordsOf(field: RowField, name: string | undefined): string {
+  return field.role === 'name' ? (name ?? '') : field.text;
+}
+
+/** The row with `dropped` left out and its name as `name` (none: no name field). A field with no words leaves no separator behind. */
+function joinRow(
+  lead: string | undefined,
+  fields: readonly RowField[],
+  dropped: readonly RowFieldRole[],
+  name: string | undefined,
+): string {
+  let out = '';
+  for (const field of fields) {
+    const text = dropped.includes(field.role) ? '' : wordsOf(field, name);
+    if (text.trim().length === 0) continue;
+    out = out === '' ? text : `${out}${joinerOf(field)}${text}`;
+  }
+  if (lead === undefined || out === '') return lead ?? out;
+  return `${lead} ${out}`;
+}
+
+/** The row with `dropped` left out when it fits `max` with its name whole or, once the tail may go, cut to no fewer than `floor` columns. */
+function fittedWith(
+  lead: string | undefined,
+  fields: readonly RowField[],
+  dropped: readonly RowFieldRole[],
+  name: string | undefined,
+  floor: number,
+  max: number,
+): string | undefined {
+  const full = joinRow(lead, fields, dropped, name);
+  if (displayWidth(full) <= max) return full;
+  if (name === undefined) return undefined;
+  const room = max - (displayWidth(full) - displayWidth(name));
+  return room >= floor ? joinRow(lead, fields, dropped, clipLine(name, room)) : undefined;
+}
+
+/**
+ * A work-page row in at most `maxColumns` columns: `lead` (a glyph, never cut) and the fields, given up step by step in the order of `fit`
+ * ({@link RUN_ROW_FIT}, {@link SESSION_ROW_FIT}), the name first bounded to the fit's columns: until the name's tail is given up the name is
+ * whole; after, it is cut (an ellipsis shows the cut) to no fewer than {@link ROW_NAME_FLOOR} columns. Past the last step the name is cut below its floor, then dropped; what is
+ * `keep` (the status word, the gate's kind) is never given up, and only the row's own cut at its end, the last resort, can reach it. The fields
+ * arrive scrubbed.
+ */
+export function fitRow(
+  lead: string | undefined,
+  fields: readonly RowField[],
+  maxColumns = Number.POSITIVE_INFINITY,
+  fit: RowFit = RUN_ROW_FIT,
+): string {
+  const max = Number.isNaN(maxColumns)
+    ? Number.POSITIVE_INFINITY
+    : Math.max(1, Math.floor(maxColumns));
+  const named = fields.find((field) => field.role === 'name')?.text;
+  const name =
+    named === undefined || named.trim().length === 0 ? undefined : clipLine(named, fit.nameColumns);
+  const dropped: RowFieldRole[] = [];
+  let floor = Number.POSITIVE_INFINITY;
+  for (const step of [undefined, ...fit.order]) {
+    if (step === 'name-tail') floor = ROW_NAME_FLOOR;
+    else if (step !== undefined) dropped.push(step);
+    const row = fittedWith(
+      lead,
+      fields,
+      dropped,
+      name,
+      Math.min(floor, displayWidth(name ?? '')),
+      max,
+    );
+    if (row !== undefined) return row;
+  }
+  const bare = joinRow(lead, fields, dropped, name);
+  const room = name === undefined ? 0 : max - (displayWidth(bare) - displayWidth(name));
+  const kept = room >= 2 && name !== undefined ? clipLine(name, room) : undefined;
+  return clipLine(joinRow(lead, fields, dropped, kept), max);
+}
+
+/** A run's id as its row names it: the first eight characters of the scrubbed id. */
+function rowId(runId: string): string {
+  return shortId(flowLine(runId));
+}
+
+/** A stored name as a row draws it: scrubbed, or none when it is absent. */
+function rowName(stored: string | undefined): string | undefined {
+  return stored === undefined ? undefined : flowLine(stored);
+}
+
+/** The time a run row's age is counted from: a running run from its start, a finished one from its end, a queued one from its creation. */
+function runAnchor(row: HomeRunRow): string {
+  const anchor = row.status === 'running' ? row.startedAt : (row.completedAt ?? row.startedAt);
+  return anchor ?? row.createdAt;
+}
+
+function costOf(row: HomeRunRow | HomeSessionRow): string {
+  return formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls);
+}
+
+/**
+ * A session row: `title · agent · age · cost`, one row (every session the Home lists is this directory's, so no directory line). An UNTITLED
+ * session shows its agent ONCE, as its name. A narrow row gives up the cost, the age, the title's tail, then the agent
+ * ({@link SESSION_ROW_FIT}).
+ */
+export function sessionLabel(row: HomeSessionRow, nowMs: number, maxColumns?: number): string {
+  const agent = flowLine(row.agentSlug);
+  const title = rowName(row.title);
+  const head: readonly RowField[] =
+    title === undefined || title.trim().length === 0
+      ? [{ text: agent, role: 'name' }]
+      : [
+          { text: title, role: 'name' },
+          { text: agent, role: 'detail' },
+        ];
+  return fitRow(
+    undefined,
+    [
+      ...head,
+      { text: formatAgeOfIso(row.updatedAt, nowMs), role: 'age' },
+      { text: costOf(row), role: 'cost' },
+    ],
+    maxColumns,
+    SESSION_ROW_FIT,
+  );
+}
+
+/**
+ * A run of the Runs section: `workflow · status · age · cost · id` (the age from the status' own moment; the cost stays, it is where a person
+ * sees spend; the status word stays, colour is never the only carrier). A run whose workflow cannot be named has no name field: its id names it.
+ */
+export function runLabel(row: HomeRunRow, nowMs: number, maxColumns?: number): string {
+  return fitRow(
+    undefined,
+    [
+      { text: rowName(row.workflowSlug) ?? '', role: 'name' },
+      { text: row.status, role: 'keep' },
+      { text: formatAgeOfIso(runAnchor(row), nowMs), role: 'age' },
+      { text: costOf(row), role: 'cost' },
+      { text: rowId(row.runId), role: 'detail' },
+    ],
+    maxColumns,
+  );
+}
+
+/** A failed run under Attention: `✗ workflow · failed 2h ago · cost · id` (the glyph from the table, in the form in force). */
+export function failedRunLabel(row: HomeRunRow, nowMs: number, maxColumns?: number): string {
+  return fitRow(
+    glyph('failed'),
+    [
+      { text: rowName(row.workflowSlug) ?? '', role: 'name' },
+      { text: 'failed', role: 'keep' },
+      { text: formatAgeOfIso(runAnchor(row), nowMs), role: 'age', glued: true },
+      { text: costOf(row), role: 'cost' },
+      { text: rowId(row.runId), role: 'detail' },
+    ],
+    maxColumns,
+  );
+}
+
+/**
+ * A run whose event log could not be read (#W15-15): `⚠ id · workflow · cannot be read`, its workflow only when the summary read could name
+ * it. `Enter` on it says why (a read-only card); the row says only that it cannot be read.
+ */
+export function unreadableRunLabel(run: HomeUnreadableRun, maxColumns?: number): string {
+  return fitRow(
+    glyph('warning'),
+    [
+      { text: rowId(run.runId), role: 'keep' },
+      { text: rowName(run.workflowSlug) ?? '', role: 'name' },
+      { text: 'cannot be read', role: 'keep' },
+    ],
+    maxColumns,
+  );
+}
+
+/** A recently-used agent: `agent · when last used`. */
+export function agentLabel(row: HomeAgentRow, nowMs: number, maxColumns?: number): string {
+  return fitRow(
+    undefined,
+    [
+      { text: flowLine(row.agentSlug), role: 'name' },
+      { text: formatAgeOfIso(row.lastUsedAt, nowMs), role: 'age' },
+    ],
+    maxColumns,
+  );
 }
 
 /** Whether the run host has a leg that is preparing, executing or cancelling: the one meaning of "a run is active" for the Home. */

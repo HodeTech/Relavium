@@ -198,11 +198,17 @@ describe('the Home’s strip', () => {
     );
 
   it.each(BOTH)(
-    'draws the focused parked row inverse and bold, and the row beside it plain (colour %s)',
+    'draws the focused parked row by the tinted rule (MVP-11 unit 7): bold with the colour flag on (its tint and `›` carry the rest, no inverse), bold and inverse with it off; the row beside it plain (colour %s)',
     (color) => {
       const frame = homeFrame(color);
-      expect(stylesOver(frame, '0b8f3a5')?.filter((style) => style !== 'colour')).toEqual(SELECTED);
-      expect(stylesOver(frame, 'other-run') ?? []).not.toContain('inverse');
+      expect(stylesOver(frame, '0b8f3a5')?.filter((style) => style !== 'colour')).toEqual(
+        color ? ['bold'] : SELECTED,
+      );
+      // the neighbour's row names its run by the first eight characters of its id (MVP-11 unit 7)
+      const beside = stylesOver(frame, 'other-ru');
+      expect(beside, 'the neighbour is drawn').toBeDefined();
+      expect(beside ?? []).not.toContain('inverse');
+      expect(beside ?? []).not.toContain('bold');
     },
   );
 });

@@ -183,6 +183,11 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
     'home.popup-selected-row',
     'a popup over the populated landing with a strip row selected (an inverse row; the backdrop-dim body, ADR-0148 §4)',
   ),
+  // The card of a run whose log cannot be read: a read-only popup, opened by Enter on its row of the work page (MVP-11 unit 7).
+  row(
+    'home.unreadable-run-card',
+    'the card of an unreadable run: why its log cannot be read, read-only (over the work page)',
+  ),
   // A prompt of the native prompt channel drawn in the popup frame (MVP-11 unit 6, 6.1): the frame every flow of the Home wears.
   row('home.native-popup-select', 'a native choice drawn in the popup frame (a hint that wraps)'),
   row('home.native-popup-text', 'a native text field drawn in the popup frame'),

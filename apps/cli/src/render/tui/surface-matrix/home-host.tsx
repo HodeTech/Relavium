@@ -1,5 +1,5 @@
 import type { HomeStatusReader } from '../../../home/home-status-facts.js';
-import type { HomeSnapshot, HomeStore } from '../../../home/home-store.js';
+import type { HomeSnapshot, HomeStore, HomeUnreadableRun } from '../../../home/home-store.js';
 import { RootApp, type RootAppProps } from '../home-app.js';
 import {
   createHomeController,
@@ -28,6 +28,7 @@ import {
   type ReportsPort,
 } from '../../../popups/report-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
+import { openUnreadableRun } from '../../../popups/unreadable-run-port.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import type { ChatStoreController } from '../chat-store.js';
 import { createChatStore } from '../chat-store.js';
@@ -67,6 +68,12 @@ const MATRIX_STATUS: HomeStatusReader = {
     directory: '~/acme-web',
   }),
 };
+
+/**
+ * The wall clock the matrix's Home reads an unreadable run's age against (the card of `Enter` on its row, MVP-11 unit 7): fixed, so a run started
+ * two hours before it reads `2h ago` in every cell and on every day.
+ */
+export const MATRIX_NOW_MS = Date.parse('2026-11-23T12:00:00.000Z');
 
 /** What the controller's ports may need of the host they are built for. */
 export interface HomeContext {
@@ -274,6 +281,10 @@ export function mountHome(
     // The bare Home's own channel, as `driveHome` wires it: what its `/models` popup applied says, after the popup has closed.
     announce: (text: string) => {
       notifications.notify(text);
+    },
+    // As `driveHome` wires it: `Enter` on an unreadable run's row opens its read-only card on the Home's popup host.
+    openUnreadableRun: ({ run }: { readonly run: HomeUnreadableRun }) => {
+      void openUnreadableRun({ host: popups, run, origin: 'home', now: () => MATRIX_NOW_MS });
     },
     statusFacts: MATRIX_STATUS,
     onExit: () => {},

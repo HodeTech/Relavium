@@ -1,23 +1,16 @@
 import { Box, type DOMElement } from 'ink';
 import type { ReactElement, ReactNode, RefObject } from 'react';
 
-import type {
-  HomeAgentRow,
-  HomeRunRow,
-  HomeSessionRow,
-  HomeSnapshot,
-} from '../../home/home-store.js';
+import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
-import type { DisplayPathRoots } from '../notation.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
-import { flowLine } from './flow-text.js';
 import type { StatusColor } from './format.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import {
-  PARKED_ROW_INDENT_COLUMNS,
+  attentionOrder,
   parkedRunLabel,
-  parkedRunOverdue,
+  type AttentionItem,
   type ParkedRunRow,
 } from './home-attention.js';
 import {
@@ -31,7 +24,6 @@ import { frameRows, homeMargin, homeRailWidth, thinRule } from './home-layout.js
 import {
   DOCKED_CHROME_ROWS,
   DOCKED_PLACEHOLDER,
-  UNREADABLE_ROWS_SHOWN,
   WAY_BACK_LINE,
   workEditorRows,
   workListRows,
@@ -40,19 +32,20 @@ import {
 import {
   agentLabel,
   exitGuardLines,
+  failedRunLabel,
   runLabel,
   sessionLabel,
   unreadableRunLabel,
   type ExitGuardPhase,
 } from './home-projection.js';
+import { allocateWorkList, type SectionWindow } from './home-work-budget.js';
 import { homeContentColumns, homePromptRows } from './home-notice.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { PaletteAbovePrompt } from './palette-block.js';
 import { paletteLines } from './palette-window.js';
-import { placeForDisplay } from './place-label.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
-import { SelectableText, selectionMarker } from './selectable-text.js';
+import { SelectableText, selectionMarker, TintedSelectableText } from './selectable-text.js';
 import type { StripFocus } from './strip-focus.js';
 import { Text } from './text.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
@@ -62,61 +55,40 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
  * tall, top to bottom:
  *
  * - the way back, dim (`↑ start page`), and a blank row;
- * - the strip's sections as the Home has always built them ("Attention required": the parked runs of this project, the runs whose log cannot be
- *   read, the failed runs; then "Continue": the sessions with their directories, the runs, the agents; all of them this directory's), windowed to the
- *   rows the page leaves them so the focused row is always one of the rows drawn;
+ * - the sections, all of them this directory's: "Attention required" (the parked runs, the failed runs of the window and the runs whose log
+ *   cannot be read, in their urgency order, `attentionOrder`), then "Continue": Sessions, Runs and Agents, newest first. Each is windowed to the
+ *   rows the page leaves it by the allocation (`home-work-budget.ts`: the caps, the priority, the `▲`/`▼ N more` markers whose N is the TRUE
+ *   total), so the focused row is always one of the rows drawn and the rows shown and the markers always add up to the section's total;
  * - a notice, when there is one, with a blank row above it;
  * - the block at the bottom: the DOCKED PROMPT (a blank row, the prompt with its invitation, the thin rule, the status line, the hint), or, while
  *   the `/` palette is open, the palette above the prompt (its list, the prompt with the typed query, the rule, the palette's legend on the hint
  *   row), or the exit-guard card in the prompt block's place.
  *
- * Pure: it holds no state and reads nothing but its props. The strip's labels come from the unit-tested `home-projection`; every free text is
- * sanitised at this boundary (and each row cut at its width rather than wrapped, so a long title cannot shatter the list).
+ * Pure: it holds no state and reads nothing but its props. Every row is ONE line (no directory line under a session: every session here is this
+ * directory's), built by the unit-tested labels (`home-projection.ts`, `home-attention.ts`), which scrub every stored field (`flowLine`) before
+ * they cut the row at its width; the view cuts nothing itself and wraps nothing.
  */
 
-/** Columns a session's directory line spends before its text: the section's indent (2) and the line's own (4). */
-const STRIP_HINT_INDENT = 6;
+/** Columns a row spends before its own words: the section's indent (2) and the marker column (`› `, 2). */
+const ROW_INDENT_COLUMNS = 4;
 
-/** A strip row: a stable key (the row's durable id), its line, and the directory line under a session. */
-interface StripRow {
-  readonly key: string;
-  readonly line: string;
-  readonly hint?: string;
-  readonly selected?: boolean;
-}
+/**
+ * Where the rows a `▼` counts are when `↓` cannot reach them (they were not loaded): the runs in `/workflows` (its Active and History tabs), the
+ * conversations in `/resume`, the agents in `/agents` (an agent row is never focusable, so its marker always says where).
+ */
+const ELSEWHERE = { runs: '/workflows', sessions: '/resume', agents: '/agents' } as const;
 
-/** A labelled list section ("Sessions", "Runs", …): nothing when it is empty. */
-function Section(
-  props: Readonly<{ title: string; rows: readonly StripRow[]; color: boolean; tint?: StatusColor }>,
-): ReactElement | null {
-  if (props.rows.length === 0) return null;
-  return (
-    <Box flexDirection="column" marginLeft={2}>
-      <Text {...dimProps(props.color)} wrap="truncate-end">
-        {props.title}
-      </Text>
-      {props.rows.map((row) => (
-        <Box key={row.key} flexDirection="column">
-          <Text
-            {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
-            wrap="truncate-end"
-          >
-            <SelectableText selected={row.selected}>
-              {`${selectionMarker(row.selected, props.color)} `}
-              {sanitizeInline(row.line)}
-            </SelectableText>
-          </Text>
-          {row.hint !== undefined && (
-            <Text {...dimProps(props.color)} wrap="truncate-end">
-              {'    '}
-              {row.hint}
-            </Text>
-          )}
-        </Box>
-      ))}
-    </Box>
-  );
-}
+/** One line of a section: a row (its durable key, its words, whether it is the focused row, its tint on an Attention row) or a marker. */
+type SectionLine =
+  | {
+      readonly kind: 'row';
+      readonly key: string;
+      readonly text: string;
+      readonly selected: boolean;
+      /** An Attention row's colour (amber, red when overdue or failed): its selected look is the tinted one (`TintedSelectableText`). */
+      readonly tint?: StatusColor;
+    }
+  | { readonly kind: 'more'; readonly key: string; readonly text: string };
 
 /** What the sections are built from. */
 interface SectionsInput {
@@ -128,210 +100,254 @@ interface SectionsInput {
   /** The columns a row may take: the terminal less the margin. */
   readonly columns: number;
   readonly nowMs: number;
-  readonly paths: DisplayPathRoots | undefined;
   /** Colour on or off: the rows carry the glyph table's glyphs in the form it asks for (the plain forms without colour, ADR-0145 §5). */
   readonly color: boolean;
 }
 
 /**
- * The sections' rows, windowed to the budget the way the strip always was (the focused row is always one of the rows drawn). Every line is built
- * here, as text, by the plain function {@link buildSections}: a line carries glyphs of the glyph table, whose form is the one in force while the
- * view is BUILT (`withGlyphForm`), and a component renders after that scope has closed.
+ * The sections' lines for `budget` rows (the allocation's windows, the markers in them). Every line is built here, as text, by the plain function
+ * {@link buildSections}: a line carries glyphs of the glyph table, whose form is the one in force while the view is BUILT (`withGlyphForm`), and
+ * a component renders after that scope has closed.
  */
 export interface SectionsModel {
-  readonly parkedRows: readonly (StripRow & { readonly overdue: boolean })[];
-  readonly unreadable: readonly StripRow[];
-  readonly failed: readonly StripRow[];
-  readonly sessions: readonly StripRow[];
-  readonly runs: readonly StripRow[];
-  readonly agents: readonly StripRow[];
+  readonly attention: readonly SectionLine[];
+  readonly sessions: readonly SectionLine[];
+  readonly runs: readonly SectionLine[];
+  readonly agents: readonly SectionLine[];
 }
 
-/**
- * The strip's rows for `budget` rows. The Attention rows come first (the parked runs, the unreadable runs, the failed runs) and leave the Continue sections their least (a session's four rows when there is one); each window follows the focus so the focused
- * row is drawn; the sessions take two rows each (the title and the directory) and leave a focused recent run its section's title and row.
- */
 export function buildSections(input: SectionsInput): SectionsModel {
   return withGlyphForm(!input.color, () => sectionsIn(input));
 }
 
-// ---- The stored text of a row (MVP-11 unit 7, round 1) ----------------------------------------------------------------------------
-// A session's title and agent, a run's id and workflow, a gate's message: stored text a model, a project or another terminal wrote. Each passes
-// the Home's full row scrub (`flowLine`: secrets, control, bidirectional, invisible and line-separator characters, host glyphs, answer chords,
-// and the legend's separators and key tokens made inert) BEFORE the strip's label is built from it, so the label's own separators are the only
-// ones on the row. A row's identity (its key, its focus) is the stored id as it is; only what is drawn is scrubbed.
+/** A marker line: `▲ N more` above the window, `▼ N more` below it, and where the rest are when `↓` cannot reach them. */
+function moreLine(side: 'above' | 'below', count: number, elsewhere?: string): SectionLine {
+  const mark = glyph(side === 'above' ? 'moreAbove' : 'moreBelow');
+  const where = elsewhere === undefined ? '' : ` · ${elsewhere}`;
+  return { kind: 'more', key: `more-${side}`, text: `${mark} ${String(count)} more${where}` };
+}
 
-/** A session row with its drawn text scrubbed. */
-function scrubbedSession(row: HomeSessionRow): HomeSessionRow {
-  return {
-    ...row,
-    title: row.title === undefined ? undefined : flowLine(row.title),
-    agentSlug: flowLine(row.agentSlug),
-  };
+/** A section's lines: its `▲` marker, the rows of its window, and its `▼` marker (with `elsewhere` when its rows were not all loaded). */
+function linesOf<T>(
+  window: SectionWindow,
+  items: readonly T[],
+  line: (item: T) => SectionLine,
+  elsewhere: { readonly where: string; readonly always?: boolean },
+): readonly SectionLine[] {
+  const lines: SectionLine[] = [];
+  if (window.above > 0) lines.push(moreLine('above', window.above));
+  for (const item of items.slice(window.start, window.start + window.count)) lines.push(line(item));
+  if (window.below > 0) {
+    const named = elsewhere.always === true || !window.belowLoaded;
+    lines.push(moreLine('below', window.below, named ? elsewhere.where : undefined));
+  }
+  return lines;
 }
-/** A run row with its drawn text scrubbed (the workflow, and the id its short form is cut from). */
-function scrubbedRun(row: HomeRunRow): HomeRunRow {
-  return {
-    ...row,
-    runId: flowLine(row.runId),
-    workflowSlug: row.workflowSlug === undefined ? undefined : flowLine(row.workflowSlug),
-  };
-}
-/** An agent row with its name scrubbed. */
-function scrubbedAgent(row: HomeAgentRow): HomeAgentRow {
-  return { ...row, agentSlug: flowLine(row.agentSlug) };
+
+/** An Attention row: its label at `room` columns and its tint (a parked run amber, red once overdue; a failed run red; an unreadable run amber). */
+function attentionLine(
+  item: AttentionItem,
+  selected: boolean,
+  room: number,
+  nowMs: number,
+): SectionLine {
+  const key = `${item.kind}:${item.runId}`;
+  switch (item.kind) {
+    case 'parked':
+      return {
+        kind: 'row',
+        key,
+        selected,
+        text: parkedRunLabel(item.row, room, nowMs),
+        tint: item.overdue ? 'red' : 'yellow',
+      };
+    case 'failed':
+      return {
+        kind: 'row',
+        key,
+        selected,
+        text: failedRunLabel(item.run, nowMs, room),
+        tint: 'red',
+      };
+    case 'unreadable':
+      return {
+        kind: 'row',
+        key,
+        selected,
+        text: unreadableRunLabel(item.run, room),
+        tint: 'yellow',
+      };
+  }
 }
 
 function sectionsIn(input: SectionsInput): SectionsModel {
-  const { snapshot, parked, focus, columns, nowMs } = input;
-  const parkedIds = new Set(parked.map((row) => row.runId));
+  const { snapshot, parked, focus, nowMs } = input;
   const runFocused = (runId: string): boolean => focus?.kind === 'run' && focus.id === runId;
-  let remaining = Math.max(0, input.budget);
-  let attentionRemaining = Math.max(
-    0,
-    remaining - (snapshot.recentSessions.length > 0 ? 4 : 0) - 2,
-  );
-  // A focused failed run is drawn after the rows above it, so they leave it one row.
-  const failedFocusIndex = snapshot.attention.failedRuns.findIndex((run) => runFocused(run.runId));
-  let attentionReserve = failedFocusIndex >= 0 ? 1 : 0;
-  const takeAttention = <T,>(items: readonly T[], max = attentionRemaining): readonly T[] => {
-    const room = Math.max(0, attentionRemaining - attentionReserve);
-    const selected = items.slice(0, Math.min(room, max));
-    attentionRemaining -= selected.length;
-    return selected;
+  const sessionFocused = (id: string): boolean => focus?.kind === 'session' && focus.id === id;
+  const attention = attentionOrder(parked, snapshot, nowMs);
+  // A run is listed once: a run that is an Attention item is not also a run of the Runs section.
+  const listed = new Set(attention.map((item) => item.runId));
+  const runs = snapshot.recentRuns.filter((run) => !listed.has(run.runId));
+  const sessions = snapshot.recentSessions;
+  const at = (index: number): number | undefined => (index >= 0 ? index : undefined);
+  const windows = allocateWorkList({
+    rows: input.budget,
+    attention: {
+      loaded: attention.length,
+      total: snapshot.totals.attention,
+      focus: at(attention.findIndex((item) => runFocused(item.runId))),
+    },
+    sessions: {
+      loaded: sessions.length,
+      total: snapshot.totals.sessions,
+      focus: at(sessions.findIndex((session) => sessionFocused(session.sessionId))),
+    },
+    runs: {
+      loaded: runs.length,
+      total: snapshot.totals.runs,
+      focus: at(runs.findIndex((run) => runFocused(run.runId))),
+    },
+    agents: { loaded: snapshot.recentAgents.length, total: snapshot.recentAgents.length },
+  });
+  const room = Math.max(1, input.columns - ROW_INDENT_COLUMNS);
+  return {
+    attention: linesOf(
+      windows.attention,
+      attention,
+      (item) => attentionLine(item, runFocused(item.runId), room, nowMs),
+      { where: ELSEWHERE.runs },
+    ),
+    sessions: linesOf(
+      windows.sessions,
+      sessions,
+      (session) => ({
+        kind: 'row',
+        key: session.sessionId,
+        text: sessionLabel(session, nowMs, room),
+        selected: sessionFocused(session.sessionId),
+      }),
+      { where: ELSEWHERE.sessions },
+    ),
+    runs: linesOf(
+      windows.runs,
+      runs,
+      (run) => ({
+        kind: 'row',
+        key: run.runId,
+        text: runLabel(run, nowMs, room),
+        selected: runFocused(run.runId),
+      }),
+      { where: ELSEWHERE.runs },
+    ),
+    agents: linesOf(
+      windows.agents,
+      snapshot.recentAgents,
+      (agent) => ({
+        kind: 'row',
+        key: agent.agentSlug,
+        text: agentLabel(agent, nowMs, room),
+        selected: false,
+      }),
+      { where: ELSEWHERE.agents, always: true },
+    ),
   };
-  const parkedFocusIndex = parked.findIndex((row) => runFocused(row.runId));
-  const parkedCapacity = Math.max(0, attentionRemaining - attentionReserve);
-  const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
-  const parkedRows = takeAttention(parked.slice(parkedStart)).map((row) => ({
-    key: `parked:${row.runId}`,
-    line: `${runFocused(row.runId) ? `${glyph('selection')} ` : '  '}${parkedRunLabel(row, runFocused(row.runId), columns - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
-    selected: runFocused(row.runId),
-    overdue: parkedRunOverdue(row, nowMs),
-  }));
-  const unreadable = takeAttention(snapshot.unreadableRuns, UNREADABLE_ROWS_SHOWN).map(
-    ({ runId }) => ({
-      key: `unreadable-${runId}`,
-      line: `${glyph('warning')} ${unreadableRunLabel(flowLine(runId))}`,
-    }),
-  );
-  attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
-  const failedStart = Math.max(0, failedFocusIndex - attentionRemaining + 1);
-  const failed = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map((r) => ({
-    key: r.runId,
-    line: `${glyph('failed')} ${runLabel(scrubbedRun(r), nowMs)}`,
-    selected: runFocused(r.runId),
-  }));
-  const attentionCount = parkedRows.length + unreadable.length + failed.length;
-  // the heading and the blank row under the section
-  if (attentionCount > 0) remaining -= attentionCount + 2;
-  let continueHeading = false;
-  const takeSection = <T,>(items: readonly T[], cost = 1, reserve = 0): readonly T[] => {
-    const chrome = continueHeading ? 1 : 2;
-    const selected = items.slice(0, Math.max(0, Math.floor((remaining - chrome - reserve) / cost)));
-    if (selected.length > 0) {
-      remaining -= chrome + selected.length * cost;
-      continueHeading = true;
-    }
-    return selected;
-  };
-  const recentRuns = snapshot.recentRuns.filter((r) => !parkedIds.has(r.runId));
-  const runFocusIndex = recentRuns.findIndex((r) => runFocused(r.runId));
-  // A focused recent run is drawn after the sessions, so they leave it its section's title and its own row.
-  const sessionReserve = runFocusIndex >= 0 ? 2 : 0;
-  const sessionCapacity = Math.max(0, Math.floor((remaining - 2 - sessionReserve) / 2));
-  const focusedIndex = snapshot.recentSessions.findIndex(
-    (s) => focus?.kind === 'session' && s.sessionId === focus.id,
-  );
-  const sessionStart = Math.max(0, focusedIndex - sessionCapacity + 1);
-  const sessions = takeSection(snapshot.recentSessions.slice(sessionStart), 2, sessionReserve).map(
-    (s) => ({
-      key: s.sessionId,
-      line: sessionLabel(scrubbedSession(s), nowMs),
-      hint: placeForDisplay(
-        s.workingDir,
-        input.paths,
-        Math.max(1, columns - STRIP_HINT_INDENT),
-        flowLine,
-      ),
-      selected: focus?.kind === 'session' && s.sessionId === focus.id,
-    }),
-  );
-  const runCapacity = Math.max(0, remaining - (continueHeading ? 1 : 2));
-  const runStart = Math.max(0, runFocusIndex - runCapacity + 1);
-  const runs = takeSection(recentRuns.slice(runStart)).map((r) => ({
-    key: r.runId,
-    line: runLabel(scrubbedRun(r), nowMs),
-    selected: runFocused(r.runId),
-  }));
-  const agents = takeSection(snapshot.recentAgents).map((a) => ({
-    key: a.agentSlug,
-    line: agentLabel(scrubbedAgent(a), nowMs),
-  }));
-  return { parkedRows, unreadable, failed, sessions, runs, agents };
 }
 
-/** The Attention section: its heading in the warning colour, its rows, and the blank row under it. */
-function AttentionSection(
-  props: Readonly<{ model: SectionsModel; color: boolean }>,
-): ReactElement | null {
-  const { model, color } = props;
-  if (model.parkedRows.length + model.unreadable.length + model.failed.length === 0) return null;
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-        Attention required
+/**
+ * One line of a section. A marker is dim, in the rows' column. A row has the marker column (`›` when it is the focused row) and its words: an
+ * Attention row in its tint, focused `›` + bold + the tint and no inverse (the tinted rule, `TintedSelectableText`); a plain row (a session, a
+ * run, an agent) focused bold + inverse (ADR-0145 §5, `SelectableText`). The words are the labels' (scrubbed); the inline pass here is the
+ * emphasis module's precondition (no text of theirs carries an SGR into the pair it opens).
+ */
+function SectionLineView(props: Readonly<{ line: SectionLine; color: boolean }>): ReactElement {
+  const { line, color } = props;
+  if (line.kind === 'more')
+    return (
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {'  '}
+        {line.text}
       </Text>
-      <Box flexDirection="column" marginLeft={2}>
-        {model.parkedRows.map((row) => (
-          <Text
-            key={row.key}
-            {...colorProps(color, row.overdue ? 'red' : 'yellow')}
-            wrap="truncate-end"
-          >
-            <SelectableText selected={row.selected}>{sanitizeInline(row.line)}</SelectableText>
-          </Text>
-        ))}
-        {/* A run whose event log cannot be read: its gate detail is MISSING, not absent (#W15-15). */}
-        {model.unreadable.map((row) => (
-          <Text key={row.key} {...colorProps(color, 'red')} wrap="truncate-end">
-            {'  '}
-            {row.line}
-          </Text>
-        ))}
-        {model.failed.map((f) => (
-          <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-            <SelectableText selected={f.selected}>
-              {`${selectionMarker(f.selected, color)} `}
-              {sanitizeInline(f.line)}
-            </SelectableText>
-          </Text>
-        ))}
-      </Box>
+    );
+  const words = (
+    <>
+      {`${selectionMarker(line.selected, color)} `}
+      {sanitizeInline(line.text)}
+    </>
+  );
+  if (line.tint === undefined)
+    return (
+      <Text wrap="truncate-end">
+        <SelectableText selected={line.selected}>{words}</SelectableText>
+      </Text>
+    );
+  return (
+    <Text {...colorProps(color, line.tint)} wrap="truncate-end">
+      <TintedSelectableText selected={line.selected} color={color}>
+        {words}
+      </TintedSelectableText>
+    </Text>
+  );
+}
+
+/** The lines of a section, one under the other (the section's own box gives them its indent). */
+function SectionLines(
+  props: Readonly<{ lines: readonly SectionLine[]; color: boolean }>,
+): ReactElement {
+  return (
+    <Box flexDirection="column">
+      {props.lines.map((line) => (
+        <SectionLineView key={line.key} line={line} color={props.color} />
+      ))}
+    </Box>
+  );
+}
+
+/** A titled section of "Continue" (Sessions, Runs, Agents): its dim title and its lines; nothing when it has none. */
+function Section(
+  props: Readonly<{ title: string; lines: readonly SectionLine[]; color: boolean }>,
+): ReactElement | null {
+  if (props.lines.length === 0) return null;
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text {...dimProps(props.color)} wrap="truncate-end">
+        {props.title}
+      </Text>
+      <SectionLines lines={props.lines} color={props.color} />
     </Box>
   );
 }
 
 /**
- * The work page's list: the strip's sections ({@link buildSections}) in a region of exactly `budget` rows, so the block under it stays where it is
- * whatever the list holds.
+ * The work page's list in a region of exactly `budget` rows, drawn as the allocation counted it (`workListChrome`): "Attention required" and its
+ * lines; then, when a Continue section has lines, a blank row (only under Attention), the dim "Continue", and each section's title and lines.
  */
 function WorkSections(
   props: Readonly<{ model: SectionsModel; budget: number; color: boolean }>,
 ): ReactElement {
   const { color, model } = props;
+  const hasAttention = model.attention.length > 0;
   const hasContinue = model.sessions.length + model.runs.length + model.agents.length > 0;
   return (
     <Box flexDirection="column" height={Math.max(0, props.budget)} overflow="hidden" flexShrink={0}>
-      <AttentionSection model={model} color={color} />
+      {hasAttention && (
+        <>
+          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+            Attention required
+          </Text>
+          <Box marginLeft={2} flexDirection="column">
+            <SectionLines lines={model.attention} color={color} />
+          </Box>
+          {hasContinue && <Box height={1} />}
+        </>
+      )}
       {hasContinue && (
         <>
           <Text {...dimProps(color)} wrap="truncate-end">
             Continue
           </Text>
-          <Section title="Sessions" rows={model.sessions} color={color} />
-          <Section title="Runs" rows={model.runs} color={color} />
-          <Section title="Agents" rows={model.agents} color={color} />
+          <Section title="Sessions" lines={model.sessions} color={color} />
+          <Section title="Runs" lines={model.runs} color={color} />
+          <Section title="Agents" lines={model.agents} color={color} />
         </>
       )}
     </Box>

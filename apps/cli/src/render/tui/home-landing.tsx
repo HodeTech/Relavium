@@ -179,8 +179,9 @@ export function StatusRow(
 }
 
 /**
- * A hint row of either page, dim, with the part the hint marks drawn in the warning colour (the landing's `↓ 1 needs you`): the text is one row,
- * cut at its end, and the marked part is a span of that very text, so the words are the same with colour and without it.
+ * A hint row of either page, dim, with the part the hint marks drawn in the warning colour (the landing's `↓ 1 needs you`, or the most urgent
+ * item it names with the words that stay with it), red when that item's deadline has passed: the text is one row, cut at its end, and the
+ * marked part is a span of that very text, so the words are the same with colour and without it (an overdue item says `expired`).
  */
 export function HomeHintText(props: Readonly<{ hint: HintRow; color: boolean }>): ReactElement {
   const { hint, color } = props;
@@ -194,7 +195,9 @@ export function HomeHintText(props: Readonly<{ hint: HintRow; color: boolean }>)
   return (
     <Text wrap="truncate-end">
       <Text {...dimProps(color)}>{hint.text.slice(0, warn.from)}</Text>
-      <Text {...colorProps(color, 'yellow')}>{hint.text.slice(warn.from, warn.to)}</Text>
+      <Text {...colorProps(color, warn.tone === 'danger' ? 'red' : 'yellow')}>
+        {hint.text.slice(warn.from, warn.to)}
+      </Text>
       <Text {...dimProps(color)}>{hint.text.slice(warn.to)}</Text>
     </Text>
   );

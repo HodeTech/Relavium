@@ -85,7 +85,15 @@ const STATUS: HomeStatusFacts = {
   mode: 'ask',
   directory: '~/acme-web',
 };
-const H3_HINT = '[/] commands · ↓ 2 need you · 2 sessions · 2 runs · [Ctrl+C] exit (twice)';
+/**
+ * The landing's hint over the H3 state (MVP-11 unit 7): it NAMES the most urgent item (the parked run, which has no workflow name, so it is
+ * `run` and its id) and counts the other one. At 80 columns the counts, then `need you`, give way and the name is cut; at 100 the name is whole.
+ */
+const H3_HINT = {
+  80: '[/] commands · ↓ run run… needs approval · +1 more · [Ctrl+C] exit (twice)',
+  100: '[/] commands · ↓ run run-gate needs approval · +1 more needs you · [Ctrl+C] exit (twice)',
+} as const;
+const ESC = String.fromCharCode(0x1b);
 
 interface Draw {
   readonly snapshot?: HomeSnapshot;
@@ -148,7 +156,7 @@ describe.each([
     expect(busy.slice(0, hintAt), 'every row above the hint is the empty Home’s').toEqual(
       empty.slice(0, hintAt),
     );
-    expect(busy[hintAt]).toBe(`${pad}${H3_HINT}`);
+    expect(busy[hintAt]).toBe(`${pad}${H3_HINT[cols]}`);
     expect(busy.join('\n')).not.toContain('Attention required');
     expect(busy.length).toBeLessThanOrEqual(rows - 1);
   });
@@ -159,13 +167,15 @@ describe.each([
     expect(page[0]).toBe(`${pad}↑ start page`);
     expect(page[1]).toBe('');
     expect(page[2]).toBe(`${pad}Attention required`);
-    expect(page[3]?.startsWith(`${pad}  > || run-gate`), page[3]).toBe(true);
+    expect(page[3], 'the parked row: its kind and its id, no key at its end').toBe(
+      `${pad}  > || approval · run-gate`,
+    );
     const block = page.slice(-5);
     expect(block[0], 'the blank lead row').toBe('');
     expect(block[1]).toBe(`${pad}> type a message, or / for commands`);
     expect(block[2]).toBe(`${pad}${'-'.repeat(cols - 2 * margin)}`);
     expect(block[3]).toBe(`${pad}anthropic · claude-haiku-5-5 · ask mode   ~/acme-web`);
-    expect(block[4]).toBe(`${pad}↑/↓ select · Enter open the gate · type to chat · Esc start page`);
+    expect(block[4]).toBe(`${pad}↑/↓ select · Enter open · type to chat · Esc start page`);
   });
 
   it('page 2 with the docked prompt focused: no row marked, the draft in the prompt and its own hint (frame 08)', () => {
@@ -233,24 +243,37 @@ describe.each([
 });
 
 describe('the indicator and its colour', () => {
-  it('draws the attention count in the warning colour and the rest of the hint dim; without colour the words are the same and no colour is drawn', () => {
+  it('draws the most urgent item and the words that stay with it in the warning colour and the rest of the hint dim; without colour the words are the same and no colour is drawn', () => {
     const coloured = frameOf({ color: true });
-    const row = coloured.split('\n').find((line) => line.includes('need you')) ?? '';
-    expect(row).toContain('\u001b[33m↓ 2 need you');
-    expect(row).toContain('\u001b[2m[/] commands · ');
+    const row = coloured.split('\n').find((line) => line.includes('needs approval')) ?? '';
+    expect(row).toContain(`${ESC}[33m↓ run run… needs approval · +1 more${ESC}[39m`);
+    expect(row).toContain(`${ESC}[2m[/] commands · `);
     const bare = frameOf({ color: false });
-    // eslint-disable-next-line no-control-regex -- the assertion is that no colour code is drawn
-    expect(bare).not.toMatch(/\u001b\[(?:3[0-7]|9[0-7])m/u);
-    expect(plain(bare).some((line) => line.trim() === H3_HINT)).toBe(true);
+    expect(bare).not.toMatch(new RegExp(`${ESC}\\[(?:3[0-7]|9[0-7])m`, 'u'));
+    expect(plain(bare).some((line) => line.trim() === H3_HINT[80])).toBe(true);
   });
 
-  it('says the true count of Attention (the snapshot total): `1 needs you` for one', () => {
-    // No parked run: the store counts the failed run alone (MVP-11 unit 7: the count is the snapshot's total, not the rows drawn).
+  it('says the true count of Attention (the snapshot total): one item named, and `+N more` the others the store counted, loaded or not', () => {
+    // The failed run is the one item loaded; the store counted five under Attention (MVP-11 unit 7: the snapshot's total, not the rows drawn).
+    const five = rowsOf({
+      parked: [],
+      cols: 100,
+      rows: 30,
+      snapshot: { ...BUSY, totals: { ...BUSY.totals, attention: 5 } },
+    });
+    expect(
+      five.some((row) => row.includes('↓ wf-run-failed failed 1h ago · +4 more need you')),
+    ).toBe(true);
     const one = rowsOf({
       parked: [],
+      cols: 100,
+      rows: 30,
       snapshot: { ...BUSY, totals: { ...BUSY.totals, attention: 1 } },
     });
-    expect(one.some((row) => row.includes('↓ 1 needs you · 2 sessions · 2 runs'))).toBe(true);
+    expect(
+      one.some((row) => row.includes('↓ wf-run-failed failed 1h ago · 2 sessions · 2 runs')),
+    ).toBe(true);
+    expect(one.join('\n')).not.toContain('more');
     const work = rowsOf({
       parked: [],
       page: 'work',

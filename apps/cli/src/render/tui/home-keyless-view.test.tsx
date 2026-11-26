@@ -48,10 +48,8 @@ describe('keyless Home view', () => {
       const frame = view.lastFrame() ?? '';
       expect(frame).toContain('> Conversation 7');
       expect(frame).toContain('Enter resume');
-      // A long directory is cut at the FRONT (ADR-0145 §8): the end of a path is what tells one directory from another.
-      const hint = frame.split('\n').find((line) => line.includes('long directory/')) ?? '';
-      expect(hint.trimStart().startsWith('…'), hint).toBe(true);
-      expect(hint.endsWith('long directory/'), hint).toBe(true);
+      // A session is one row (MVP-11 unit 7: every session the Home lists is this directory's): no directory line is drawn under it.
+      expect(frame).not.toContain('long directory');
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
       view.unmount();
     },
@@ -82,8 +80,10 @@ describe('keyless Home view', () => {
     const frame = view.lastFrame() ?? '';
     expect(frame).toContain('No provider key yet · Enter connect · /providers');
     // At 80 columns the landing's hint keeps the indicator and gives up the call to connect, which the status row above it says (MVP-11
-    // unit 7). The indicator says the TRUE count, the store's total: fifty runs need you, though the section lists three of them.
-    expect(frame).toContain('[/] commands · ↓ 50 need you · [Ctrl+C] exit (twice)');
+    // unit 7). The indicator names the most urgent item and counts the others TRULY, the store's total: forty-nine more, all of them loaded.
+    expect(frame).toContain(
+      '[/] commands · ↓ a run cannot be read · +49 more · [Ctrl+C] exit (twice)',
+    );
     expect(frame).not.toContain('↓ continue');
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     view.unmount();
@@ -215,13 +215,12 @@ describe('the keyless line and the other things Enter does first', () => {
     return frame;
   };
 
-  it('is shown with nothing else on offer for Enter, and the hint says Enter connects a provider', () => {
+  it('is shown with nothing else on offer for Enter: the line says Enter connects, and the hint, which names the parked run, gives its own call to connect up first', () => {
     const frame = frameOf({});
     expect(frame).toContain(LINE);
-    // the parked run is counted by the landing's indicator (MVP-11 unit 7)
-    expect(frame).toContain(
-      'Enter connect a provider · [/] commands · ↓ 1 needs you · [Ctrl+C] exit (twice)',
-    );
+    // the parked run is NAMED by the landing's indicator (MVP-11 unit 7); beside it the hint's call to connect gives way first, as it always
+    // did beside the indicator: the keyless line above says it
+    expect(frame).toContain('[/] commands · ↓ run run-0002 needs approval · [Ctrl+C] exit (twice)');
   });
 
   it('is shown while a live run is in the view, where the hint bar says Enter shows the run first, and so does not promise that Enter connects', () => {
@@ -238,14 +237,14 @@ describe('the keyless line and the other things Enter does first', () => {
     const frame = frameOf({ parkedFocus: 'run-0002' });
     expect(frame).toContain(LINE_ENTER_TAKEN);
     expect(frame).not.toContain('Enter connect ·');
-    expect(frame).toContain('Enter open the gate');
+    expect(frame).toContain('↑/↓ select · Enter open · type to chat · Esc start page');
     expect(frame).not.toContain('Enter connect a provider');
   });
 
   it('is shown once the run has ended and the focus has left the row', () => {
     const frame = frameOf({ hostedRun: IDLE_HOST });
     expect(frame).toContain(LINE);
-    expect(frame).toContain('Enter connect a provider · [/] commands');
+    expect(frame).toContain('[/] commands · ↓ run run-0002 needs approval');
   });
 
   it('is absent with a key', () => {
@@ -288,7 +287,7 @@ describe('the hint bar on a focused parked row', () => {
     const bar = frameFor('approval')
       .split('\n')
       .find((line) => line.includes('↑/↓ select'));
-    expect(bar).toContain('Enter open the gate');
+    expect(bar).toContain('↑/↓ select · Enter open · type to chat · Esc start page');
   });
 
   it('says what Enter does when the focused row has no gate to decide: it says why', () => {
@@ -331,26 +330,22 @@ describe('the focused parked row at 80 columns', () => {
     return line;
   };
 
+  // MVP-11 unit 7: the row names its kind and the first eight characters of its id, and no key: the hint row names the focused row's `Enter`.
   it.each([
-    ['none', 'Enter say why'],
-    ['approval', 'Enter open'],
-    ['several', 'Enter open'],
-  ] as const)('a %s row with a 36-character id shows its whole cue (%s)', (kind, cue) => {
+    ['none', '> || parked, no gate · 0b8f3a52'],
+    ['approval', '> || approval · 0b8f3a52'],
+    ['several', '> || 3 open gates · 0b8f3a52'],
+  ] as const)('a %s row with a 36-character id is its kind and its short id: %s', (kind, words) => {
     const line = rowLine(kind, 80);
-    expect(line.trimEnd().endsWith(cue), line).toBe(true);
+    expect(line.trim()).toBe(words);
+    expect(line).not.toMatch(/Enter|↑\/↓/u);
     expect(line.length, 'inside the 80 columns').toBeLessThanOrEqual(80);
   });
 
-  it('a row with no gate to decide is the one that overflows: its id gives up columns, the words and the key do not', () => {
-    const line = rowLine('none', 80);
-    expect(line, 'the id was shortened').toContain('…');
-    expect(line, 'and still starts with the run it names').toContain(UUID.slice(0, 8));
-    expect(line).toContain('parked, no gate to decide');
-  });
-
-  it('keeps the whole id when the row fits', () => {
+  it('never draws the whole id, however wide the terminal: the run view and the card name it in full', () => {
     const line = rowLine('approval', 120);
-    expect(line).toContain(UUID);
+    expect(line).toContain(UUID.slice(0, 8));
+    expect(line).not.toContain(UUID);
     expect(line).not.toContain('…');
   });
 });

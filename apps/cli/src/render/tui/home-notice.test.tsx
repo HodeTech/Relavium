@@ -21,10 +21,9 @@ const snapshot: HomeSnapshot = {
   })),
   recentRuns: [],
   recentAgents: [],
-  unreadableRuns: Array.from({ length: 50 }, (_, n) => ({
-    runId: `run-${n}`,
-    reason: 'corrupt-row' as const,
-  })),
+  // Fifty counted under Attention and none of them loaded (MVP-11 unit 7: an unreadable run is a row `↓` reaches, so loaded ones would come
+  // before the sessions this file focuses): the landing says the count, `↓ 50 need you`, and the work page a marker for them.
+  unreadableRuns: [],
   totals: { attention: 50, sessions: 8, runs: 0 },
   isEmpty: false,
 };

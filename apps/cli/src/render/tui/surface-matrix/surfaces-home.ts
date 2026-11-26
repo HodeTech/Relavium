@@ -16,6 +16,7 @@ import { FLOW_STEP_SURFACES } from './flow-steps-fixture.js';
 import { PROJECT_FLOW_SURFACES } from './project-flows-fixture.js';
 import { PROVIDER_FLOW_SURFACES } from './providers-flow-fixture.js';
 import { RESUME_RUN_SURFACES } from './resume-run-fixture.js';
+import { UNREADABLE_RUN_SURFACES } from './unreadable-run-fixture.js';
 import {
   ACTIVE_PORT,
   AGENTS_PORT,
@@ -302,11 +303,15 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     popup: testPopupBox('home'),
     setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
     notes:
-      'the body behind the popup: the populated landing with the failed run focused, so its row is bold and inverse (a popup cannot open over a tab screen, which owns the keyboard)',
+      'the body behind the popup: the work page with the first session focused, so its row is bold and inverse (MVP-11 unit 7: a focused Attention row is tinted and bold, not inverse, so the body would hold no inverse cell); a popup cannot open over a tab screen, which owns the keyboard',
     open: async (m) => {
       await m.until(() => m.homePainted());
       m.key(KEYS.down);
       await m.until(() => m.controller.getSnapshot().stripFocus !== undefined && m.homePainted());
+      m.key(KEYS.down); // past the failed run (an Attention row) onto the first session
+      await m.until(
+        () => m.controller.getSnapshot().stripFocus?.kind === 'session' && m.homePainted(),
+      );
       recordBaseline(m);
       m.popups.openForUser(testReportPopup('home'));
       await settleOn(m, TEST_POPUP_TITLE);
@@ -341,26 +346,32 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.populated-parked-run',
-    // MVP-11 unit 7: the landing is always the calm landing; what there is to continue is counted by its hint's indicator
+    // MVP-11 unit 7: the landing is always the calm landing; its hint's indicator NAMES the most urgent item and counts the others
     title:
-      'The populated Home’s landing: its indicator counts a parked run, a failed run and conversations',
+      'The populated Home’s landing: its indicator names the parked run (the most urgent) and counts the failed run',
     exitKey: 'Ctrl+C',
-    landmark: '2 need you',
+    landmark: 'ship-it needs approval',
     setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
     open: async () => {},
   },
   {
     host: 'home',
     id: 'home.strip-focus',
-    title: 'The work page with a row focused (the ↓ flow)',
+    // MVP-11 unit 7: a plain row (a session) is the selection ADR-0145 §5 draws, bold and inverse in every cell; the tinted Attention row
+    // is `home.strip-focus-parked`
+    title: 'The work page with a session row focused (the ↓ flow past the failed run)',
     exitKey: 'Esc',
     landmark: 'Esc start page',
-    selectedRow: 'ship-it  ·  failed',
+    selectedRow: 'Conversation 1 · chat',
     setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
     open: async (m) => {
       await m.until(() => m.homePainted());
       m.key(KEYS.down);
-      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined);
+      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined && m.homePainted());
+      m.key(KEYS.down);
+      await m.until(
+        () => m.controller.getSnapshot().stripFocus?.kind === 'session' && m.homePainted(),
+      );
     },
   },
   {
@@ -368,8 +379,10 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     id: 'home.strip-focus-parked',
     title: 'The work page with the parked run focused (the ↓ flow on an Attention row)',
     exitKey: 'Esc',
-    landmark: 'Esc start page',
-    selectedRow: 'run-0001  ·  ship-it',
+    // No `selectedRow`: a focused Attention row is the TINTED selection (MVP-11 unit 7, the maintainer's ruling: `›` + bold + its tint, no
+    // inverse with colour; bold + inverse without), which the matrix's inverse check would refuse in the colour cells. Its look is pinned
+    // with colour on and off by `home-work-selection.test.tsx`; the landmark is the row's own words.
+    landmark: 'ship-it · approval',
     setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
     open: async (m) => {
       await m.until(() => m.homePainted());
@@ -701,5 +714,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   ...RESUME_RUN_SURFACES,
   // The `/providers` popup and its first run, in each of their states (MVP-11 unit 6, 6.2).
   ...PROVIDER_FLOW_SURFACES,
+  // The card of an unreadable run, opened by `Enter` on its row of the work page (MVP-11 unit 7).
+  ...UNREADABLE_RUN_SURFACES,
   ...NATIVE_POPUP_KINDS.map(homeNativePopupSurface),
 ];

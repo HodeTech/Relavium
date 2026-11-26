@@ -198,7 +198,7 @@ it('the card of the command a Home-hosted chat asks about names the directory fr
   });
 });
 
-it('the strip of the Home the host mounts lists this directory’s sessions only, naming the directory from the project; the others are `/resume`’s', async () => {
+it('the strip of the Home the host mounts lists this directory’s sessions only: the others are `/resume`’s, and no row names a directory (every row is this one’s)', async () => {
   await withHome(async (host) => {
     expect(host.props.paths, 'the host hands RootApp the roots').toEqual({
       cwd: host.cwd,
@@ -235,12 +235,14 @@ it('the strip of the Home the host mounts lists this directory’s sessions only
     try {
       // the sessions are the work page's rows (MVP-11 unit 7): down to them
       controller.handleKey('', { downArrow: true });
-      await mount.until(() => rowsOf(mount).includes('. (project root)'));
+      await mount.until(() => rowsOf(mount).join('\n').includes('hello · relavium-chat'));
       await mount.settle();
       const rows = rowsOf(mount);
-      // The Home lists this directory's work only (MVP-11 unit 7): the chat it hosted is here, named from the project; the sessions of a
-      // directory below it, of the home and of elsewhere are other directories', reachable in `/resume` (the next test), not on the strip.
-      expect(rows, mount.frame().join('\n')).toContain('. (project root)');
+      // The Home lists this directory's work only (MVP-11 unit 7): the chat it hosted is here, one row with no directory line under it (every
+      // row is this directory's); the sessions of a directory below it, of the home and of elsewhere are other directories', reachable in
+      // `/resume` (the next test, which names each one's directory), not on the strip.
+      expect(rows.join('\n'), mount.frame().join('\n')).toContain('hello · relavium-chat');
+      expect(rows, 'no directory line under a session').not.toContain('. (project root)');
       for (const away of ['packages/app', '~/other', '/opt/shared/tools'])
         expect(rows, away).not.toContain(away);
       expect(rows.join('\n')).not.toContain('Strip ');

@@ -1,22 +1,24 @@
 /**
- * The Home's Attention rows for parked runs
- * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §4, §7): one line per run of THIS project
- * that is paused, with the kind of gate it waits on and the key that opens its card. Pure: the read is over the injected reader and the
- * label over a row, so what the strip says and what the keys do come from one place.
+ * The Home's Attention rows ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §4, §7; MVP-11
+ * unit 7): one line per run of THIS project that is paused, with the kind of gate it waits on; the ONE urgency order of "Attention required"
+ * ({@link attentionOrder}: the parked runs, the failed runs and the runs whose log cannot be read); and what page 1 says of the most urgent
+ * of them ({@link urgentWords}). Pure: the read is over the injected reader and the rest over rows, so what the work page draws, what the keys
+ * walk and what page 1 names come from one place.
  *
  * - **This project's runs only.** The rows come from `readProjectRunGates`, which asks the reader for the project's paused runs and checks
  *   each row against the project root again, so a run of another directory never gets a row: a run is actionable only in its own workspace.
  * - **One row per run, not per gate.** A run with several open gates is one row (`3 open gates`); its card lists them.
- * - **A run whose log cannot be read gets no row here.** Its gates are unknown, so there is no kind to name and no card to open; the strip's
- *   own unreadable-run line already says so.
- * - **Bounded.** At most {@link PARKED_RUNS_MAX} runs are read and shown, newest first, as the other strip lists are.
- * - **What the row says is what the person needs to pick a run.** Its workflow's slug and the earliest deadline of its open gates, beside the
- *   run id, the kind of gate and the key. When the terminal cannot hold all of it, the id gives way first (to its first columns), then the
- *   workflow, then the deadline; the kind and the key never do ({@link parkedRunLabel}).
+ * - **A run whose log cannot be read gets no parked row.** Its gates are unknown, so there is no kind to name and no gate card to open; it is
+ *   the snapshot's unreadable item instead, whose `Enter` says why.
+ * - **Bounded.** At most {@link PARKED_RUNS_MAX} runs are read, newest first, as the other strip lists are.
+ * - **What the row says is what the person needs to pick a run** ({@link parkedRunLabel}): its workflow, the kind of gate, the earliest
+ *   deadline of its open gates, and the first eight characters of its id. The key that opens it is named on the work page's hint row, for the
+ *   focused row only, never at the row's end.
  */
 
 import type { RunHistoryReader } from '@relavium/db';
 
+import type { HomeRunRow, HomeSnapshot, HomeUnreadableRun } from '../../home/home-store.js';
 import type { HostedRunDisposition } from '../../home/hosted-run-terminal.js';
 import {
   isMediaOnlyPark,
@@ -24,13 +26,11 @@ import {
   type ProjectRunGates,
   type RunGatesReader,
 } from '../../home/run-gates.js';
-import { shortId } from '../notation.js';
+import { formatAgeOfIso, shortId } from '../notation.js';
 import { flowLine } from './flow-text.js';
 import { glyph } from './glyphs.js';
-import { expiryLabel } from './home-projection.js';
-import { keyLabel, type LegendKey } from './legend.js';
+import { expiryLabel, fitRow } from './home-projection.js';
 import { clipLine } from './sheet-frame.js';
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /** The most parked runs the Home keeps rows for. */
 export const PARKED_RUNS_MAX = 8;
@@ -116,123 +116,260 @@ export function readParkedRuns(
   return parkedRunRows(project, reader.loadWorkflowSlugs?.(ids));
 }
 
-/**
- * What `Enter` does on the focused row of each kind, in the row's own words: a gate or a budget gate opens its card, a media park asks
- * whether to continue the run here (nothing is continued without a Yes), and a run with nothing to answer says why. An input gate's card
- * cannot take its value, so its key says what the card does: it shows how to answer. Each is a legend item (ADR-0145 §3), so the key is
- * written by the bracket rule and the verb is the imperative of the action the key performs.
- */
-const FOCUSED_CUE: Readonly<Record<ParkedRunKind, LegendKey>> = {
-  approval: { keys: 'Enter', verb: 'open' },
-  // The card of an input gate takes no typed value: it shows the shell command that does, and offers a rejection. `Enter` shows how.
-  input: { keys: 'Enter', verb: 'show how to answer' },
-  review: { keys: 'Enter', verb: 'open' },
-  budget: { keys: 'Enter', verb: 'open' },
-  several: { keys: 'Enter', verb: 'open' },
-  media: { keys: 'Enter', verb: 'ask to continue' },
-  none: { keys: 'Enter', verb: 'say why' },
-};
+// ---- The Attention order (MVP-11 unit 7: Attention by urgency) -------------------------------------------------------------------
 
-/**
- * What an unfocused row names instead: the arrows move onto it, and only the focused row can be opened. Both arrows: the row is on the work
- * page (MVP-11 unit 7), where `↑` reaches the list from the docked prompt under it and the arrows walk it from a row either side.
- */
-const UNFOCUSED_CUE: LegendKey = { keys: '↑/↓', verb: 'select' };
-
-/** One legend item as the row writes it: its key by the bracket rule, then its verb. */
-function cueText(item: LegendKey): string {
-  return `${keyLabel(item.keys)} ${item.verb}`;
+/** What an item of "Attention required" shares, whatever kind it is: the run, its workflow when it can be named, and its deadline. */
+interface AttentionCommon {
+  readonly runId: string;
+  /** The workflow's slug as stored (NOT scrubbed: every drawn use passes `flowLine` first), when the read could name it. */
+  readonly workflow: string | undefined;
+  /** A parked run's earliest deadline, when one of its gates has one that parses. */
+  readonly deadlineMs: number | undefined;
+  /** The deadline has passed at the clock {@link attentionOrder} was given (never without one). */
+  readonly overdue: boolean;
 }
 
-function wordsFor(row: ParkedRunRow): string {
+/** One item of "Attention required": a parked run (the controller's row), a failed run of the window, or a run whose log cannot be read. */
+export type AttentionItem =
+  | (AttentionCommon & { readonly kind: 'parked'; readonly row: ParkedRunRow })
+  | (AttentionCommon & { readonly kind: 'failed'; readonly run: HomeRunRow })
+  | (AttentionCommon & { readonly kind: 'unreadable'; readonly run: HomeUnreadableRun });
+
+/** A time a sort can read: the instant an ISO text names, or `-Infinity` when it names none (it then sorts as the oldest). */
+function instantOf(iso: string | undefined): number {
+  const ms = iso === undefined ? Number.NaN : Date.parse(iso);
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+}
+
+function byRunId(a: { readonly runId: string }, b: { readonly runId: string }): number {
+  if (a.runId === b.runId) return 0;
+  return a.runId < b.runId ? -1 : 1;
+}
+
+/** Newest first by `at`, a tie on the run id: a total order, the same on every refresh. */
+function newestFirst<T extends { readonly runId: string; readonly at: number }>(
+  a: T,
+  b: T,
+): number {
+  if (a.at === b.at) return byRunId(a, b);
+  return a.at > b.at ? -1 : 1;
+}
+
+/**
+ * The items of "Attention required" in the order of their urgency (the maintainer's ruling of 2026-11-26), ONE order for the work page's rows,
+ * the keys that walk them (`strip-focus.ts`) and page 1's "most urgent" item:
+ *
+ * 1. the parked runs whose deadline has passed, the longest overdue first, then those whose deadline is still ahead, the soonest first (one
+ *    ascending sort of the deadline is both: a passed deadline is an earlier one);
+ * 2. the parked runs with no deadline, in the read's order, which is newest first (`readParkedRuns`; the row carries no time of its own);
+ * 3. the failed runs of the window, newest first;
+ * 4. the runs whose log cannot be read, newest first (one with no creation time last).
+ *
+ * A tie breaks on the run id, so the order is total and a refresh that hands the rows back in another order gives the same list. A run is ONE
+ * item: a run whose log cannot be read is an unreadable item and never also a parked or failed one, and a parked run is never also a failed one.
+ * `nowMs` only marks the overdue items (the order does not depend on the clock); without it no item is overdue.
+ */
+export function attentionOrder(
+  parked: readonly ParkedRunRow[],
+  snapshot: Pick<HomeSnapshot, 'attention' | 'unreadableRuns'>,
+  nowMs?: number,
+): readonly AttentionItem[] {
+  const broken = new Set(snapshot.unreadableRuns.map((run) => run.runId));
+  const seen = new Set<string>();
+  const first = (runId: string): boolean => {
+    if (seen.has(runId)) return false;
+    seen.add(runId);
+    return true;
+  };
+  const due: (AttentionItem & { readonly deadlineMs: number })[] = [];
+  const open: AttentionItem[] = [];
+  for (const row of parked) {
+    if (broken.has(row.runId) || !first(row.runId)) continue;
+    const at = instantOf(row.expiresAt);
+    const deadlineMs = Number.isFinite(at) ? at : undefined;
+    const common = { runId: row.runId, workflow: row.workflow, overdue: false };
+    if (deadlineMs === undefined) open.push({ ...common, kind: 'parked', row, deadlineMs });
+    else
+      due.push({
+        ...common,
+        kind: 'parked',
+        row,
+        deadlineMs,
+        overdue: nowMs !== undefined && deadlineMs <= nowMs,
+      });
+  }
+  due.sort((a, b) => a.deadlineMs - b.deadlineMs || byRunId(a, b));
+  const failed = snapshot.attention.failedRuns
+    .filter((run) => !broken.has(run.runId) && first(run.runId))
+    .map((run) => ({ runId: run.runId, at: instantOf(run.createdAt), run }))
+    .sort(newestFirst)
+    .map(
+      ({ run }): AttentionItem => ({
+        kind: 'failed',
+        runId: run.runId,
+        workflow: run.workflowSlug,
+        deadlineMs: undefined,
+        overdue: false,
+        run,
+      }),
+    );
+  const unreadable = snapshot.unreadableRuns
+    .filter((run) => first(run.runId))
+    .map((run) => ({ runId: run.runId, at: instantOf(run.createdAt), run }))
+    .sort(newestFirst)
+    .map(
+      ({ run }): AttentionItem => ({
+        kind: 'unreadable',
+        runId: run.runId,
+        workflow: run.workflowSlug,
+        deadlineMs: undefined,
+        overdue: false,
+        run,
+      }),
+    );
+  return [...due, ...open, ...failed, ...unreadable];
+}
+
+/**
+ * The words a parked row names its kind with (MVP-11 unit 7): the gate's type alone (`approval`, `input`, `review`, `budget`), how many gates
+ * a run with several has open, `waiting for media`, or `parked, no gate` (nothing a card can show or a continue can answer). What `Enter`
+ * does on it is the work page's hint row's to say, for the focused row only (`home-pages.ts`), not the row's.
+ */
+export function parkedKindWords(row: Pick<ParkedRunRow, 'kind' | 'gates'>): string {
   switch (row.kind) {
     case 'approval':
     case 'input':
     case 'review':
     case 'budget':
-      return `${row.kind} gate`;
+      return row.kind;
     case 'several':
       return `${String(row.gates)} open gates`;
     case 'media':
       return 'waiting for media';
     case 'none':
-      return 'parked, no gate to decide';
+      return 'parked, no gate';
   }
 }
-
-/**
- * The columns the Attention list spends before a row's own label: the list's two-column margin and the two-column focus marker
- * (`> `). The view hands {@link parkedRunLabel} what is left of the terminal after them.
- */
-export const PARKED_ROW_INDENT_COLUMNS = 4;
-
-/** The ellipsis a run id ends with when the row had to give it up some columns. */
-const ID_ELLIPSIS = '…';
-/** The columns of a run id kept when the row needs the room for the workflow and the deadline: the first eight, as the short id is elsewhere. */
-const SHORT_ID_COLUMNS = 8;
-/** The most columns a workflow's slug takes in a row, the cut shown by an ellipsis. */
-const WORKFLOW_COLUMNS = 24;
-const ROW_SEPARATOR = '  ·  ';
 
 /** Whether the run's earliest deadline has passed at `nowMs`: the row says `expired`, and the view draws it in red, as the strip's own gate rows are. */
 export function parkedRunOverdue(row: ParkedRunRow, nowMs: number): boolean {
   return expiryLabel(row.expiresAt, nowMs) === 'expired';
 }
 
-/** `id` kept to its first `columns` columns and ended with an ellipsis, or whole when it is no longer than that. */
-function idWithin(id: string, columns: number): string {
-  if (displayWidth(id) <= columns) return id;
-  // Never an id of nothing: a row that cannot fit even one column of it still names the run by where it starts.
-  return `${sliceDisplayColumns(id, 0, Math.max(1, columns - displayWidth(ID_ELLIPSIS)))}${ID_ELLIPSIS}`;
-}
-
 /**
- * The strip line of a parked run: a glyph, the run id, its workflow, the kind of gate, its deadline and the key that opens its card.
- * `focused` is the row the person has moved onto (`↓`): only that row can be opened, so only it names `Enter`; the others say how to reach
- * them. `nowMs` is the clock the deadline is worded against (`expires in 5m`, `expired`); without it the row has no deadline words.
- *
- * `maxColumns` is the room the row has (the terminal's width less its indent). The kind and the key are what the row is FOR, and they are
- * never the part that is cut. What the rest gives up, in order: the id keeps its first eight columns and ends with an ellipsis (the run view
- * and the card name it in full), then the workflow goes, then the deadline; and a row that still would not fit shortens the id further, as
- * a row with neither always did.
+ * The work page's row of a parked run: `‖ workflow · kind · deadline · id` (`‖ release-notes · approval · expires in 5m · 3f9a1c2e`), the
+ * workflow only when the read could name it, the deadline only with a clock and a gate that has one, and the run's first eight characters
+ * last. No key is named on the row: the hint row names the focused row's `Enter`. `maxColumns` is the room the row has; what a narrow row
+ * gives up, in order, is the workflow's tail, the deadline, the id, then the workflow; the kind never ({@link fitRow}).
  */
 export function parkedRunLabel(
   row: ParkedRunRow,
-  focused: boolean,
   maxColumns = Number.POSITIVE_INFINITY,
   nowMs?: number,
 ): string {
-  const key = cueText(focused ? FOCUSED_CUE[row.kind] : UNFOCUSED_CUE);
-  // Stored text, through the Home's full row scrub (MVP-11 unit 7, round 1): the label's own separators are then the only ones on the row.
-  const id = flowLine(row.runId);
-  const workflow =
-    row.workflow === undefined || row.workflow === ''
-      ? undefined
-      : clipLine(flowLine(row.workflow), WORKFLOW_COLUMNS);
-  const due = nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs);
-  const line = (shownId: string, withWorkflow: boolean, withDue: boolean): string =>
+  return fitRow(
+    glyph('paused'),
     [
-      `${glyph('paused')} ${shownId}`,
-      ...(withWorkflow && workflow !== undefined ? [workflow] : []),
-      wordsFor(row),
-      ...(withDue && due !== undefined ? [due] : []),
-      key,
-    ].join(ROW_SEPARATOR);
-  const short = idWithin(id, SHORT_ID_COLUMNS);
-  // Each plan gives up one more thing than the one before it; the first that fits is the row. A plan is tried only if it says something
-  // beyond the row's own words (a run with no workflow and no deadline keeps as much of its id as the room allows, below).
-  const plans: readonly (readonly [string, boolean, boolean])[] = [
-    [id, true, true],
-    [short, true, true],
-    [short, false, true],
-  ];
-  for (const [shownId, withWorkflow, withDue] of plans) {
-    const extra = (withWorkflow && workflow !== undefined) || (withDue && due !== undefined);
-    const full = extra ? line(shownId, withWorkflow, withDue) : undefined;
-    if (full !== undefined && displayWidth(full) <= maxColumns) return full;
+      { text: row.workflow === undefined ? '' : flowLine(row.workflow), role: 'name' },
+      { text: parkedKindWords(row), role: 'keep' },
+      {
+        text: (nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs)) ?? '',
+        role: 'age',
+      },
+      { text: shortId(flowLine(row.runId)), role: 'detail' },
+    ],
+    maxColumns,
+  );
+}
+
+// ---- Page 1's most urgent item (MVP-11 unit 7, the maintainer's ruling 5) ---------------------------------------------------------
+
+/** Every arrow (U+2190 to U+21FF): the hint's own `↓` must be the only arrow on its row. Built from its code points, never an escape in the source. */
+const ARROWS = new RegExp(`[${String.fromCharCode(0x2190)}-${String.fromCharCode(0x21ff)}]`, 'gu');
+
+/** The most columns the most urgent item's name takes on page 1's hint before the hint's own fit cuts it further. */
+export const URGENT_NAME_COLUMNS = 24;
+
+/**
+ * What page 1's hint says of the most urgent item: its name (`release-notes`, or `run 3f9a1c2e` when the workflow cannot be named; none for
+ * a run whose log cannot be read, whose words say it), the words of its kind (`needs approval`, `failed 2h ago`, `a run cannot be read`, …),
+ * its deadline words (`expires in 5m`, `expired`) when it has one, and whether it is overdue (the view draws it red).
+ */
+export interface UrgentWords {
+  readonly name: string | undefined;
+  readonly words: string;
+  readonly deadline: string | undefined;
+  readonly overdue: boolean;
+}
+
+/** The words of a parked run's kind as page 1 says them: `needs approval`, `hit a budget limit`, `has 3 open gates`, `is parked`, … */
+function parkedHeadWords(row: ParkedRunRow): string {
+  switch (row.kind) {
+    case 'approval':
+    case 'input':
+    case 'review':
+      return `needs ${row.kind}`;
+    case 'budget':
+      return 'hit a budget limit';
+    case 'several':
+      return `has ${String(row.gates)} open gates`;
+    case 'media':
+      return 'is waiting for media';
+    case 'none':
+      return 'is parked';
   }
-  const bare = line('', false, false);
-  return line(idWithin(id, Math.max(1, maxColumns - displayWidth(bare))), false, false);
+}
+
+/**
+ * A stored name as page 1's hint draws it, on a sink of its own: the Home's full row scrub (`flowLine`) FIRST, then every bracket a
+ * parenthesis (the scrub makes a chord token inert, but a bracketed universal key such as `[Enter]` is not the grammar's and it leaves it, so a
+ * name could still dress up as a key beside the real ones), then every arrow a space (the hint's own `↓` is the only one on the row), then
+ * bounded to {@link URGENT_NAME_COLUMNS} columns, by display width. The legend's separator a name brings is already inert (` - `).
+ */
+export function urgentName(stored: string): string {
+  const scrubbed = flowLine(stored)
+    .replace(/[[\]]/gu, (bracket) => (bracket === '[' ? '(' : ')'))
+    .replace(ARROWS, ' ')
+    .trim();
+  return clipLine(scrubbed, URGENT_NAME_COLUMNS);
+}
+
+/** The name of a run on page 1: its workflow, else `run` and the first eight characters of its id; empty after the scrub counts as absent. */
+function urgentRunName(workflow: string | undefined, runId: string): string {
+  const named = workflow === undefined ? '' : urgentName(workflow);
+  return named === '' ? urgentName(`run ${shortId(runId)}`) : named;
+}
+
+/** What page 1 says of `item` at `nowMs` ({@link UrgentWords}): its name, the words of its kind, and its deadline. */
+export function urgentWords(item: AttentionItem, nowMs: number): UrgentWords {
+  switch (item.kind) {
+    case 'parked':
+      return {
+        name: urgentRunName(item.workflow, item.runId),
+        words: parkedHeadWords(item.row),
+        deadline: expiryLabel(item.row.expiresAt, nowMs),
+        overdue: parkedRunOverdue(item.row, nowMs),
+      };
+    case 'failed': {
+      const age = formatAgeOfIso(
+        item.run.completedAt ?? item.run.startedAt ?? item.run.createdAt,
+        nowMs,
+      );
+      return {
+        name: urgentRunName(item.workflow, item.runId),
+        words: age === '' ? 'failed' : `failed ${age}`,
+        deadline: undefined,
+        overdue: false,
+      };
+    }
+    case 'unreadable':
+      return {
+        name: undefined,
+        words: 'a run cannot be read',
+        deadline: undefined,
+        overdue: false,
+      };
+  }
 }
 
 /**

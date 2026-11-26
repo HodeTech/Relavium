@@ -168,7 +168,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     ).toBe(true);
   });
 
-  it('lists a run once, and leaves out a run whose log could not be read, whose row stays a display row', () => {
+  it('lists a run once: an unreadable run is one unreadable row, never also a parked, failed or recent row', () => {
     const rows = stripRows(
       [parked('p1')],
       snapshot({
@@ -177,14 +177,40 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
         unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
     );
-    expect(rows.map((row) => row.id)).toEqual(['p1', 'f1', 'r1']);
+    expect(rows.map((row) => `${row.role}:${row.id}`)).toEqual([
+      'parked:p1',
+      'failed:f1',
+      'unreadable:u1',
+      'recent:r1',
+    ]);
   });
 
-  it('has no row for the strip rows that only display: an unreadable run, an agent', () => {
+  it('focuses an unreadable run (Enter says why it cannot be read): a run row by its id, after the failed runs, in the Attention order', () => {
+    const rows = stripRows(
+      [parked('p1')],
+      snapshot({
+        attention: { failedRuns: [runRow('f1', 'failed')] },
+        unreadableRuns: [
+          { runId: 'u1', reason: 'newer-version' },
+          { runId: 'u2', reason: 'could-not-read' },
+        ],
+        recentSessions: [sessionRow('s1')],
+        recentAgents: [{ agentSlug: 'coder', lastUsedAt: '2026-11-23T00:00:00.000Z' }],
+      }),
+    );
+    expect(rows).toEqual([
+      { kind: 'run', id: 'p1', role: 'parked' },
+      { kind: 'run', id: 'f1', role: 'failed' },
+      { kind: 'run', id: 'u1', role: 'unreadable' },
+      { kind: 'run', id: 'u2', role: 'unreadable' },
+      { kind: 'session', id: 's1', role: 'session' },
+    ]);
+  });
+
+  it('has no row for an agent, which only displays', () => {
     const rows = stripRows(
       [],
       snapshot({
-        unreadableRuns: [{ runId: 'u1', reason: 'newer-version' }],
         recentAgents: [{ agentSlug: 'coder', lastUsedAt: '2026-11-23T00:00:00.000Z' }],
       }),
     );

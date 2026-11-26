@@ -2,6 +2,7 @@ import '../force-color.js';
 
 import { describe, expect, it } from 'vitest';
 
+import { ALL_SURFACES } from './all-surfaces.js';
 import { runCell } from './cells.js';
 import { checkBackdropDim, type PopupBox } from './properties.js';
 import { problemsOf } from './run-cell.js';
@@ -258,5 +259,120 @@ describe('the backdrop-dim property through the real pipeline', () => {
     const problems = problemsOf(entry, await runCell(entry, plain, { tamper: dimEverything }));
     expect(problems.some((problem) => problem.startsWith('backdrop-dim:'))).toBe(true);
     expect(problems.join('\n')).toContain('were dimmed with colour off');
+  });
+});
+
+/**
+ * A surface's own word that its body behind the popup holds no inverse cell by design (`SurfaceBase.backdropHasNoInverse`, MVP-11 unit 7): the
+ * one demand it drops is the inverse cell in the baseline. These show that the declaration is read only where it is made, that it drops that
+ * demand and no other, and that nothing else of the property is looser behind it.
+ */
+describe('a body that has no inverse cell by design (backdropHasNoInverse)', () => {
+  /** `dimBody()` with the one inverse cell of its body taken away: bold and coloured cells remain, as a tinted selected row's body does. */
+  function tintedBody(): { before: ScreenCell[][]; now: ScreenCell[][] } {
+    const { before, now } = dimBody();
+    before[1] = row('an inverse cursor    ');
+    return { before, now };
+  }
+  const checkDeclared = (
+    variant: Variant,
+    before: readonly (readonly ScreenCell[])[],
+    now: readonly (readonly ScreenCell[])[],
+    bodyHasNoInverse: boolean | undefined,
+  ): string[] =>
+    checkBackdropDim({ variant, before, now, box: BOX, bodyHasNoInverse }).map(
+      (violation) => violation.message,
+    );
+
+  it.each([undefined, false])(
+    'a surface that does not declare it (%s) still fails a body with bold and colour and no inverse: it would pass on a plain body',
+    (declared) => {
+      const { before, now } = tintedBody();
+      const found = checkDeclared(ALT_COLOUR, before, now, declared);
+      expect(found).toHaveLength(1);
+      expect(found[0]).toContain('no inverse cell');
+      expect(found[0]).toContain('would pass on a plain body');
+    },
+  );
+
+  it('a surface that declares it passes the same body, with every cell of it dim', () => {
+    const { before, now } = tintedBody();
+    expect(checkDeclared(ALT_COLOUR, before, now, true)).toEqual([]);
+  });
+
+  it('the declaration drops the inverse demand and no other: a body with no bold cell, or no coloured cell, still fails', () => {
+    for (const [kind, words] of [
+      ['bold', 'no bold cell'],
+      ['colour', 'no coloured cell'],
+    ] as const) {
+      const { before, now } = tintedBody();
+      const plain = before.map((cells) =>
+        cells.map((cell) => ({
+          char: cell.char,
+          style: style({
+            bold: kind === 'bold' ? false : cell.style.bold,
+            fg: kind === 'colour' ? undefined : cell.style.fg,
+          }),
+        })),
+      );
+      const found = checkDeclared(ALT_COLOUR, plain, now, true);
+      expect(found, kind).toHaveLength(1);
+      expect(found[0]).toContain(words);
+    }
+  });
+
+  it('behind the declaration a popup that fails to dim a bold cell still fails, naming it', () => {
+    const { before, now } = tintedBody();
+    now[0]![0] = { char: 'b', style: style({ bold: true }) }; // the bold cell of the body, left bright
+    const found = checkDeclared(ALT_COLOUR, before, now, true);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain('not dim');
+    expect(found[0]).toContain('1:1 "b"');
+  });
+
+  it('behind the declaration the rest of the property stands: the popup’s own cells are not dim, and with colour off nothing is dimmed', () => {
+    const inSubtree = tintedBody();
+    for (let column = BOX.left; column < BOX.left + BOX.width; column += 1)
+      inSubtree.now[BOX.top]![column] = { char: 'p', style: style({ inverse: true, dim: true }) };
+    expect(checkDeclared(ALT_COLOUR, inSubtree.before, inSubtree.now, true)).toHaveLength(1);
+    const { before, now } = tintedBody();
+    const found = checkDeclared(ALT_PLAIN, before, now, true);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain('were dimmed with colour off');
+  });
+
+  it('the declaration is made by the surfaces it is meant for and no others, each with its reason', () => {
+    const declared = ALL_SURFACES.filter((surface) => surface.backdropHasNoInverse !== undefined);
+    // Adding a surface here is a decision of its own: the body behind its popup must have no inverse cell by design, and the reason says why.
+    expect(declared.map((surface) => surface.id)).toEqual(['home.unreadable-run-card']);
+    for (const surface of declared) {
+      expect(surface.popup, `${surface.id} is a popup`).toBeDefined();
+      expect((surface.backdropHasNoInverse ?? '').trim().length, surface.id).toBeGreaterThan(20);
+    }
+  });
+
+  describe('the card of an unreadable run, through the real pipeline', () => {
+    const entry = HOME_SURFACES.find((surface) => surface.id === 'home.unreadable-run-card');
+    if (entry === undefined) throw new Error('home.unreadable-run-card is not registered');
+    const alt: Variant = { renderer: 'alt', color: true, size: { cols: 80, rows: 24 } };
+    const stripDim = (chunk: string): string => chunk.replaceAll(`${ESC}[2m`, '');
+
+    it('control: with its declaration the cell has no problem', async () => {
+      expect(problemsOf(entry, await runCell(entry, alt))).toEqual([]);
+    });
+
+    it('without the declaration the same cell fails on the inverse demand alone, so the declaration is the one thing that lets it pass', async () => {
+      const undeclared = { ...entry, backdropHasNoInverse: undefined };
+      const problems = problemsOf(undeclared, await runCell(undeclared, alt));
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain('backdrop-dim:');
+      expect(problems[0]).toContain('no inverse cell');
+    });
+
+    it('with its declaration a terminal that never received the dim codes is still named', async () => {
+      const problems = problemsOf(entry, await runCell(entry, alt, { tamper: stripDim }));
+      expect(problems.some((problem) => problem.startsWith('backdrop-dim:'))).toBe(true);
+      expect(problems.join('\n')).toContain('are not dim');
+    });
   });
 });

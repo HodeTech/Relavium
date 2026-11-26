@@ -84,28 +84,31 @@ const SMALL: HomeSnapshot = {
 };
 
 describe('a failed run and a recent run are rows the focus can stand on', () => {
-  it('a failed run takes the marker, and the hint bar says Enter opens the run', () => {
+  it('a failed run takes the marker, and the hint bar says Enter opens its details (MVP-11 unit 7)', () => {
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 0));
-    expect(frame).toContain('> x wf-f1');
-    expect(frame).toContain('↑/↓ select · Enter open the run · type to chat · Esc start page');
+    expect(frame).toContain('> x wf-f1 · failed 1h ago · $0.0000');
+    expect(frame).toContain('↑/↓ select · Enter details · type to chat · Esc start page');
     expect(frame).not.toContain('Enter resume');
   });
 
   it('a recent run takes the marker too, with the same words on the bar', () => {
     const rows = stripRows([], SMALL);
     const frame = draw(SMALL, [], focusAt(rows, 2));
-    expect(frame).toContain('> wf-r1');
+    expect(frame).toContain('> wf-r1 · completed');
     expect(frame).not.toContain('> x');
-    expect(frame).toContain('Enter open the run');
+    expect(frame).toContain('Enter details');
   });
 
   it('with nothing focused, no row has a marker and the bar says how to reach the rows', () => {
     // On the landing (MVP-11 unit 7) no row is drawn at all, and the hint's indicator is the way down to them.
     const frame = draw(SMALL, [], undefined, { cols: 80, rows: 24 }, 'start');
     expect(frame).not.toContain('> x');
-    expect(frame).not.toContain('Enter open the run');
-    expect(frame).toContain('↓ 1 needs you · 1 session · 1 run');
+    expect(frame).not.toContain('Enter details');
+    // Page 1 names the most urgent item (MVP-11 unit 7): here the one failed run, then the true counts (at 80 columns the runs' count gives way).
+    expect(frame).toContain(
+      '[/] commands · ↓ wf-f1 failed 1h ago · 1 session · [Ctrl+C] exit (twice)',
+    );
     // On the work page with the docked prompt focused, no row has a marker either.
     expect(draw(SMALL, [], undefined)).not.toMatch(/^ *> (x |wf-|Conversation)/mu);
   });
@@ -116,17 +119,27 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
     expect(draw(SMALL, parked, focusAt(rows, 2))).toContain(
       '↑/↓ select session · Enter resume · type to chat · Esc start page',
     );
-    expect(draw(SMALL, parked, focusAt(rows, 0))).toContain('Enter open the gate');
+    expect(draw(SMALL, parked, focusAt(rows, 0))).toContain(
+      '↑/↓ select · Enter open · type to chat · Esc start page',
+    );
   });
 
-  it('a run whose log could not be read is not a row the focus names: its row stays a display row', () => {
+  it('a run whose log could not be read is a row the focus stands on (MVP-11 unit 7: `Enter` says why), drawn once, after the failed runs', () => {
     const snapshot: HomeSnapshot = {
       ...SMALL,
       attention: { failedRuns: [runRow('u1', 'failed')] },
-      unreadableRuns: [{ runId: 'run-u1', reason: 'corrupt-row' }],
+      unreadableRuns: [{ runId: 'run-u1', workflowSlug: 'wf-u1', reason: 'corrupt-row' }],
     };
-    expect(stripRows([], snapshot).map((row) => row.id)).toEqual(['session-1', 'run-r1']);
-    expect(draw(snapshot, [], undefined)).toContain('event log unreadable');
+    const rows = stripRows([], snapshot);
+    expect(rows.map((row) => `${row.role}:${row.id}`)).toEqual([
+      'unreadable:run-u1',
+      'session:session-1',
+      'recent:run-r1',
+    ]);
+    const frame = draw(snapshot, [], focusAt(rows, 0));
+    expect(frame).toContain('> ! run-u1 · wf-u1 · cannot be read');
+    expect(frame).toContain('↑/↓ select · Enter why · type to chat · Esc start page');
+    expect(frame.match(/run-u1/gu)).toHaveLength(1);
   });
 });
 
@@ -163,7 +176,7 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
   const lineStart = (index: number): string => {
     const row = rows[index];
     if (row === undefined) throw new Error(`no row ${String(index)}`);
-    if (row.role === 'parked') return `> || ${row.id}`;
+    if (row.role === 'parked') return `> || approval · ${row.id}`;
     if (row.role === 'failed') return `> x wf-${row.id.slice('run-'.length)}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return `> wf-${row.id.slice('run-'.length)}`;
@@ -203,9 +216,9 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     .map((n) => `report line ${String(n + 1)}`)
     .join('\n');
   const needle = [
-    '> || run-p0',
-    '> || run-p1',
-    '> || run-p2',
+    '> || approval · run-p0',
+    '> || approval · run-p1',
+    '> || approval · run-p2',
     '> x wf-f0',
     '> x wf-f1',
     '> Conversation 0',
@@ -244,7 +257,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     .map((n) => `report line ${String(n + 1)}`)
     .join('\n');
   const marker = (row: { readonly role: string; readonly id: string }): string => {
-    if (row.role === 'parked') return `> || ${row.id}`;
+    if (row.role === 'parked') return `> || approval · ${row.id}`;
     if (row.role === 'session') return `> Conversation ${row.id.slice('session-'.length)}`;
     return row.role === 'failed'
       ? `> x wf-${row.id.slice('run-'.length)}`
@@ -399,8 +412,8 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
         attention: { failedRuns: [runRow('u', 'failed')] },
         unreadableRuns: [{ runId: 'run-u', reason: 'corrupt-row' }],
       }).hasAttentionRuns,
-      'an unreadable run is a display row',
-    ).toBe(false);
+      'an unreadable run is a row `↓` can focus (MVP-11 unit 7)',
+    ).toBe(true);
     expect(stripReach([], { ...none, recentRuns: [runRow('r', 'completed')] }).hasRecentRuns).toBe(
       true,
     );
