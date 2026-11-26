@@ -79,15 +79,22 @@ const sessionRow = (n: number): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 
+/** A snapshot of this directory; `parked` is how many parked runs the store counts (their rows are the controller's own read). */
 const snapshotOf = (over: {
   sessions?: boolean | undefined;
   runs?: boolean | undefined;
+  parked?: number | undefined;
 }): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: over.sessions === true ? [sessionRow(1)] : [],
   recentRuns: over.runs === true ? [runRow('1', 'completed')] : [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: {
+    attention: over.parked ?? 0,
+    sessions: over.sessions === true ? 1 : 0,
+    runs: over.runs === true ? 1 : 0,
+  },
   isEmpty: over.sessions !== true && over.runs !== true,
 });
 
@@ -229,7 +236,11 @@ const homeView = (item: HomeCase, color: boolean) => {
   return (
     <HomeView
       page={item.page ?? (item.focus === undefined ? 'start' : 'work')}
-      snapshot={snapshotOf({ sessions: item.sessions, runs: item.runs })}
+      snapshot={snapshotOf({
+        sessions: item.sessions,
+        runs: item.runs,
+        parked: item.parked?.length,
+      })}
       editor={{ text: item.text ?? '', cursor: (item.text ?? '').length }}
       nowMs={Date.parse('2026-11-23T01:00:00.000Z')}
       cols={size.cols}

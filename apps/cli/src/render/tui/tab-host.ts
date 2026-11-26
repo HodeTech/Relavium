@@ -85,6 +85,7 @@ import {
   unreadableHistoryTab,
   withHistoryDetail,
   withHistoryDetailLoading,
+  withHistoryNotice,
   type HistoryMemory,
   type HistoryPort,
   type HistoryTabState,
@@ -359,6 +360,16 @@ export function withHistoryLoad(
   return history === host.history ? host : { ...host, history };
 }
 
+/**
+ * `host` with a sentence the launch a History detail's `r` asked for left, where the person is looking: the detail's message row (the list's
+ * own when no detail is open), which the next key drops; the same object when that tab is not the one in front.
+ */
+export function withHistoryNote(host: TabHostState, text: string): TabHostState {
+  return host.history === undefined
+    ? host
+    : { ...host, history: withHistoryNotice(host.history, text) };
+}
+
 /** `host` after the load of a run's detail failed for a reason that is not about the run: the list again, with a sentence. */
 export function withHistoryLoadFailure(host: TabHostState, runId: string): TabHostState {
   if (host.history === undefined) return host;
@@ -559,7 +570,8 @@ function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
 
 /**
  * What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), become another
- * state, ask the host to run or export one workflow of the Defined tab, ask it to reopen the view of the run it hosts or to open the gate
+ * state, ask the host to run or export one workflow of the Defined tab (a `run` is also what `r` on a History detail asks: the same request
+ * for the catalog's entry of the run's workflow), ask it to reopen the view of the run it hosts or to open the gate
  * card of a paused run of the Active tab, ask it to load a run's detail on the History tab, ask it to resume a conversation of the Sessions
  * tab in place, or ask it to start a chat bound to the agent of an open detail, each carrying the state the tab is left in.
  * The slug is a catalog entry's own, never a row's label, and a run id is the one the read classified (the host reads the run again before
@@ -679,6 +691,8 @@ function foldHistoryTab(
   const step = foldHistoryKey(history, input, key, {
     history: context.history,
     pins: context.pins,
+    // `r` on a run's detail looks the run's workflow up in the very catalog the Defined tab lists.
+    defined: context.defined,
   });
   const next = step.state === history ? state : { ...state, history: step.state };
   return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };

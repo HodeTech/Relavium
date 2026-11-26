@@ -20,11 +20,12 @@ import type { ParkedRunRow } from './home-attention.js';
 import { HomeView } from './home-view.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const RED = '\u001b[31m';

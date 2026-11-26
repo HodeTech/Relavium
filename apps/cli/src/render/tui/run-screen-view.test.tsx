@@ -399,11 +399,12 @@ describe('a notice wider than the terminal', () => {
 // ---- Through a mounted RootApp, with real stdin bytes ---------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const CTRL_C = '\x03';

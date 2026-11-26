@@ -56,24 +56,27 @@ const sessionRow = (n: number): HomeSessionRow => ({
 /** The study's H3 state: a gate to answer (a parked run) and a failed run under Attention, two sessions, two runs. */
 const PARKED: readonly ParkedRunRow[] = [{ runId: 'run-gate', kind: 'approval', gates: 1 }];
 const BUSY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [runRow('run-failed', 'failed')] },
+  attention: { failedRuns: [runRow('run-failed', 'failed')] },
   recentSessions: [sessionRow(1), sessionRow(2)],
   recentRuns: [runRow('run-a', 'completed'), runRow('run-b', 'completed')],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 2, sessions: 2, runs: 2 },
   isEmpty: false,
 };
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const SESSIONS_ONLY: HomeSnapshot = {
   ...EMPTY,
   recentSessions: [sessionRow(1), sessionRow(2)],
+  totals: { attention: 0, sessions: 2, runs: 0 },
   isEmpty: false,
 };
 const STATUS: HomeStatusFacts = {
@@ -161,7 +164,7 @@ describe.each([
     expect(block[0], 'the blank lead row').toBe('');
     expect(block[1]).toBe(`${pad}> type a message, or / for commands`);
     expect(block[2]).toBe(`${pad}${'-'.repeat(cols - 2 * margin)}`);
-    expect(block[3]).toBe(`${pad}next chat: anthropic · claude-haiku-5-5 · ask mode   ~/acme-web`);
+    expect(block[3]).toBe(`${pad}anthropic · claude-haiku-5-5 · ask mode   ~/acme-web`);
     expect(block[4]).toBe(`${pad}↑/↓ select · Enter open the gate · type to chat · Esc start page`);
   });
 
@@ -241,10 +244,18 @@ describe('the indicator and its colour', () => {
     expect(plain(bare).some((line) => line.trim() === H3_HINT)).toBe(true);
   });
 
-  it('counts exactly the Attention rows of the work page: `1 needs you` for one', () => {
-    const one = rowsOf({ parked: [] });
+  it('says the true count of Attention (the snapshot total): `1 needs you` for one', () => {
+    // No parked run: the store counts the failed run alone (MVP-11 unit 7: the count is the snapshot's total, not the rows drawn).
+    const one = rowsOf({
+      parked: [],
+      snapshot: { ...BUSY, totals: { ...BUSY.totals, attention: 1 } },
+    });
     expect(one.some((row) => row.includes('↓ 1 needs you · 2 sessions · 2 runs'))).toBe(true);
-    const work = rowsOf({ parked: [], page: 'work' });
+    const work = rowsOf({
+      parked: [],
+      page: 'work',
+      snapshot: { ...BUSY, totals: { ...BUSY.totals, attention: 1 } },
+    });
     const heading = work.indexOf('      Attention required');
     const end = work.findIndex((row, at) => at > heading && row.trim() === '');
     expect(heading).toBeGreaterThan(0);

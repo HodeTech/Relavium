@@ -25,6 +25,8 @@ describe('schema-valid semantic usage corruption stays isolated to its run', () 
         const store = createRunHistoryStore(client.db, {
           uuid: randomUUID,
           now: () => 1,
+          // The Home lists the runs of the directory it was opened in (MVP-11 unit 7): both runs were started there.
+          projectRoot: process.cwd(),
           workflow: {
             slug: 'coverage-corruption',
             name: 'coverage-corruption',
@@ -68,11 +70,19 @@ describe('schema-valid semantic usage corruption stays isolated to its run', () 
           });
           return { exit, out: out(), err: err() };
         };
-        const baseline = buildHomeSnapshot({ sessions, runs: reader });
+        const home = (): ReturnType<typeof buildHomeSnapshot> =>
+          buildHomeSnapshot({
+            sessions,
+            runs: reader,
+            projectRoot: process.cwd(),
+            workingDir: process.cwd(),
+            now: () => Date.parse(timestamp),
+          });
+        const baseline = home();
         expect(baseline.recentRuns.map((run) => run.runId)).toEqual(
           expect.arrayContaining(['healthy', 'damaged']),
         );
-        expect(baseline.unreadableRunIds).toEqual([]);
+        expect(baseline.unreadableRuns).toEqual([]);
         const baselineStatus = await invokeStatus(true);
         expect(baselineStatus.exit).toBe(0);
         expect(parseNdjson(baselineStatus.out)).toHaveLength(2);
@@ -129,15 +139,18 @@ describe('schema-valid semantic usage corruption stays isolated to its run', () 
         await expect(createHistoryCheckpointer(store).load('damaged')).rejects.toMatchObject(
           expectedError,
         );
-        const home = buildHomeSnapshot({ sessions, runs: reader });
-        expect(home.recentRuns.map((run) => run.runId)).toEqual(['healthy']);
-        expect(home.recentRuns[0]?.usageCoverage).toEqual({
+        const after = home();
+        expect(after.recentRuns.map((run) => run.runId)).toEqual(['healthy']);
+        expect(after.recentRuns[0]?.usageCoverage).toEqual({
           unverified: false,
           pendingInvocations: 0,
           unknownCalls: 0,
         });
-        expect(home.unreadableRunIds).toEqual(['damaged']);
-        expect(home.isEmpty).toBe(false);
+        // Named with WHY, in the closed vocabulary: a damaged row (the message the error carries never reaches the snapshot).
+        expect(after.unreadableRuns.map((run) => [run.runId, run.reason])).toEqual([
+          ['damaged', 'corrupt-row'],
+        ]);
+        expect(after.isEmpty).toBe(false);
         const json = await invokeStatus(true);
         expect(json.exit).toBe(0);
         expect(json.err).toBe('');

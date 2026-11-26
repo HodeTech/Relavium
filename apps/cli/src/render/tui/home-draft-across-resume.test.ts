@@ -22,11 +22,12 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 const SESSIONS: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [sessionRow('s1')],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 1, runs: 0 },
   isEmpty: false,
 };
 const DRAFT = 'a long message I was writing\nthree paragraphs of it';

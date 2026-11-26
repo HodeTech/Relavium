@@ -43,11 +43,12 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 });
 /** The parked run first (its own row), then a failed run, a session and a recent run. */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [runRow('run-failed', 'failed')] },
+  attention: { failedRuns: [runRow('run-failed', 'failed')] },
   recentSessions: [sessionRow('s1')],
   recentRuns: [runRow('run-live', 'running')],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 2, sessions: 1, runs: 1 },
   isEmpty: false,
 };
 const PARKED: ParkedRunRow = { runId: RUN, kind: 'approval', gates: 1 };

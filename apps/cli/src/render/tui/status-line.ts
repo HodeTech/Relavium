@@ -11,9 +11,10 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
  * keychain: the controller resolves the provider, the model and the mode once and passes them in, so nothing on a render path reads
  * anything.
  *
- * - **The Home:** `next chat: <provider> · <model> · <mode> mode[ · effort <e>]`, then THREE spaces and the directory. The label says that
- *   the group is the default for the NEXT chat, and the gap says the directory is not one of those defaults. With neither a provider nor a
- *   model the label goes too (the line says nothing about a model it does not have).
+ * - **The Home:** `<provider> · <model> · <mode> mode[ · effort <e>]`, then THREE spaces and the directory. The group is the default for the
+ *   NEXT chat and says no more than a chat's own line does (the maintainer, 2026-11-26: the label `next chat:` was dropped, the line reads as the
+ *   chat's will); the gap says the directory is not one of those defaults. With neither a provider nor a model the line says nothing about a
+ *   model it does not have.
  * - **A chat:** `<provider> · <model> · <mode> mode[ · effort <e>] · <n> turn(s) · <cost>[ · ctx <p>% used]`.
  * - **The budget** is `columns − homeMargin(columns)` (74 at 80 columns, the hint line's), or `columns − leftMargin` when the caller names the
  *   margin it draws at. **What goes first**, stopping as soon as the line
@@ -23,8 +24,8 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
  *   {@link DIRECTORY_FRAGMENT_MIN} columns). In a chat: the turns, then the context, then the cost switches to its short form, then the
  *   model and the provider as above (the ADR's refinement of OD-9: cost is the signal a person watches against a budget, and
  *   `ctx 18% used` says which way it counts). **The mode word and the effort are NEVER cut or dropped**: they are words the host
- *   enumerates, not free text, so a Home line is wider than its budget only when they alone, with the label, the two floors and the
- *   separators, are (59 columns on the Home with an effort set: a terminal the Home does not draw, it needs 80).
+ *   enumerates, not free text, so a Home line is wider than its budget only when they alone, with the two floors and the
+ *   separators, are (48 columns on the Home with an effort set: a terminal the Home does not draw, it needs 80).
  * - **A chat takes back what the ladder dropped while it fits** (OB7-L3): the ladder gives the turns and then the context up until the line fits and
  *   is not minimal (it may drop both for the few columns it needs), so after it the line tries the context and then the turns again (the reverse of the
  *   loss order: the context is the one the order values more), each while the line still fits, and only while the cost is in a form its caller wrote.
@@ -49,11 +50,8 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
  * A data module: it imports nothing from `ink`, `react`, `chalk` or `node:` (ADR-0145 §10).
  */
 
-/** The three spaces between the next chat's defaults and the directory. */
+/** The three spaces between the next chat's defaults and the directory: the gap says the directory is not one of the defaults. */
 export const HOME_DIRECTORY_GAP = '   ';
-
-/** The label before the Home's defaults: what a person is told the group is. */
-export const NEXT_CHAT_LABEL = 'next chat:';
 
 /** The narrowest a model id is cut to; one that is already narrower is not cut. */
 export const MODEL_FLOOR = 12;
@@ -278,10 +276,8 @@ function homeText(shape: HomeShape): string {
     modeWord(shape.mode),
     effortWord(shape.effort),
   ]);
-  const named = isText(shape.provider) || isText(shape.model);
-  const group = named ? `${NEXT_CHAT_LABEL} ${defaults}` : defaults;
-  if (shape.directory === '') return group;
-  return group === '' ? shape.directory : `${group}${HOME_DIRECTORY_GAP}${shape.directory}`;
+  if (shape.directory === '') return defaults;
+  return defaults === '' ? shape.directory : `${defaults}${HOME_DIRECTORY_GAP}${shape.directory}`;
 }
 
 /**

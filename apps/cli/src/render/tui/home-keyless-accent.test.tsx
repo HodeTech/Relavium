@@ -17,11 +17,12 @@ function rowOf(color: boolean, needle: string): string {
   const view = render(
     <HomeView
       snapshot={{
-        attention: { gates: [], failedRuns: [] },
+        attention: { failedRuns: [] },
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 0 },
         isEmpty: true,
       }}
       editor={{ text: '', cursor: 0 }}

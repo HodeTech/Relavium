@@ -39,7 +39,7 @@ const HOSTILE: Readonly<Record<string, string>> = {
   'a bidirectional override': `abc${ch(0x202e)}edom otua${ch(0x202c)}def`,
   'zero-width characters': `a${ch(0x200b)}b${ch(0x2060)}c${ch(0xfeff)}d`,
   'line and paragraph separators': `line1${ch(0x2028)}line2${ch(0x2029)}line3`,
-  'a newline and a forged status line': 'one\nnext chat: anthropic · evil · auto mode',
+  'a newline and a forged status line': 'one\nanthropic · evil · auto mode   ~/forged',
   'tag characters': `a${ch(0xe0041)}${ch(0xe0042)}b`,
   'the host’s row glyphs': '› selected ▸ x ⇄ y',
   'a forged field': 'claude-haiku-4-5 · auto mode · effort max',
@@ -70,28 +70,9 @@ const runRow = (id: string, slug: string, status: HomeRunRow['status']): HomeRun
 /** Every kind of row of the work page, each carrying `value` in every stored field it draws, and the hosted run's row on the landing. */
 function homeWith(value: string) {
   const snapshot: HomeSnapshot = {
+    // (The gate rows of runs not parked here are gone with the Home's scope, MVP-11 unit 7: every parked run of this directory is the
+    // parked row below, and the unreadable run carries the stored workflow name it can be named by.)
     attention: {
-      gates: [
-        {
-          runId: `g-${value}`,
-          workflowSlug: value,
-          gateId: 'gate-1',
-          gateType: 'approval',
-          nodeId: 'review',
-          message: value,
-          expiresAt: undefined,
-        },
-        // A gate of a run with no workflow name: the row names it by its id.
-        {
-          runId: value,
-          workflowSlug: undefined,
-          gateId: 'gate-2',
-          gateType: 'approval',
-          nodeId: 'review',
-          message: 'plain',
-          expiresAt: undefined,
-        },
-      ],
       failedRuns: [runRow(`f-${value}`, value, 'failed')],
     },
     recentSessions: [sessionRow(value, 1)],
@@ -101,7 +82,16 @@ function homeWith(value: string) {
       { ...runRow(value, value, 'completed'), workflowSlug: undefined },
     ],
     recentAgents: [{ agentSlug: value, lastUsedAt: '2026-11-23T00:00:00.000Z' }],
-    unreadableRunIds: [value],
+    unreadableRuns: [
+      {
+        runId: value,
+        workflowSlug: value,
+        status: 'failed',
+        createdAt: '2026-11-23T00:00:00.000Z',
+        reason: 'corrupt-row',
+      },
+    ],
+    totals: { attention: 3, sessions: 1, runs: 2 },
     isEmpty: false,
   };
   const parked: readonly ParkedRunRow[] = [
@@ -145,7 +135,7 @@ describe.each(['work', 'start'] as const)('stored text on the %s page', (page) =
     expect(frame, 'no key').not.toMatch(/sk-ant-api03-[AB]{6}/u);
     expect(frame, 'none of the host’s row glyphs from a value').not.toMatch(/[›▸⇄]/u);
     expect(frame, 'no field forged with the separator').not.toContain('auto mode · effort');
-    expect(frame, 'no status line forged on a row').not.toMatch(/next chat: anthropic · evil/u);
+    expect(frame, 'no status line forged on a row').not.toMatch(/anthropic · evil/u);
   });
 });
 

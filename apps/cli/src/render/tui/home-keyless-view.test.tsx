@@ -24,11 +24,15 @@ describe('keyless Home view', () => {
         <HomeView
           page="work"
           snapshot={{
-            attention: { gates: [], failedRuns: [] },
+            attention: { failedRuns: [] },
             recentSessions: sessions,
             recentRuns: [],
             recentAgents: [],
-            unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${n}`),
+            unreadableRuns: Array.from({ length: 50 }, (_, n) => ({
+              runId: `run-${n}`,
+              reason: 'corrupt-row' as const,
+            })),
+            totals: { attention: 50, sessions: sessions.length, runs: 0 },
             isEmpty: false,
           }}
           editor={{ text: '', cursor: 0 }}
@@ -56,11 +60,15 @@ describe('keyless Home view', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: Array.from({ length: 50 }, (_, i) => `id-${i}`),
+          unreadableRuns: Array.from({ length: 50 }, (_, i) => ({
+            runId: `id-${i}`,
+            reason: 'corrupt-row' as const,
+          })),
+          totals: { attention: 50, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}
@@ -73,9 +81,9 @@ describe('keyless Home view', () => {
     );
     const frame = view.lastFrame() ?? '';
     expect(frame).toContain('No provider key yet · Enter connect · /providers');
-    // At 80 columns the landing's hint keeps the indicator (three of the fifty unreadable runs are listed under Attention) and gives up the
-    // call to connect, which the status row above it says (MVP-11 unit 7).
-    expect(frame).toContain('[/] commands · ↓ 3 need you · [Ctrl+C] exit (twice)');
+    // At 80 columns the landing's hint keeps the indicator and gives up the call to connect, which the status row above it says (MVP-11
+    // unit 7). The indicator says the TRUE count, the store's total: fifty runs need you, though the section lists three of them.
+    expect(frame).toContain('[/] commands · ↓ 50 need you · [Ctrl+C] exit (twice)');
     expect(frame).not.toContain('↓ continue');
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     view.unmount();
@@ -106,11 +114,12 @@ describe('the Home hint bar', () => {
         // a focused row is the work page's (MVP-11 unit 7)
         page={over.stripFocus === undefined ? 'start' : 'work'}
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: sessions,
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: sessions.length, runs: 0 },
           isEmpty: sessions.length === 0,
         }}
         editor={{ text: over.text ?? '', cursor: (over.text ?? '').length }}
@@ -180,11 +189,12 @@ describe('the keyless line and the other things Enter does first', () => {
         // a focused parked row is the work page's (MVP-11 unit 7)
         page={over.parkedFocus === undefined ? 'start' : 'work'}
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 1, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}
@@ -251,11 +261,12 @@ describe('the hint bar on a focused parked row', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 1, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}
@@ -295,11 +306,12 @@ describe('the focused parked row at 80 columns', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 1, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}
@@ -349,11 +361,12 @@ describe('the keyless Home hint bar by what the draft is', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }}
         editor={{ text, cursor: text.length }}

@@ -31,19 +31,24 @@ const session = (n: number) => ({
   totalCostMicrocents: 0,
 });
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const FULL: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: Array.from({ length: 8 }, (_, n) => session(n)),
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${String(n)}`),
+  unreadableRuns: Array.from({ length: 50 }, (_, n) => ({
+    runId: `run-${String(n)}`,
+    reason: 'corrupt-row' as const,
+  })),
+  totals: { attention: 50, sessions: 8, runs: 0 },
   isEmpty: false,
 };
 
@@ -93,8 +98,8 @@ describe('the landing hint while a leg executes', () => {
   // The run's own row says `Enter show it` (between the status line and the hint: MVP-11 unit 7, the study's frame 21), so the hint does not say
   // it a second time: it keeps its own doors (the indicator, or the empty Home's sentence).
   it.each([
-    // FULL lists 3 unreadable runs under Attention (of 50) and 8 sessions
-    ['a Home with sessions', FULL, '↓ 3 need you · 8 sessions', 80],
+    // FULL holds 50 unreadable runs under Attention (the store's true total; the section lists 3 of them) and 8 sessions
+    ['a Home with sessions', FULL, '↓ 50 need you · 8 sessions', 80],
     ['an empty Home at 100 columns', EMPTY, 'type a message to chat', 100],
   ] as const)(
     'leaves `Enter show it` to the run row, and keeps its own door (%s)',

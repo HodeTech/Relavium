@@ -46,14 +46,20 @@ const sessionRow = (n: number): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 const SESSIONS: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [sessionRow(1), sessionRow(2)],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 2, runs: 0 },
   isEmpty: false,
 };
-const NOTHING: HomeSnapshot = { ...SESSIONS, recentSessions: [], isEmpty: true };
+const NOTHING: HomeSnapshot = {
+  ...SESSIONS,
+  recentSessions: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
+  isEmpty: true,
+};
 const PARKED: ParkedRunRow = { runId: RUN, kind: 'approval', gates: 1 };
 const APPROVAL_RUN: RunGates = {
   runId: RUN,

@@ -3,14 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  CorruptRunEventError,
   createClient,
   createRunHistoryReader,
   createRunHistoryStore,
   createSessionStore,
-  MAX_RUN_SUMMARY_IDS,
+  isRunHistoryReadError,
   runEvents,
   runMigrations,
   runs,
+  SessionDiscoveryBoundaryError,
+  UnreadableRunEventLogError,
   workflows,
   type DbClient,
 } from '@relavium/db';
@@ -19,31 +22,73 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { formatCostShort } from '../render/tui/format.js';
-import { seedRun } from '../test-support.js';
+import { seedRun, type SeedRunOptions } from '../test-support.js';
 import {
+  ATTENTION_FAILED_WINDOW_MS,
   buildHomeSnapshot,
   createHomeStore,
   DEFAULT_HOME_LIMIT,
-  PROJECT_LABEL_MAX_CHARS,
+  HOME_LIMIT_MAX,
+  unreadableReasonOf,
   type HomeStoreDeps,
 } from './home-store.js';
 
-const CTX = SessionContextSchema.parse({ workingDir: '/workspace', fsScopeTier: 'sandboxed' });
+/** The directory the Home is opened in: the sessions' working directory and the runs' project root. */
+const HERE = '/workspace';
+const CTX = SessionContextSchema.parse({ workingDir: HERE, fsScopeTier: 'sandboxed' });
 const ISO = (ms: number): string => new Date(ms).toISOString();
 const T0 = 1_750_000_000_000;
+/** The Home's clock: a minute after the seeded runs, so a failed run seeded around `T0` is inside the window. */
+const NOW = T0 + 60_000;
+const DAY = 86_400_000;
 
-describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
+describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directory, true totals)', () => {
   let client: DbClient;
   let deps: HomeStoreDeps;
 
   beforeEach(() => {
     client = createClient(':memory:');
     runMigrations(client.db);
-    deps = { sessions: createSessionStore(client.db), runs: createRunHistoryReader(client.db) };
+    deps = {
+      sessions: createSessionStore(client.db),
+      runs: createRunHistoryReader(client.db),
+      projectRoot: HERE,
+      workingDir: HERE,
+      now: () => NOW,
+    };
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     client.sqlite.close();
   });
+
+  /** Record `root` as the project `runId` was started in (a column the seeding helper does not set). */
+  const recordProject = (runId: string, root: string | null): void => {
+    client.db.update(runs).set({ projectRoot: root }).where(eq(runs.id, runId)).run();
+  };
+  /** Seed a run started in `root` (this Home's directory unless told otherwise). */
+  const seed = async (opts: SeedRunOptions, root: string | null = HERE): Promise<void> => {
+    await seedRun(client.db, opts);
+    recordProject(opts.runId, root);
+  };
+  /** Append one stored row to a run's log: a damaged one (`corrupt`) or one a newer version wrote (`future`). */
+  const damage = (runId: string, kind: 'corrupt' | 'future', seq = 900): void => {
+    client.db
+      .insert(runEvents)
+      .values({
+        id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`,
+        runId,
+        seq,
+        eventType: kind === 'corrupt' ? 'node:started' : 'future:usage',
+        payloadJson: JSON.stringify(
+          kind === 'corrupt'
+            ? { type: 'node:started', nodeId: 42 }
+            : { type: 'future:usage', runId, sequenceNumber: seq, timestamp: ISO(T0) },
+        ),
+        ts: T0,
+      })
+      .run();
+  };
 
   const session = (overrides: Partial<AgentSessionRecord>): AgentSessionRecord => ({
     id: 'sess',
@@ -60,75 +105,51 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
   });
 
   it('isolates a future discriminator discovered by strict coverage while retaining healthy Home rows', async () => {
-    await seedRun(client.db, { slug: 'healthy', runId: 'healthy', state: 'running', atMs: T0 });
-    await seedRun(client.db, { slug: 'future', runId: 'future', state: 'running', atMs: T0 + 1 });
-    client.db
-      .insert(runEvents)
-      .values({
-        id: 'future-event',
-        runId: 'future',
-        seq: 900,
-        eventType: 'future:usage',
-        payloadJson: JSON.stringify({
-          type: 'future:usage',
-          runId: 'future',
-          sequenceNumber: 900,
-          timestamp: ISO(T0),
-        }),
-        ts: T0,
-      })
-      .run();
+    await seed({ slug: 'healthy', runId: 'healthy', state: 'running', atMs: T0 });
+    await seed({ slug: 'future', runId: 'future', state: 'running', atMs: T0 + 1 });
+    damage('future', 'future');
     const snapshot = buildHomeSnapshot(deps);
     expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['healthy']);
-    expect(snapshot.unreadableRunIds).toEqual(['future']);
+    // The run is named by what its listing row says, and WHY in the closed vocabulary: written by a newer version.
+    expect(snapshot.unreadableRuns).toEqual([
+      {
+        runId: 'future',
+        workflowSlug: 'future',
+        status: 'running',
+        createdAt: ISO(T0 + 1),
+        reason: 'newer-version',
+      },
+    ]);
     expect(snapshot.attention.failedRuns).toEqual([]);
+    // It is one Attention item and no longer a run of the Runs section.
+    expect(snapshot.totals).toEqual({ attention: 1, sessions: 0, runs: 1 });
     expect(snapshot.isEmpty).toBe(false);
   });
 
-  it('is empty (first-run welcome path) on a fresh db', () => {
+  it('is empty (first-run welcome path) on a fresh db, with every total zero', () => {
     const snap = buildHomeSnapshot(deps);
     expect(snap.isEmpty).toBe(true);
     expect(snap.recentSessions).toEqual([]);
     expect(snap.recentRuns).toEqual([]);
-    expect(snap.attention.gates).toEqual([]);
     expect(snap.attention.failedRuns).toEqual([]);
     expect(snap.recentAgents).toEqual([]);
+    expect(snap.unreadableRuns).toEqual([]);
+    expect(snap.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
   });
 
-  it('lifts pending gates (first) and failed runs into Attention, labeled by workflow slug', async () => {
-    await seedRun(client.db, {
+  it('counts a paused run and a failed run of the window under Attention, labels rows by workflow slug, and lists the rest as Runs', async () => {
+    await seed({
       slug: 'deploy',
       runId: 'run-paused',
       state: 'paused',
       atMs: T0 + 3_000,
       gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
     });
-    await seedRun(client.db, {
-      slug: 'nightly',
-      runId: 'run-failed',
-      state: 'failed',
-      atMs: T0 + 2_000,
-    });
-    await seedRun(client.db, {
-      slug: 'backup',
-      runId: 'run-ok',
-      state: 'completed',
-      atMs: T0 + 1_000,
-    });
+    await seed({ slug: 'nightly', runId: 'run-failed', state: 'failed', atMs: T0 + 2_000 });
+    await seed({ slug: 'backup', runId: 'run-ok', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot(deps);
 
-    expect(snap.attention.gates).toEqual([
-      {
-        runId: 'run-paused',
-        workflowSlug: 'deploy',
-        gateId: 'g1',
-        gateType: 'approval',
-        nodeId: 'g',
-        message: 'ship it?',
-        expiresAt: undefined,
-      },
-    ]);
     // Exact row (not objectContaining) so a dropped/mis-mapped createdAt or cost projection is caught.
     expect(snap.attention.failedRuns).toEqual([
       {
@@ -143,7 +164,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         unpricedCalls: 0,
       },
     ]);
-    // The completed run is the only neutral "Continue" run — the failed + paused runs are in Attention, not here.
+    // The completed run is the only Runs row — the failed + paused runs are Attention, not here.
     expect(snap.recentRuns).toEqual([
       {
         runId: 'run-ok',
@@ -157,87 +178,49 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         unpricedCalls: 0,
       },
     ]);
+    // The paused run is the parked row's (the controller reads it); here it is counted, once.
+    expect(snap.totals).toEqual({ attention: 2, sessions: 0, runs: 1 });
+    expect(snap.unreadableRuns).toEqual([]);
     expect(snap.isEmpty).toBe(false);
   });
 
-  it('never repeats a failed run in the Continue list (it lives only in Attention)', async () => {
-    await seedRun(client.db, { slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 2_000 });
-    await seedRun(client.db, {
-      slug: 'a',
-      runId: 'run-good',
-      state: 'completed',
-      atMs: T0 + 1_000,
-    });
+  it('never repeats a failed run in the Runs list (it lives only in Attention)', async () => {
+    await seed({ slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 2_000 });
+    await seed({ slug: 'a', runId: 'run-good', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot(deps);
     expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-good']); // NOT run-bad
   });
 
-  it('keeps a BUDGET-paused run in Continue (it is not a human gate)', async () => {
-    await seedRun(client.db, {
+  it('counts a paused run of every kind (human gate, budget, media) under Attention and never lists it as a run', async () => {
+    await seed({
       slug: 'a',
       runId: 'run-budget',
       state: 'paused',
       atMs: T0 + 1_000,
-      budgetGateId: 'budget-1',
+      budgetGateId: 'b1',
     });
+    await seed({
+      slug: 'a',
+      runId: 'run-both',
+      state: 'paused',
+      atMs: T0 + 2_000,
+      budgetGateId: 'b2',
+      gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
+    });
+    await seed({ slug: 'a', runId: 'run-media', state: 'paused', atMs: T0 + 3_000 });
 
     const snap = buildHomeSnapshot(deps);
-    expect(snap.attention.gates).toEqual([]); // a budget gate is the `relavium budget resume` surface, not here
-    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-budget']);
+    expect(snap.recentRuns).toEqual([]);
+    expect(snap.attention.failedRuns).toEqual([]);
+    expect(snap.totals).toEqual({ attention: 3, sessions: 0, runs: 0 });
+    expect(snap.isEmpty).toBe(false);
   });
 
-  it('surfaces every human gate on a run (multi-gate fan-out) and lifts the run out of Continue', async () => {
-    await seedRun(client.db, {
-      slug: 'deploy',
-      runId: 'run-multi',
-      state: 'paused',
-      atMs: T0 + 1_000,
-      gates: [
-        { gateId: 'g1', gateType: 'approval', message: 'approve A?' },
-        { gateId: 'g2', gateType: 'review', message: 'review B?' },
-      ],
-    });
-
-    const snap = buildHomeSnapshot(deps);
-    // Both gates surface, each labeled with the run's slug; the flatMap fans one paused run out to two rows.
-    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1', 'g2']);
-    expect(
-      snap.attention.gates.every((g) => g.runId === 'run-multi' && g.workflowSlug === 'deploy'),
-    ).toBe(true);
-    expect(snap.recentRuns).toEqual([]); // the gated run is not repeated in Continue
-  });
-
-  it('orders gates across MULTIPLE paused runs by the run’s recency (newest paused run’s gate first)', async () => {
-    // Two paused-with-human-gate runs at different times; the Attention gate order must track the paused run’s
-    // created_at DESC (the documented Phase-1 proxy), so the newest run’s gate leads — a guard against an
-    // accidental reorder of the underlying paused-run list.
-    await seedRun(client.db, {
-      slug: 'older',
-      runId: 'run-old',
-      state: 'paused',
-      atMs: T0 + 1_000,
-      gate: { gateId: 'g-old', gateType: 'approval', message: 'approve old?' },
-    });
-    await seedRun(client.db, {
-      slug: 'newer',
-      runId: 'run-new',
-      state: 'paused',
-      atMs: T0 + 5_000,
-      gate: { gateId: 'g-new', gateType: 'approval', message: 'approve new?' },
-    });
-
-    const snap = buildHomeSnapshot(deps);
-    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g-new', 'g-old']);
-    expect(snap.attention.gates.map((g) => g.runId)).toEqual(['run-new', 'run-old']);
-  });
-
-  it('a human-gated paused run BEYOND the display cap is still excluded from Continue (no leak)', async () => {
-    // 3 paused+human-gated runs, limit 2: the top-2 are DISPLAYED as gates; the 3rd is beyond the display cap but
-    // still inside the Continue window — it must be LIFTED out of Continue, not leaked in.
-    for (const [i, id] of ['gated-0', 'gated-1', 'gated-2'].entries()) {
-      await seedRun(client.db, {
+  it('a paused run beyond the loaded limit is still counted, and still never a run', async () => {
+    for (const [i, id] of ['p-0', 'p-1', 'p-2'].entries()) {
+      await seed({
         slug: `wf-${i}`,
         runId: id,
         state: 'paused',
@@ -245,36 +228,14 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         gate: { gateId: `g-${i}`, gateType: 'approval', message: 'ok?' },
       });
     }
-
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.attention.gates.map((g) => g.runId)).toEqual(['gated-2', 'gated-1']); // top-2 displayed
-    expect(snap.recentRuns).toEqual([]); // the 3rd (beyond-cap) gated run did NOT leak into Continue
-  });
-
-  it('on a run with BOTH a budget and a human gate: surfaces only the human gate, excludes the run from Continue', async () => {
-    await seedRun(client.db, {
-      slug: 'a',
-      runId: 'run-both',
-      state: 'paused',
-      atMs: T0 + 1_000,
-      budgetGateId: 'budget-1',
-      gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
-    });
-
-    const snap = buildHomeSnapshot(deps);
-    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1']); // budget gate excluded, human surfaced
-    expect(snap.recentRuns).toEqual([]); // the human gate still lifts the run out of Continue
+    expect(snap.recentRuns).toEqual([]);
+    expect(snap.totals.attention, 'the total is not the loaded limit').toBe(3);
   });
 
   it('renders a run whose workflow is soft-deleted with workflowSlug undefined (still surfaced)', async () => {
-    await seedRun(client.db, {
-      slug: 'gone',
-      runId: 'run-orphan',
-      state: 'completed',
-      atMs: T0 + 1_000,
-    });
-    // Soft-delete the workflow row — its run stays (listRuns filters runs.deletedAt, not the workflow's), but
-    // the slug lookup drops it, so the row renders unlabeled rather than vanishing.
+    await seed({ slug: 'gone', runId: 'run-orphan', state: 'completed', atMs: T0 + 1_000 });
+    // Soft-delete the workflow row — its run stays, but the slug lookup drops it, so the row renders unlabeled rather than vanishing.
     client.db.update(workflows).set({ deletedAt: T0 }).where(eq(workflows.slug, 'gone')).run();
 
     const [row] = buildHomeSnapshot(deps).recentRuns;
@@ -283,89 +244,78 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     expect(row?.status).toBe('completed');
   });
 
-  it('Continue backfills past newer attention runs (the over-fetch compensates) in newest-first order', async () => {
-    // limit 2; the 2 NEWEST runs are failed (attention) ahead of 2 older completed runs. The over-fetch
-    // (limit + #attention) widens the window so Continue still fills to 2 with the older completed runs.
-    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 4_000 });
-    await seedRun(client.db, { slug: 'b', runId: 'fail-1', state: 'failed', atMs: T0 + 3_000 });
-    await seedRun(client.db, { slug: 'b', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
+  it('the Runs list fills past newer Attention runs, newest first, and each list is bounded by the limit', async () => {
+    await seed({ slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 4_000 });
+    await seed({ slug: 'b', runId: 'fail-1', state: 'failed', atMs: T0 + 3_000 });
+    await seed({ slug: 'b', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
+    await seed({ slug: 'a', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']); // backfilled + newest-first
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']); // bounded to limit 2
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']);
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
   });
 
-  it('a failed run beyond the attention display cap still never leaks into Continue (status-based exclusion)', async () => {
-    // 3 failed runs but limit 2: attention shows only the 2 newest failed, yet NO failed run may appear in
-    // Continue — `recentRuns` excludes by STATUS, not by the (capped) displayed-failed id set. (It may under-fill
-    // in this deep-burst edge; that is accepted — what must never happen is a failed run shown as "continuable".)
-    await seedRun(client.db, { slug: 'a', runId: 'fail-3', state: 'failed', atMs: T0 + 3_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_500 });
-    await seedRun(client.db, { slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 2_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 1_000 });
+  it('a failed run beyond the loaded limit never leaks into the Runs list, and the totals still count it', async () => {
+    await seed({ slug: 'a', runId: 'fail-3', state: 'failed', atMs: T0 + 3_000 });
+    await seed({ slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_500 });
+    await seed({ slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 2_000 });
+    await seed({ slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    // Exact (not a vacuous negative): ok-1 IS within the over-fetched window (limit 2 + 2 failed = 4), so it
-    // must appear; an empty result would be over-filtering, not the accepted deep-burst under-fill. And no
-    // failed run (incl. the beyond-cap fail-1) may leak in.
+    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-3', 'fail-2']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-1']);
+    expect(snap.totals).toEqual({ attention: 3, sessions: 0, runs: 1 });
   });
 
-  it('Continue backfills when BOTH a failed and a human-gated run consume attention slots (combined overFetch)', async () => {
-    // The over-fetch is failedRunRecords.length + humanGatedRunIds.size — this fixture makes BOTH terms non-zero
-    // (1 failed + 1 gated), so a regression dropping either term would leave Continue empty instead of filled.
-    await seedRun(client.db, {
+  it('the Runs list fills when BOTH a failed and a paused run sit above it', async () => {
+    await seed({
       slug: 'deploy',
       runId: 'gated',
       state: 'paused',
       atMs: T0 + 4_000,
       gate: { gateId: 'g1', gateType: 'approval', message: 'ship it?' },
     });
-    await seedRun(client.db, {
-      slug: 'nightly',
-      runId: 'fail-1',
-      state: 'failed',
-      atMs: T0 + 3_000,
-    });
-    await seedRun(client.db, { slug: 'a', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
-    await seedRun(client.db, { slug: 'b', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
+    await seed({ slug: 'nightly', runId: 'fail-1', state: 'failed', atMs: T0 + 3_000 });
+    await seed({ slug: 'a', runId: 'ok-new', state: 'completed', atMs: T0 + 2_000 });
+    await seed({ slug: 'b', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.attention.gates.map((g) => g.gateId)).toEqual(['g1']);
     expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-1']);
-    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']); // both overFetch terms applied
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']);
+    expect(snap.totals).toEqual({ attention: 2, sessions: 0, runs: 2 });
   });
 
-  it('trims recentRuns to the limit when OLDER failed runs widen the window past `limit` neutral survivors', async () => {
-    // 2 OLD failed runs widen overFetch to 2 (window = limit 2 + 2 = 4), but the 4 NEWEST rows are all neutral —
-    // so the status filter removes nothing from the window and `.slice(0, limit)` is the SOLE active trimmer.
-    await seedRun(client.db, { slug: 'a', runId: 'ok-3', state: 'completed', atMs: T0 + 5_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'ok-2', state: 'completed', atMs: T0 + 4_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 3_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 1_000 });
+  it('trims the Runs list to the limit when more runs exist than it loads, and the total says how many', async () => {
+    await seed({ slug: 'a', runId: 'ok-3', state: 'completed', atMs: T0 + 5_000 });
+    await seed({ slug: 'a', runId: 'ok-2', state: 'completed', atMs: T0 + 4_000 });
+    await seed({ slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 3_000 });
+    await seed({ slug: 'a', runId: 'fail-2', state: 'failed', atMs: T0 + 2_000 });
+    await seed({ slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
     expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
-    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-3', 'ok-2']); // sliced from 3 survivors to 2
+    expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-3', 'ok-2']);
+    expect(snap.totals.runs).toBe(3);
   });
 
-  it('clamps a non-positive limit to 1 (the DB ≤0⇒unbounded convention must not leak to the Home)', () => {
+  it('clamps a non-positive limit to 1 and a limit above HOME_LIMIT_MAX to it (the DB ≤0⇒unbounded convention must not leak)', () => {
     const store = createSessionStore(client.db);
     store.createSession(session({ id: 's1', updatedAt: ISO(T0 + 2_000) }));
     store.createSession(session({ id: 's2', updatedAt: ISO(T0 + 1_000) }));
-    // limit 0 would otherwise read every session unbounded; the clamp makes it a coherent single-row strip.
     expect(buildHomeSnapshot({ ...deps, limit: 0 }).recentSessions.map((s) => s.sessionId)).toEqual(
       ['s1'],
     );
+    // A limit no page accepts (above the summary page's maximum) is not refused by the Home: it loads the most it can.
+    expect(
+      buildHomeSnapshot({ ...deps, limit: 10_000 }).recentSessions.map((s) => s.sessionId),
+    ).toEqual(['s1', 's2']);
+    expect(HOME_LIMIT_MAX * 2).toBeLessThanOrEqual(200);
   });
 
   it('falls back to the default for an invalid limit (NaN / Infinity / a fraction) — never a broken read', () => {
     const store = createSessionStore(client.db);
     store.createSession(session({ id: 's1', updatedAt: ISO(T0 + 2_000) }));
     store.createSession(session({ id: 's2', updatedAt: ISO(T0 + 1_000) }));
-    // A non-integer can't reach the bounded read; it coerces to DEFAULT_HOME_LIMIT (≥2 here) ⇒ a coherent strip.
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 2.5]) {
       expect(
         buildHomeSnapshot({ ...deps, limit: bad }).recentSessions.map((s) => s.sessionId),
@@ -373,14 +323,13 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     }
   });
 
-  it('a running (non-terminal, non-gated) run stays neutral in Continue, never in Attention', async () => {
-    await seedRun(client.db, { slug: 'a', runId: 'run-live', state: 'running', atMs: T0 + 2_000 });
-    await seedRun(client.db, { slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 1_000 });
+  it('a running (non-terminal, not parked) run stays a Runs row, never Attention', async () => {
+    await seed({ slug: 'a', runId: 'run-live', state: 'running', atMs: T0 + 2_000 });
+    await seed({ slug: 'a', runId: 'run-bad', state: 'failed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot(deps);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-live']);
     expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
-    expect(snap.attention.gates).toEqual([]);
   });
 
   it('derives recent agents from the recent sessions — most-recent-first and deduped', () => {
@@ -390,15 +339,13 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     store.createSession(session({ id: 's3', agentSlug: 'writer', updatedAt: ISO(T0 + 2_000) }));
 
     const snap = buildHomeSnapshot(deps);
-    // 'writer' was used twice (s1 @1000, s3 @2000) and 'coder' once (s2 @3000). The list is one row per agent,
-    // ordered by each agent's MOST-RECENT use: coder (@3000) before writer (its newest is s3 @2000).
     expect(snap.recentAgents).toEqual([
       { agentSlug: 'coder', lastUsedAt: ISO(T0 + 3_000) },
       { agentSlug: 'writer', lastUsedAt: ISO(T0 + 2_000) },
     ]);
   });
 
-  it('bounds every list to the top-N (indexed `{ limit }`), newest-first', () => {
+  it('bounds every list to the top-N (indexed `{ limit }`), newest-first, and the session total is not the limit', () => {
     const store = createSessionStore(client.db);
     for (let i = 0; i < 5; i += 1) {
       store.createSession(
@@ -406,19 +353,18 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
       );
     }
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.recentSessions.map((s) => s.sessionId)).toEqual(['s4', 's3']); // newest two only
+    expect(snap.recentSessions.map((s) => s.sessionId)).toEqual(['s4', 's3']);
+    expect(snap.totals.sessions).toBe(5);
   });
 
   it('exposes the agent-first session fields (title, agent, status, updatedAt; absent model ⇒ undefined)', () => {
-    // `modelId` is left unset (a catalog FK governs it — the established `makeSession` pattern avoids seeding a
-    // model_catalog row); the row projects it as `undefined`, which is what the Home renders for an unset model.
     createSessionStore(client.db).createSession(
       session({ id: 's1', title: 'Plan the launch', agentSlug: 'planner' }),
     );
     const [row] = buildHomeSnapshot(deps).recentSessions;
     expect(row).toEqual({
       sessionId: 's1',
-      workingDir: '/workspace',
+      workingDir: HERE,
       title: 'Plan the launch',
       agentSlug: 'planner',
       modelId: undefined,
@@ -440,7 +386,8 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     expect(store.read().isEmpty).toBe(true);
     createSessionStore(client.db).createSession(session({ id: 's1' }));
     expect(store.read().recentSessions.map((s) => s.sessionId)).toEqual(['s1']);
-    expect(store.read().isEmpty).toBe(false); // a session-only db must flip the recentSessions arm of isEmpty
+    expect(store.read().isEmpty).toBe(false);
+    expect(store.read().totals.sessions).toBe(1);
   });
 
   it('defaults to DEFAULT_HOME_LIMIT when no limit is given', () => {
@@ -451,137 +398,332 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
       );
     }
     expect(buildHomeSnapshot(deps).recentSessions).toHaveLength(DEFAULT_HOME_LIMIT);
+    expect(buildHomeSnapshot(deps).totals.sessions).toBe(DEFAULT_HOME_LIMIT + 3);
   });
 
-  it('names a run whose event log cannot be read instead of showing it as ordinary (#W15-15)', async () => {
+  it('names a run whose event log cannot be read instead of showing it as ordinary (#W15-15), with why', async () => {
     // Degrading silently made a damaged run render exactly like a paused run with nothing pending — and the
     // Home is where a user would come to find out WHICH run is broken.
-    await seedRun(client.db, { slug: 'demo', runId: 'bad-01', state: 'paused' });
-    client.db
-      .insert(runEvents)
-      .values({
-        id: '00000000-0000-4000-8000-0000000000f1',
-        runId: 'bad-01',
-        seq: 900,
-        eventType: 'node:started',
-        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
-        ts: 0,
-      })
-      .run();
+    await seed({ slug: 'demo', runId: 'bad-01', state: 'paused', atMs: T0 });
+    damage('bad-01', 'corrupt');
 
     const snapshot = buildHomeSnapshot(deps);
 
-    expect(snapshot.unreadableRunIds).toEqual(['bad-01']);
+    expect(snapshot.unreadableRuns).toEqual([
+      {
+        runId: 'bad-01',
+        workflowSlug: 'demo',
+        status: 'paused',
+        createdAt: ISO(T0),
+        reason: 'corrupt-row',
+      },
+    ]);
+    // It is the paused run's ONE Attention item (counted with the paused runs), never also a run.
+    expect(snapshot.totals).toEqual({ attention: 1, sessions: 0, runs: 0 });
     // …and NOT the fresh-install welcome: a Home whose only content is a damaged run must not answer "you
     // have nothing", which is this finding in its most misleading form.
     expect(snapshot.isEmpty).toBe(false);
   });
 
-  describe('the run rows of another project say so', () => {
-    const HERE = '/home/alice/code/here';
-    const HOME = '/home/alice';
-    /** Record `root` as the project `runId` was started in (a column the seeding helper does not set). */
-    const recordProject = (runId: string, root: string | null): void => {
-      client.db.update(runs).set({ projectRoot: root }).where(eq(runs.id, runId)).run();
-    };
-    /** The real reader with its summaries read counted: what `buildHomeSnapshot` asks of it, and how many ids at a time. */
-    const spiedSummaries = () => {
-      const reader = createRunHistoryReader(client.db);
-      const load = vi.fn(reader.loadRunSummariesByIds);
-      return { load, runs: { ...reader, loadRunSummariesByIds: load } };
-    };
-    const projectOf = (snapshot: ReturnType<typeof buildHomeSnapshot>, runId: string) =>
-      [...snapshot.recentRuns, ...snapshot.attention.failedRuns].find((run) => run.runId === runId)
-        ?.project;
+  it('a failed run whose log cannot be read is one Attention item, listed as unreadable and not as a failed row', async () => {
+    await seed({ slug: 'nightly', runId: 'fail-ok', state: 'failed', atMs: T0 + 2_000 });
+    await seed({ slug: 'nightly', runId: 'fail-bad', state: 'failed', atMs: T0 + 1_000 });
+    damage('fail-bad', 'corrupt');
 
-    it('marks a run recorded for another project with its root, `~`-shortened under the home directory', async () => {
-      await seedRun(client.db, { slug: 'wf', runId: 'mine', state: 'completed', atMs: T0 });
-      await seedRun(client.db, { slug: 'wf', runId: 'other', state: 'completed', atMs: T0 + 1 });
-      await seedRun(client.db, { slug: 'wf', runId: 'failed', state: 'failed', atMs: T0 + 2 });
-      recordProject('mine', HERE);
-      recordProject('other', `${HOME}/code/other-app`);
-      recordProject('failed', `${HOME}/code/third`);
+    const snapshot = buildHomeSnapshot(deps);
+    expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['fail-ok']);
+    expect(snapshot.unreadableRuns.map((run) => [run.runId, run.reason])).toEqual([
+      ['fail-bad', 'corrupt-row'],
+    ]);
+    expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 0 });
+  });
 
-      const snapshot = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
-
-      expect(projectOf(snapshot, 'mine'), 'this Home’s own project is not marked').toBeUndefined();
-      expect(projectOf(snapshot, 'other')).toBe('~/code/other-app');
-      expect(projectOf(snapshot, 'failed'), 'a failed run of another project too').toBe(
-        '~/code/third',
-      );
-    });
-
-    it('never shows an absolute path: outside the home directory only the last two segments stay, and a long root is bounded', async () => {
-      await seedRun(client.db, { slug: 'wf', runId: 'srv', state: 'completed', atMs: T0 });
-      await seedRun(client.db, { slug: 'wf', runId: 'long', state: 'completed', atMs: T0 + 1 });
-      await seedRun(client.db, { slug: 'wf', runId: 'nohome', state: 'completed', atMs: T0 + 2 });
-      recordProject('srv', '/srv/apps/shop');
-      recordProject('long', `${HOME}/${'x'.repeat(500)}`);
-      recordProject('nohome', `${HOME}/code/other-app`);
-
-      const snapshot = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
-      expect(projectOf(snapshot, 'srv')).toBe('…/apps/shop');
-      const long = projectOf(snapshot, 'long') ?? '';
-      expect(long.startsWith('~/xxx')).toBe(true);
-      expect(long.length, 'bounded, with an ellipsis for the cut').toBeLessThanOrEqual(
-        PROJECT_LABEL_MAX_CHARS + 1,
-      );
-      expect(long.endsWith('…')).toBe(true);
-
-      // Told no home directory, a root under it is still never shown whole.
-      const unknownHome = buildHomeSnapshot({ ...deps, projectRoot: HERE });
-      expect(projectOf(unknownHome, 'nohome')).toBe('…/code/other-app');
-    });
-
-    it('marks nothing for a run that recorded no project, and nothing at all when the Home was not told its own', async () => {
-      await seedRun(client.db, { slug: 'wf', runId: 'legacy', state: 'completed', atMs: T0 });
-      await seedRun(client.db, { slug: 'wf', runId: 'other', state: 'completed', atMs: T0 + 1 });
-      recordProject('legacy', null);
-      recordProject('other', '/elsewhere/app');
-
-      const told = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
-      expect(projectOf(told, 'legacy'), 'unknown is not "another project"').toBeUndefined();
-      expect(projectOf(told, 'other')).toBe('…/elsewhere/app');
-
-      const spied = spiedSummaries();
-      const untold = buildHomeSnapshot({ ...deps, runs: spied.runs });
-      expect(projectOf(untold, 'other')).toBeUndefined();
-      expect(spied.load, 'and nothing extra is read').not.toHaveBeenCalled();
-    });
-
-    it('reads the projects in batches the reader accepts, so a long list is never refused', async () => {
-      const total = 130;
-      for (let n = 0; n < total; n += 1) {
-        await seedRun(client.db, {
+  describe('this directory only (the maintainer’s ruling: what belongs here is shown, the unrelated is not)', () => {
+    it('a run of another project, a run with no project and a session of another directory are in no list and no count', async () => {
+      await seed({ slug: 'wf', runId: 'mine', state: 'completed', atMs: T0 + 1 });
+      await seed({ slug: 'wf', runId: 'other-ok', state: 'completed', atMs: T0 + 2 }, '/elsewhere');
+      await seed({ slug: 'wf', runId: 'other-bad', state: 'failed', atMs: T0 + 3 }, '/elsewhere');
+      await seed(
+        {
           slug: 'wf',
-          runId: `f${String(n).padStart(3, '0')}`,
-          state: 'failed',
-          atMs: T0 + n,
-        });
-        recordProject(`f${String(n).padStart(3, '0')}`, '/elsewhere/app');
-      }
-      for (let n = 0; n < total; n += 1) {
-        await seedRun(client.db, {
-          slug: 'wf',
-          runId: `c${String(n).padStart(3, '0')}`,
-          state: 'completed',
-          atMs: T0 + total + n,
-        });
-        recordProject(`c${String(n).padStart(3, '0')}`, '/elsewhere/app');
-      }
-      const spied = spiedSummaries();
+          runId: 'other-parked',
+          state: 'paused',
+          atMs: T0 + 4,
+          gate: { gateId: 'g', gateType: 'approval', message: 'x' },
+        },
+        '/elsewhere',
+      );
+      await seed({ slug: 'wf', runId: 'below', state: 'failed', atMs: T0 + 5 }, `${HERE}/sub`);
+      await seed({ slug: 'wf', runId: 'legacy', state: 'failed', atMs: T0 + 6 }, null);
+      damage('other-ok', 'corrupt', 901);
+      const store = createSessionStore(client.db);
+      store.createSession(session({ id: 's-here' }));
+      store.createSession(
+        session({
+          id: 's-there',
+          context: SessionContextSchema.parse({
+            workingDir: '/elsewhere',
+            fsScopeTier: 'sandboxed',
+          }),
+          updatedAt: ISO(T0 + 9),
+        }),
+      );
+
+      const snapshot = buildHomeSnapshot(deps);
+      const listed = [
+        ...snapshot.recentRuns.map((run) => run.runId),
+        ...snapshot.attention.failedRuns.map((run) => run.runId),
+        ...snapshot.unreadableRuns.map((run) => run.runId),
+      ];
+      expect(listed).toEqual(['mine']);
+      expect(snapshot.recentSessions.map((s) => s.sessionId)).toEqual(['s-here']);
+      expect(snapshot.recentAgents).toEqual([{ agentSlug: 'chatter', lastUsedAt: ISO(T0) }]);
+      expect(snapshot.totals).toEqual({ attention: 0, sessions: 1, runs: 1 });
+    });
+
+    it('a Home with nothing of its own is the empty Home, however much another directory holds', async () => {
+      await seed({ slug: 'wf', runId: 'other', state: 'failed', atMs: T0 }, '/elsewhere');
+      createSessionStore(client.db).createSession(
+        session({
+          id: 's-there',
+          context: SessionContextSchema.parse({
+            workingDir: '/elsewhere',
+            fsScopeTier: 'sandboxed',
+          }),
+        }),
+      );
+      const snapshot = buildHomeSnapshot(deps);
+      expect(snapshot.isEmpty).toBe(true);
+      expect(snapshot.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
+    });
+
+    it('reads the runs by the project root a run records and the sessions by the working directory a chat records (as `/resume` does)', async () => {
+      // The two spellings of one directory can differ (a symlinked temp directory and its canonical path): each list is read by its own.
+      await seed({ slug: 'wf', runId: 'run-here', state: 'completed', atMs: T0 }, '/link/here');
+      const store = createSessionStore(client.db);
+      store.createSession(
+        session({
+          id: 's-canonical',
+          context: SessionContextSchema.parse({
+            workingDir: '/real/here',
+            fsScopeTier: 'sandboxed',
+          }),
+        }),
+      );
       const snapshot = buildHomeSnapshot({
         ...deps,
-        runs: spied.runs,
-        projectRoot: HERE,
-        limit: total,
+        projectRoot: '/link/here',
+        workingDir: '/real/here',
       });
-      const sizes = spied.load.mock.calls.map(([ids]) => ids.length);
-      expect(sizes.length, 'more than one batch').toBeGreaterThan(1);
-      expect(Math.max(...sizes)).toBeLessThanOrEqual(MAX_RUN_SUMMARY_IDS);
-      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(2 * total);
-      expect(snapshot.recentRuns.every((run) => run.project === '…/elsewhere/app')).toBe(true);
+      expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['run-here']);
+      expect(snapshot.recentSessions.map((s) => s.sessionId)).toEqual(['s-canonical']);
+      expect(snapshot.totals).toEqual({ attention: 0, sessions: 1, runs: 1 });
+      // Swapped, neither list finds anything: the two are not read by one value.
+      const swapped = buildHomeSnapshot({
+        ...deps,
+        projectRoot: '/real/here',
+        workingDir: '/link/here',
+      });
+      expect(swapped.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
     });
+
+    it('an empty working directory is refused with the session reads’ typed error, before any read', () => {
+      const sessions = createSessionStore(client.db);
+      const list = vi.fn(sessions.listSessions);
+      expect(() =>
+        buildHomeSnapshot({
+          ...deps,
+          sessions: { ...sessions, listSessions: list },
+          workingDir: '',
+        }),
+      ).toThrow(SessionDiscoveryBoundaryError);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it('an empty project root is refused with a typed error: there is no unscoped Home', () => {
+      // `projectRoot` is required by the type; a caller in plain JavaScript (or a cwd that came back empty) is refused at the read, never
+      // shown every directory's runs as if they were this one's.
+      const reader = createRunHistoryReader(client.db);
+      const list = vi.fn(reader.listRunSummaries);
+      for (const projectRoot of ['', undefined]) {
+        let refusal: unknown;
+        try {
+          buildHomeSnapshot({
+            ...deps,
+            runs: { ...reader, listRunSummaries: list },
+            ...Object.fromEntries([['projectRoot', projectRoot]]),
+          });
+        } catch (error) {
+          refusal = error;
+        }
+        expect(isRunHistoryReadError(refusal), String(projectRoot)).toBe(true);
+        expect(refusal).toMatchObject({ code: 'invalid_filter' });
+      }
+      expect(list, 'refused before any read').not.toHaveBeenCalled();
+    });
+  });
+
+  it('a run that changed status between two of the snapshot’s statements is still placed once', async () => {
+    // Another terminal fails a run while this snapshot reads: the Runs read (taken later) is handed the run the failed read already
+    // placed. It is a failed row, once, and never also a Runs row.
+    await seed({ slug: 'wf', runId: 'moving', state: 'failed', atMs: T0 + 2 });
+    await seed({ slug: 'wf', runId: 'steady', state: 'completed', atMs: T0 + 1 });
+    const reader = createRunHistoryReader(client.db);
+    const snapshot = buildHomeSnapshot({
+      ...deps,
+      runs: {
+        ...reader,
+        listRunSummaries: (options) => {
+          const rows = reader.listRunSummaries(options);
+          if (options.exceptStatus !== 'paused') return rows;
+          const moved = reader.listRunSummaries({ projectRoot: HERE, status: 'failed', limit: 1 });
+          return [...moved.map((run) => ({ ...run, status: 'running' as const })), ...rows];
+        },
+      },
+    });
+    expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['moving']);
+    expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['steady']);
+  });
+
+  describe('the failed-run window (ATTENTION_FAILED_WINDOW_MS)', () => {
+    it('is seven days', () => {
+      expect(ATTENTION_FAILED_WINDOW_MS).toBe(7 * DAY);
+    });
+
+    it('a failed run is Attention while it was created within the window (inclusive), and a Runs row once it is older', async () => {
+      const since = NOW - ATTENTION_FAILED_WINDOW_MS;
+      await seed({ slug: 'wf', runId: 'inside', state: 'failed', atMs: since + 1 });
+      await seed({ slug: 'wf', runId: 'edge', state: 'failed', atMs: since });
+      await seed({ slug: 'wf', runId: 'outside', state: 'failed', atMs: since - 1 });
+      await seed({ slug: 'wf', runId: 'old-ok', state: 'completed', atMs: since - 2 * DAY });
+
+      const snapshot = buildHomeSnapshot(deps);
+      expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['inside', 'edge']);
+      // Outside the window it is history: listed as the run it is, with its status word, not dropped.
+      expect(snapshot.recentRuns.map((run) => [run.runId, run.status])).toEqual([
+        ['outside', 'failed'],
+        ['old-ok', 'completed'],
+      ]);
+      expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 2 });
+    });
+
+    it('is measured against the injected clock, read once per snapshot', async () => {
+      await seed({ slug: 'wf', runId: 'f', state: 'failed', atMs: T0 });
+      const now = vi.fn(() => T0 + ATTENTION_FAILED_WINDOW_MS + 1);
+      const later = buildHomeSnapshot({ ...deps, now });
+      expect(later.attention.failedRuns).toEqual([]);
+      expect(later.recentRuns.map((run) => run.runId)).toEqual(['f']);
+      expect(now).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('why a run cannot be read: a closed vocabulary, never an error message', () => {
+    it('maps the two per-run log errors to their words and anything else to "could not be read"', () => {
+      expect(unreadableReasonOf(new CorruptRunEventError('r', 3, 'node:started', undefined))).toBe(
+        'corrupt-row',
+      );
+      expect(unreadableReasonOf(new UnreadableRunEventLogError('r', [9]))).toBe('newer-version');
+      expect(unreadableReasonOf(new Error('a disk said no'))).toBe('could-not-read');
+      expect(unreadableReasonOf('not even an error')).toBe('could-not-read');
+    });
+
+    it('a hostile error message (a path, a secret, a control sequence) never reaches the snapshot', async () => {
+      await seed({ slug: 'wf', runId: 'paused-1', state: 'paused', atMs: T0 + 3 });
+      await seed({ slug: 'wf', runId: 'failed-1', state: 'failed', atMs: T0 + 2 });
+      await seed({ slug: 'wf', runId: 'done-1', state: 'completed', atMs: T0 + 1 });
+      const ESC = String.fromCharCode(27);
+      const hostile = `/Users/someone/.ssh/id_rsa sk-ant-SECRET-1234 ${ESC}[31mRED`;
+      const reader = createRunHistoryReader(client.db);
+      const corrupt = (runId: string): never => {
+        throw new CorruptRunEventError(runId, 7, hostile, new Error(hostile));
+      };
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        runs: {
+          ...reader,
+          loadRunStateEvents: (runId) => corrupt(runId),
+          visitRunEventsForReplay: (runId) => {
+            if (runId === 'failed-1') return corrupt(runId);
+            const error = new UnreadableRunEventLogError(runId, [1]);
+            error.message = hostile;
+            throw error;
+          },
+        },
+      });
+      expect(snapshot.unreadableRuns.map((run) => [run.runId, run.reason])).toEqual([
+        ['paused-1', 'corrupt-row'],
+        ['failed-1', 'corrupt-row'],
+        ['done-1', 'newer-version'],
+      ]);
+      const serialized = JSON.stringify(snapshot);
+      for (const fragment of ['id_rsa', 'SECRET', ESC, 'RED', '.ssh'])
+        expect(serialized).not.toContain(fragment);
+    });
+
+    it('a fault that is not a per-run log error still fails the read: it is never turned into a reason', async () => {
+      await seed({ slug: 'wf', runId: 'done-1', state: 'completed', atMs: T0 });
+      const reader = createRunHistoryReader(client.db);
+      expect(() =>
+        buildHomeSnapshot({
+          ...deps,
+          runs: {
+            ...reader,
+            visitRunEventsForReplay: () => {
+              throw new Error('the database is closed');
+            },
+          },
+        }),
+      ).toThrow('the database is closed');
+    });
+  });
+
+  it('per-run event reads do not grow: one state read per loaded paused run, one usage read per run a list shows or finds unreadable', async () => {
+    // The fixed scenario of the W4a probe, run at bb3965c0 against the old unscoped store: 10 state reads and 26 usage reads (36).
+    const corruptAt = new Set(['p0', 'p4', 'f3', 'c2']);
+    const plan: readonly [string, SeedRunOptions['state'], number, number][] = [
+      ['p', 'paused', 10, DAY],
+      ['f', 'failed', 12, 2 * DAY],
+      ['o', 'failed', 5, 10 * DAY],
+      ['c', 'completed', 15, 3 * DAY],
+      ['r', 'running', 2, DAY / 2],
+    ];
+    let seq = 0;
+    for (const [prefix, state, count, age] of plan) {
+      for (let i = 0; i < count; i++) {
+        const runId = `${prefix}${String(i)}`;
+        await seed({
+          slug: `wf${String(i % 3)}`,
+          runId,
+          state,
+          atMs: NOW - age - i * 1_000,
+          ...(state === 'paused'
+            ? { gate: { gateId: `g${runId}`, gateType: 'approval' as const, message: 'ok?' } }
+            : {}),
+        });
+        if (corruptAt.has(runId)) damage(runId, 'corrupt', 900 + (seq += 1));
+      }
+    }
+    for (let i = 0; i < 13; i++)
+      await seed(
+        { slug: 'wf', runId: `x${String(i)}`, state: 'completed', atMs: NOW - DAY / 4 },
+        '/elsewhere',
+      );
+
+    const reader = createRunHistoryReader(client.db);
+    const stateReads = vi.fn(reader.loadRunStateEvents);
+    const usageReads = vi.fn(reader.visitRunEventsForReplay);
+    const snapshot = buildHomeSnapshot({
+      ...deps,
+      runs: { ...reader, loadRunStateEvents: stateReads, visitRunEventsForReplay: usageReads },
+    });
+    // The eight newest paused runs (the parked rows the controller shows) are probed; p0 and p4 cannot be read.
+    expect(stateReads).toHaveBeenCalledTimes(DEFAULT_HOME_LIMIT);
+    // Failed rows: f0..f8 (f3 cannot be read) = 9; Runs rows: r0, r1, c0..c6 (c2 cannot be read) = 9.
+    expect(usageReads).toHaveBeenCalledTimes(18);
+    expect(stateReads.mock.calls.length + usageReads.mock.calls.length).toBeLessThanOrEqual(36);
+    // Newest first, whichever list found them.
+    expect(snapshot.unreadableRuns.map((run) => run.runId)).toEqual(['p0', 'p4', 'f3', 'c2']);
+    expect(snapshot.totals).toEqual({ attention: 10 + 12 + 1, sessions: 0, runs: 5 + 15 + 2 - 1 });
   });
 });
 
@@ -596,6 +738,7 @@ it('Home qualifies the atomic current amount when another SQLite writer settles 
       uuid: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
       now: () => T0,
       workflow: { slug: 'race', name: 'race', definitionJson: '{}' },
+      projectRoot: HERE,
     });
     const workflowId = await writer.resolveWorkflowId('race');
     const envelope = { runId: 'race', timestamp: ISO(T0) };
@@ -634,10 +777,13 @@ it('Home qualifies the atomic current amount when another SQLite writer settles 
     let settlement: Promise<void> | undefined;
     const snapshot = buildHomeSnapshot({
       sessions: createSessionStore(readerClient.db),
+      projectRoot: HERE,
+      workingDir: HERE,
+      now: () => NOW,
       runs: {
         ...reader,
-        listRuns: (options) => {
-          const rows = reader.listRuns(options);
+        listRunSummaries: (options) => {
+          const rows = reader.listRunSummaries(options);
           const discovered = rows.find((row) => row.id === 'race');
           if (discovered !== undefined) discoveredCost = discovered.totalCostMicrocents;
           return rows;

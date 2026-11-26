@@ -16,11 +16,12 @@ import { createHomeController, type HomeControllerDeps } from './home-controller
 import type { DefinedPort } from './tab-host-workflows.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const ENTER = { return: true } as const;

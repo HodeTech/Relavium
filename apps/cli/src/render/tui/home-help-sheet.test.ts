@@ -30,11 +30,12 @@ import { buildPaletteEntries, filterPaletteEntries } from './palette-entries.js'
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const WITH_SESSION: HomeSnapshot = {
@@ -65,7 +66,6 @@ const EXECUTING: RunHostSnapshot = {
 const WITH_FAILED_RUN: HomeSnapshot = {
   ...EMPTY,
   attention: {
-    gates: [],
     failedRuns: [
       {
         runId: 'failed-run',
@@ -78,6 +78,7 @@ const WITH_FAILED_RUN: HomeSnapshot = {
       },
     ],
   },
+  totals: { attention: 1, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));

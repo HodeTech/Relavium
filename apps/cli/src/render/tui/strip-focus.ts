@@ -9,8 +9,8 @@
  *   session ended) the focus is dropped, back at the prompt, and no other row is moved onto: a refresh must not hand `Enter` to a row the
  *   person did not choose, which can be a different kind of row.
  * - **One list, in the order the strip draws it.** The parked runs of this directory, then the failed runs, then the recent sessions, then the
- *   recent runs. Every row of it can be opened; the rows the strip only displays (an unreadable run, a gate of a run that is not parked
- *   here, an agent) are not in it, so `↑`/`↓` never stop on a row `Enter` has nothing to do with. The strip draws its rows from the same
+ *   recent runs. Every row of it can be opened; the rows the strip only displays (an unreadable run, an agent) are not in it, so `↑`/`↓`
+ *   never stop on a row `Enter` has nothing to do with. The strip draws its rows from the same
  *   list (`home-view.tsx`), so what it shows and what the keys reach come from one place.
  */
 
@@ -49,7 +49,7 @@ export function stripRows(
 ): readonly StripRow[] {
   const rows: StripRow[] = [];
   const seen = new Set<string>();
-  const unreadable = new Set(snapshot.unreadableRunIds);
+  const unreadable = new Set(snapshot.unreadableRuns.map((run) => run.runId));
   const addRun = (id: string, role: 'parked' | 'failed' | 'recent'): void => {
     if (seen.has(id) || unreadable.has(id)) return;
     seen.add(id);

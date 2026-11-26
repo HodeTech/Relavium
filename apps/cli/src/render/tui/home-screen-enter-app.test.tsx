@@ -45,11 +45,12 @@ const failedRun: HomeRunRow = {
   totalCostMicrocents: 0,
 };
 const SNAPSHOT: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [failedRun] },
+  attention: { failedRuns: [failedRun] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 1, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 

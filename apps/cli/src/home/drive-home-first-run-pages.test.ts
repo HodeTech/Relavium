@@ -10,7 +10,7 @@ import { createHomeController } from '../render/tui/home-controller.js';
 import { homeClearForFirstRun } from './drive-home.js';
 
 const BUSY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [
     {
       sessionId: 's1',
@@ -25,7 +25,8 @@ const BUSY: HomeSnapshot = {
   ],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 1, runs: 0 },
   isEmpty: false,
 };
 

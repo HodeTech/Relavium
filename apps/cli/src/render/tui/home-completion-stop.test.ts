@@ -8,11 +8,12 @@ import type { MentionReader } from './mention.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY_HOME: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));

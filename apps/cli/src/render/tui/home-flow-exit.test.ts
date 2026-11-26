@@ -5,11 +5,12 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { createHomeController } from './home-controller.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));

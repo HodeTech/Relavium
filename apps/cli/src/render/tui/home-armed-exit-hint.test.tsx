@@ -28,11 +28,12 @@ const sessionRow = (n: number): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 const SESSIONS: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [sessionRow(1)],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 1, runs: 0 },
   isEmpty: false,
 };
 

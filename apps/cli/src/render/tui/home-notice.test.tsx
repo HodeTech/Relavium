@@ -8,7 +8,7 @@ import { RootApp } from './home-app.js';
 import { MAX_HOME_NOTICE_CHARS, layoutHomeNotice } from './home-notice.js';
 
 const snapshot: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: Array.from({ length: 8 }, (_, n) => ({
     sessionId: `saved-${n}`,
     title: `Saved conversation ${n}`,
@@ -21,7 +21,11 @@ const snapshot: HomeSnapshot = {
   })),
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${n}`),
+  unreadableRuns: Array.from({ length: 50 }, (_, n) => ({
+    runId: `run-${n}`,
+    reason: 'corrupt-row' as const,
+  })),
+  totals: { attention: 50, sessions: 8, runs: 0 },
   isEmpty: false,
 };
 // A long report the Home's notice holds whole (the notice wraps and pages any long sentence the same way). Put there through the controller's

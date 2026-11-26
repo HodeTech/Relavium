@@ -1187,7 +1187,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     const snap = props.controller.getSnapshot().snapshot;
     expect(snap.isEmpty).toBe(true);
-    expect(snap.attention.gates).toEqual([]);
+    expect(snap.attention.failedRuns).toEqual([]);
+    expect(snap.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1195,11 +1196,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('reconciles a crashed run BEFORE the first strip read (2.6.G liveness, #229)', async () => {
-    // A run whose process died: `run:started` is durable, there is no terminal and no lease.
+    // A run whose process died: `run:started` is durable, there is no terminal and no lease. It was started in this Home's directory
+    // (the Home lists this directory's runs only, MVP-11 unit 7).
     const runs = createRunHistoryStore(client.db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
       workflow: { slug: 'crashed', name: 'crashed', definitionJson: '{}' },
+      projectRoot: cwd,
     });
     const runId = randomUUID();
     await runs.persistEvent(
@@ -2804,6 +2807,14 @@ workflow:
       });
       expect(historyOf(props)?.detail?.read?.model.header.runId).toBe(runId);
       expect(historyOf(props)?.detail?.read?.terminalHeld, 'the outbox is empty').toBe(false);
+      // The wired-but-dead fields of the detail's `r`: the loader is told the Home's directory (the run was recorded under it, so it reads
+      // `here`), and the detail carries the slug the run was recorded under, the key `r` finds its workflow by. Without the directory the
+      // detail says nothing of where the run was started and `r` refuses every run; each read of one in isolation would still pass.
+      expect(
+        historyOf(props)?.detail?.read?.directory,
+        'the Home told the loader its directory',
+      ).toBe('here');
+      expect(historyOf(props)?.detail?.read?.workflowSlug).toBe('wf');
 
       props.controller.handleKey('', { escape: true }); // back to the list
       props.controller.handleKey('', { escape: true }); // the screen closes

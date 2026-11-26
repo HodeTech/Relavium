@@ -29,11 +29,12 @@ import {
 import { INLINE_TRANSCRIPT_BOUND, type TranscriptEntry } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const homeStore: HomeStore = { read: () => EMPTY };

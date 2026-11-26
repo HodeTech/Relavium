@@ -20,11 +20,12 @@ import { createHomeController, type HomeController } from './home-controller.js'
 import { SHEET_SETTLE_MS, sheetEntries } from './permissions-sheet.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 

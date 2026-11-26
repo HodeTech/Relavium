@@ -17,11 +17,12 @@ import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 
 const RUN = '3f2a9c1e-7b64-4d0a-9c11-5a2e8f6d0b13';
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const EXECUTING: RunHostSnapshot = {

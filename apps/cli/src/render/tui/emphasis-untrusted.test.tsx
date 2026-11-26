@@ -104,7 +104,6 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
         page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
           attention: {
-            gates: [],
             failedRuns: [
               {
                 runId: 'run-1',
@@ -121,7 +120,8 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 1, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}

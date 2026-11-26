@@ -550,7 +550,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
     view: props,
     page,
     canContinue,
-    counts: canContinue ? workCounts(snapshot, parked) : NOTHING_TO_COUNT,
+    counts: canContinue ? workCounts(snapshot) : NOTHING_TO_COUNT,
     runCanBeShown: hostedRunCanBeShown(props.hostedRun),
     // dispatch trims, so a line with blanks before its slash is a command too
     slashDraft: editor.text.trimStart().startsWith('/'),

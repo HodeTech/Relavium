@@ -198,7 +198,7 @@ it('the card of the command a Home-hosted chat asks about names the directory fr
   });
 });
 
-it('the strip of the Home the host mounts names each session’s directory from the project or the home, and whole where it is outside both', async () => {
+it('the strip of the Home the host mounts lists this directory’s sessions only, naming the directory from the project; the others are `/resume`’s', async () => {
   await withHome(async (host) => {
     expect(host.props.paths, 'the host hands RootApp the roots').toEqual({
       cwd: host.cwd,
@@ -235,14 +235,17 @@ it('the strip of the Home the host mounts names each session’s directory from 
     try {
       // the sessions are the work page's rows (MVP-11 unit 7): down to them
       controller.handleKey('', { downArrow: true });
-      await mount.until(() => rowsOf(mount).includes('~/other'));
+      await mount.until(() => rowsOf(mount).includes('. (project root)'));
       await mount.settle();
       const rows = rowsOf(mount);
+      // The Home lists this directory's work only (MVP-11 unit 7): the chat it hosted is here, named from the project; the sessions of a
+      // directory below it, of the home and of elsewhere are other directories', reachable in `/resume` (the next test), not on the strip.
       expect(rows, mount.frame().join('\n')).toContain('. (project root)');
-      expect(rows).toContain('packages/app');
-      expect(rows).toContain('~/other');
-      expect(rows).toContain('/opt/shared/tools');
+      for (const away of ['packages/app', '~/other', '/opt/shared/tools'])
+        expect(rows, away).not.toContain(away);
+      expect(rows.join('\n')).not.toContain('Strip ');
       expect(rows.join('\n')).not.toContain(host.cwd);
+      expect(controller.getSnapshot().snapshot.totals.sessions).toBe(1);
     } finally {
       mount.unmount();
     }

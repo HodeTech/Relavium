@@ -101,7 +101,7 @@ describe.each(RENDERERS)('a long draft on the Home in the %s renderer', (rendere
           // The rule, the status line and the hint are under the draft and on screen.
           const rule = ruleOf(frame);
           expect(rule).toBeGreaterThan(0);
-          expect(frame[rule + 1]).toContain('next chat:');
+          expect(frame[rule + 1]).toContain('anthropic · claude-haiku-5-5 · ask mode');
           expect(frame.at(-1)).toContain('Enter start the chat');
           // The window says what it hides: one marker above, counting every row it hides (the marker's own row included).
           const markers = draftRows(frame).filter((row) => /more/u.test(row));
@@ -161,7 +161,7 @@ describe.each(RENDERERS)('a long draft on the Home in the %s renderer', (rendere
           const rule = ruleOf(frame);
           // the row above the rule ends the text, and the rule, the status line and the hint are there
           expect(frame[rule - 1]?.trimEnd().endsWith('word')).toBe(true);
-          expect(frame[rule + 1]).toContain('next chat:');
+          expect(frame[rule + 1]).toContain('anthropic · claude-haiku-5-5 · ask mode');
         } finally {
           m.unmount();
         }

@@ -43,10 +43,27 @@ export interface DetailEvent {
   readonly nodeId?: string;
 }
 
+/**
+ * Where a run was started, against the directory the Home is in, as a CLOSED word (never the stored path): `here` (the run's recorded
+ * project is the Home's directory, exactly), `elsewhere` (another recorded project), `unrecorded` (the run recorded none, or an empty one:
+ * unknown is never `here`). It is what decides whether a run may be run again from this Home (MVP-11 unit 7, W4c).
+ */
+export type RunDirectory = 'here' | 'elsewhere' | 'unrecorded';
+
 /** One run's detail, ready to draw. */
 export interface RunDetailRead {
   readonly runId: string;
   readonly status: RunStatus;
+  /**
+   * Where the run was started ({@link RunDirectory}); absent when the read was not told the Home's directory (a test, or a caller that
+   * has none), which says nothing and offers nothing.
+   */
+  readonly directory?: RunDirectory | undefined;
+  /**
+   * The slug the run was recorded under, as a KEY for the catalog to match (`r` runs the workflow of that slug again); never drawn
+   * (the header draws its own scrubbed label). Absent when the workflow was deleted since: the run no longer names a workflow of a project.
+   */
+  readonly workflowSlug?: string | undefined;
   readonly model: RunDetailModel;
   /** The run's end is held in the terminal outbox: it is over, and the page says `held`, never `in progress`. */
   readonly terminalHeld: boolean;
@@ -129,9 +146,27 @@ export interface ReadRunDetailInput {
   readonly heldUnread?: boolean;
   /** The run's frozen workflow snapshot as stored (`runs.workflow_definition_snapshot`); absent when it was not read. */
   readonly snapshotJson?: string | undefined;
+  /**
+   * The directory the Home is in: what the run's recorded project is compared with ({@link RunDetailRead.directory}), exactly as the History
+   * list's `this project` scope compares it. Absent, the detail says nothing of where the run was started.
+   */
+  readonly projectRoot?: string | undefined;
   /** Test seams: the size of a page and the most pages read. */
   readonly eventPage?: number;
   readonly maxPages?: number;
+}
+
+/**
+ * Where a run was started, against the Home's directory: `undefined` when the Home's directory is not known to the read, `unrecorded` for
+ * a run with no project (or an empty one), `here` when the two are the same text (the History list's own comparison), else `elsewhere`.
+ */
+function directoryOf(
+  recorded: string | undefined,
+  home: string | undefined,
+): RunDirectory | undefined {
+  if (home === undefined) return undefined;
+  if (recorded === undefined || recorded === '') return 'unrecorded';
+  return recorded === home ? 'here' : 'elsewhere';
 }
 
 /**
@@ -174,11 +209,14 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
         }),
     terminalHeld,
   });
+  const directory = directoryOf(run.projectRoot, input.projectRoot);
   return {
     kind: 'ready',
     detail: {
       runId,
       status: run.status,
+      ...(directory === undefined ? {} : { directory }),
+      ...(workflowSlug === undefined ? {} : { workflowSlug }),
       model,
       terminalHeld,
       heldUnread: input.heldUnread === true && !finished && !terminalHeld,
@@ -192,6 +230,8 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
 
 export interface RunDetailLoaderDeps {
   readonly reader: RunDetailReader;
+  /** The directory the Home is in ({@link ReadRunDetailInput.projectRoot}): the loader the Home builds is always given it. */
+  readonly projectRoot?: string | undefined;
   /** The events the terminal outbox holds (`createFileTerminalOutbox(...).list`). Rejects when the file cannot be read. */
   readonly listHeld: () => Promise<readonly { readonly runId?: string | undefined }[]>;
   /**
@@ -223,6 +263,13 @@ export function createRunDetailLoader(
     } catch {
       snapshotJson = undefined;
     }
-    return readRunDetail({ reader: deps.reader, runId, terminalHeld, heldUnread, snapshotJson });
+    return readRunDetail({
+      reader: deps.reader,
+      runId,
+      terminalHeld,
+      heldUnread,
+      snapshotJson,
+      projectRoot: deps.projectRoot,
+    });
   };
 }

@@ -38,7 +38,7 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
         resumeChat: resume,
         homeStore: {
           read: () => ({
-            attention: { gates: [], failedRuns: [] },
+            attention: { failedRuns: [] },
             recentSessions: [
               {
                 sessionId: 'saved',
@@ -53,7 +53,8 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
             ],
             recentRuns: [],
             recentAgents: [],
-            unreadableRunIds: [],
+            unreadableRuns: [],
+            totals: { attention: 0, sessions: 1, runs: 0 },
             isEmpty: false,
           }),
         },

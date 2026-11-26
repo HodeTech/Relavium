@@ -36,6 +36,7 @@ import {
   withDefinedNote,
   withHistoryLoad,
   withHistoryLoadFailure,
+  withHistoryNote,
   withSessionsNote,
   type TabEntry,
   type TabHostState,
@@ -2578,16 +2579,33 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the
-   * single start are the flow's own). A run that started is shown at once, `Esc` returns to the tab, and the start is one notification; a
-   * launch that was refused or left says so on the tab's own message row, never in the Home's notice (ADR-0148 §6), and one whose failure the
-   * popup has already said (`''`) adds nothing. A run STARTED is told by {@link launchStartedRun}, as `/run` tells it: a refusal leaves another
-   * leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
+   * A sentence for the person who asked for a run from a tab: the History tab's message row when a run's detail (`r`) asked, which the next key
+   * drops, else the Defined tab's. With another screen in front (or none) it is the landing's notice, as {@link noteOnDefinedTab} says.
+   */
+  const noteOnRunTab = (text: string): void => {
+    const screen = state.screen;
+    if (screen?.kind !== 'tab-host' || screen.host.history === undefined) {
+      noteOnDefinedTab(text);
+      return;
+    }
+    const host = withHistoryNote(screen.host, text);
+    tabMemory = tabHostMemory(host);
+    set({ screen: { kind: 'tab-host', host } });
+  };
+
+  /**
+   * `r` on a Defined row, or `r` on a History run's detail (the same request: the catalog's slug and path of the run's workflow): the launch
+   * flow, started at that workflow (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own, and
+   * the form asks the inputs again: a run's own are never read). A run that started is shown at once, `Esc` returns to the tab, and the start is
+   * one notification; a launch that was refused or left says so on the tab's own message row (the Defined tab's, or the detail's), never in
+   * the Home's notice (ADR-0148 §6), and one whose failure the popup has already said (`''`) adds nothing. A run STARTED is told by
+   * {@link launchStartedRun}, as `/run` tells it: a refusal leaves another leg as it was, and its view is not what `r` asked for, so the
+   * refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
-      noteOnDefinedTab('Running a workflow is unavailable in this session.');
+      noteOnRunTab('Running a workflow is unavailable in this session.');
       return;
     }
     openNativeAction(async () => {
@@ -2596,7 +2614,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (exiting) return;
       set({ ...parkedPatch() });
       if (launchStartedRun(before) && openRunView('tab-host')) deps.announce?.(said);
-      else if (said !== '') noteOnDefinedTab(said);
+      else if (said !== '') noteOnRunTab(said);
     }, 'Run workflow');
   };
 

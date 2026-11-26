@@ -54,12 +54,19 @@ const session = (n: number): HomeSessionRow => ({
 
 /** A Home with something on each strip: a failed run needing attention, two conversations, a finished run and an agent. */
 export const POPULATED_SNAPSHOT: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [run('f1', 'failed', 'ship-it')] },
+  attention: { failedRuns: [run('f1', 'failed', 'ship-it')] },
   recentSessions: [session(1), session(2)],
   recentRuns: [run('r1', 'completed', 'nightly-report')],
   recentAgents: [{ agentSlug: 'reviewer', lastUsedAt: '2026-11-22T00:00:00.000Z' }],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 1, sessions: 2, runs: 1 },
   isEmpty: false,
+};
+
+/** The populated Home with one parked run of this directory too: the store counts it under Attention (its row is the controller's read). */
+const POPULATED_WITH_PARKED: HomeSnapshot = {
+  ...POPULATED_SNAPSHOT,
+  totals: { ...POPULATED_SNAPSHOT.totals, attention: POPULATED_SNAPSHOT.totals.attention + 1 },
 };
 
 /** The run host with nothing running, and with one run executing. */
@@ -147,7 +154,7 @@ export function parkedRunSetup(gates: RunGates, kind: ParkedRunRow['kind']): Hom
     guard: GUARD_OFF,
   };
   return {
-    snapshot: POPULATED_SNAPSHOT,
+    snapshot: POPULATED_WITH_PARKED,
     deps: {
       gateCards,
       hostedRuns: {

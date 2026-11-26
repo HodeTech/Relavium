@@ -48,11 +48,12 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 });
 /** A session and a run: the work page has rows, so `↓` from the landing slides to it and `Esc` slides back. */
 const BUSY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [sessionRow('s1')],
   recentRuns: [runRow('r1')],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 1, runs: 1 },
   isEmpty: false,
 };
 

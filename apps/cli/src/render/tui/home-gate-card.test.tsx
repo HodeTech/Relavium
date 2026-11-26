@@ -55,11 +55,12 @@ async function eventually(predicate: () => boolean, what = 'the condition'): Pro
 }
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -136,9 +137,11 @@ function mount(options: Options = {}) {
     resume,
     guard: options.guard ?? OFF,
   };
+  // The store counts the parked runs it lists (its totals, MVP-11 unit 7), as a real store over the same log would.
+  const counted: HomeSnapshot = { ...EMPTY, totals: { ...EMPTY.totals, attention: rows.length } };
   const real = createHomeController({
     startChat: () => new Promise(() => {}),
-    homeStore: { read: () => options.snapshot ?? EMPTY },
+    homeStore: { read: () => options.snapshot ?? counted },
     hostedRuns: {
       snapshot: () => options.host ?? IDLE,
       cancel: () => false,
@@ -298,24 +301,14 @@ describe('the Attention rows', () => {
   });
 
   it('the strip`s own gate row of the same run is not repeated beside it', async () => {
+    // The store no longer reads gate rows at all (MVP-11 unit 7: every parked run of this directory is the controller's parked row, and
+    // the snapshot only counts it); what stays pinned is that the parked run is ONE row, and its gate's message is the card's alone.
     const m = mount({
       snapshot: {
         ...EMPTY,
         isEmpty: false,
-        attention: {
-          gates: [
-            {
-              runId: RUN,
-              workflowSlug: 'deploy',
-              gateId: 'g1',
-              gateType: 'approval',
-              nodeId: 'review-step',
-              message: 'Ship the release?',
-              expiresAt: undefined,
-            },
-          ],
-          failedRuns: [],
-        },
+        attention: { failedRuns: [] },
+        totals: { attention: 1, sessions: 0, runs: 0 },
       },
     });
     await toWorkPagePrompt(m);

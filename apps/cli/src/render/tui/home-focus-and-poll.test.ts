@@ -22,11 +22,12 @@ import { createHomeController, STRIP_REFRESH_MS, type HomeController } from './h
 
 const RUN = 'run-0001';
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 const SESSION: HomeSnapshot = {
@@ -43,6 +44,7 @@ const SESSION: HomeSnapshot = {
       totalCostMicrocents: 0,
     },
   ],
+  totals: { attention: 0, sessions: 1, runs: 0 },
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
 const executing = (runId: string): RunHostSnapshot => ({

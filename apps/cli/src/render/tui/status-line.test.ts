@@ -50,16 +50,17 @@ const QUALIFIED: ChatStatusInput = {
 };
 
 describe('the Home status line: its words', () => {
-  it('says the defaults are for the next chat, then the directory after a gap of three spaces', () => {
+  it('says the defaults as `<provider> · <model> · <mode> mode` with no label before them, then the directory after a gap of three spaces', () => {
     expect(statusLine(HOME, 120)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   ~/acme-web',
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   ~/acme-web',
       cut: [],
     });
+    expect(statusLine(HOME, 120).text).not.toContain('next chat');
   });
 
   it('keeps the effort inside the group of defaults, before the gap', () => {
     expect(statusLine({ ...HOME, effort: 'high' }, 120).text).toBe(
-      'next chat: anthropic · claude-sonnet-4-6 · ask mode · effort high   ~/acme-web',
+      'anthropic · claude-sonnet-4-6 · ask mode · effort high   ~/acme-web',
     );
   });
 
@@ -77,9 +78,7 @@ describe('the Home status line: its words', () => {
       mode: 'ask',
       directory: '~/acme-web',
     };
-    expect(statusLine(input, 120).text).toBe(
-      'next chat: claude-sonnet-4-6 · ask mode   ~/acme-web',
-    );
+    expect(statusLine(input, 120).text).toBe('claude-sonnet-4-6 · ask mode   ~/acme-web');
   });
 
   it('leaves the model and its separator out when the model is unknown', () => {
@@ -89,10 +88,10 @@ describe('the Home status line: its words', () => {
       mode: 'ask',
       directory: '~/acme-web',
     };
-    expect(statusLine(input, 120).text).toBe('next chat: anthropic · ask mode   ~/acme-web');
+    expect(statusLine(input, 120).text).toBe('anthropic · ask mode   ~/acme-web');
   });
 
-  it('drops the "next chat:" label too when there is neither a provider nor a model, and says nothing about a model', () => {
+  it('says nothing about a model when there is neither a provider nor a model: the line is the mode word, then the directory', () => {
     const input: HomeStatusInput = { surface: 'home', mode: 'ask', directory: '~/acme-web' };
     expect(statusLine(input, 120).text).toBe('ask mode   ~/acme-web');
     expect(statusLine({ ...input, effort: 'high' }, 120).text).toBe(
@@ -107,114 +106,107 @@ describe('the Home status line: its words', () => {
 
   it('draws no gap and no directory when there is no directory', () => {
     expect(statusLine({ ...HOME, directory: '' }, 120).text).toBe(
-      'next chat: anthropic · claude-sonnet-4-6 · ask mode',
+      'anthropic · claude-sonnet-4-6 · ask mode',
     );
   });
 });
 
 describe('the Home status line: what goes first, one step at a time', () => {
-  it('fits the line exactly at its budget and cuts nothing: 70 columns hold 64', () => {
-    expect(statusLine(HOME, 70)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   ~/acme-web',
+  // The line has no label before the defaults, so every budget below is the one the line had with the label less its 11 columns (`next chat: `):
+  // the same part is cut at the same step.
+  it('fits the line exactly at its budget and cuts nothing: 59 columns hold 53', () => {
+    expect(statusLine(HOME, 59)).toEqual({
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   ~/acme-web',
       cut: [],
     });
+    expect(displayWidth(statusLine(HOME, 59).text)).toBe(budgetOf(59));
   });
 
   it('cuts the DIRECTORY first, its leading names becoming … and the last name staying whole', () => {
-    expect(statusLine(DEEP, 80)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   …/acme/web-frontend',
+    expect(statusLine(DEEP, 69)).toEqual({
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   …/acme/web-frontend',
       cut: ['directory'],
     });
-    expect(statusLine(DEEP, 74)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   …/web-frontend',
+    expect(statusLine(DEEP, 63)).toEqual({
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   …/web-frontend',
       cut: ['directory'],
     });
   });
 
   it('keeps the directory whole while it fits and cuts it as soon as one column is missing', () => {
-    expect(statusLine({ ...HOME, directory: '~/work/acme' }, 71)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   ~/work/acme',
+    expect(statusLine({ ...HOME, directory: '~/work/acme' }, 60)).toEqual({
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   ~/work/acme',
       cut: [],
     });
-    expect(statusLine({ ...HOME, directory: '~/work/acme' }, 70)).toEqual({
-      text: 'next chat: anthropic · claude-sonnet-4-6 · ask mode   …/acme',
+    expect(statusLine({ ...HOME, directory: '~/work/acme' }, 59)).toEqual({
+      text: 'anthropic · claude-sonnet-4-6 · ask mode   …/acme',
       cut: ['directory'],
     });
   });
 
   it('cuts the MODEL id in its middle only after the directory is down to …/<last>, and keeps both ends', () => {
-    expect(statusLine(DEEP, 72)).toEqual({
-      text: 'next chat: anthropic · claude-sonn…4-6 · ask mode   …/web-frontend',
+    expect(statusLine(DEEP, 61)).toEqual({
+      text: 'anthropic · claude-sonn…4-6 · ask mode   …/web-frontend',
       cut: ['directory', 'model'],
     });
-    expect(statusLine(DEEP, 69).text).toBe(
-      'next chat: anthropic · claude-so…-6 · ask mode   …/web-frontend',
-    );
+    expect(statusLine(DEEP, 58).text).toBe('anthropic · claude-so…-6 · ask mode   …/web-frontend');
   });
 
   it('cuts the model alone when the directory has nothing left to give', () => {
-    expect(statusLine(HOME, 69)).toEqual({
-      text: 'next chat: anthropic · claude-sonne…4-6 · ask mode   ~/acme-web',
+    expect(statusLine(HOME, 58)).toEqual({
+      text: 'anthropic · claude-sonne…4-6 · ask mode   ~/acme-web',
       cut: ['model'],
     });
-    expect(statusLine(HOME, 68).text).toBe(
-      'next chat: anthropic · claude-sonn…4-6 · ask mode   ~/acme-web',
-    );
+    expect(statusLine(HOME, 57).text).toBe('anthropic · claude-sonn…4-6 · ask mode   ~/acme-web');
   });
 
   it('cuts the PROVIDER at its end only after the model is down to its 12-column floor', () => {
-    expect(statusLine(DEEP, 66)).toEqual({
-      text: 'next chat: anthr… · claude-so…-6 · ask mode   …/web-frontend',
+    expect(statusLine(DEEP, 55)).toEqual({
+      text: 'anthr… · claude-so…-6 · ask mode   …/web-frontend',
       cut: ['directory', 'model', 'provider'],
     });
-    expect(statusLine(DEEP, 62).text).toBe(
-      'next chat: a… · claude-so…-6 · ask mode   …/web-frontend',
-    );
+    expect(statusLine(DEEP, 51).text).toBe('a… · claude-so…-6 · ask mode   …/web-frontend');
   });
 
   it('does not report the model cut while the model is already at or under its floor', () => {
     const short = statusLine(
       { ...HOME, model: 'haiku', directory: '~/a/very/deep/folder/name/here' },
-      50,
+      39,
     );
     expect(short).toEqual({
-      text: 'next chat: anth… · haiku · ask mode   …/here',
+      text: 'anth… · haiku · ask mode   …/here',
       cut: ['directory', 'provider'],
     });
   });
 
   it('cuts the directory BY CHARACTERS only as the last resort, when the last name is wider than the rest can spare', () => {
-    expect(statusLine(EFFORT, 80)).toEqual({
-      text: 'next chat: anthr… · claude-so…-6 · ask mode · effort high   …/web-frontend',
+    expect(statusLine(EFFORT, 69)).toEqual({
+      text: 'anthr… · claude-so…-6 · ask mode · effort high   …/web-frontend',
       cut: ['directory', 'model', 'provider'],
     });
-    expect(statusLine(EFFORT, 75).text).toBe(
-      'next chat: a… · claude-so…-6 · ask mode · effort high   …web-frontend',
+    expect(statusLine(EFFORT, 64).text).toBe(
+      'a… · claude-so…-6 · ask mode · effort high   …web-frontend',
     );
-    expect(statusLine(EFFORT, 70).text).toBe(
-      'next chat: a… · claude-so…-6 · ask mode · effort high   …rontend',
+    expect(statusLine(EFFORT, 59).text).toBe(
+      'a… · claude-so…-6 · ask mode · effort high   …rontend',
     );
   });
 
   it('drops a directory that would be a lone … or a letter or two, and the gap with it', () => {
-    expect(statusLine(EFFORT, 64).text).toBe(
-      'next chat: a… · claude-so…-6 · ask mode · effort high',
-    );
-    expect(statusLine(EFFORT, 60).text).toBe(
-      'next chat: a… · claude-so…-6 · ask mode · effort high',
-    );
+    expect(statusLine(EFFORT, 53).text).toBe('a… · claude-so…-6 · ask mode · effort high');
+    expect(statusLine(EFFORT, 49).text).toBe('a… · claude-so…-6 · ask mode · effort high');
   });
 
   it('reports each part once, in the order it was given up', () => {
-    expect(statusLine(EFFORT, 62).cut).toEqual(['directory', 'model', 'provider']);
+    expect(statusLine(EFFORT, 51).cut).toEqual(['directory', 'model', 'provider']);
   });
 
   it('flips the budget at 100 columns: the margin is 6 below it and 8 from it', () => {
-    const wide: HomeStatusInput = { ...EFFORT, directory: `~/${'a'.repeat(22)}` };
+    const wide: HomeStatusInput = { ...EFFORT, directory: `~/${'a'.repeat(33)}` };
     const fits = statusLine(wide, 100);
     expect(displayWidth(fits.text)).toBe(92);
     expect(fits.cut).toEqual([]);
-    const over: HomeStatusInput = { ...EFFORT, directory: `~/${'a'.repeat(23)}` };
+    const over: HomeStatusInput = { ...EFFORT, directory: `~/${'a'.repeat(34)}` };
     expect(statusLine(over, 99).cut).toEqual([]);
     expect(displayWidth(statusLine(over, 99).text)).toBe(93);
     expect(statusLine(over, 100).cut).toContain('model');
@@ -238,8 +230,8 @@ describe('the Home status line: mode and effort are never cut', () => {
     }
   });
 
-  it('fits the budget from 70 columns up and, below, only ever overflows by the parts that are never cut', () => {
-    for (let columns = 70; columns <= 200; columns += 1) {
+  it('fits the budget from 59 columns up and, below, only ever overflows by the parts that are never cut', () => {
+    for (let columns = 59; columns <= 200; columns += 1) {
       expect(displayWidth(statusLine(crowded, columns).text), String(columns)).toBeLessThanOrEqual(
         budgetOf(columns),
       );
@@ -248,8 +240,8 @@ describe('the Home status line: mode and effort are never cut', () => {
 
   it('cuts the model to its floor and the provider to its floor before it gives up a column of the mode', () => {
     const { text } = statusLine(crowded, 50);
-    const [label, ...rest] = text.split(' · ');
-    expect(label).toBe('next chat: a…');
+    const [provider, ...rest] = text.split(' · ');
+    expect(provider).toBe('a…');
     expect(rest[0]).toHaveLength(MODEL_FLOOR);
     expect(displayWidth('a…')).toBe(PROVIDER_FLOOR);
   });
@@ -489,7 +481,7 @@ describe('hostile values in the status line', () => {
     ).text;
     expect(directory).toContain('~/ab');
     const provider = statusLine({ ...HOME, provider: `any${isolate}thing${nul}` }, 120).text;
-    expect(provider).toContain('next chat: anything · ');
+    expect(provider.startsWith('anything · claude-sonnet-4-6 · ')).toBe(true);
     for (const text of [directory, provider]) {
       for (const character of hostile) expect(text.includes(character)).toBe(false);
     }
@@ -497,7 +489,7 @@ describe('hostile values in the status line', () => {
 
   it('makes a " · " inside a value inert, so it adds no separator of the line', () => {
     const home = statusLine({ ...HOME, model: 'claude · evil', directory: '~/a · b' }, 120).text;
-    expect(home).toBe('next chat: anthropic · claude - evil · ask mode   ~/a - b');
+    expect(home).toBe('anthropic · claude - evil · ask mode   ~/a - b');
     expect(home.split(' · ')).toHaveLength(3);
     const chat = statusLine(
       { ...CHAT, provider: 'a · b', cost: { full: '$1 · $2', short: '$1', qualified: false } },
@@ -508,7 +500,7 @@ describe('hostile values in the status line', () => {
 
   it('scrubs the mode word on both surfaces, and a mode that is nothing once scrubbed leaves only the directory', () => {
     expect(statusLine({ ...HOME, mode: 'a · b' }, 120).text).toBe(
-      'next chat: anthropic · claude-sonnet-4-6 · a - b mode   ~/acme-web',
+      'anthropic · claude-sonnet-4-6 · a - b mode   ~/acme-web',
     );
     expect(statusLine({ ...CHAT, mode: 'a · b' }, 120).text).toContain(' · a - b mode · ');
     const bidi = String.fromCharCode(0x202e);
@@ -525,16 +517,16 @@ describe('hostile values in the status line', () => {
 
   it('keeps the ellipsis the directory label itself starts with, and folds one inside a value into three dots', () => {
     expect(statusLine({ ...HOME, directory: '…/app' }, 120).text).toBe(
-      'next chat: anthropic · claude-sonnet-4-6 · ask mode   …/app',
+      'anthropic · claude-sonnet-4-6 · ask mode   …/app',
     );
     expect(statusLine({ ...HOME, model: 'a…b', directory: '~/x…y' }, 120).text).toBe(
-      'next chat: anthropic · a...b · ask mode   ~/x...y',
+      'anthropic · a...b · ask mode   ~/x...y',
     );
   });
 
-  it('keeps a 300-character directory inside the budget at every width from 60 to 200, with the mode whole', () => {
+  it('keeps a 300-character directory inside the budget at every width from 49 to 200, with the mode whole', () => {
     const input: HomeStatusInput = { ...HOME, effort: 'high', directory: `~/${'x'.repeat(300)}` };
-    for (let columns = 60; columns <= 200; columns += 1) {
+    for (let columns = 49; columns <= 200; columns += 1) {
       const { text } = statusLine(input, columns);
       expect(displayWidth(text), String(columns)).toBeLessThanOrEqual(budgetOf(columns));
       expect(text, String(columns)).toContain(' · ask mode · effort high');
@@ -563,7 +555,7 @@ describe('hostile values in the status line', () => {
       model: '模型模型模型模型模型模型模型模型',
       directory: '~/项目/客户端应用程序/前端项目/网站',
     };
-    for (let columns = 60; columns <= 200; columns += 1) {
+    for (let columns = 49; columns <= 200; columns += 1) {
       const { text } = statusLine(cjk, columns);
       expect(displayWidth(text), String(columns)).toBeLessThanOrEqual(budgetOf(columns));
     }
@@ -590,12 +582,15 @@ describe('the status line at every width', () => {
     { ...CHAT, mode: 'auto', effort: 'high' },
   ];
 
-  it('never exceeds its budget from 60 columns up, and never loses the mode word, from 20 to 200', () => {
+  it('never exceeds its budget from 49 columns up on the Home and 60 in a chat, and never loses the mode word, from 20 to 200', () => {
+    // The Home's line is 11 columns shorter than it was with its label, so it has its floors from 49 columns where a chat has them from 60.
+    const fitsFrom = (input: HomeStatusInput | ChatStatusInput): number =>
+      input.surface === 'home' ? 49 : 60;
     for (const input of inputs) {
       for (let columns = 20; columns <= 200; columns += 1) {
         const { text } = statusLine(input, columns);
         expect(text, `${input.surface} ${String(columns)}`).toContain(`${input.mode} mode`);
-        if (columns >= 60) {
+        if (columns >= fitsFrom(input)) {
           expect(displayWidth(text), `${input.surface} ${String(columns)}`).toBeLessThanOrEqual(
             budgetOf(columns),
           );
@@ -619,7 +614,7 @@ describe('the status line at every width', () => {
 
   it('does not throw for a width that is not a number: it keeps the mode and cuts everything else to its floor', () => {
     expect(statusLine(EFFORT, Number.NaN)).toEqual({
-      text: 'next chat: a… · claude-so…-6 · ask mode · effort high',
+      text: 'a… · claude-so…-6 · ask mode · effort high',
       cut: ['directory', 'model', 'provider'],
     });
     // A chat has a last resort the Home has not (SE7-2): with no room at all it is the mode word alone, never a line wider than its budget.

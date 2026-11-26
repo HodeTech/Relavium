@@ -3,7 +3,6 @@ import type { ReactElement, ReactNode, RefObject } from 'react';
 
 import type {
   HomeAgentRow,
-  HomeGateRow,
   HomeRunRow,
   HomeSessionRow,
   HomeSnapshot,
@@ -41,8 +40,6 @@ import {
 import {
   agentLabel,
   exitGuardLines,
-  gateExpired,
-  gateLabel,
   runLabel,
   sessionLabel,
   unreadableRunLabel,
@@ -66,7 +63,7 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
  *
  * - the way back, dim (`↑ start page`), and a blank row;
  * - the strip's sections as the Home has always built them ("Attention required": the parked runs of this project, the runs whose log cannot be
- *   read, the gates of other runs, the failed runs; then "Continue": the sessions with their directories, the runs, the agents), windowed to the
+ *   read, the failed runs; then "Continue": the sessions with their directories, the runs, the agents; all of them this directory's), windowed to the
  *   rows the page leaves them so the focused row is always one of the rows drawn;
  * - a notice, when there is one, with a blank row above it;
  * - the block at the bottom: the DOCKED PROMPT (a blank row, the prompt with its invitation, the thin rule, the status line, the hint), or, while
@@ -144,11 +141,6 @@ interface SectionsInput {
 export interface SectionsModel {
   readonly parkedRows: readonly (StripRow & { readonly overdue: boolean })[];
   readonly unreadable: readonly StripRow[];
-  readonly gateRows: readonly {
-    readonly key: string;
-    readonly line: string;
-    readonly expired: boolean;
-  }[];
   readonly failed: readonly StripRow[];
   readonly sessions: readonly StripRow[];
   readonly runs: readonly StripRow[];
@@ -156,8 +148,7 @@ export interface SectionsModel {
 }
 
 /**
- * The strip's rows for `budget` rows. The Attention rows come first (the parked runs, the unreadable runs, the gates of other runs, the failed
- * runs) and leave the Continue sections their least (a session's four rows when there is one); each window follows the focus so the focused
+ * The strip's rows for `budget` rows. The Attention rows come first (the parked runs, the unreadable runs, the failed runs) and leave the Continue sections their least (a session's four rows when there is one); each window follows the focus so the focused
  * row is drawn; the sessions take two rows each (the title and the directory) and leave a focused recent run its section's title and row.
  */
 export function buildSections(input: SectionsInput): SectionsModel {
@@ -184,15 +175,6 @@ function scrubbedRun(row: HomeRunRow): HomeRunRow {
     ...row,
     runId: flowLine(row.runId),
     workflowSlug: row.workflowSlug === undefined ? undefined : flowLine(row.workflowSlug),
-  };
-}
-/** A gate row with its drawn text scrubbed (its type is a closed word). */
-function scrubbedGate(row: HomeGateRow): HomeGateRow {
-  return {
-    ...row,
-    runId: flowLine(row.runId),
-    workflowSlug: row.workflowSlug === undefined ? undefined : flowLine(row.workflowSlug),
-    message: flowLine(row.message),
   };
 }
 /** An agent row with its name scrubbed. */
@@ -227,19 +209,12 @@ function sectionsIn(input: SectionsInput): SectionsModel {
     selected: runFocused(row.runId),
     overdue: parkedRunOverdue(row, nowMs),
   }));
-  const unreadable = takeAttention(snapshot.unreadableRunIds, UNREADABLE_ROWS_SHOWN).map(
-    (runId) => ({
+  const unreadable = takeAttention(snapshot.unreadableRuns, UNREADABLE_ROWS_SHOWN).map(
+    ({ runId }) => ({
       key: `unreadable-${runId}`,
       line: `${glyph('warning')} ${unreadableRunLabel(flowLine(runId))}`,
     }),
   );
-  const gateRows = takeAttention(
-    snapshot.attention.gates.filter((g) => !parkedIds.has(g.runId)),
-  ).map((g) => ({
-    key: `${g.runId}:${g.gateId}`,
-    line: `${glyph('warning')} ${gateLabel(scrubbedGate(g), nowMs)}`,
-    expired: gateExpired(g, nowMs),
-  }));
   attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
   const failedStart = Math.max(0, failedFocusIndex - attentionRemaining + 1);
   const failed = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map((r) => ({
@@ -247,7 +222,7 @@ function sectionsIn(input: SectionsInput): SectionsModel {
     line: `${glyph('failed')} ${runLabel(scrubbedRun(r), nowMs)}`,
     selected: runFocused(r.runId),
   }));
-  const attentionCount = parkedRows.length + unreadable.length + gateRows.length + failed.length;
+  const attentionCount = parkedRows.length + unreadable.length + failed.length;
   // the heading and the blank row under the section
   if (attentionCount > 0) remaining -= attentionCount + 2;
   let continueHeading = false;
@@ -293,7 +268,7 @@ function sectionsIn(input: SectionsInput): SectionsModel {
     key: a.agentSlug,
     line: agentLabel(scrubbedAgent(a), nowMs),
   }));
-  return { parkedRows, unreadable, gateRows, failed, sessions, runs, agents };
+  return { parkedRows, unreadable, failed, sessions, runs, agents };
 }
 
 /** The Attention section: its heading in the warning colour, its rows, and the blank row under it. */
@@ -301,14 +276,7 @@ function AttentionSection(
   props: Readonly<{ model: SectionsModel; color: boolean }>,
 ): ReactElement | null {
   const { model, color } = props;
-  if (
-    model.parkedRows.length +
-      model.unreadable.length +
-      model.gateRows.length +
-      model.failed.length ===
-    0
-  )
-    return null;
+  if (model.parkedRows.length + model.unreadable.length + model.failed.length === 0) return null;
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
@@ -329,16 +297,6 @@ function AttentionSection(
           <Text key={row.key} {...colorProps(color, 'red')} wrap="truncate-end">
             {'  '}
             {row.line}
-          </Text>
-        ))}
-        {model.gateRows.map((g) => (
-          <Text
-            key={g.key}
-            {...colorProps(color, g.expired ? 'red' : 'yellow')}
-            wrap="truncate-end"
-          >
-            {'  '}
-            {g.line}
           </Text>
         ))}
         {model.failed.map((f) => (

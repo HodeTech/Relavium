@@ -29,11 +29,12 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const FIRST: HomeStatusFacts = {
@@ -298,15 +299,15 @@ describe('the status line as the Home draws it', () => {
     return plain(rows[rule + 1] ?? '');
   };
 
-  it('says what the next chat will use and where it works: `next chat:` first, the directory plainly after a gap', () => {
+  it('says what the next chat will use and where it works: provider, model and mode with no label, the directory plainly after a gap', () => {
     expect(statusRow(frameOf(FIRST)).trim()).toBe(
-      'next chat: anthropic · claude-haiku-5-5 · ask mode   ~/acme-web',
+      'anthropic · claude-haiku-5-5 · ask mode   ~/acme-web',
     );
     expect(
       statusRow(
         frameOf({ ...FIRST, mode: 'auto', effort: 'high' }, { cols: 100, rows: 30 }),
       ).trim(),
-    ).toBe('next chat: anthropic · claude-haiku-5-5 · auto mode · effort high   ~/acme-web');
+    ).toBe('anthropic · claude-haiku-5-5 · auto mode · effort high   ~/acme-web');
   });
 
   it('draws a provider, a model and a directory that are hostile as text and nothing else, in one row inside the width', () => {

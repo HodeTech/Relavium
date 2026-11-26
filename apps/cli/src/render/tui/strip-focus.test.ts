@@ -135,11 +135,12 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
   });
   const parked = (runId: string): ParkedRunRow => ({ runId, kind: 'approval', gates: 1 });
   const snapshot = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-    attention: { gates: [], failedRuns: [] },
+    attention: { failedRuns: [] },
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 0, runs: 0 },
     isEmpty: false,
     ...over,
   });
@@ -148,7 +149,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1'), parked('p2')],
       snapshot({
-        attention: { gates: [], failedRuns: [runRow('f1', 'failed')] },
+        attention: { failedRuns: [runRow('f1', 'failed')] },
         recentSessions: [sessionRow('s1'), sessionRow('s2')],
         recentRuns: [runRow('r1', 'completed'), runRow('r2', 'running')],
       }),
@@ -171,32 +172,19 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1')],
       snapshot({
-        attention: { gates: [], failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
+        attention: { failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
         recentRuns: [runRow('p1', 'paused'), runRow('r1', 'completed')],
-        unreadableRunIds: ['u1'],
+        unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
     );
     expect(rows.map((row) => row.id)).toEqual(['p1', 'f1', 'r1']);
   });
 
-  it('has no row for the strip rows that only display: a gate of a run that is not parked here, an agent', () => {
+  it('has no row for the strip rows that only display: an unreadable run, an agent', () => {
     const rows = stripRows(
       [],
       snapshot({
-        attention: {
-          gates: [
-            {
-              runId: 'elsewhere',
-              workflowSlug: 'wf',
-              gateId: 'g',
-              gateType: 'approval',
-              nodeId: 'n',
-              message: 'm',
-              expiresAt: undefined,
-            },
-          ],
-          failedRuns: [],
-        },
+        unreadableRuns: [{ runId: 'u1', reason: 'newer-version' }],
         recentAgents: [{ agentSlug: 'coder', lastUsedAt: '2026-11-23T00:00:00.000Z' }],
       }),
     );

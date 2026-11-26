@@ -35,7 +35,7 @@ const DOWN = { downArrow: true } as const;
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 const snapshotWith = (sessions: number): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: Array.from({ length: sessions }, (_, index) => ({
     sessionId: `saved-${String(index)}`,
     title: `Saved conversation ${String(index)}`,
@@ -48,7 +48,8 @@ const snapshotWith = (sessions: number): HomeSnapshot => ({
   })),
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions, runs: 0 },
   isEmpty: sessions === 0,
 });
 

@@ -41,11 +41,12 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 });
 /** Two sessions: the work page's first row is a session `Enter` resumes. */
 const SESSIONS: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [sessionRow('s1'), sessionRow('s2')],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 2, runs: 0 },
   isEmpty: false,
 };
 

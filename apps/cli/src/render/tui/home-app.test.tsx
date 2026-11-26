@@ -65,11 +65,12 @@ const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
 const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const homeStore: HomeStore = { read: () => EMPTY };
@@ -932,7 +933,7 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
  */
 describe('RootApp — the Home landing and its title', () => {
   const BUSY: HomeSnapshot = {
-    attention: { gates: [], failedRuns: [] },
+    attention: { failedRuns: [] },
     recentSessions: [
       {
         workingDir: '/workspace',
@@ -947,7 +948,8 @@ describe('RootApp — the Home landing and its title', () => {
     ],
     recentRuns: [],
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 1, runs: 0 },
     isEmpty: false,
   };
 

@@ -613,9 +613,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const homeStore = createHomeStore({
       sessions: opened.store,
       runs: runReader,
-      // A run of another project is marked `other project` in the strip (the same project root the Defined and History tabs use).
+      // The Home lists THIS directory only (MVP-11 unit 7): its runs by the project root a run records (the root the parked rows, the
+      // Defined and the History tabs use), its sessions by the canonical workspace a chat records, the directory `/resume` calls "this
+      // directory". Another directory's work stays in `/resume` (Tab) and `/history`.
       projectRoot: deps.global.cwd,
-      homeDir: deps.homeDir,
+      workingDir: fsPolicyWorkspace(fsPolicy),
+      // The failed-run window's clock (a failed run is under Attention for seven days).
+      now,
     });
 
     // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the
@@ -1999,6 +2003,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           reader: runReader,
           listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
           loadSnapshot: frozenSnapshot,
+          // Where a run was started, against this directory: what `r` on the detail needs to run it again (the list's own `this project`).
+          projectRoot: deps.global.cwd,
         }),
         loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
       };

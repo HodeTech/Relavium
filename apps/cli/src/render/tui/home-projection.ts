@@ -1,6 +1,5 @@
 import type {
   HomeAgentRow,
-  HomeGateRow,
   HomeRunRow,
   HomeSessionRow,
   HomeSnapshot,
@@ -43,11 +42,6 @@ export function expiryLabel(expiresAt: string | undefined, nowMs: number): strin
   return `expires ${formatTimeUntil(deadlineMs - nowMs)}`;
 }
 
-/** Whether a gate's deadline is already past — the renderer escalates an overdue gate from yellow to red. */
-export function gateExpired(row: HomeGateRow, nowMs: number): boolean {
-  return expiryLabel(row.expiresAt, nowMs) === 'expired';
-}
-
 const SEP = '  ·  ';
 
 /** A recent session row → its glanceable line: title · agent · when · cost. An UNTITLED session shows the agent
@@ -65,10 +59,7 @@ export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
     .join(SEP);
 }
 
-/** What the strip says after the cost of a run recorded for another project: it lists runs of every directory, and such a run opens read-only. */
-export const OTHER_PROJECT_MARK = 'other project';
-
-/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost [· other project]. */
+/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost. Every run the strip lists is this directory's. */
 export function runLabel(row: HomeRunRow, nowMs: number): string {
   const name = row.workflowSlug ?? shortId(row.runId);
   const anchor = row.status === 'running' ? row.startedAt : (row.completedAt ?? row.startedAt);
@@ -77,7 +68,6 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     row.status,
     formatAgeOfIso(anchor ?? row.createdAt, nowMs),
     formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls),
-    ...(row.project === undefined ? [] : [OTHER_PROJECT_MARK]),
   ]
     .filter((s) => s.trim().length > 0)
     .join(SEP);
@@ -90,20 +80,6 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
  */
 export function unreadableRunLabel(runId: string): string {
   return `${shortId(runId)}${SEP}event log unreadable${SEP}gate detail unavailable`;
-}
-
-/** A pending-gate row → workflow (or short id) · gateType · message · expiry-urgency. */
-export function gateLabel(row: HomeGateRow, nowMs: number): string {
-  const name = row.workflowSlug ?? shortId(row.runId);
-  const expiry = expiryLabel(row.expiresAt, nowMs);
-  return [
-    name,
-    row.gateType,
-    sanitizeInline(row.message),
-    ...(expiry === undefined ? [] : [expiry]),
-  ]
-    .filter((s) => s.trim().length > 0) // a whitespace-only (sanitized) gate message must not dangle a separator
-    .join(SEP);
 }
 
 /** A recently-used agent → slug · when last used. */

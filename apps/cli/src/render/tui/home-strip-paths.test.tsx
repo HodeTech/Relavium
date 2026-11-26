@@ -32,11 +32,12 @@ const session = (n: number, workingDir: string) => ({
 });
 
 const snapshotOf = (...dirs: readonly string[]): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: dirs.map((dir, index) => session(index, dir)),
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: dirs.length, runs: 0 },
   isEmpty: false,
 });
 

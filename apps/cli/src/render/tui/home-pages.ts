@@ -191,8 +191,9 @@ export function reducePageKey(key: PageKey, state: PageKeyState): PageKeyOutcome
 // ---- The indicator and the hints ----------------------------------------------------------------------------------------------
 
 /**
- * What the work page lists, counted as it lists it: the rows under "Attention required" (the parked runs of this project, the runs whose log
- * cannot be read, the gates of runs not parked here, the failed runs), the recent sessions, and the recent runs that are not parked here.
+ * What the work page holds, counted TRULY (MVP-11 unit 7: the snapshot's `totals`, never the rows loaded): under "Attention required" every
+ * parked run of this directory, every failed run of the window and every run whose log cannot be read, each run once; this directory's
+ * sessions; and its runs that are not under Attention.
  */
 export interface WorkCounts {
   readonly attention: number;
@@ -204,24 +205,15 @@ export interface WorkCounts {
 export const UNREADABLE_ROWS_SHOWN = 3;
 
 /**
- * {@link WorkCounts} of a snapshot and the parked runs of this project, counted exactly as the work page lists them: a run with a parked row is
- * not counted again among the gates or the recent runs, and at most {@link UNREADABLE_ROWS_SHOWN} unreadable runs are listed. The agents are not
- * counted: an agent is listed because a session ran it, so a Home with agents always has sessions to count.
+ * {@link WorkCounts} of a snapshot: this directory's true totals (`HomeSnapshot.totals`), each run counted once by the store (a parked run is
+ * not also a run, an unreadable run is one Attention item), however many rows a list loaded or a section draws. The agents are not counted:
+ * an agent is listed because a session ran it, so a Home with agents always has sessions to count.
  */
-export function workCounts(
-  snapshot: Pick<HomeSnapshot, 'attention' | 'recentSessions' | 'recentRuns' | 'unreadableRunIds'>,
-  parked: readonly { readonly runId: string }[],
-): WorkCounts {
-  const parkedIds = new Set(parked.map((row) => row.runId));
-  const gates = snapshot.attention.gates.filter((gate) => !parkedIds.has(gate.runId)).length;
+export function workCounts(snapshot: Pick<HomeSnapshot, 'totals'>): WorkCounts {
   return {
-    attention:
-      parked.length +
-      Math.min(UNREADABLE_ROWS_SHOWN, snapshot.unreadableRunIds.length) +
-      gates +
-      snapshot.attention.failedRuns.length,
-    sessions: snapshot.recentSessions.length,
-    runs: snapshot.recentRuns.filter((run) => !parkedIds.has(run.runId)).length,
+    attention: snapshot.totals.attention,
+    sessions: snapshot.totals.sessions,
+    runs: snapshot.totals.runs,
   };
 }
 

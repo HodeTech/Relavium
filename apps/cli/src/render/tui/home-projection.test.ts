@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HomeGateRow, HomeRunRow, HomeSessionRow } from '../../home/home-store.js';
+import type { HomeRunRow, HomeSessionRow } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import {
   agentLabel,
   EXIT_GUARD_GLYPH,
   exitGuardLines,
   expiryLabel,
-  gateExpired,
-  gateLabel,
   homeFitsTerminal,
   hostedRunIsLive,
   hostedRunLabel,
@@ -175,16 +173,10 @@ describe('row labels', () => {
     );
   });
 
-  it('runLabel: a run recorded for another project says so after its cost, and a run of this one does not', () => {
+  it('runLabel: a paused run anchors on startedAt and carries no project marker (every run the Home lists is this directory’s)', () => {
     const paused = runRow({ status: 'paused', startedAt: ago(1 * HR), completedAt: undefined });
-    expect(runLabel(paused, NOW), 'same project (or none recorded): no marker').toBe(
-      'deploy  ·  paused  ·  1h ago  ·  free',
-    );
-    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).toBe(
-      'deploy  ·  paused  ·  1h ago  ·  free  ·  other project',
-    );
-    // The marker is a fixed phrase: the other project's root is data and never reaches the line.
-    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).not.toContain('other-app');
+    expect(runLabel(paused, NOW)).toBe('deploy  ·  paused  ·  1h ago  ·  free');
+    expect(runLabel(paused, NOW)).not.toContain('other project');
   });
 
   it('runLabel: a RUNNING run anchors on startedAt (not completedAt/createdAt)', () => {
@@ -200,40 +192,6 @@ describe('row labels', () => {
       completedAt: undefined,
     });
     expect(runLabel(run, NOW)).toBe('deploy  ·  pending  ·  3m ago  ·  free');
-  });
-
-  it('gateLabel: workflow · gateType · message · expiry urgency; sanitizes the message', () => {
-    const gate: HomeGateRow = {
-      runId: 'r1',
-      workflowSlug: 'deploy',
-      gateId: 'g1',
-      gateType: 'approval',
-      nodeId: 'g',
-      message: 'ship\x1b[0m it?',
-      expiresAt: ahead(5 * MIN),
-    };
-    expect(gateLabel(gate, NOW)).toBe('deploy  ·  approval  ·  ship it?  ·  expires in 5m');
-    // A free-form gate message with a newline must NOT forge a second row in the one-line Attention strip.
-    const injected = gateLabel({ ...gate, message: 'Approve?\nFAKE PROMPT:' }, NOW);
-    expect(injected).not.toMatch(/[\n\t]/);
-    expect(injected).not.toContain('\x1b');
-    expect(injected).toContain('Approve? FAKE PROMPT:');
-  });
-
-  it('gateLabel + gateExpired flag an overdue gate (the renderer escalates it yellow → red)', () => {
-    const base: HomeGateRow = {
-      runId: 'r1',
-      workflowSlug: 'deploy',
-      gateId: 'g1',
-      gateType: 'approval',
-      nodeId: 'g',
-      message: 'ship it?',
-      expiresAt: ago(MIN), // a minute past its deadline
-    };
-    expect(gateLabel(base, NOW)).toBe('deploy  ·  approval  ·  ship it?  ·  expired');
-    expect(gateExpired(base, NOW)).toBe(true);
-    expect(gateExpired({ ...base, expiresAt: ahead(5 * MIN) }, NOW)).toBe(false); // still has time
-    expect(gateExpired({ ...base, expiresAt: undefined }, NOW)).toBe(false); // no deadline ⇒ not overdue
   });
 
   it('agentLabel: slug · last used', () => {

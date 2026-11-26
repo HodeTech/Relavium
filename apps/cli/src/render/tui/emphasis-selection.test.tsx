@@ -176,11 +176,12 @@ describe('the Home’s strip', () => {
       <HomeView
         page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 1, sessions: 0, runs: 0 },
           isEmpty: false,
         }}
         editor={{ text: '', cursor: 0 }}

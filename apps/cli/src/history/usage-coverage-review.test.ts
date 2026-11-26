@@ -84,6 +84,8 @@ describe('W8 review: actual persisted usage projections', () => {
         const store = createRunHistoryStore(client.db, {
           uuid: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
           now: () => Date.parse(timestamp),
+          // The Home lists the runs of the directory it was opened in (MVP-11 unit 7).
+          projectRoot: process.cwd(),
           workflow: {
             slug: workflow.workflow.id,
             name: workflow.workflow.id,
@@ -195,6 +197,9 @@ describe('W8 review: actual persisted usage projections', () => {
         const home = buildHomeSnapshot({
           sessions: createSessionStore(client.db),
           runs: createRunHistoryReader(client.db),
+          projectRoot: process.cwd(),
+          workingDir: process.cwd(),
+          now: () => Date.parse(timestamp),
         });
         expect(home.recentRuns).toContainEqual(
           expect.objectContaining({

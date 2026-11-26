@@ -26,11 +26,12 @@ import { tagStyles } from './legend-golden/frames.js';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const FACTS: HomeStatusFacts = {
@@ -39,7 +40,7 @@ const FACTS: HomeStatusFacts = {
   mode: 'ask',
   directory: '~/acme-web',
 };
-const STATUS_TEXT = 'next chat: anthropic · claude-haiku-5-5 · ask mode   ~/acme-web';
+const STATUS_TEXT = 'anthropic · claude-haiku-5-5 · ask mode   ~/acme-web';
 
 // eslint-disable-next-line no-control-regex -- the escape that starts a styling sequence
 const SGR = /\u001b\[[0-9;]*m/gu;
@@ -296,7 +297,7 @@ describe('the keyless landing: the status line is the call to connect, in the ac
         'No provider key yet · Enter connect · /providers',
       );
       expect(rows.join('\n'), 'the status line is replaced, not repeated').not.toContain(
-        'next chat:',
+        'claude-haiku-5-5',
       );
       expect(rows[14]?.trim(), 'the hint keeps its keyless words').toBe(
         'Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)',

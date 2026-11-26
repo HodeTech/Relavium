@@ -2,6 +2,7 @@ import {
   agentSessions,
   createClient,
   createRunHistoryReader,
+  createSessionStore,
   runMigrations,
   runs,
   sessionMessages,
@@ -225,6 +226,72 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
     const plan = planOfRead(() => reader.loadRunLeases(['run-1', 'run-2', 'run-3']));
     expect(plan.join('\n')).toContain('USING INDEX sqlite_autoindex_run_leases_1 (run_id=?)');
     expect(plan.join('\n')).not.toMatch(/SCAN run_leases/u);
+  });
+
+  // --- the Home reads THIS directory, with true totals (MVP-11 unit 7) -------------------------------------------------------
+  // The real reader's and the real session store's statements, planned as issued (as the browsers' reads above are).
+
+  it('the Home’s lists of this directory are served off the directory indexes with no filesort', () => {
+    const reader = createRunHistoryReader(client.db);
+    // The Runs section: this project's runs that are not under Attention (no paused run, no failed run inside the window). The two
+    // exclusions are residual filters on the project's own ordered range, so the newest rows come first without a sort.
+    expectIndexServedNoFilesort(
+      planOfRead(() =>
+        reader.listRunSummaries({
+          limit: 16,
+          projectRoot: '/work/p1',
+          exceptStatus: 'paused',
+          failedOnlyBefore: 1_000,
+        }),
+      ),
+      'runs',
+      'idx_runs_project_created',
+    );
+    // The failed runs inside the window: the lower bound is a RANGE on the same index, not a filter after it.
+    const failed = planOfRead(() =>
+      reader.listRunSummaries({
+        limit: 16,
+        projectRoot: '/work/p1',
+        status: 'failed',
+        since: 1_000,
+      }),
+    );
+    expectIndexServedNoFilesort(failed, 'runs', 'idx_runs_project_created');
+    expect(failed.join('\n')).toContain('created_at>?');
+    const sessions = createSessionStore(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => sessions.listSessions({ limit: 8, workingDir: '/work/p1' })),
+      'agent_sessions',
+      'idx_agent_sessions_working_dir_updated',
+    );
+  });
+
+  it('the Home’s totals are index-served counts of this directory, never a table scan', () => {
+    const reader = createRunHistoryReader(client.db);
+    // All of the project's runs, its paused runs (Attention), and its Runs section: the project's own range of its index.
+    for (const filter of [
+      { projectRoot: '/work/p1' },
+      { projectRoot: '/work/p1', status: 'paused' as const },
+      { projectRoot: '/work/p1', exceptStatus: 'paused' as const, failedOnlyBefore: 1_000 },
+    ]) {
+      const plan = planOfRead(() => reader.countRunSummaries(filter));
+      expectIndexServedNoFilesort(plan, 'runs', 'idx_runs_project_created');
+      expect(plan.join('\n'), JSON.stringify(filter)).toContain('(project_root=?');
+    }
+    // The failed runs inside the window: SQLite reads the status index's range of the window (`status=? AND created_at>?`) and checks
+    // the project on each row, the narrower of the two ranges for a window of days. Pinned as chosen, so a change of plan is seen.
+    const failedInWindow = planOfRead(() =>
+      reader.countRunSummaries({ projectRoot: '/work/p1', status: 'failed', since: 1_000 }),
+    );
+    expectIndexServedNoFilesort(failedInWindow, 'runs', 'idx_runs_status');
+    expect(failedInWindow.join('\n')).toContain('created_at>?');
+    // The sessions of this directory.
+    const sessions = createSessionStore(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => sessions.countSessions({ workingDir: '/work/p1' })),
+      'agent_sessions',
+      'idx_agent_sessions_working_dir_updated',
+    );
   });
 
   it('listStepSummaries and loadStepDetail are served off the step_executions indexes', () => {

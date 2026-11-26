@@ -165,12 +165,17 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
 
     // A write through the Home's own connection moves neither half of the token (`PRAGMA data_version` ignores its own connection and
     // nothing bumped the generation): the tick finds the token where the Home read it, and reads nothing.
+    // (Each run is recorded for the directory the Home was opened in: the Home lists this directory's runs only, MVP-11 unit 7.)
     await seedRun(client.db, { slug: 'wf', runId: 'own-write', state: 'completed' });
+    client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, 'own-write');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS * 3);
     expect(home.runIds(), 'the token did not move, so the strip was not read').toEqual([]);
 
     // Another terminal commits: `PRAGMA data_version` moves, and the next tick reads the strip (all of it, the own write too).
     await seedRun(other.db, { slug: 'wf', runId: 'another-terminal', state: 'completed' });
+    other.sqlite
+      .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+      .run(root, 'another-terminal');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS);
     expect(new Set(home.runIds())).toEqual(new Set(['own-write', 'another-terminal']));
 
@@ -178,8 +183,8 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
   });
 });
 
-describe('driveHome tells the store which project this Home is, so a run of another project says so', () => {
-  it('marks a paused run recorded for another project `other project` in the Continue strip, and a run of this project not', async () => {
+describe('driveHome tells the store which directory this Home is, so it lists that directory’s work only', () => {
+  it('lists a run of this directory, and neither a run recorded for another directory nor one that recorded none, in any list or count', async () => {
     const elsewhere = join(operatorHome, 'code', 'other-app');
     const home = await mountHome(async () => {
       await seedRun(client.db, { slug: 'wf', runId: 'this-project', state: 'completed' });
@@ -188,23 +193,17 @@ describe('driveHome tells the store which project this Home is, so a run of anot
       const record = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
       record.run(root, 'this-project'); // the directory the Home was opened in (`global.cwd`)
       record.run(elsewhere, 'other-project');
-      // `no-project` recorded none: unknown is not another project
+      // `no-project` recorded none: unknown is not this directory
     });
-    expect(new Set(home.runIds())).toEqual(
-      new Set(['this-project', 'other-project', 'no-project']),
+    expect(home.runIds()).toEqual(['this-project']);
+    const snapshot = home.props.controller.getSnapshot().snapshot;
+    expect(snapshot.totals).toEqual({ attention: 0, sessions: 0, runs: 1 });
+    expect(snapshot.unreadableRuns).toEqual([]);
+    expect(snapshot.attention.failedRuns).toEqual([]);
+    const own = home.row('this-project');
+    expect(own === undefined ? 'missing' : runLabel(own, Date.now())).not.toContain(
+      'other project',
     );
-    const now = Date.now();
-
-    const other = home.row('other-project');
-    expect(other?.project, 'the root as the store shortens it under the home directory').toMatch(
-      /^~[\\/]code[\\/]other-app$/u,
-    );
-    expect(other === undefined ? '' : runLabel(other, now)).toContain('other project');
-    for (const id of ['this-project', 'no-project']) {
-      const own = home.row(id);
-      expect(own?.project, `${id} is not marked`).toBeUndefined();
-      expect(own === undefined ? 'missing' : runLabel(own, now)).not.toContain('other project');
-    }
     expect(await home.leave()).toBe(0);
   });
 });

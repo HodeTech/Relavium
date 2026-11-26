@@ -20,11 +20,12 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const RUNNING: RunHostSnapshot = {

@@ -339,11 +339,12 @@ describe('the Home adopts what the /resume frame came to only after the frame ha
       startChat: () => Promise.resolve(open),
       homeStore: {
         read: () => ({
-          attention: { gates: [], failedRuns: [] },
+          attention: { failedRuns: [] },
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }),
       },

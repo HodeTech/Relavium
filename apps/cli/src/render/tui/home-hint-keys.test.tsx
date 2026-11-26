@@ -42,13 +42,15 @@ const runRow = (id: string): HomeRunRow => ({
   completedAt: '2026-11-23T00:00:00.000Z',
   totalCostMicrocents: 0,
 });
-const snapshotOf = (over: { sessions?: number; runs?: number }): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
+/** A snapshot of this directory; `parked` is how many parked runs the store counts (the controller's parked rows are a separate read). */
+const snapshotOf = (over: { sessions?: number; runs?: number; parked?: number }): HomeSnapshot => ({
+  attention: { failedRuns: [] },
   recentSessions: Array.from({ length: over.sessions ?? 0 }, (_, index) => sessionRow(index + 1)),
   recentRuns: Array.from({ length: over.runs ?? 0 }, (_, index) => runRow(String(index + 1))),
   recentAgents: [],
-  unreadableRunIds: [],
-  isEmpty: over.sessions === undefined && over.runs === undefined,
+  unreadableRuns: [],
+  totals: { attention: over.parked ?? 0, sessions: over.sessions ?? 0, runs: over.runs ?? 0 },
+  isEmpty: over.sessions === undefined && over.runs === undefined && (over.parked ?? 0) === 0,
 });
 
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -92,7 +94,12 @@ function rig(options: {
   const exits = vi.fn();
   const controller = createHomeController({
     startChat: options.startChat ?? (() => new Promise(() => {})),
-    homeStore: { read: () => options.snapshot ?? snapshotOf({}) },
+    // A parked run is counted by the store too (the totals): a Home that lists one says so on its landing.
+    homeStore: {
+      read: () =>
+        options.snapshot ??
+        snapshotOf(options.parked === undefined ? {} : { parked: options.parked.length }),
+    },
     hostedRuns: {
       snapshot: () => options.host ?? IDLE,
       cancel: () => true,

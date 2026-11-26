@@ -17,11 +17,12 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  * passed the whole suite. A new file (`chat/repl-info.test.ts` belongs to the permanent workload pin).
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const ENTER = { return: true } as const;

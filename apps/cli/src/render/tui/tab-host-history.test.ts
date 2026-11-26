@@ -361,8 +361,8 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(text).toContain('✓ completed  build');
     expect(text).toContain('Events (3)');
     expect(text).toContain('#0  node:started build');
-    expect(text, 'no run is changed here, and p says that it only marks one').toContain(
-      'No run is changed here; [p] only marks one.',
+    expect(text, 'this run is not changed, and p says that it only marks it').toContain(
+      'This run is not changed; [p] only marks it.',
     );
   });
 

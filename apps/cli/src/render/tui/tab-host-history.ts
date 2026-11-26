@@ -47,6 +47,7 @@ import {
   moreBelowText,
 } from './sheet-frame.js';
 import { glyph, glyphWithWord, statusCell } from './glyphs.js';
+import { decideRunAgain, runAgainOffered } from './run-again.js';
 import {
   NODE_FAULT,
   NODE_KEYS,
@@ -67,6 +68,7 @@ import {
   type PinPort,
   type PinToggle,
 } from './tab-host-pin.js';
+import type { DefinedPort } from './tab-host-workflows.js';
 import { displayWidth } from './viewport.js';
 
 /**
@@ -90,7 +92,13 @@ import { displayWidth } from './viewport.js';
  *   held in the outbox says `held`, never `in progress`. The table lists the nodes that ran in the order they ran, then the nodes of the run's
  *   frozen workflow that have no record (`history/run-detail-source.ts`). `Enter` on a node row opens the node page (`tab-host-node.ts`, read
  *   now through {@link HistoryPort.loadNode}); `n` puts the cursor on the first node whose LAST attempt failed; `p` pins or unpins the run by
- *   the list's own toggle and reads the list again behind the detail; a sentence a key leaves is dropped by the next.
+ *   the list's own toggle and reads the list again behind the detail; `r` runs the run's workflow again (below); a sentence a key leaves is
+ *   dropped by the next.
+ * - **`r` on the detail runs the workflow again** (MVP-11 unit 7). It changes no run: it asks the host for the Defined tab's own `run` request
+ *   (the catalog's slug and the path it was listed from), and the host opens the launch flow, whose form asks the inputs AGAIN (a run's inputs
+ *   are never kept for reuse, ADR-0113, and this module never reads them), whose `Ctrl+Y` is the only start. It is a key of the ready detail
+ *   alone (not a list row, not the node page, not a detail that is loading or missing); the decision and its refusal lines are `run-again.ts`'s,
+ *   said on the detail's own message row.
  * - **Every state has a glyph and a word.** `✓ completed`, `✗ failed`, `⊘ cancelled`, `◐ running`, `◇ held`, `? missing`, `★ pinned`;
  *   colour only repeats what the words say. A run whose log cannot be read keeps its own status glyph and word, and says `unreadable` in
  *   the cost slot only.
@@ -115,6 +123,8 @@ export interface HistoryPort extends HistorySource {
 export interface HistoryContext {
   readonly history: HistoryPort;
   readonly pins: PinPort | undefined;
+  /** The catalog `r` on a detail looks the run's workflow up in (the Defined tab's own port); none, and `r` says the workflows cannot be listed. */
+  readonly defined?: DefinedPort | undefined;
 }
 
 /** What the tab remembers of its position while the screen lives: the scope, the filter and the run the cursor was on. */
@@ -158,10 +168,19 @@ export interface HistoryTabState {
   readonly detail?: HistoryDetailState | undefined;
 }
 
-/** What a key does on the tab: become another state, or ask the host to load one run's detail. */
+/**
+ * What a key does on the tab: become another state, ask the host to load one run's detail, or ask it to run the detail's workflow again (the
+ * Defined tab's own `run` request: the catalog entry's slug and the path it was listed from, see `run-again.ts`).
+ */
 export type HistoryStep =
   | { readonly kind: 'state'; readonly state: HistoryTabState }
-  | { readonly kind: 'open-detail'; readonly runId: string; readonly state: HistoryTabState };
+  | { readonly kind: 'open-detail'; readonly runId: string; readonly state: HistoryTabState }
+  | {
+      readonly kind: 'run';
+      readonly slug: string;
+      readonly path: string;
+      readonly state: HistoryTabState;
+    };
 
 /** The keys the History tab's legend names that are its own. The test presses every one of them. */
 export const HISTORY_KEYS = {
@@ -182,6 +201,8 @@ export const HISTORY_KEYS = {
   firstFailed: NODE_KEYS.firstFailed,
   /** On a run's detail `Esc` goes back to the list: one level (ADR-0145 §2, Step). The list's `Esc` is the host's. */
   back: exitKey.step(),
+  /** On a run's detail of this directory: the run's workflow again, through the launch flow's own form. Named only where `r` answers. */
+  run: { keys: 'r', verb: 'run again' },
 } as const satisfies Readonly<Record<string, LegendKey>>;
 
 export const HISTORY_UNREADABLE = 'The run history could not be read.';
@@ -195,6 +216,16 @@ export const HISTORY_HINT_MORE = `Newest first. ${keyToken('Enter')} opens a run
 /** What a page with no finished run says when the next page may hold some. */
 export const HISTORY_EMPTY_PAGE = `No finished run on this page. ${keyToken('↓')} reads the next page.`;
 export const HISTORY_LOADING = 'Reading the run…';
+/**
+ * The line under a run's detail where `r` is not available: the run is not changed, and `p` only marks it. (It said "No run is changed
+ * here", which stopped being true as a statement about the screen once `r` could start another run from it.)
+ */
+export const HISTORY_DETAIL_HINT = `This run is not changed; ${keyToken('p')} only marks it.`;
+/**
+ * The same line where `r` is available. The legend at the 80-column floor has no room for `Enter open` beside `[r] run again`, so this line
+ * names the way into a node; it is 68 columns, and a sentence a key leaves takes its row.
+ */
+export const HISTORY_DETAIL_HINT_AGAIN = `This run is not changed. ${keyToken('Enter')} opens a node; ${keyToken('r')} opens the run form.`;
 export const HISTORY_DETAIL_MISSING = `That run is not in the history any more. ${keyToken('Esc')} goes back.`;
 export const HISTORY_DETAIL_UNREADABLE =
   'The event log of this run could not be read. relavium logs shows what is wrong with it.';
@@ -407,6 +438,16 @@ export function withHistoryMessage(state: HistoryTabState, message: string): His
 }
 
 /**
+ * `state` with a sentence from the host the next key drops, where the person is looking: the run's detail when one is open (the launch the
+ * detail's `r` asked for says its word there), else the list's own row.
+ */
+export function withHistoryNotice(state: HistoryTabState, message: string): HistoryTabState {
+  return state.detail === undefined
+    ? withHistoryMessage(state, message)
+    : { ...state, detail: { ...state.detail, message } };
+}
+
+/**
  * The detail the host loaded, handed in. It lands only on the detail it was asked for and still waits for (a result for a run the person
  * has left, or already answered, changes nothing): the same object then.
  */
@@ -516,6 +557,27 @@ function scrolledTo(cursor: number, last: number, key: ChatKey): number | undefi
   return key.end === true ? clamp(last, last) : undefined;
 }
 
+/**
+ * `p` (pin), `n` (the first failed node) and `r` (run the workflow again) on a ready detail, by the bare letter; `undefined` for any other key.
+ * `r` asks for nothing of the run: {@link decideRunAgain} reads the two facts the detail already holds and the catalog, and the answer is the
+ * host's `run` request or the line that says why it makes none, on the detail's own message row.
+ */
+function foldDetailLetter(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  read: RunDetailRead,
+  letter: string,
+  context: HistoryContext,
+): HistoryStep | undefined {
+  if (letter === 'p') return { kind: 'state', state: pinDetail(state, detail, context) };
+  if (letter === 'n') return { kind: 'state', state: jumpToFirstFailed(state, detail, read) };
+  if (letter !== 'r') return undefined;
+  const decision = decideRunAgain(read, context.defined);
+  if (decision.kind === 'refused')
+    return { kind: 'state', state: withDetailMessage(state, detail, decision.message) };
+  return { kind: 'run', slug: decision.slug, path: decision.path, state };
+}
+
 function foldDetailKey(
   state: HistoryTabState,
   detail: HistoryDetailState,
@@ -535,9 +597,8 @@ function foldDetailKey(
     detail.message === undefined ? detail : { ...detail, message: undefined };
   const held: HistoryTabState = cleared === detail ? state : { ...state, detail: cleared };
   // A bare letter is the same key with Caps Lock on.
-  const letter = input.toLowerCase();
-  if (letter === 'p') return { kind: 'state', state: pinDetail(held, cleared, context) };
-  if (letter === 'n') return { kind: 'state', state: jumpToFirstFailed(held, cleared, read) };
+  const lettered = foldDetailLetter(held, cleared, read, input.toLowerCase(), context);
+  if (lettered !== undefined) return lettered;
   if (key.return === true) return { kind: 'state', state: openNode(held, cleared, read, context) };
   const to = scrolledTo(detail.cursor, detailLineCount(read) - 1, key);
   return to === undefined || to === cleared.cursor
@@ -1196,12 +1257,10 @@ function detailBody(
     { start, end, total },
     width,
   );
+  const hint = runAgainOffered(read) ? HISTORY_DETAIL_HINT_AGAIN : HISTORY_DETAIL_HINT;
   const footer: SheetLine =
     detail.message === undefined
-      ? {
-          kind: 'hint',
-          text: clipLine(`No run is changed here; ${keyToken('p')} only marks one.`, width),
-        }
+      ? { kind: 'hint', text: clipLine(hint, width) }
       : { kind: 'notice', text: clipLine(detail.message, width) };
   return [...lines, footer];
 }
@@ -1220,7 +1279,11 @@ export function historyBody(
 /** The legend's own items after the tab item, with the cycle item between them when the whole fits the floor (see {@link historyLegendItems}). */
 type NamedLegend = (...rest: readonly LegendItem[]) => readonly LegendItem[];
 
-/** The detail's legend: the node page's own, nothing but the way back while the detail is not ready, or the scroll, open, first-failed and pin keys. */
+/**
+ * The detail's legend: the node page's own, nothing but the way back while the detail is not ready, or the scroll, open, first-failed and pin
+ * keys. Where `r` answers it is named last before the way out, and `Enter open` makes the room for it: with both the legend is 89 columns and
+ * the 80-column floor has 78 (the way out is never cut), without `Enter open` it is 76. The line under the detail names `Enter` there.
+ */
 function detailLegendItems(
   detail: HistoryDetailState,
   named: NamedLegend,
@@ -1232,6 +1295,8 @@ function detailLegendItems(
   }
   // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
   if (detail.phase !== 'ready') return named();
+  if (detail.read !== undefined && runAgainOffered(detail.read))
+    return named(HISTORY_KEYS.scroll, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin, HISTORY_KEYS.run);
   return named(HISTORY_KEYS.scroll, HISTORY_KEYS.open, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin);
 }
 

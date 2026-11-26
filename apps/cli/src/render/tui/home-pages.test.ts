@@ -252,11 +252,12 @@ describe('reducePageKey: every key in every state', () => {
 // ---- The indicator ----------------------------------------------------------------------------------------------------------
 
 const snapshotOf = (over: Partial<HomeSnapshot> = {}): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
+  attention: { failedRuns: [] },
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: false,
   ...over,
 });
@@ -269,15 +270,6 @@ const run = (id: string) => ({
   completedAt: undefined,
   totalCostMicrocents: 0,
 });
-const gate = (runId: string) => ({
-  runId,
-  workflowSlug: 'wf',
-  gateId: 'g',
-  gateType: 'approval' as const,
-  nodeId: 'n',
-  message: 'm',
-  expiresAt: undefined,
-});
 const session = (id: string) => ({
   sessionId: id,
   workingDir: '/w',
@@ -289,21 +281,23 @@ const session = (id: string) => ({
   totalCostMicrocents: 0,
 });
 
-describe('the indicator counts exactly what the work page lists', () => {
-  it('counts the Attention rows: parked runs, unreadable runs (at most three), gates of runs not parked here, failed runs', () => {
+describe('the indicator says the true totals of this directory (MVP-11 unit 7)', () => {
+  it("counts the snapshot's totals, never the rows a list loaded or a section draws", () => {
+    // Two failed rows, five unreadable runs, two sessions and two runs are LOADED; the store counted 40 under Attention (32 parked runs
+    // among them), 12 sessions and 9 runs. The indicator says the store's numbers.
     const snapshot = snapshotOf({
-      attention: { gates: [gate('parked-1'), gate('other')], failedRuns: [run('f1'), run('f2')] },
-      unreadableRunIds: ['u1', 'u2', 'u3', 'u4', 'u5'],
+      attention: { failedRuns: [run('f1'), run('f2')] },
+      unreadableRuns: ['u1', 'u2', 'u3', 'u4', 'u5'].map((runId) => ({
+        runId,
+        reason: 'corrupt-row' as const,
+      })),
       recentSessions: [session('s1'), session('s2')],
-      recentRuns: [run('parked-1'), run('r1')],
+      recentRuns: [run('r1'), run('r2')],
+      totals: { attention: 40, sessions: 12, runs: 9 },
     });
-    expect(workCounts(snapshot, [{ runId: 'parked-1' }])).toEqual({
-      // 1 parked + 3 unreadable + 1 gate (the parked run's gate is its row) + 2 failed
-      attention: 1 + UNREADABLE_ROWS_SHOWN + 1 + 2,
-      sessions: 2,
-      // the parked run is not counted again among the recent runs
-      runs: 1,
-    });
+    expect(workCounts(snapshot)).toEqual({ attention: 40, sessions: 12, runs: 9 });
+    // More unreadable runs than the section lists (UNREADABLE_ROWS_SHOWN) are still each counted.
+    expect(snapshot.unreadableRuns.length).toBeGreaterThan(UNREADABLE_ROWS_SHOWN);
   });
 
   it('says `1 needs you` for one and `2 need you` for two', () => {

@@ -74,11 +74,12 @@ function draw(
 }
 
 const SMALL: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [runRow('f1', 'failed')] },
+  attention: { failedRuns: [runRow('f1', 'failed')] },
   recentSessions: [sessionRow(1)],
   recentRuns: [runRow('r1', 'completed')],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 1, sessions: 1, runs: 1 },
   isEmpty: false,
 };
 
@@ -121,27 +122,11 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   it('a run whose log could not be read is not a row the focus names: its row stays a display row', () => {
     const snapshot: HomeSnapshot = {
       ...SMALL,
-      attention: { gates: [], failedRuns: [runRow('u1', 'failed')] },
-      unreadableRunIds: ['run-u1'],
+      attention: { failedRuns: [runRow('u1', 'failed')] },
+      unreadableRuns: [{ runId: 'run-u1', reason: 'corrupt-row' }],
     };
     expect(stripRows([], snapshot).map((row) => row.id)).toEqual(['session-1', 'run-r1']);
     expect(draw(snapshot, [], undefined)).toContain('event log unreadable');
-  });
-});
-
-describe('a run recorded for another project says so on its Continue row', () => {
-  const snapshot = (project: string | undefined): HomeSnapshot => ({
-    ...SMALL,
-    attention: { gates: [], failedRuns: [] },
-    recentSessions: [],
-    recentRuns: [{ ...runRow('p1', 'paused'), ...(project === undefined ? {} : { project }) }],
-  });
-
-  it('draws `other project` after the cost for a run of another project, and nothing for this one', () => {
-    const other = draw(snapshot('~/code/other-app'), [], undefined);
-    expect(other).toMatch(/wf-p1 {2}· {2}paused .*· {2}other project/u);
-    expect(other).not.toContain('other-app');
-    expect(draw(snapshot(undefined), [], undefined)).not.toContain('other project');
   });
 });
 
@@ -153,13 +138,13 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
   }));
   const full: HomeSnapshot = {
     attention: {
-      gates: [],
       failedRuns: indexes(8).map((n) => runRow(`f${String(n)}`, 'failed')),
     },
     recentSessions: indexes(8).map(sessionRow),
     recentRuns: indexes(8).map((n) => runRow(`r${String(n)}`, 'completed')),
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 16, sessions: 8, runs: 8 },
     isEmpty: false,
   };
   const rows = stripRows(parked, full);
@@ -205,11 +190,12 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     gates: 1,
   }));
   const snapshot: HomeSnapshot = {
-    attention: { gates: [], failedRuns: indexes(2).map((n) => runRow(`f${String(n)}`, 'failed')) },
+    attention: { failedRuns: indexes(2).map((n) => runRow(`f${String(n)}`, 'failed')) },
     recentSessions: indexes(2).map(sessionRow),
     recentRuns: indexes(2).map((n) => runRow(`r${String(n)}`, 'completed')),
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 5, sessions: 2, runs: 2 },
     isEmpty: false,
   };
   const rows = stripRows(parked, snapshot);
@@ -268,11 +254,12 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a failed run and a session',
       {
-        attention: { gates: [], failedRuns: [runRow('f1', 'failed')] },
+        attention: { failedRuns: [runRow('f1', 'failed')] },
         recentSessions: [sessionRow(1)],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 1, sessions: 1, runs: 0 },
         isEmpty: false,
       },
       [],
@@ -280,11 +267,12 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a failed run alone',
       {
-        attention: { gates: [], failedRuns: [runRow('f1', 'failed')] },
+        attention: { failedRuns: [runRow('f1', 'failed')] },
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 1, sessions: 0, runs: 0 },
         isEmpty: false,
       },
       [],
@@ -292,11 +280,12 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a recent run alone',
       {
-        attention: { gates: [], failedRuns: [] },
+        attention: { failedRuns: [] },
         recentSessions: [],
         recentRuns: [runRow('r1', 'completed')],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 1 },
         isEmpty: false,
       },
       [],
@@ -304,11 +293,12 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a session and a recent run',
       {
-        attention: { gates: [], failedRuns: [] },
+        attention: { failedRuns: [] },
         recentSessions: [sessionRow(1)],
         recentRuns: [runRow('r1', 'completed')],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 1, runs: 1 },
         isEmpty: false,
       },
       [],
@@ -317,13 +307,13 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
       'two failed runs, two sessions and two recent runs',
       {
         attention: {
-          gates: [],
           failedRuns: [runRow('f1', 'failed'), runRow('f2', 'failed')],
         },
         recentSessions: [sessionRow(1), sessionRow(2)],
         recentRuns: [runRow('r1', 'completed'), runRow('r2', 'completed')],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 2, sessions: 2, runs: 2 },
         isEmpty: false,
       },
       [],
@@ -387,11 +377,12 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
 
   it('stripReach names what the strip lists that `↓` can focus', () => {
     const none: HomeSnapshot = {
-      attention: { gates: [], failedRuns: [] },
+      attention: { failedRuns: [] },
       recentSessions: [sessionRow(1)],
       recentRuns: [],
       recentAgents: [],
-      unreadableRunIds: [],
+      unreadableRuns: [],
+      totals: { attention: 0, sessions: 0, runs: 0 },
       isEmpty: false,
     };
     expect(stripReach([], none)).toEqual({ hasAttentionRuns: false, hasRecentRuns: false });
@@ -399,14 +390,14 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
       stripReach([{ runId: 'run-p', kind: 'approval', gates: 1 }], none).hasAttentionRuns,
     ).toBe(true);
     expect(
-      stripReach([], { ...none, attention: { gates: [], failedRuns: [runRow('f', 'failed')] } })
+      stripReach([], { ...none, attention: { failedRuns: [runRow('f', 'failed')] } })
         .hasAttentionRuns,
     ).toBe(true);
     expect(
       stripReach([], {
         ...none,
-        attention: { gates: [], failedRuns: [runRow('u', 'failed')] },
-        unreadableRunIds: ['run-u'],
+        attention: { failedRuns: [runRow('u', 'failed')] },
+        unreadableRuns: [{ runId: 'run-u', reason: 'corrupt-row' }],
       }).hasAttentionRuns,
       'an unreadable run is a display row',
     ).toBe(false);
