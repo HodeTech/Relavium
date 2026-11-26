@@ -341,6 +341,14 @@ function refused(reason: HostedRefusal, message: string): HostedLaunch {
   return { kind: 'refused', reason, message };
 }
 
+/** What a start leg throws when the working directory stopped resolving here during its preparation: answered as `directory_changed`. */
+class ProjectDirectoryChangedError extends Error {
+  constructor() {
+    super(PROJECT_DIRECTORY_CHANGED);
+    this.name = 'ProjectDirectoryChangedError';
+  }
+}
+
 /**
  * Wrap the caller's secret port so a blank value never reaches the run core.
  *
@@ -707,7 +715,8 @@ export class RunHost {
    * The refusal for a request made after the working directory stopped resolving to the directory this host answers (round 2 sitting #2,
    * F3): the legs work in {@link #cwd} as it was spelled, so with a link in that spelling repointed a start would read another project's
    * workflow and record its run there, and an answer would load another project's configuration. Asked of the live spelling just before
-   * a leg is registered, as a chat re-validates its pins before each use; `undefined` while it still resolves here.
+   * a leg is registered, as a chat re-validates its pins before each use; `undefined` while it still resolves here. A start asks it again
+   * once its preparation is done, before the engine starts (`#acquireStart`).
    */
   #directoryChanged(): Promise<HostedLaunch> | undefined {
     if (projectRootOf(this.#cwd) === this.#projectRoot) return undefined;
@@ -786,8 +795,11 @@ export class RunHost {
       acquired = await acquire({ lifetime, resources, io, commit: untie });
     } catch (cause) {
       const stopped = lifetime.isStoppedFailure(cause);
-      if (!stopped) lifetime.failure(cause);
+      // The directory that moved during the preparation is the host's own refusal, never a fault of the leg (nothing failed).
+      const moved = cause instanceof ProjectDirectoryChangedError;
+      if (!stopped && !moved) lifetime.failure(cause);
       await this.#release(leg, resources);
+      if (moved) return refused('directory_changed', PROJECT_DIRECTORY_CHANGED);
       if (!stopped) return refused('rejected', this.#faultMessage(cause));
       return refused('stopped', kind === 'resume' ? HOSTED_RESUME_CANCELLED : HOSTED_START_STOPPED);
     } finally {
@@ -1075,6 +1087,9 @@ export class RunHost {
 
   async #acquireStart(request: HostedStartRequest, context: LegContext): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
+    // The root the run core records the run under: `projectRootOf` of this leg's cwd as it resolved when the history was opened, after the
+    // leg's awaits (the secret port, the MCP consent card and connect).
+    let recordedRoot: string | undefined;
     const prepared = await prepareRun(
       {
         workflow: request.workflow,
@@ -1094,8 +1109,10 @@ export class RunHost {
         // The same home a resume loads from, never the OS's: the host is always handed one.
         home: this.#homeDir,
         ...this.#services,
-        openRunStore: (workflow, homeDir, projectRoot) =>
-          this.#historyOverHome(workflow, homeDir, projectRoot),
+        openRunStore: (workflow, homeDir, projectRoot) => {
+          recordedRoot = projectRoot;
+          return this.#historyOverHome(workflow, homeDir, projectRoot);
+        },
       },
       {
         secretInputs: (def) => refuseBlankSecrets(request.secrets, declaredSecretNames(def)),
@@ -1105,6 +1122,14 @@ export class RunHost {
       lifetime,
       resources,
     );
+    // Asked again once the preparation is done, with no await before the engine starts (round 2 sitting #3, finding 5): the check in
+    // `start()` ran before the leg's awaits, and a link in this spelling repointed while they waited would record the run under the other
+    // directory or start it there. The root the run was recorded under and the live one must both still be the Home's.
+    if (
+      (recordedRoot !== undefined && recordedRoot !== this.#projectRoot) ||
+      projectRootOf(this.#cwd) !== this.#projectRoot
+    )
+      throw new ProjectDirectoryChangedError();
     const handle = prepared.start();
     return {
       engine: prepared.engine,

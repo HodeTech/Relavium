@@ -149,7 +149,9 @@ function saysMore(result: StartupDefaultSaveResult): boolean {
 
 /**
  * What the popup ends with once the flow has: the Done step for a write that happened or failed (resolves `undefined`: the popup said it),
- * the one notification of a confirmation declined, or nothing for a popup closed before its confirmation.
+ * the one notification of a confirmation declined, the flow's own sentence as that one notification when it refused before a mode was chosen
+ * (the configuration could not be read: round 2 sitting #3, where the popup said nothing at all), or nothing for a popup closed before its
+ * confirmation.
  */
 async function finish(
   framed: FramedChordFlow,
@@ -158,6 +160,9 @@ async function finish(
 ): Promise<string | undefined> {
   const result = startupDefaultResultOf(seen.said);
   const mode = seen.chosen;
+  // A refusal with no mode chosen has no Done step to name a mode on: its sentence ("Mode settings could not be completed. Startup default
+  // unchanged.") is what the person is told.
+  if (result.kind === 'refused' && mode === undefined) return seen.said;
   if (result.kind === 'unchanged' || mode === undefined)
     return seen.asked ? MODE_UNCHANGED : undefined;
   await framed.done({
@@ -171,7 +176,8 @@ async function finish(
 
 /**
  * Run the bare Home's `/mode` as a popup (see the module header). Resolves with the ONE notification the Home shows (a declined
- * confirmation), or `undefined` when the popup said what happened (its Done step) or was closed before it asked anything. The frame is begun
+ * confirmation, or the flow's refusal before a mode was chosen), or `undefined` when the popup said what happened (its Done step) or was
+ * closed before it asked anything. The frame is begun
  * here and ended here, around every run of the flow, so a step back keeps one box.
  */
 export async function runHomeModeSettings(deps: HomeModeSettingsDeps): Promise<string | undefined> {

@@ -15,8 +15,9 @@ import { commandLine, formatCommandInjection, type ShellCommand } from './shell.
  * the buffer + transcript), each is queued as a compact **pending attachment** shown in a chip bar, and expanded
  * into the shared UNTRUSTED, nonce-fenced frame ({@link injection.ts}) only at SUBMIT — so the model still receives
  * the same unforgeable, bounded context, but the user sees a clean prompt + a `@path` reference / a read-only `!`
- * result. A FILE attachment is referenced inline by its `@path` marker (deleting the marker drops it); a COMMAND
- * attachment is carried context (its output was shown read-only when it ran). Both are TTY-only.
+ * result. A FILE attachment is referenced inline by its `@path` marker (deleting the marker drops it, at that edit:
+ * {@link attachmentsOfDraft}); a COMMAND attachment is carried context (its output was shown read-only when it ran).
+ * Both are TTY-only.
  */
 export type PendingAttachment =
   | {
@@ -51,6 +52,66 @@ export function mentionPresent(line: string, path: string): boolean {
   return false;
 }
 
+/**
+ * The pending attachments `draft` still references: a FILE attachment stays only while its `@path` marker is in the draft as a
+ * whitespace-bounded token ({@link mentionPresent}); a COMMAND attachment has no marker by design (it is carried context, drawn in the
+ * chat's chip bar, cleared by `Esc`) and stays. The ONE rule both surfaces (the Home's prompts and the chat it hosts, and the stand-alone
+ * `ChatApp`) apply after EVERY change to the draft or to the list (MVP-11 unit 7, round 2 sitting #3): an attachment whose marker left the
+ * draft (deleted, cleared, replaced by a command line or a recalled entry) is gone for good, so a marker typed, pasted or recalled later is
+ * plain text and never brings back the content read at an earlier pick. The Home draws no chip bar, so without this a file the person could
+ * no longer see rode the next message that happened to name it. `list` itself when nothing is dropped (callers compare by reference).
+ */
+export function attachmentsOfDraft(
+  draft: string,
+  list: readonly PendingAttachment[],
+): readonly PendingAttachment[] {
+  const kept = list.filter((a) => a.kind === 'command' || mentionPresent(draft, a.path));
+  return kept.length === list.length ? list : kept;
+}
+
+/**
+ * How long an `Enter` that would send is held off after an `Enter` chose a file in the `@` picker: the approval card's lockout (2 s), for the
+ * same reason. A key held through the choice auto-repeats only after the terminal's initial delay (250 to 1800 ms), so a quiet-gap rule
+ * cannot tell its first repeat from a deliberate press; a window from the choice, restarted by each `Enter` inside it, can.
+ */
+export const PICK_ENTER_LOCKOUT_MS = 2000;
+
+/**
+ * The guard against a held `Enter` that chose a file in the `@` picker and then sent the message (MVP-11 unit 7, round 2 sitting #3: on the
+ * Home a held `Enter` on the picker started a chat with the file, and in a chat it sent the message, with no deliberate send). After
+ * {@link PickEnterLock.chosen}, an `Enter` that would send inside {@link PICK_ENTER_LOCKOUT_MS} is a repeat of the one that chose: it is
+ * ignored and restarts the window, so a key held at any rate never sends. Any other key or a paste ({@link PickEnterLock.typed}) is the person
+ * typing: the next `Enter` is theirs. Pure but for the clock the caller passes, so the Home's controller and `ChatApp` share it.
+ */
+export interface PickEnterLock {
+  /** An `Enter` chose a file in the picker at `at`. */
+  readonly chosen: (at: number) => void;
+  /** A key other than `Enter`, or a paste: the window ends. */
+  readonly typed: () => void;
+  /** Whether an `Enter` that would send at `at` is held off; `true` restarts the window. */
+  readonly holds: (at: number) => boolean;
+}
+
+export function createPickEnterLock(): PickEnterLock {
+  let since: number | undefined;
+  return {
+    chosen: (at) => {
+      since = at;
+    },
+    typed: () => {
+      since = undefined;
+    },
+    holds: (at) => {
+      if (since === undefined || at - since >= PICK_ENTER_LOCKOUT_MS) {
+        since = undefined;
+        return false;
+      }
+      since = at;
+      return true;
+    },
+  };
+}
+
 /** A compact chip label for the attachment bar (`@src/foo.ts` / `!npm test (exit 0)`). */
 export function attachmentChip(a: PendingAttachment): string {
   return a.kind === 'file' ? mentionMarker(a.path) : `!${commandLine(a.cmd)} (exit ${a.exitCode})`;
@@ -77,7 +138,7 @@ export interface Outbound {
   /** The COMPACT string shown in the transcript: the prose (file `@markers` are already visible in it) plus a
    *  `[📎 …]` note for carried COMMAND outputs, which have no marker in the line. */
   readonly display: string;
-  /** The attachments actually included — the caller clears exactly these (a file whose marker the user deleted stays). */
+  /** The attachments actually included — the caller clears exactly these (a file whose marker left the draft was already dropped at that edit). */
   readonly consumed: readonly PendingAttachment[];
 }
 

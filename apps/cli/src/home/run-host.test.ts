@@ -575,6 +575,73 @@ describe('a run belongs to the workspace it was started in', () => {
     expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(swap.a);
   });
 
+  /**
+   * The link repointed AFTER the check `start()` makes and before the preparation resolves (round 2 sitting #3, finding 5): the preparation
+   * awaits (the secret port, the MCP consent card and connect) and only then opens the history under the cwd's root and builds the engine, so a
+   * swap in that gap would record the run under the other directory or start it there. The hooks are the two ports the preparation calls after
+   * the check: the engine build (after the history was opened) and the secret port (before it).
+   */
+  it('refuses a start whose working directory was repointed while it prepared (the engine build): nothing starts, no run is recorded', async () => {
+    const swap = swappableHome();
+    const builds = vi.fn();
+    const r = rig(
+      {
+        projectRoot: swap.a,
+        buildEngine: (options?: BuildEngineOptions) => {
+          builds();
+          swap.point(swap.b); // after the history was opened under A, before the engine starts
+          return buildEngine(options);
+        },
+      },
+      swap.link,
+    );
+    const launch = await r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } });
+    expect(launch).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(builds, 'the preparation ran up to the engine').toHaveBeenCalledOnce();
+    expect(runCount(), 'no run was started or recorded').toBe(0);
+    expect(r.f.registry.activeOwners, 'the leg`s owner retired').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    expect(
+      r.f.registry.observations.infrastructureCode(),
+      'a refusal, never a fault of the Home`s process',
+    ).toBeUndefined();
+  });
+
+  it('refuses a start recorded under the other directory even when the link points back before the engine starts', async () => {
+    const swap = swappableHome();
+    writeFileSync(join(swap.a, 'w.relavium.yaml'), SECRET_RUN);
+    writeFileSync(join(swap.b, 'w.relavium.yaml'), SECRET_RUN);
+    const r = rig(
+      {
+        projectRoot: swap.a,
+        buildEngine: (options?: BuildEngineOptions) => {
+          swap.point(swap.a); // back at A before the engine starts: only the recorded root still names B
+          return buildEngine(options);
+        },
+      },
+      swap.link,
+    );
+    const launch = await r.host.start({
+      workflow: 'w.relavium.yaml',
+      rawInputs: { n: '3' },
+      secrets: () => {
+        swap.point(swap.b); // while the leg awaits its secret port, before the history is opened
+        return Promise.resolve({ token: 'opaque-swap-secret' });
+      },
+    });
+    expect(launch).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(runCount(), 'no run was started or recorded').toBe(0);
+    expect(r.f.registry.activeOwners).toBe(0);
+  });
+
   it('refuses to answer a gate, or continue a run, once the working directory resolves elsewhere: the run stays parked', async () => {
     const swap = swappableHome();
     const r = rig({ projectRoot: swap.a }, swap.link);

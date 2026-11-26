@@ -1671,6 +1671,41 @@ describe('the confirmation names the file it was built from, by its real path (r
     expect(catalog.load(file).place, 'the same spelling, the other project').toBe(shown('B'));
   });
 
+  /**
+   * A directory name that dresses up as the Home's own chrome (round 2 sitting #3, the `File:` row improvement): the row is drawn with the Home's
+   * row scrub (`foldKeyLookalikes(workRowText(...))`), as every stored name beside real keys is, so a `▼ 9 more` marker, a bracketed `[Enter]`
+   * key and an arrow cannot imitate the popup's own, and a control or a bidirectional override is gone. Built from code points.
+   */
+  it.each([
+    ['a window marker', `${String.fromCharCode(0x25bc)} 9 more`, String.fromCharCode(0x25bc)],
+    ['an upward marker', `${String.fromCharCode(0x25b2)} 2 more`, String.fromCharCode(0x25b2)],
+    ['a bracketed key', '[Enter] approve', '[Enter]'],
+    ['an arrow', `next ${String.fromCharCode(0x2192)} step`, String.fromCharCode(0x2192)],
+    ['an escape sequence', `red${String.fromCharCode(0x1b)}[31mname`, String.fromCharCode(0x1b)],
+    ['a right-to-left override', `ab${String.fromCharCode(0x202e)}cd`, String.fromCharCode(0x202e)],
+    ['an answer chord', 'press Ctrl+Y now', 'Ctrl+Y'],
+  ])(
+    'a project directory with %s in its name: the row draws none of it, keeps its end and fits one row',
+    (_name, directory, hostile) => {
+      const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-run-launch-chrome-')));
+      scratch.push(base);
+      const home = join(base, 'home');
+      const project = join(home, directory);
+      mkdirSync(join(project, '.relavium', 'workflows'), { recursive: true });
+      writeFileSync(join(project, '.relavium', 'workflows', 'w.relavium.yaml'), NO_INPUTS);
+      const catalog = createProjectCatalog({
+        cwd: project,
+        projectConfigDir: () => join(project, '.relavium'),
+        homeDir: home,
+      });
+      const row = catalog.load(join('.relavium', 'workflows', 'w.relavium.yaml')).place ?? '';
+      expect(row.startsWith('File: ~')).toBe(true);
+      expect(row, 'nothing of the chrome it imitated').not.toContain(hostile);
+      expect(row.endsWith(join('.relavium', 'workflows', 'w.relavium.yaml'))).toBe(true);
+      expect(displayWidth(row)).toBeLessThanOrEqual(popupInnerWidth(80, 'standard'));
+    },
+  );
+
   it('is the card’s first row, above the host’s passage, and a long path keeps its end', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig();

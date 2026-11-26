@@ -24,7 +24,7 @@ import {
   type HomeControllerDeps,
 } from './home-controller.js';
 import { createChatStore } from './chat-store.js';
-import { MAX_PENDING_ATTACHMENTS } from './attachments.js';
+import { MAX_PENDING_ATTACHMENTS, PICK_ENTER_LOCKOUT_MS } from './attachments.js';
 import type { MentionCandidate, MentionReadResult, MentionReader } from './mention.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import {
@@ -122,6 +122,8 @@ function rig(options: RigOptions = {}) {
   const session = (): HomeChatSession => ({
     store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
     sessionId: 'sess-mention',
+    // The chat's own reader, over the same scripted files: the chat in front picks through it (`chatMentions`).
+    mentionReader: { list, read },
     processLine: (line, display) => {
       sent.push({ line, display });
       return Promise.resolve();
@@ -134,6 +136,8 @@ function rig(options: RigOptions = {}) {
     options.startChat ?? (() => Promise.resolve(session())),
   );
   const onExit = vi.fn();
+  // The Home's clock, moved by hand: an `Enter` inside the lockout after the `Enter` that chose a file is its repeat (`PickEnterLock`).
+  let clock = 10_000;
   const c = createHomeController({
     startChat,
     homeStore: { read: () => options.snapshot ?? EMPTY },
@@ -141,6 +145,7 @@ function rig(options: RigOptions = {}) {
     onError: (cause) => {
       throw cause;
     },
+    now: () => clock,
     mentionReader: { list, read },
     agents: AGENTS,
     announce,
@@ -153,7 +158,22 @@ function rig(options: RigOptions = {}) {
   const type = (text: string): void => {
     for (const char of text) c.handleKey(char, {});
   };
-  return { c, list, read, pending, sent, announce, startChat, openProviders, onExit, type };
+  const advance = (ms: number): void => {
+    clock += ms;
+  };
+  return {
+    c,
+    list,
+    read,
+    pending,
+    sent,
+    announce,
+    startChat,
+    openProviders,
+    onExit,
+    type,
+    advance,
+  };
 }
 type Rig = ReturnType<typeof rig>;
 
@@ -337,6 +357,7 @@ describe('the landing’s send carries them into the FIRST message, by the chat�
     await openPicker(r);
     r.c.handleKey('', DOWN);
     r.c.handleKey('', ENTER); // the read is on its way
+    r.advance(2_500); // a deliberate Enter, past the lockout after the choice
     r.c.handleKey('', ENTER); // the draft is sent, and its build fails
     await until(() => r.c.getSnapshot().mode === 'home' && r.c.getSnapshot().input.text !== '');
     r.pending[0]?.resolve({ content: CONTENT, sizeBytes: CONTENT.length });
@@ -351,6 +372,7 @@ describe('the landing’s send carries them into the FIRST message, by the chat�
     await openPicker(r);
     r.c.handleKey('', DOWN);
     r.c.handleKey('', ENTER);
+    r.advance(2_500); // a deliberate Enter, past the lockout after the choice
     r.c.handleKey('', ENTER); // the draft is sent before the read lands
     await until(() => r.sent.length > 0);
     r.pending[0]?.resolve({ content: CONTENT, sizeBytes: CONTENT.length });
@@ -398,7 +420,8 @@ describe('the attachments go with the draft', () => {
     const r = rig();
     await pickNotes(r);
     for (let i = 0; i < '@notes.md '.length; i += 1) r.c.handleKey('', { backspace: true });
-    expect(r.c.getSnapshot().attachments, 'pending, its marker gone').toHaveLength(1);
+    // The marker's deletion took the file along (round 2 sitting #3), so the palette's empty prompt has nothing pending to carry.
+    expect(r.c.getSnapshot().attachments, 'gone with its marker').toEqual([]);
     r.c.handleKey('/', {}); // the palette, on the empty prompt
     r.type('agents');
     r.c.handleKey('', ENTER); // the agents browser
@@ -439,3 +462,202 @@ describe('the attachments go with the draft', () => {
     expect(r.c.getSnapshot().attachments).toHaveLength(1);
   });
 });
+
+/** Type `@path` as a person does with no pick: `@` opens the picker, the name is its filter, and `Esc` gives both back to the draft literally. */
+function typeMarker(r: Rig, path: string): void {
+  r.c.handleKey('@', {});
+  r.type(path);
+  r.c.handleKey('', ESC);
+}
+
+/** A chat in front of the Home, started by a first message `hi` (its line is then dropped from `sent`). */
+async function inChat(r: Rig): Promise<void> {
+  r.type('hi');
+  r.c.handleKey('', ENTER);
+  await until(() => r.c.getSnapshot().mode === 'chat' && r.sent.length > 0);
+  r.sent.length = 0;
+}
+
+/**
+ * A marker that left the draft takes its file along, for good (round 2 sitting #3, the medium finding): the Home draws no chip bar, so a file
+ * whose marker was deleted, cleared or replaced stayed pending out of sight and rode the next message that named it, typed or pasted, with the
+ * content read at the earlier pick. The three recipes of the sitting's real-binary run, on the landing and in the chat the Home hosts.
+ */
+describe.each(['the landing', 'the chat in front'] as const)(
+  'on %s, a file whose marker left the draft is never sent',
+  (where) => {
+    const begin = async (): Promise<Rig> => {
+      const r = rig();
+      if (where === 'the chat in front') await inChat(r);
+      return r;
+    };
+    const sentLine = async (r: Rig): Promise<string | undefined> => {
+      await until(() => r.sent.length > 0);
+      return r.sent[0]?.line;
+    };
+
+    it('atdel: pick, Ctrl+U, then type `@notes.md typedagain` and send: the line goes as plain text', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      expect(r.c.getSnapshot().attachments).toHaveLength(1);
+      r.c.handleKey('u', CTRL);
+      expect(r.c.getSnapshot().attachments, 'the cleared line took it along').toEqual([]);
+      typeMarker(r, 'notes.md');
+      r.type(' typedagain');
+      expect(r.c.getSnapshot().input.text).toBe('@notes.md typedagain');
+      expect(r.c.getSnapshot().attachments, 'a typed marker brings nothing back').toEqual([]);
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r)).toBe('@notes.md typedagain');
+    });
+
+    it('atbs2: pick, Backspace ×10, type `hello`, paste ` @notes.md please` and send: plain text', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      for (let i = 0; i < '@notes.md '.length; i += 1) r.c.handleKey('', { backspace: true });
+      expect(r.c.getSnapshot().attachments).toEqual([]);
+      r.type('hello');
+      r.c.handlePaste(' @notes.md please');
+      expect(r.c.getSnapshot().attachments, 'a pasted marker brings nothing back').toEqual([]);
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r)).toBe('hello @notes.md please');
+    });
+
+    it('atpal: pick, Ctrl+U, a command from the palette, then paste `@notes.md later` and send: plain text', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      r.c.handleKey('u', CTRL);
+      r.c.handleKey('/', {}); // the palette, on the empty prompt
+      r.type('help');
+      r.c.handleKey('', ENTER); // the help sheet
+      await settle();
+      r.c.handleKey('', ESC); // closed again
+      await settle();
+      expect(r.c.getSnapshot().attachments).toEqual([]);
+      r.sent.length = 0; // in a chat the palette's `/help` is a line of the chat's own: only what follows is the message
+      r.c.handlePaste('@notes.md later');
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r)).toBe('@notes.md later');
+    });
+
+    it('a recalled line that names a file sent before brings nothing back either', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      r.type('first');
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r), 'sent with the file').toContain(CONTENT);
+      if (where === 'the landing') return; // the landing's send started a chat: the recall below is the chat's
+      r.sent.length = 0;
+      await pickNotes(r);
+      r.c.handleKey('u', CTRL);
+      r.c.handleKey('', { upArrow: true }); // the input history's last line: `@notes.md first`
+      expect(r.c.getSnapshot().input.text).toBe('@notes.md first');
+      expect(r.c.getSnapshot().attachments).toEqual([]);
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r)).toBe('@notes.md first');
+    });
+
+    it('a marker still in the draft keeps its file through edits before it (motions, text typed, a line inserted above), and it is sent', async () => {
+      const r = await begin();
+      r.type('intro ');
+      await pickNotes(r);
+      r.c.handleKey('a', CTRL); // to the start of the line
+      r.type('more ');
+      r.c.handleKey('j', CTRL); // a line inserted above the marker's
+      r.c.handleKey('', { leftArrow: true });
+      r.c.handleKey('', { rightArrow: true });
+      r.c.handleKey('e', CTRL); // to the end of the line
+      expect(r.c.getSnapshot().input.text).toBe('more \nintro @notes.md ');
+      expect(r.c.getSnapshot().attachments).toHaveLength(1);
+      r.c.handleKey('', ENTER);
+      expect(await sentLine(r)).toContain(CONTENT);
+    });
+
+    it('the first Ctrl+C: a draft it clears (in a chat) takes its files along; a draft it keeps (the landing arms the exit) keeps them', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      r.c.handleKey('c', CTRL);
+      if (where === 'the chat in front') {
+        expect(r.c.getSnapshot().input.text).toBe('');
+        expect(r.c.getSnapshot().attachments).toEqual([]);
+      } else {
+        expect(r.c.getSnapshot().input.text).toBe('@notes.md ');
+        expect(r.c.getSnapshot().attachments).toHaveLength(1);
+      }
+    });
+  },
+);
+
+/**
+ * The terminal's held-key grid: how long the first auto-repeat waits after the press (250 to 1800 ms), and how often it repeats then. A
+ * quiet-gap rule cannot tell the first repeat from a deliberate press, so the lockout runs from the press that chose the file.
+ */
+const HELD_GRID = [250, 500, 660, 1800].flatMap((delay) =>
+  [30, 100].map((rate) => [delay, rate] as const),
+);
+
+/**
+ * A held `Enter` on the picker chooses the file and then sends nothing (round 2 sitting #3: on the landing its repeats started a chat that sent
+ * the file, and in a chat they sent the message): the `Enter` that would send is held off for the lockout after the choice, and each repeat
+ * inside it restarts it. A key typed since, or a patient `Enter` once the key was let go for the whole window, is the person's.
+ */
+describe.each(['the landing', 'the chat in front'] as const)(
+  'on %s, a held Enter after the picker’s choice',
+  (where) => {
+    const begin = async (): Promise<Rig> => {
+      const r = rig();
+      if (where === 'the chat in front') await inChat(r);
+      return r;
+    };
+
+    it.each(HELD_GRID)(
+      'first repeat after %i ms, then every %i ms, for twice the lockout: one file chosen, nothing sent, no chat started',
+      async (delay, rate) => {
+        const r = await begin();
+        const chats = r.startChat.mock.calls.length;
+        await openPicker(r);
+        r.c.handleKey('', DOWN);
+        r.c.handleKey('', ENTER); // the press that chooses notes.md
+        await settle(); // its read lands before the terminal's first repeat
+        r.advance(delay);
+        for (let held = 0; held < 2 * PICK_ENTER_LOCKOUT_MS; held += rate) {
+          r.c.handleKey('', ENTER);
+          r.advance(rate);
+        }
+        await settle();
+        expect(r.read).toHaveBeenCalledOnce();
+        expect(r.sent, 'nothing was sent').toEqual([]);
+        expect(r.startChat.mock.calls.length, 'no chat was started').toBe(chats);
+        expect(r.announce, 'no word for the repeats either').not.toHaveBeenCalled();
+        expect(r.c.getSnapshot().input.text).toBe('@notes.md ');
+        expect(r.c.getSnapshot().attachments).toHaveLength(1);
+        // Let go for the whole window: the next Enter is a deliberate send, with the file.
+        r.advance(PICK_ENTER_LOCKOUT_MS);
+        r.c.handleKey('', ENTER);
+        await until(() => r.sent.length > 0);
+        expect(r.sent[0]?.line.startsWith('@notes.md')).toBe(true);
+        expect(r.sent[0]?.line).toContain(CONTENT);
+      },
+    );
+
+    it('a key typed right after the choice makes the next Enter the person’s: it sends at once', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      r.advance(20);
+      r.type('x');
+      r.advance(20);
+      r.c.handleKey('', ENTER);
+      await until(() => r.sent.length > 0);
+      expect(r.sent[0]?.line.startsWith('@notes.md x')).toBe(true);
+      expect(r.sent[0]?.line).toContain(CONTENT);
+    });
+
+    it('a paste right after the choice does too', async () => {
+      const r = await begin();
+      await pickNotes(r);
+      r.c.handlePaste('read it');
+      r.c.handleKey('', ENTER);
+      await until(() => r.sent.length > 0);
+      expect(r.sent[0]?.line.startsWith('@notes.md read it')).toBe(true);
+    });
+  },
+);

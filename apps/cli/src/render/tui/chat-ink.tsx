@@ -126,8 +126,10 @@ import {
 import { MentionView } from './mention-view.js';
 import {
   appendAttachment,
+  attachmentsOfDraft,
   buildOutbound,
   commandResultPreview,
+  createPickEnterLock,
   fileAttachmentWarning,
   mentionMarker,
   MAX_PENDING_ATTACHMENTS,
@@ -1297,6 +1299,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const value = next(editorRef.current);
     editorRef.current = value;
     setEditor(value);
+    keepNamedAttachments(value.text);
   };
   const cancelFired = useRef(false);
   // The one interrupt keymap (ADR-0115 §1). `interruptRef` is its whole state (when it was armed, on the monotonic clock);
@@ -1541,10 +1544,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // file entry per path (dedup).
   const [attachments, setAttachments] = useState<readonly PendingAttachment[]>([]);
   const attachmentsRef = useRef<readonly PendingAttachment[]>([]);
+  // The list is the attachments the draft still names (`attachmentsOfDraft`, the Home's own rule; round 2 sitting #3): pruned on every
+  // change to the list here and on every edit of the draft (`applyEditor`), so a file whose marker left the draft is gone for good, the chip
+  // bar shows what the next send carries, and a marker typed or pasted later is plain text.
   const applyAttachments = (next: readonly PendingAttachment[]): void => {
-    attachmentsRef.current = next;
-    setAttachments(next);
+    const kept = attachmentsOfDraft(editorRef.current.text, next);
+    attachmentsRef.current = kept;
+    setAttachments(kept);
   };
+  const keepNamedAttachments = (draft: string): void => {
+    const pending = attachmentsRef.current;
+    if (pending.length === 0) return;
+    const kept = attachmentsOfDraft(draft, pending);
+    if (kept !== pending) applyAttachments(kept);
+  };
+  // A held `Enter` that chose a file in the `@` picker sends nothing (`PickEnterLock`, shared with the Home's controller).
+  const [pickEnter] = useState(createPickEnterLock);
   const addAttachment = (a: PendingAttachment): void => {
     const { list, dropped } = appendAttachment(attachmentsRef.current, a);
     applyAttachments(list);
@@ -1800,6 +1815,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const pasted = draftText(text);
     if (text.length === 0) return;
     disarmInterrupt();
+    pickEnter.typed(); // a paste is typing: the next `Enter` is the person's
     if (pasted.length === 0) return; // nothing but controls: a key that edits nothing
     const snap = props.store.getSnapshot();
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
@@ -2027,6 +2043,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
     }
     if (!interrupt) disarmInterrupt();
+    // Any key but `Enter` is the person typing: an `Enter` after it is theirs, never a repeat of the one that chose a file.
+    if (!key.return) pickEnter.typed();
     const reviewAction = props.store.handleReviewInput(char, key);
     if (reviewAction === 'handled') return;
     if (interrupt) {
@@ -2072,6 +2090,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       if (step.kind === 'accept') {
         applyMention(undefined);
+        // The `Enter` that chose: its auto-repeats must not send the message the file lands in.
+        if (key.return) pickEnter.chosen(performance.now());
         acceptMention(step.path);
         return;
       }
@@ -2250,6 +2270,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         });
         return;
       case 'submit': {
+        // A repeat of the `Enter` that chose a file sends nothing.
+        if (pickEnter.holds(performance.now())) return;
         // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
         // message; a bare `!` or an absent runner falls through to a normal message send.
         const trimmed = action.line.trim();
@@ -2269,7 +2291,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         if (parsed !== undefined) {
           historyRef.current = recordHistory(historyRef.current, action.line);
           applyEditor(() => emptyEditor());
-          runShell(parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+          runShell(parsed); // a `!command` → the shell escape (carried outputs stay pending; a file goes with the line)
           return;
         }
         if (trimmed.startsWith('/') || attachmentsRef.current.length === 0) {

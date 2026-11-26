@@ -78,6 +78,10 @@ afterEach(() => {
 interface RigOptions {
   readonly initial?: ChatMode;
   readonly publish?: ModeSettingsOptions['publish'];
+  /** The runtime's read of the configuration throws when the flow asks it (round 2 sitting #3, finding 3). */
+  readonly readThrows?: boolean;
+  /** The global configuration is made unparseable after the Home opened, before `/mode` reads it (the sitting's `mbroken`). */
+  readonly corrupt?: boolean;
 }
 
 /** An operator home whose global default is `initial`, the real runtime over it, and the popup running on the real channel. */
@@ -91,7 +95,18 @@ function rig(options: RigOptions = {}) {
   const configPath = join(home, '.relavium', 'config.toml');
   const written = `[preferences]\ndefault_mode = "${options.initial ?? 'ask'}"\ntheme = "kept"\n`;
   writeFileSync(configPath, written);
-  const runtime = createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true);
+  const real = createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true);
+  const runtime: typeof real =
+    options.readThrows === true
+      ? {
+          ...real,
+          read: () => {
+            throw new Error('the configuration could not be read');
+          },
+        }
+      : real;
+  if (options.corrupt === true)
+    writeFileSync(configPath, `${written}[preferences\ndefault_mode="x27\n`, 'utf8');
   let clock = SHOWN_AT;
   const channel = createNativePromptChannel({ now: () => clock });
   channel.ui.bindVisibility(() => true);
@@ -169,6 +184,41 @@ describe('step 1, Mode: the choice', () => {
     expect(await r.result, 'closed before it asked: nothing to say').toBeUndefined();
     expect(r.config()).toBe(r.unchanged);
   });
+});
+
+/** The flow's own sentence for a refusal before anything was saved (`chat/mode-settings.ts`, `modeSettingsFailure`). */
+const NOT_COMPLETED = 'Mode settings could not be completed. Startup default unchanged.';
+
+describe('a flow that refuses before a mode is chosen (round 2 sitting #3, finding 3: the popup said nothing)', () => {
+  it.each([
+    ['the configuration read throws', { readThrows: true }],
+    ['the configuration became unparseable after the Home opened (mbroken)', { corrupt: true }],
+  ] as const)(
+    '%s: its own sentence is the one notification; no step is asked, no Done step is drawn, nothing is written',
+    async (_name, options) => {
+      const r = rig(options);
+      const before = r.config();
+      expect(await r.result).toBe(NOT_COMPLETED);
+      expect(r.publish).not.toHaveBeenCalled();
+      expect(r.snapshot().final, 'no Done step').toBeUndefined();
+      expect(r.snapshot().active, 'the popup is closed').toBe(false);
+      expect(r.config(), 'nothing was written').toBe(before);
+    },
+  );
+
+  it.each([
+    ['Esc', '', ESCAPE],
+    ['Ctrl+C', 'c', CTRL],
+  ] as const)(
+    '%s on step 1 still says nothing (the person closed it)',
+    async (_name, input, key) => {
+      const r = rig();
+      await r.stepUp('select');
+      r.press(input, key);
+      expect(await r.result).toBeUndefined();
+      expect(r.config()).toBe(r.unchanged);
+    },
+  );
 });
 
 describe('step 2, Confirm: the chord card', () => {

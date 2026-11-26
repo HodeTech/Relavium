@@ -337,6 +337,29 @@ describe('/mode on the bare Home', () => {
     expect(f.error()).toBeUndefined();
   });
 
+  it('a configuration made unparseable after the Home opened (mbroken): /mode says its refusal in one notification and writes nothing', async () => {
+    const f = await fixture();
+    try {
+      const broken = `${CONFIG}[preferences\ndefault_mode="x27\n`;
+      writeFileSync(f.configPath, broken);
+      f.mounted.controller.handlePaste('/mode');
+      f.mounted.controller.handleKey('', ENTER);
+      await vi.waitFor(
+        () =>
+          expect(f.notified).toEqual([
+            'Mode settings could not be completed. Startup default unchanged.',
+          ]),
+        WAIT,
+      );
+      expect(nativeOf(f).getSnapshot().active, 'no step is left open').toBe(false);
+      expect(f.mounted.controller.getSnapshot().notice).toBeUndefined();
+      expect(readFileSync(f.configPath, 'utf8')).toBe(broken);
+    } finally {
+      await f.close();
+    }
+    expect(f.error()).toBeUndefined();
+  });
+
   it('a typed argument keeps its answer: no popup, the sentence that says where /mode works', async () => {
     const f = await fixture();
     try {

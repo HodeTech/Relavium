@@ -403,11 +403,15 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       read: (path) => Promise.resolve({ content: `// ${path}`, sizeBytes: 5 }),
     };
     const made = makeSession({ mentionReader });
+    // The Home's clock: an `Enter` right after the `Enter` that chose a file is held off as its repeat (`PickEnterLock`), so the
+    // deliberate submit below comes after the lockout.
+    let clock = 10_000;
     const c = createHomeController({
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
+      now: () => clock,
     });
     type(c, 'hi');
     c.handleKey('', ENTER); // start the chat (input clears)
@@ -441,6 +445,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // SUBMIT: the marker's file expands into the nonce-fenced <file> frame sent to the model (a fresh random nonce,
     // open === close — an unforgeable boundary); the buffer + the consumed attachment clear.
     made.lines.length = 0; // isolate the submitted message from the earlier 'hi'
+    clock += 2_500; // a deliberate Enter, past the lockout after the choice
     c.handleKey('', ENTER);
     await flush();
     const framed = made.lines[0]?.match(
@@ -701,11 +706,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       mentionReader,
       runShellCommand: () => Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' }),
     });
+    let clock = 10_000;
     const c = createHomeController({
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
+      now: () => clock,
     });
     type(c, 'hi');
     c.handleKey('', ENTER);
@@ -715,6 +722,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('@', {});
     await flush();
     c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+    clock += 2_500; // past the lockout after the choice: the next Enter is a deliberate submit, not the choosing Enter's repeat
     c.handleKey('', ENTER); // submit `!echo "oops @app.ts`: an open quote, refused, NOT consumed
     expect(c.getSnapshot().input.text).toContain('!echo "oops');
 

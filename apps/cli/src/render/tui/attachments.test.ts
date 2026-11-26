@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   appendAttachment,
   attachmentChip,
+  attachmentsOfDraft,
   buildOutbound,
   commandResultPreview,
+  createPickEnterLock,
   fileAttachmentWarning,
   MAX_PENDING_ATTACHMENTS,
+  PICK_ENTER_LOCKOUT_MS,
   mentionMarker,
   mentionPresent,
   type PendingAttachment,
@@ -177,4 +180,72 @@ describe('@/! pending-attachment model (2.5.D chip redesign)', () => {
     expect(over.list.some((a) => a.kind === 'file' && a.path === 'f0.ts')).toBe(false); // oldest gone
     expect(over.list.some((a) => a.kind === 'file' && a.path === 'newest.ts')).toBe(true); // newest kept
   });
+});
+
+describe('the attachments a draft still names (round 2 sitting #3: one rule for the Home and both chats)', () => {
+  it('keeps a file whose marker is a whitespace-bounded token of the draft, on any line, and returns the SAME list when nothing goes', () => {
+    const list = [file('a.md'), file('docs/b.md')];
+    expect(attachmentsOfDraft('see @a.md and\n@docs/b.md', list)).toBe(list);
+    expect(attachmentsOfDraft('@a.md\tthen @docs/b.md', list)).toBe(list);
+  });
+
+  it('drops a file whose marker left the draft: deleted, glued to a word, cut to a prefix, or the draft emptied', () => {
+    const a = file('a.md');
+    const b = file('docs/b.md');
+    expect(attachmentsOfDraft('see @docs/b.md', [a, b])).toEqual([b]);
+    expect(attachmentsOfDraft('see @a.mdx', [a])).toEqual([]);
+    expect(attachmentsOfDraft('mail me@a.md', [a])).toEqual([]);
+    expect(attachmentsOfDraft('see @a.m', [a])).toEqual([]);
+    expect(attachmentsOfDraft('', [a, b])).toEqual([]);
+  });
+
+  it('keeps a carried command, which has no marker by design (its chip is drawn, and Esc clears it), even on an empty draft', () => {
+    const c = cmd('npm', ['test']);
+    const a = file('a.md');
+    expect(attachmentsOfDraft('', [c, a])).toEqual([c]);
+    const list = [c];
+    expect(attachmentsOfDraft('anything', list)).toBe(list);
+  });
+
+  it('never adds: a marker in the draft brings back nothing the list does not hold', () => {
+    expect(attachmentsOfDraft('@a.md', [])).toEqual([]);
+  });
+});
+
+describe('the Enter held off after the picker chose a file (PickEnterLock)', () => {
+  it('holds an Enter inside the lockout after the choice, and each one held restarts it', () => {
+    const lock = createPickEnterLock();
+    lock.chosen(1000);
+    expect(lock.holds(1000 + PICK_ENTER_LOCKOUT_MS - 1)).toBe(true);
+    // restarted at the held press: still held a whole lockout after it
+    expect(lock.holds(1000 + 2 * PICK_ENTER_LOCKOUT_MS - 2)).toBe(true);
+    expect(lock.holds(1000 + 3 * PICK_ENTER_LOCKOUT_MS - 2)).toBe(false);
+    expect(lock.holds(1000 + 3 * PICK_ENTER_LOCKOUT_MS - 1), 'and it stays open').toBe(false);
+  });
+
+  it('lets an Enter through once the whole window passed with no press, and from the moment another key was typed', () => {
+    const patient = createPickEnterLock();
+    patient.chosen(0);
+    expect(patient.holds(PICK_ENTER_LOCKOUT_MS)).toBe(false);
+    const typed = createPickEnterLock();
+    typed.chosen(0);
+    typed.typed();
+    expect(typed.holds(1)).toBe(false);
+  });
+
+  it('holds nothing before any choice', () => {
+    expect(createPickEnterLock().holds(0)).toBe(false);
+  });
+
+  it.each(
+    [250, 500, 660, 1800].flatMap((delay) => [30, 100].map((rate) => [delay, rate] as const)),
+  )(
+    'a key held from the choice (first repeat after %i ms, then every %i ms) is held for as long as it is down',
+    (delay, rate) => {
+      const lock = createPickEnterLock();
+      lock.chosen(0);
+      for (let at = delay; at < delay + 4 * PICK_ENTER_LOCKOUT_MS; at += rate)
+        expect(lock.holds(at), `the repeat at ${String(at)} ms`).toBe(true);
+    },
+  );
 });

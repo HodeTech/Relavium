@@ -19,6 +19,8 @@ import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { displayRoots } from '../render/display-roots.js';
 import { flowLine } from '../render/tui/flow-text.js';
+import { foldKeyLookalikes } from '../render/tui/home-attention.js';
+import { workRowText } from '../render/tui/home-projection.js';
 import { keyToken } from '../render/tui/legend.js';
 import { placeForDisplay } from '../render/tui/place-label.js';
 import {
@@ -538,7 +540,9 @@ const PLACE_LIMIT = popupInnerWidth(POPUP_FLOOR.columns, 'standard') - PLACE_LEA
 /**
  * The confirmation's `File:` row for a workflow file read at `path` ({@link LoadedWorkflow.place}): the real path (a file that went between
  * the read and this call keeps the path it was read by, which the start reads again), as a person reads a path outside the project: from `~`,
- * or whole. Through the Home's full scrub (`flowLine`) and cut at its front.
+ * or whole. Through the Home's row scrub (`foldKeyLookalikes(workRowText(...))`: the full scrub `flowLine`, then a `▼ 9 more` or `^ N more`
+ * marker, a bracketed key such as `[Enter]` and an arrow a directory name brings folded, as every stored name drawn beside real keys is) and
+ * cut at its front.
  */
 function workflowPlace(path: string, homeDir: string): string {
   let real = path;
@@ -547,7 +551,12 @@ function workflowPlace(path: string, homeDir: string): string {
   } catch {
     // kept as read
   }
-  return `${PLACE_LEAD}${placeForDisplay(real, displayRoots(undefined, homeDir), PLACE_LIMIT, flowLine)}`;
+  return `${PLACE_LEAD}${placeForDisplay(real, displayRoots(undefined, homeDir), PLACE_LIMIT, placeRowText)}`;
+}
+
+/** A path as the `File:` row draws it: the Home's row scrub. */
+function placeRowText(text: string): string {
+  return foldKeyLookalikes(workRowText(text));
 }
 
 const LABEL_LIMIT = 60;

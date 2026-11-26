@@ -135,8 +135,10 @@ import {
 } from './mention.js';
 import {
   appendAttachment,
+  attachmentsOfDraft,
   buildOutbound,
   commandResultPreview,
+  createPickEnterLock,
   fileAttachmentWarning,
   mentionMarker,
   MAX_PENDING_ATTACHMENTS,
@@ -1325,6 +1327,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Enter can never splice the file into the (now-empty) buffer meant for the NEXT message (the session-identity
   // guard only catches a chat SWAP, not an in-chat submit that stays in the same session/mode).
   let submitEpoch = 0;
+  // A held `Enter` that chose a file in the `@` picker must not go on to send (round 2 sitting #3): the landing's and the chat's
+  // `Enter` that would send is held off for the lockout after the choice, unless another key or a paste came since (`PickEnterLock`).
+  const pickEnter = createPickEnterLock();
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -1431,6 +1436,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
     const before = state;
     state = { ...state, ...patch, noticeRevision };
+    // The attachments pending on the draft are the ones it still names (ADR-0061; round 2 sitting #3): after every change to the draft or to
+    // the list, a file whose `@path` marker left the draft is dropped for good (`attachmentsOfDraft`), on the landing, the work page's docked
+    // prompt and the chat in front alike, so the chip bar and the next send read the same list and a marker typed later is plain text.
+    if (('input' in patch || 'attachments' in patch) && state.attachments.length > 0) {
+      const kept = attachmentsOfDraft(state.input.text, state.attachments);
+      if (kept !== state.attachments) state = { ...state, attachments: kept };
+    }
     if ('snapshot' in patch || 'parkedRuns' in patch) followRows(patch);
     if (before.screen !== undefined && state.screen === undefined) restoreRowFocus(patch);
     // A screen or a card that opens or closes ends the swallowed `Enter` (see `focusJustDropped`): the first key after the landing comes
@@ -3871,6 +3883,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       loadMentions(owner, step.dir);
     } else if (step.kind === 'accept') {
       set({ mention: undefined });
+      // The `Enter` that chose: its auto-repeats must not send the draft the file lands in.
+      if (key.return === true) pickEnter.chosen(interruptNow());
       acceptMention(owner, step.path);
     } else {
       set({ mention: step.state });
@@ -3995,10 +4009,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       });
   };
 
-  // Submit `line`: a leading `!command` runs the shell escape (attachments stay pending — they ride the NEXT
-  // message); a `/slash` passes through unchanged (attachments stay); otherwise it is a MESSAGE — expand the pending
-  // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
-  // form in the transcript, and clear exactly the consumed attachments.
+  // Submit `line`: a leading `!command` runs the shell escape (carried command outputs stay pending — they ride the NEXT
+  // message); a `/slash` passes through unchanged; otherwise it is a MESSAGE — expand the pending attachments (files
+  // whose `@marker` is present + all carried commands) into the outbound frame, show the compact form in the
+  // transcript, and clear exactly the consumed attachments. The line leaves the editor on every path, and a FILE goes
+  // with it (`set` keeps only the attachments the draft still names).
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
     const trimmed = line.trim();
     const shellLine =
@@ -4017,7 +4032,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (parsed !== undefined) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
-      runShell(active, parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+      runShell(active, parsed); // a `!command` → the shell escape (carried outputs stay pending; a file goes with the line)
       return;
     }
     const open = overlayCommandFor(active, trimmed);
@@ -4263,7 +4278,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       active.store.note('cleared pending attachments');
       return;
     }
-    applyChatAction(active, reduceChatKey(input, key, state.input.text, running));
+    const action = reduceChatKey(input, key, state.input.text, running);
+    // A repeat of the `Enter` that chose a file sends nothing.
+    if (action.kind === 'submit' && pickEnter.holds(interruptNow())) return;
+    applyChatAction(active, action);
   };
 
   /**
@@ -4406,6 +4424,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (handleLandingDraftKey(input, key)) return;
     switch (action.kind) {
       case 'submit':
+        // A repeat of the `Enter` that chose a file starts no chat (and, on an empty draft, opens nothing).
+        if (pickEnter.holds(interruptNow())) return;
         submit();
         return;
       case 'none':
@@ -4450,6 +4470,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
     const focusDropped = focusJustDropped;
     focusJustDropped = false;
+    // Any key but `Enter` is the person typing: an `Enter` after it is theirs, never a repeat of the one that chose a file.
+    if (key.return !== true) pickEnter.typed();
     // The exit-guard card (ADR-0139 §6) owns every key while it is open, `Ctrl+C` included: there it is a cancel, not the keymap's.
     if (state.exitGuard !== undefined) {
       routeExitGuardKey(state.exitGuard, input, key);
@@ -4486,6 +4508,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (exiting || state.nativeActionBusy) return;
     disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
     focusJustDropped = false; // and the one ignored `Enter` after a dropped focus
+    pickEnter.typed(); // and the `Enter` held off after a file was chosen: the next `Enter` is the person's
     if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
     if (state.screen !== undefined) {
       // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord

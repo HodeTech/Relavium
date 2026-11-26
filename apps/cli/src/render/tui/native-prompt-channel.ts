@@ -64,18 +64,55 @@ export function nativeLeave(
 
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
 /**
- * The zero-width and invisible characters the `/run` confirmation (`flowLine`) removes or folds when it shows a value: the zero-width space
- * (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF), the soft hyphen (U+00AD) and the line and paragraph separators (U+2028,
- * U+2029). A field refuses them, with the controls the display floor strips, so the question shows exactly what is started. The joiner
- * U+200D (an emoji sequence) and the non-joiner U+200C (a script such as Persian needs it) are NOT here: they are typed as they are. Built from
- * code points, never an escape in the source.
+ * The characters a native text or masked field refuses besides the controls the display floor strips (`sanitizeInline`): the ones the `/run`
+ * confirmation (`flowLine`) removes or folds when it shows a value, so the question would show another string than the one started (round 2
+ * sittings #2 and #3: `a<ch>b` was started while `ab` was asked about). A CLOSED table of named, inclusive code-point ranges, never a Unicode
+ * property, so what a field takes cannot change with the runtime's Unicode tables; `native-prompt-field-characters.test.ts` presses every code
+ * point of every range. Two groups:
+ *
+ * - **Invisible and format characters**, which the confirmation removes: the soft hyphen, the combining grapheme joiner, the Hangul fillers,
+ *   the Mongolian vowel separator, the zero-width space, the line and paragraph separators (folded to a space), the word joiner, the invisible
+ *   operators, the byte-order mark, the interlinear annotation characters, the musical format characters and the tag characters.
+ * - **Spaces the confirmation folds to an ordinary space** (its compatibility fold): the no-break space, the typographic spaces from the en
+ *   quad to the hair space, the narrow no-break space, the medium mathematical space and the ideographic space. A value shown with another
+ *   space than the one started is the same class. No field needs one: the pricing id and rates are a model id and numbers, a provider key
+ *   and a gate's secret hold none, a `/run` input is typed with the ordinary space, and the import path's review step shows the path through
+ *   the same fold (a file whose name holds one is renamed first).
+ *
+ * NOT here, on purpose: the zero-width non-joiner U+200C and joiner U+200D and the emoji presentation selector U+FE0F. Text really uses them
+ * (an emoji sequence, scripts such as Persian and the Indic ones), so they are typed as they are; the confirmation drops them (an emoji
+ * sequence may draw as its parts there), an invisible difference that does not change the words the person reads.
  */
-const FIELD_INVISIBLES: readonly string[] = [0x200b, 0x2060, 0xfeff, 0xad, 0x2028, 0x2029].map(
-  (code) => String.fromCharCode(code),
-);
-/** Whether a field could not show `text` as it is: a control the display floor strips or folds, or one of the {@link FIELD_INVISIBLES}. */
-const fieldRefuses = (text: string): boolean =>
-  sanitizeInline(text) !== text || FIELD_INVISIBLES.some((mark) => text.includes(mark));
+const FIELD_REFUSED_RANGES: readonly (readonly [name: string, first: number, last: number])[] = [
+  ['soft hyphen', 0xad, 0xad],
+  ['combining grapheme joiner', 0x34f, 0x34f],
+  ['Hangul choseong and jungseong fillers', 0x115f, 0x1160],
+  ['Mongolian vowel separator', 0x180e, 0x180e],
+  ['zero-width space', 0x200b, 0x200b],
+  ['line and paragraph separators', 0x2028, 0x2029],
+  ['word joiner', 0x2060, 0x2060],
+  ['invisible function application, times, separator and plus', 0x2061, 0x2064],
+  ['Hangul filler', 0x3164, 0x3164],
+  ['byte-order mark', 0xfeff, 0xfeff],
+  ['halfwidth Hangul filler', 0xffa0, 0xffa0],
+  ['interlinear annotation anchor, separator and terminator', 0xfff9, 0xfffb],
+  ['musical symbol format characters', 0x1d173, 0x1d17a],
+  ['tag characters', 0xe0000, 0xe007f],
+  ['no-break space', 0xa0, 0xa0],
+  ['en quad to hair space', 0x2000, 0x200a],
+  ['narrow no-break space', 0x202f, 0x202f],
+  ['medium mathematical space', 0x205f, 0x205f],
+  ['ideographic space', 0x3000, 0x3000],
+];
+/** Whether a field could not show `text` as it is: a control the display floor strips or folds, or a character of {@link FIELD_REFUSED_RANGES}. */
+function fieldRefuses(text: string): boolean {
+  if (sanitizeInline(text) !== text) return true;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (FIELD_REFUSED_RANGES.some(([, first, last]) => code >= first && code <= last)) return true;
+  }
+  return false;
+}
 /**
  * What a masked field says after a terminal resize cleared what was typed into it ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §4): a fixed product text in the prompt's error row, so the person pastes again. Nothing of the old buffer survives the resize.
@@ -673,9 +710,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       return;
     }
     // A character the field could not show as it is is refused, and so is the whole text it came in: a C0 control, DEL, a C1 control or a
-    // bidirectional control, exactly what the display floor (`sanitizeInline`) strips or folds, and the zero-width and invisible characters
-    // the confirmation removes ({@link FIELD_INVISIBLES}). A value is then shown, here and on the confirmation, as the very string that is
-    // started (round 2 sitting #2, F6: `a<CSI>2Jb<NEL>c<RLO>d` was shown `a2Jbcd`).
+    // bidirectional control, exactly what the display floor (`sanitizeInline`) strips or folds, and the invisible characters and the spaces
+    // the confirmation removes or folds ({@link FIELD_REFUSED_RANGES}). A value is then shown, here and on the confirmation, as the very
+    // string that is started (round 2 sitting #2, F6: `a<CSI>2Jb<NEL>c<RLO>d` was shown `a2Jbcd`).
     if (fieldRefuses(text)) {
       invalid = true;
       publish({ ...snapshot, error: refused('Input contains unsupported control characters') });

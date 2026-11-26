@@ -949,9 +949,10 @@ describe('a model the list does not show', () => {
     // Built from code points: a literal zero-width space would be invisible in this very file.
     // The field itself refuses what it could not show as it is, before the id's own check reads it (round 2 sitting #2, F6: a bidirectional
     // mark; round 2 cleanup: the zero-width space, the word joiner, the soft hyphen and the byte-order mark, which `trim()` would otherwise
-    // drop from the typed text); the other invisible characters (a tag character) are the id check's to refuse.
-    const refusedByTheField = [0x200b, 0x2060, 0x200e, 0x00ad, 0xfeff];
-    for (const code of [...refusedByTheField, 0xe0041]) {
+    // drop from the typed text; round 2 sitting #3: a tag character and the rest of the confirmation's invisible set); the invisible
+    // characters a text needs, which the field types (the zero-width joiner), are the id check's to refuse.
+    const refusedByTheField = [0x200b, 0x2060, 0x200e, 0x00ad, 0xfeff, 0xe0041];
+    for (const code of [...refusedByTheField, 0x200d]) {
       r.type(`gpt-5${String.fromCodePoint(code)}`);
       await vi.waitFor(
         () =>
