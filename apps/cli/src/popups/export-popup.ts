@@ -7,12 +7,13 @@
  * **The confirmation is a step, not a keystroke.** `/export` writes a file into the project, so it shows the file first (project-relative), says
  * whether it is a new file or this session's own earlier export rewritten in place (the one overwrite `/export` makes), and says what the
  * scaffold is and what to review before committing it (the review notice's sentence). Only `Ctrl+Y`, through the popup host's chord guard,
- * answers it; `Esc` cancels. The result is a persistent step that `Enter` and `Esc` close: the file written, or that nothing was and why, in the
- * product's words. Nothing is written into the transcript or a notice (§6).
+ * answers it; `Esc` refuses it. The result is a persistent step that `Enter` and `Esc` close: what was exported and the file under it, or that
+ * nothing was and why, in the product's words. Nothing is written into the transcript or a notice (§6).
  *
  * The target and every fault text are a file system's and a project's words, so each passes the FULL scrub ({@link scrubPopupText}).
  */
 
+import { EXPORT_ALLOW_LABEL, EXPORT_FAILED } from '../render/tui/export-card.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import type { PopupContent, PopupOrigin } from './frame-model.js';
 import type { ChordRefusal } from './popup-host.js';
@@ -45,8 +46,14 @@ export const EXPORT_TARGET_CHANGED = {
   next: 'Type /export again to see where it goes now.',
 } as const;
 
-/** What the result says above the reason when the write (or the look before it) failed. */
-export const EXPORT_FAILED = 'Nothing was exported.';
+/**
+ * What the result says above the reason when the write (or the look before it) failed: the Defined tab's export says it in the same words
+ * (`EXPORT_FAILED` of `render/tui/export-card.ts`, which the Home loads first), so one name is one text.
+ */
+export { EXPORT_FAILED };
+
+/** What the result says above the file when the write was made: the file is the row under it, as every flow's last step names its target. */
+export const EXPORT_DONE = 'Exported this chat as a workflow';
 
 /** The confirmation's lines: the file, whether it is new, then the review notice's sentence, each wrapped to the popup's width. */
 export function exportReviewContent(view: SessionExportView, review: string): PopupContent {
@@ -66,9 +73,9 @@ export function exportPrepareFailedContent(reason: string): PopupContent {
   return { kind: 'error', what: EXPORT_FAILED, next: scrubPopupText(reason) };
 }
 
-/** The result of a write that was made: the file, project-relative. */
+/** The result of a write that was made: what was exported, and the file under it, project-relative (its own row, through the full scrub). */
 export function exportDoneContent(target: string): PopupContent {
-  return { kind: 'report', lines: wrapPopupText(`Exported · ${scrubPopupText(target)}`) };
+  return { kind: 'report', lines: [EXPORT_DONE, ...wrapPopupText(scrubPopupText(target))] };
 }
 
 /** The result of a write that failed, by the product's words for it. */
@@ -98,8 +105,10 @@ export function exportSpec(origin: PopupOrigin): PopupSpec {
         name: 'Export',
         content: EXPORT_LOADING_CONTENT,
         holds: 'chord',
-        chord: { verb: 'export' },
-        exitVerb: 'cancel',
+        // The words of the Defined tab's export and of `/init`, `/import` and `/pricing`: the same answer, and the same `Esc` (it refuses, and
+        // nothing is written), so the legend does not say one thing in four ways.
+        chord: { verb: EXPORT_ALLOW_LABEL },
+        exitVerb: 'denies',
       },
       {
         name: 'Done',

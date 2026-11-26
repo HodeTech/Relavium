@@ -1,7 +1,7 @@
 /**
  * The `/providers` POPUP of the Home and its first run (MVP-11 unit 6, 6.2; ADR-0146 §6, ADR-0148 §1, §3, §6), driven on the REAL native channel
  * with an injected clock and the real provider setup coordinator, wizard and config writers (only the key check, the keychain and the store are
- * fakes): the rail and its words, `Esc` back and `skip for now`, the Done step, the remembered skip, the guarded consent that a held `Enter`
+ * fakes): the rail and its words, `Esc` back, the skip and `Ctrl+C`, the Done step, the remembered skip, the guarded consent that a held `Enter`
  * never answers, the secret field's custody inside the frame, and the hostile text every value a provider, an endpoint or a variable wrote can
  * carry.
  */
@@ -21,9 +21,11 @@ import { createClient, createProviderStore, runMigrations } from '@relavium/db';
 import type { Key } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ConfigError } from '../config/errors.js';
 import { globalConfigPath } from '../config/write.js';
 import {
   createProviderResolver,
+  KNOWN_PROVIDERS,
   providerEndpointContext,
   type ProviderKeyValidation,
   type ProviderResolver,
@@ -33,6 +35,7 @@ import {
   keyCheckText,
   keyStepNote,
   SETUP_SKIP_NOT_SAVED,
+  setupClosedNotice,
   setupSkippedNotice,
   UNKNOWN_KEY_HOST,
 } from '../onboarding/setup-notes.js';
@@ -43,6 +46,7 @@ import {
   UNVERIFIED_KEY_LINE,
 } from '../onboarding/wizard.js';
 import { foldLineSeparators } from '../popups/frame-model.js';
+import { nativePopupLegend } from '../popups/native-popup-body.js';
 import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
 import { scrubPopupText } from '../popups/popup-text.js';
 import {
@@ -60,9 +64,10 @@ import { captureIo } from '../test-support.js';
 import {
   consentMessage,
   createProviderSetupCoordinator,
+  FIRST_RUN_POPUP_TITLE,
+  KEY_STEP_ENTER_VERB,
   PROVIDER_STEP_NAMES,
   PROVIDERS_POPUP_TITLE,
-  type ProviderSetupOutcome,
 } from './provider-setup.js';
 
 const NONE: Key = {
@@ -119,9 +124,23 @@ function rig(
   options: {
     readonly env?: Record<string, string>;
     readonly config?: 'none' | 'hand-made' | 'symlink';
-    readonly validate?: () => Promise<ProviderKeyValidation>;
+    readonly validate?: (id: string, key: string) => Promise<ProviderKeyValidation>;
     readonly keychainDown?: boolean;
+    /** A keychain of the test's own (one that recovers, say); default an in-memory one, down when `keychainDown`. */
+    readonly keychain?: KeychainStore & { readonly stored: Map<string, string> };
     readonly resolver?: (resolver: ProviderResolver) => ProviderResolver;
+    /** The coordinator's admission (the Home's `assertAdmitting`: it throws once the Home began closing). */
+    readonly admit?: () => void;
+    /** What the default-model writer returns; default a confirmed save. */
+    readonly writeDefault?: () => unknown;
+    /** Count every visible publication of a config write (the Home's `publishPreference`). */
+    readonly published?: { count: number };
+    /** Every publication reports a durability after a crash that could not be confirmed. */
+    readonly unconfirmed?: boolean;
+    /** The keychain reminder is already remembered in the global config. */
+    readonly acknowledged?: boolean;
+    /** The surface whose words the setup speaks (the Home's by default). */
+    readonly surface?: 'home' | 'standalone-chat';
   } = {},
 ) {
   let clock = 10_000;
@@ -142,7 +161,7 @@ function rig(
     }
   }
   const policy = createStandardEnvKeyPolicy();
-  const keychain = memoryKeychain(options.keychainDown === true);
+  const keychain = options.keychain ?? memoryKeychain(options.keychainDown === true);
   const base = createProviderResolver(options.env ?? {}, keychain, { standardEnvPolicy: policy });
   const resolver = options.resolver?.(base) ?? base;
   const db = createClient(':memory:');
@@ -152,12 +171,20 @@ function rig(
     flow: channel.flow,
     resolver,
     policy,
-    globalConfig: undefined,
+    globalConfig:
+      options.acknowledged === true
+        ? { preferences: { keychain_unavailable_acknowledged: true } }
+        : undefined,
     globalConfigPath: path,
+    ...(options.surface === undefined ? {} : { credentialSurface: options.surface }),
     home,
-    assertAdmitting: () => {},
+    assertAdmitting: () => options.admit?.(),
     endpointContext: (id) => providerEndpointContext(resolver, id),
-    publishPreference: (prepared, admit) => Promise.resolve(prepared.publish(admit)),
+    publishPreference: (prepared, admit) => {
+      if (options.published !== undefined) options.published.count += 1;
+      const result = prepared.publish(admit);
+      return Promise.resolve(options.unconfirmed === true ? { durability: 'unconfirmed' } : result);
+    },
     popup: true,
     rememberSkip: true,
     wizard: {
@@ -166,7 +193,7 @@ function rig(
       io: captureIo().io,
       writeDefaultModel: (model, provider) => {
         written.push([model, provider]);
-        return { kind: 'saved', durability: 'confirmed' };
+        return options.writeDefault?.() ?? { kind: 'saved', durability: 'confirmed' };
       },
       validate: options.validate ?? (() => Promise.resolve(OK)),
     },
@@ -236,21 +263,22 @@ function rig(
 }
 
 describe('the frame of the setup popup', () => {
-  it('the automatic first run is the `/providers` popup, from the Home, on `Provider · Key · Done`, its first step’s way back `skip for now`', async () => {
+  it('the automatic first run is titled `Connect a provider` (O7), from the Home, on `Provider · Key · Done`; its first step steps back, so `Esc` (the skip) is told from `Ctrl+C` (close)', async () => {
     const r = rig();
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
     expect(r.snapshot().popup).toEqual({
-      title: PROVIDERS_POPUP_TITLE,
+      title: FIRST_RUN_POPUP_TITLE,
       origin: 'home',
       stepIndex: 0,
       stepCount: 3,
       stepNames: PROVIDER_STEP_NAMES,
-      exitLabel: 'skip for now',
+      exitLabel: 'close',
       depth: 1,
     });
+    expect(FIRST_RUN_POPUP_TITLE).toBe('Connect a provider');
     expect(PROVIDER_STEP_NAMES).toEqual(['Provider', 'Key', 'Done']);
-    expect(r.snapshot().escape, 'Esc on the first step is the way out').toBe('cancel');
+    expect(r.snapshot().escape, 'Esc on the first step is a step back: the skip').toBe('back');
     r.channel.flow.cancel();
     await running;
     r.close();
@@ -261,6 +289,7 @@ describe('the frame of the setup popup', () => {
     const running = r.coordinator.run('explicit');
     await r.until((s) => s.message === 'Which provider?');
     expect(r.snapshot().popup?.exitLabel).toBe('close');
+    expect(r.snapshot().popup?.title, 'the person typed `/providers`').toBe(PROVIDERS_POPUP_TITLE);
     await r.choose('openai');
     await r.until((s) => s.message.startsWith('OPENAI_API_KEY is set for OpenAI.'));
     expect(r.snapshot().escape).toBe('back');
@@ -327,7 +356,17 @@ describe('the key step (ADR-0146 §6, G20) and its secret, inside the frame', ()
     const running = r.coordinator.run('automatic');
     await r.choose('openai');
     await r.until((s) => s.kind === 'password');
-    expect(r.snapshot().popup).toMatchObject({ stepIndex: 1, exitLabel: 'close' });
+    expect(r.snapshot().popup).toMatchObject({
+      stepIndex: 1,
+      exitLabel: 'close',
+      enterVerb: KEY_STEP_ENTER_VERB,
+    });
+    // O9: the key's `Enter` says what it does, it sends the key to be checked (ADR-0145 §3).
+    expect(KEY_STEP_ENTER_VERB).toBe('check');
+    expect(nativePopupLegend(r.snapshot()).items[0]).toMatchObject({
+      keys: 'Enter',
+      verb: 'check',
+    });
     expect(r.snapshot().note).toBe(
       'Stored in your OS keychain, never on disk. Sent only to https://api.openai.com, once, to check it.',
     );
@@ -406,6 +445,82 @@ describe('the key step (ADR-0146 §6, G20) and its secret, inside the frame', ()
   });
 });
 
+describe('what a held key and a closing Home cannot do to the key check', () => {
+  const HELD_RATES = [30, 100, 300] as const;
+  /** How long the key is held down: well past the guarded row's lockout, which every refused repeat restarts. */
+  const HELD_MS = 6000;
+  it.each(
+    HELD_RATES.flatMap((rate) =>
+      (['plain', 'kitty'] as const).map((kind) => [rate, kind] as const),
+    ),
+  )(
+    'S5: the `Enter` that submitted the key, held (a repeat every %i ms, %s), never answers the pre-selected `Retry the check`: the key is sent once; one patient `Enter` after the lockout sends it again',
+    async (rate, kind) => {
+      let checks = 0;
+      const r = rig({
+        validate: () => {
+          checks += 1;
+          return Promise.resolve(NETWORK);
+        },
+      });
+      const running = r.coordinator.run('automatic');
+      await r.choose('anthropic');
+      await r.paste(SECRET);
+      r.key(ENTER, '\r'); // the press that submits the key, held down from here
+      await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === 'recheck'));
+      r.show();
+      expect(r.snapshot().options[r.snapshot().selected]).toMatchObject({
+        value: 'recheck',
+        guarded: true,
+      });
+      for (let at = 0; at <= HELD_MS; at += rate) {
+        r.advance(rate);
+        r.key(kind === 'kitty' ? { ...ENTER, eventType: 'repeat' } : ENTER, '\r');
+        await r.flush();
+      }
+      expect(checks, 'the held key re-sent nothing').toBe(1);
+      expect(
+        r.snapshot().options.some((o) => o.value === 'recheck'),
+        'still asking',
+      ).toBe(true);
+      // The key is released; a deliberate `Enter`, pressed once after the lockout, checks the same key again.
+      r.advance(APPROVAL_LOCKOUT_MS + 100);
+      r.key(ENTER, '\r');
+      await r.flush();
+      expect(checks).toBe(2);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    },
+  );
+
+  it('M1: a Home that began closing while the key was being checked stores nothing and writes no default (the setup asks the coordinator’s admission at every step)', async () => {
+    let closing = false;
+    const r = rig({
+      admit: () => {
+        if (closing) throw new Error('Home is closing.');
+      },
+      validate: () => {
+        closing = true; // the Home begins to close while the check is in flight
+        return Promise.resolve(OK);
+      },
+    });
+    const failure = r.coordinator.run('automatic').then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    await r.choose('gemini');
+    await r.paste(SECRET);
+    r.key(ENTER, '\r');
+    const caught = await failure;
+    expect(caught instanceof Error ? caught.message : caught).toBe('Provider setup failed.');
+    expect(r.keychain.stored.size, 'no key was stored for a Home that is closing').toBe(0);
+    expect(r.written, 'no default was written').toEqual([]);
+    expect(existsSync(r.path), 'no config was written').toBe(false);
+    r.close();
+  });
+});
+
 describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)', () => {
   it('with no config: `Esc` on the first step writes the skip with no card, and the host says it in one notification', async () => {
     const r = rig();
@@ -421,19 +536,22 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     r.close();
   });
 
-  it('on a hand-made config: the popup opens again with the rewrite disclosure, publishes, and ends in a Done step instead of a notification', async () => {
-    const r = rig({ config: 'hand-made' });
+  it('C-F3: on a hand-made config `Esc` remembers nothing: the config is byte for byte as it was, nothing is published, no popup opens again, and the one line says it opens again next launch', async () => {
+    const published = { count: 0 };
+    const r = rig({ config: 'hand-made', published });
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
     r.key(ESC);
-    await r.until((s) => s.final === 'ok' && s.message === 'Setup skipped');
-    expect(readFileSync(r.path, 'utf8')).toContain('first_run_setup_skipped = true');
-    expect(r.snapshot().details).toEqual([
-      'It will not open by itself again. /providers connects a provider any time.',
-    ]);
-    await r.closeDone('esc');
-    const outcome: ProviderSetupOutcome = await running;
-    expect(outcome.notice, 'the Done step said it').toBeUndefined();
+    const outcome = await running;
+    expect(outcome.notice).toBe(SETUP_SKIP_NOT_SAVED);
+    expect(SETUP_SKIP_NOT_SAVED.length, 'a notification fits 54 columns').toBeLessThanOrEqual(54);
+    expect(readFileSync(r.path, 'utf8'), 'its comment and its order are kept').toBe(baseline);
+    expect(published.count, 'no rewrite was published').toBe(0);
+    expect(r.snapshot().active, 'no second popup for a disclosure').toBe(false);
+    expect(
+      r.published.some((s) => s.final !== undefined),
+      'no Done step for a skip',
+    ).toBe(false);
     r.close();
   });
 
@@ -443,7 +561,6 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     await r.until((s) => s.message === 'Which provider?');
     r.key(ESC);
     expect((await running).notice).toBe(SETUP_SKIP_NOT_SAVED);
-    expect(SETUP_SKIP_NOT_SAVED.length).toBeLessThanOrEqual(54);
     expect(readFileSync(join(r.home, 'real.toml'), 'utf8')).toBe(baseline);
     r.close();
   });
@@ -461,24 +578,107 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     r.close();
   });
 
-  it('`Ctrl+C` at the key step is a cancel: not remembered, though a keyless first run still says it was skipped', async () => {
+  it('S3: `Ctrl+C` on the first step of the first run leaves it: nothing is written, and the one line says it opens again next launch', async () => {
+    const r = rig();
+    const running = r.coordinator.run('automatic');
+    await r.until((s) => s.message === 'Which provider?');
+    r.key({ ...NONE, ctrl: true }, 'c');
+    const outcome = await running;
+    expect(outcome).toEqual({
+      status: 'cancelled',
+      changed: true,
+      notice: setupClosedNotice('home'),
+    });
+    expect(setupClosedNotice('home')).toBe('Setup closed · it opens again next launch');
+    expect(setupClosedNotice('home').length).toBeLessThanOrEqual(54);
+    expect(existsSync(r.path), 'a Ctrl+C writes no remembered skip').toBe(false);
+    r.close();
+  });
+
+  it.each([
+    ['the environment-key consent', { env: { OPENAI_API_KEY: 'synthetic-env-6120' } }, 'use'],
+    ['the keychain step', { keychainDown: true }, 'retry'],
+  ] as const)(
+    'S3: on %s of the first run, `Esc` is the remembered skip and `Ctrl+C` writes nothing',
+    async (_step, options, row) => {
+      for (const how of ['esc', 'ctrl+c'] as const) {
+        const r = rig(options);
+        const running = r.coordinator.run('automatic');
+        await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === row));
+        expect(r.snapshot().escape, 'opened to step back: the channel tells Esc from Ctrl+C').toBe(
+          'back',
+        );
+        if (how === 'esc') r.key(ESC);
+        else r.key({ ...NONE, ctrl: true }, 'c');
+        const outcome = await running;
+        if (how === 'esc') {
+          expect(outcome.notice).toBe(setupSkippedNotice('home'));
+          expect(readFileSync(r.path, 'utf8')).toContain('first_run_setup_skipped = true');
+        } else {
+          expect(outcome.notice).toBe(setupClosedNotice('home'));
+          expect(existsSync(r.path), 'nothing written for a Ctrl+C').toBe(false);
+        }
+        r.close();
+      }
+    },
+  );
+
+  it('the first run’s `Esc` on the environment-key consent declines the source for the process, as `Not now` does', async () => {
+    const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-6121' } });
+    const running = r.coordinator.run('automatic');
+    await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === 'use'));
+    r.key(ESC);
+    await running;
+    expect(r.policy.isDeferred('openai')).toBe(true);
+    expect(r.policy.allows('openai', 'OPENAI_API_KEY')).toBe(false);
+    r.close();
+  });
+
+  it('C-F5: `Not now` on the environment-key consent and on the keychain step is not remembered, and says it opens again next launch', async () => {
+    for (const options of [
+      { env: { OPENAI_API_KEY: 'synthetic-env-7031' } },
+      { keychainDown: true },
+    ] as const) {
+      const r = rig(options);
+      const running = r.coordinator.run('automatic');
+      await r.choose(options.env === undefined ? 'cancel' : 'defer');
+      const outcome = await running;
+      expect(outcome.notice).toBe(setupClosedNotice('home'));
+      expect(existsSync(r.path), 'a Not now writes nothing').toBe(false);
+      r.close();
+    }
+  });
+
+  it('`Ctrl+C` at the key step is a cancel: not remembered, and says it opens again next launch', async () => {
     const r = rig();
     const running = r.coordinator.run('automatic');
     await r.choose('deepseek');
     await r.paste(SECRET);
     r.key({ ...NONE, ctrl: true }, 'c');
-    expect((await running).notice).toBe(setupSkippedNotice('home'));
+    expect((await running).notice).toBe(setupClosedNotice('home'));
     expect(existsSync(r.path)).toBe(false);
     r.close();
   });
 
-  it('an explicit `/providers` closed while keyless is no remembered skip', async () => {
+  it('O13: an explicit `/providers` closed while keyless is no remembered skip and says nothing', async () => {
     const r = rig();
     const running = r.coordinator.run('explicit');
     await r.until((s) => s.message === 'Which provider?');
     r.key(ESC);
-    expect((await running).notice).toBe(setupSkippedNotice('home'));
+    expect((await running).notice).toBeUndefined();
     expect(existsSync(r.path)).toBe(false);
+    r.close();
+  });
+
+  it('P06: an explicit `/providers` whose `Skip setup` after a failed check writes no first-run skip and says nothing', async () => {
+    const r = rig({ validate: () => Promise.resolve(NETWORK) });
+    const running = r.coordinator.run('explicit');
+    await r.choose('gemini');
+    await r.paste(SECRET);
+    r.key(ENTER, '\r');
+    await r.choose('skip');
+    expect((await running).notice).toBeUndefined();
+    expect(existsSync(r.path), 'an explicit setup writes no first-run skip').toBe(false);
     r.close();
   });
 });
@@ -498,7 +698,8 @@ describe('the environment-key consent (ADR-0146 §6, G15; ADR-0148 §3)', () => 
       ['defer', 'Not now', false],
     ]);
     expect(consent.options[consent.selected]?.value).toBe('defer');
-    expect(consent.popup?.exitLabel).toBe('skip for now');
+    expect(consent.popup?.exitLabel).toBe('close');
+    expect(consent.escape, 'Esc on the first step is the skip').toBe('back');
     r.channel.flow.cancel();
     await running;
     r.close();
@@ -591,13 +792,306 @@ describe('a keychain known to be unavailable (G19)', () => {
       'Remember this and continue without a key',
       'Not now',
     ]);
-    expect(card.popup).toMatchObject({ stepIndex: 0, exitLabel: 'skip for now' });
+    expect(card.popup).toMatchObject({ stepIndex: 0, exitLabel: 'close' });
     await r.choose('ack');
     await r.until((s) => s.final === 'ok');
     expect(r.snapshot().message).toBe('Remembered · the OS keychain is unavailable');
     await r.closeDone('esc');
     expect((await running).status).toBe('deferred');
     expect(readFileSync(r.path, 'utf8')).toContain('keychain_unavailable_acknowledged = true');
+    r.close();
+  });
+});
+
+describe('the gaps the mutation review found (MVP-11 unit 6, round 1: M6)', () => {
+  it('P14: `Esc` on the key step reached from an environment-key consent in an explicit `/providers` returns to the list, not to the consent', async () => {
+    const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-9911' } });
+    const running = r.coordinator.run('explicit');
+    await r.choose('openai');
+    await r.choose('manual');
+    await r.until((s) => s.kind === 'password');
+    r.key(ESC);
+    await r.until((s) => s.kind === 'select');
+    expect(r.snapshot().message).toBe('Which provider?');
+    r.channel.flow.cancel();
+    await running;
+    r.close();
+  });
+
+  /** A keychain that is down until `recover()`: what a person who unlocked it and chose `Retry keychain` finds. */
+  function recoveringKeychain(): KeychainStore & {
+    readonly stored: Map<string, string>;
+    readonly recover: () => void;
+  } {
+    const inner = memoryKeychain();
+    let down = true;
+    return {
+      ...inner,
+      stored: inner.stored,
+      recover: () => {
+        down = false;
+      },
+      get: (account) => {
+        if (down) throw new KeychainUnavailableError('synthetic locked keychain');
+        return inner.get(account);
+      },
+    };
+  }
+
+  it('P22: `Retry keychain` after the keychain recovered goes on to the key step', async () => {
+    const keychain = recoveringKeychain();
+    const r = rig({ keychain });
+    const running = r.coordinator.run('automatic');
+    await r.until((s) => s.options.some((o) => o.value === 'retry'));
+    keychain.recover();
+    await r.choose('retry');
+    await r.until((s) => s.kind === 'password' || s.note === 'The keychain is still unavailable.');
+    expect(r.snapshot().kind, 'the key step opened').toBe('password');
+    r.channel.flow.cancel();
+    await running;
+    r.close();
+  });
+
+  it('P21: `Retry keychain` that finds a usable key ends the setup as ready, changing nothing', async () => {
+    const keychain = recoveringKeychain();
+    const r = rig({ keychain });
+    const running = r.coordinator.run('automatic');
+    await r.until((s) => s.options.some((o) => o.value === 'retry'));
+    keychain.recover();
+    keychain.stored.set(keychainAccount('anthropic'), 'synthetic-stored-key');
+    await r.choose('retry');
+    expect(await running).toEqual({ status: 'ready', changed: false });
+    expect(existsSync(r.path), 'nothing written').toBe(false);
+    r.close();
+  });
+
+  it.each([
+    ['home', 'Keychain is unavailable. Open /providers to retry.'],
+    ['standalone-chat', 'Keychain is unavailable. Restart this chat to retry setup.'],
+  ] as const)(
+    'P25: the automatic run of a keychain already remembered as unavailable asks nothing and says how to retry on %s',
+    async (surface, line) => {
+      const r = rig({ keychainDown: true, acknowledged: true, surface });
+      const outcome = await r.coordinator.run('automatic');
+      expect(outcome).toEqual({ status: 'deferred', changed: false, notice: line });
+      // On the Home the line is a notification (54 columns); a stand-alone chat writes it as a line of its own.
+      expect(surface === 'home' ? line.length : 0).toBeLessThanOrEqual(54);
+      expect(r.published.some((s) => s.kind === 'select')).toBe(false);
+      r.close();
+    },
+  );
+
+  it('P42: the consent of a Home that already has a usable key names no default model (none will be chosen)', async () => {
+    const r = rig({
+      env: {
+        RELAVIUM_ANTHROPIC_API_KEY: 'synthetic-usable-1',
+        OPENAI_API_KEY: 'synthetic-env-7782',
+      },
+    });
+    const running = r.coordinator.run('explicit');
+    await r.choose('openai');
+    await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === 'use'));
+    expect(r.snapshot().message).toBe(consentMessage('OPENAI_API_KEY', 'OpenAI'));
+    expect(r.snapshot().message).not.toContain('default model');
+    r.channel.flow.cancel();
+    await running;
+    r.close();
+  });
+
+  it('W08: a key pasted with whitespace around it is checked and stored trimmed', async () => {
+    const seen: string[] = [];
+    const r = rig({
+      validate: (_id, key) => {
+        seen.push(key);
+        return Promise.resolve(OK);
+      },
+    });
+    const running = r.coordinator.run('automatic');
+    await r.choose('gemini');
+    await r.paste(`  ${SECRET} `);
+    r.key(ENTER, '\r');
+    await r.until((s) => s.final !== undefined);
+    expect(seen).toEqual([SECRET]);
+    expect([...r.keychain.stored.values()]).toEqual([SECRET]);
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  it('W22: a starter model selected for this invocation only is named on the Done step', async () => {
+    const r = rig({ writeDefault: () => ({ kind: 'ephemeral' }) });
+    const running = r.coordinator.run('automatic');
+    await r.choose('gemini');
+    await r.paste(SECRET);
+    r.key(ENTER, '\r');
+    await r.until((s) => s.final !== undefined);
+    const model = KNOWN_PROVIDERS.gemini.starterModel;
+    expect(r.snapshot().message).toBe(`Connected · Google Gemini · ${model}`);
+    expect(r.snapshot().details).toEqual([
+      `${model} is selected for this invocation only; the default was not saved.`,
+    ]);
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  it('W16: the flow cancelled just after the key was written says the key is stored and the setup was interrupted, and registers no row', async () => {
+    let cancel = (): void => {};
+    const inner = memoryKeychain();
+    const r = rig({
+      keychain: {
+        ...inner,
+        stored: inner.stored,
+        set: (account, value) => {
+          inner.set(account, value);
+          cancel();
+        },
+      },
+    });
+    cancel = () => r.channel.flow.cancel();
+    const running = r.coordinator.run('automatic');
+    await r.choose('gemini');
+    await r.paste(SECRET);
+    r.key(ENTER, '\r');
+    const outcome = await running;
+    expect(outcome.notice).toBe('Google Gemini key stored · setup was interrupted');
+    expect(outcome.status, 'a stored key is a change').toBe('ready');
+    expect(r.written, 'no default was written after the cancel').toEqual([]);
+    r.close();
+  });
+});
+
+describe('what the moved consent and keychain steps say (A3: the mutation spot-check of the refactor)', () => {
+  /** Grant `OPENAI_API_KEY` on the first run and return the Done step. */
+  async function granted(options: Parameters<typeof rig>[0]): Promise<{
+    readonly r: ReturnType<typeof rig>;
+    readonly done: NativePromptSnapshot;
+    readonly running: Promise<unknown>;
+  }> {
+    const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-8120' }, ...options });
+    const running = r.coordinator.run('automatic');
+    await r.choose('use');
+    await r.until((s) => s.final !== undefined);
+    return { r, done: r.snapshot(), running };
+  }
+  const model = KNOWN_PROVIDERS.openai.starterModel;
+
+  it('a consent saved with an unconfirmed durability says so on its Done step', async () => {
+    const { r, done, running } = await granted({ unconfirmed: true });
+    expect(done.details.slice(0, 2)).toEqual([
+      'Saved to your global config; the variable stays yours.',
+      'Saved, but persistence after a crash is unconfirmed.',
+    ]);
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  it('a starter selected for this invocation only after a consent is named, and its Done step says the default was not saved', async () => {
+    const { r, done, running } = await granted({ writeDefault: () => ({ kind: 'ephemeral' }) });
+    expect(done.message).toBe(`Using OPENAI_API_KEY · OpenAI · ${model}`);
+    expect(done.details).toContain(
+      `${model} is selected for this invocation only; the default was not saved.`,
+    );
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  it('a starter saved with an unconfirmed durability after a consent says so', async () => {
+    const { r, done, running } = await granted({
+      writeDefault: () => ({ kind: 'saved', durability: 'unconfirmed' }),
+    });
+    expect(done.details).toContain(
+      'The default model was saved, but persistence after a crash is unconfirmed.',
+    );
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  it('a starter whose write fails with a config fault keeps the granted source and says to pick a model; any other fault is not swallowed', async () => {
+    const { r, done, running } = await granted({
+      writeDefault: () => {
+        throw new ConfigError('synthetic.toml', 'synthetic config fault');
+      },
+    });
+    expect(done.message).toBe('Using OPENAI_API_KEY · OpenAI');
+    expect(done.details).toContain(
+      'The starter default could not be saved; select a model with /models.',
+    );
+    await r.closeDone('esc');
+    await running;
+    r.close();
+    const other = rig({
+      env: { OPENAI_API_KEY: 'synthetic-env-8121' },
+      writeDefault: () => {
+        throw new Error('synthetic private failure');
+      },
+    });
+    const failure = other.coordinator.run('automatic').then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    await other.choose('use');
+    const caught = await failure;
+    expect(caught instanceof Error ? caught.message : caught).toBe('synthetic private failure');
+    other.close();
+  });
+
+  it('a stored key whose starter default was not saved names no model on its Done step', async () => {
+    const r = rig({ writeDefault: () => ({ kind: 'cancelled' }) });
+    const running = r.coordinator.run('automatic');
+    await r.choose('gemini');
+    await r.paste(SECRET);
+    r.key(ENTER, '\r');
+    await r.until((s) => s.final !== undefined);
+    expect(r.snapshot().message).toBe('Connected · Google Gemini');
+    expect(r.snapshot().details).toEqual([
+      'The default was not saved. Choose a model with /models.',
+    ]);
+    await r.closeDone('esc');
+    await running;
+    r.close();
+  });
+
+  /** A keychain that is down until `recover()`, with an environment key waiting for consent once it is up. */
+  function recovering(): KeychainStore & {
+    readonly stored: Map<string, string>;
+    readonly recover: () => void;
+  } {
+    const inner = memoryKeychain();
+    let down = true;
+    return {
+      ...inner,
+      stored: inner.stored,
+      recover: () => {
+        down = false;
+      },
+      get: (account) => {
+        if (down) throw new KeychainUnavailableError('synthetic locked keychain');
+        return inner.get(account);
+      },
+    };
+  }
+
+  it('`Esc` on the consent that `Retry keychain` led to in a `/providers` the person opened returns to the list', async () => {
+    const keychain = recovering();
+    const r = rig({ keychain, env: { OPENAI_API_KEY: 'synthetic-env-8122' } });
+    const running = r.coordinator.run('explicit');
+    await r.choose('anthropic');
+    await r.until((s) => s.options.some((o) => o.value === 'retry'));
+    keychain.recover();
+    await r.choose('retry');
+    await r.until((s) => s.options.some((o) => o.value === 'use'));
+    r.key(ESC);
+    await r.until((s) => s.kind === 'select' && s.message === 'Which provider?');
+    expect(
+      r.snapshot().options.some((o) => o.value === 'retry'),
+      'not the keychain step',
+    ).toBe(false);
+    r.channel.flow.cancel();
+    await running;
     r.close();
   });
 });

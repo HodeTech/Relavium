@@ -14,11 +14,11 @@ import {
 import { createStandardEnvKeyPolicy } from '../../../engine/standard-env-policy.js';
 import { createProviderSetupCoordinator } from '../../../home/provider-setup.js';
 import { POPUP_SELECT_SETTLE_MS } from '../../../popups/opening-guard.js';
-import { nativePopupFrameLines, nativePopupGeometry } from '../../../popups/popup-slot.js';
 import { KeychainUnavailableError, type KeychainStore } from '../../../secrets/keychain.js';
 import { captureIo } from '../../../test-support.js';
 import { bracketed } from '../harness-util.js';
 import { KEYS, type HomeMount, type NativePromptChannel } from './home-host.js';
+import { pinnedNativePopupBox, recordNativePopups } from './native-popup-recorder.js';
 import { recordBaseline } from './popup-fixture.js';
 import type { PopupBox } from './properties.js';
 import type { HomeSurface } from './surface-types.js';
@@ -39,6 +39,7 @@ let current: NativePromptChannel | undefined;
 function channelOf(m: HomeMount): NativePromptChannel {
   if (m.channel === undefined) throw new Error('the surface needs a native prompt channel');
   current = m.channel;
+  recordNativePopups(m.channel);
   return m.channel;
 }
 
@@ -61,27 +62,10 @@ const leave = (running: Promise<unknown>): void => {
 const settled = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
 
-/** Where the framed prompt the channel shows now is drawn in a cell, and its rows: the slot's own geometry and frame lines over it. */
+/** Where the framed prompt the channel shows now is drawn in a cell, and its rows: the slot's own geometry and frame lines over it, pinned as the flow's earlier steps left it (`native-popup-recorder.ts`). */
 export function liveProviderPopupBox(variant: Variant): PopupBox {
   if (current === undefined) throw new Error('no flow is open');
-  const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
-  const snapshot = current.ui.getSnapshot();
-  const { geometry, layout } = nativePopupGeometry(
-    snapshot,
-    placement,
-    variant.size,
-    variant.color,
-  );
-  if (!geometry.fits || layout === undefined || !layout.fits)
-    throw new Error('the framed prompt does not fit this cell');
-  return {
-    placement,
-    top: geometry.top,
-    left: geometry.left,
-    width: geometry.width,
-    height: geometry.height,
-    rows: nativePopupFrameLines(snapshot, geometry, layout, variant.color).map((line) => line.text),
-  };
+  return pinnedNativePopupBox(current, current.ui.getSnapshot(), variant);
 }
 
 const EMPTY_KEYCHAIN: KeychainStore = { get: () => null, set: () => {}, delete: () => false };
@@ -193,7 +177,7 @@ export const PROVIDER_FLOW_SURFACES: readonly HomeSurface[] = [
     exitKey: 'Esc',
     landmark: 'Which provider?',
     selectedRow: 'Anthropic',
-    legendRow: '↑/↓ select · Enter choose · Esc skip for now',
+    legendRow: '↑/↓ select · Enter choose · Esc back · [Ctrl+C] close',
     belowFloor: BELOW,
     popup: liveProviderPopupBox,
     setup: NATIVE,
@@ -229,7 +213,7 @@ export const PROVIDER_FLOW_SURFACES: readonly HomeSurface[] = [
       'The setup popup’s key step (a masked field), under a long custom endpoint that wraps whole',
     exitKey: 'Esc',
     landmark: 'Stored in your OS keychain',
-    legendRow: 'Enter continue · Esc back · [Ctrl+C] close',
+    legendRow: 'Enter check · Esc back · [Ctrl+C] close',
     belowFloor: BELOW,
     popup: liveProviderPopupBox,
     setup: NATIVE,
@@ -247,7 +231,7 @@ export const PROVIDER_FLOW_SURFACES: readonly HomeSurface[] = [
     exitKey: 'Esc',
     landmark: 'OPENAI_API_KEY is set for OpenAI.',
     selectedRow: 'Not now',
-    legendRow: '↑/↓ select · Enter choose · Esc skip for now',
+    legendRow: '↑/↓ select · Enter choose · Esc back · [Ctrl+C] close',
     belowFloor: BELOW,
     popup: liveProviderPopupBox,
     setup: NATIVE,
@@ -268,7 +252,7 @@ export const PROVIDER_FLOW_SURFACES: readonly HomeSurface[] = [
     exitKey: 'Esc',
     landmark: 'Retry keychain',
     selectedRow: 'Retry keychain',
-    legendRow: '↑/↓ select · Enter choose · Esc skip for now',
+    legendRow: '↑/↓ select · Enter choose · Esc back · [Ctrl+C] close',
     belowFloor: BELOW,
     popup: liveProviderPopupBox,
     setup: NATIVE,

@@ -85,16 +85,15 @@ type PromptUi = NonNullable<RootAppProps['nativePrompt']>;
  */
 const choose = (ui: PromptUi, value: string): Promise<void> => choosePopup(ui, value);
 /**
- * `Esc` on the first step of the automatic first run skips it; on this hand-made config the skip is remembered behind the rewrite disclosure,
- * drawn in the popup again, which ends in its Done step: closed here. Returns the config as the skip left it.
+ * `Esc` on the first step of the automatic first run skips it. On this hand-made config the skip is NOT remembered (a skip never rewrites a
+ * config that exists, C-F3): the popup closes and the config is byte for byte as it was. Returns the config as the skip left it.
  */
 async function skipFirstRun(ui: PromptUi, path: string): Promise<string> {
+  const before = readFileSync(path, 'utf8');
   ui.input('', { ...key, escape: true });
-  await vi.waitFor(() => expect(ui.getSnapshot().final).toBe('ok'), { timeout: STEP_WAIT_MS });
-  await closeDone(ui, 'esc');
   await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), { timeout: STEP_WAIT_MS });
   const text = readFileSync(path, 'utf8');
-  expect(text).toContain('first_run_setup_skipped = true');
+  expect(text).toBe(before);
   return text;
 }
 /** Past the approval's lockout that runs from the key that opened a flow (`resolveOpeningKey`), and the chord card's dwell. */
@@ -489,7 +488,7 @@ describe('driveHome native provider setup', () => {
         await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
         expect(readFileSync(f.path, 'utf8'), '`Not now` is no remembered skip').toBe(baseline);
       } else {
-        // `Esc` on the first step skips the first run: the skip is remembered (MVP-11 unit 6), the consent is not.
+        // `Esc` on the first step skips the first run; on this hand-made config the skip is not remembered (C-F3), and the consent is not.
         const skipped = await skipFirstRun(ui, f.path);
         expect(skipped).not.toContain('OPENAI_API_KEY');
       }
@@ -506,7 +505,8 @@ describe('driveHome native provider setup', () => {
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('/private/path');
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('secret');
     if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
-    // `Esc` at a key step with no step before it leaves the first run, as a skip (remembered); the key was never written.
+    // `Esc` at a key step with no step before it leaves the first run, as a skip (not remembered on this hand-made config); the key was
+    // never written.
     const skipped = await skipFirstRun(p.nativePrompt, f.path);
     expect(skipped).not.toContain('OPENAI_API_KEY');
     expect(p.controller.getSnapshot().keyless).toBe(true);
@@ -532,7 +532,7 @@ describe('driveHome native provider setup', () => {
 });
 
 it('retains the committed key fact when cancellation occurs inside keychain publication', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -551,30 +551,32 @@ it('retains the committed key fact when cancellation occurs inside keychain publ
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: {
+          get: () => null,
+          set: (_account, value) => {
+            stored.push(value);
+            channel.flow.cancel();
+          },
+          delete: () => false,
+        },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => {
+          throw new Error('must not run');
+        },
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: {
-        get: () => null,
-        set: (_account, value) => {
-          stored.push(value);
-          channel.flow.cancel();
-        },
-        delete: () => false,
-      },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => {
-        throw new Error('must not run');
-      },
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await running;
@@ -589,7 +591,7 @@ it('retains the committed key fact when cancellation occurs inside keychain publ
 });
 
 it('retains the saved default fact when cancellation follows publication', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -607,24 +609,26 @@ it('retains the saved default fact when cancellation follows publication', async
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: { get: () => null, set: () => {}, delete: () => false },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => {
+          channel.flow.cancel();
+          return { kind: 'saved', durability: 'confirmed' };
+        },
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: { get: () => null, set: () => {}, delete: () => false },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => {
-        channel.flow.cancel();
-        return { kind: 'saved', durability: 'confirmed' };
-      },
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await running;
@@ -637,7 +641,7 @@ it('retains the saved default fact when cancellation follows publication', async
 });
 
 it('does not swallow an unrelated storage failure merely because cancellation also arrived', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -655,28 +659,30 @@ it('does not swallow an unrelated storage failure merely because cancellation al
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: {
+          get: () => null,
+          set: () => {
+            channel.flow.cancel();
+            throw new Error('credential-7139');
+          },
+          delete: () => false,
+        },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => undefined,
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: {
-        get: () => null,
-        set: () => {
-          channel.flow.cancel();
-          throw new Error('credential-7139');
-        },
-        delete: () => false,
-      },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => undefined,
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await expect(running).rejects.toThrow('Provider setup failed.');

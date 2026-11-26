@@ -158,7 +158,7 @@ function rig(slug = 'code-review', over: { readonly port?: ExportPort } = {}) {
   const refusalUp = (): Promise<void> =>
     vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
   /**
-   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file its one option names; then `Enter` closes it and the flow's
+   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file it names (its first row); then `Enter` closes it and the flow's
    * result (the notification it asks the Home for: none, the step said it) is read.
    */
   const done = async () => {
@@ -168,10 +168,12 @@ function rig(slug = 'code-review', over: { readonly port?: ExportPort } = {}) {
     const step = channel.ui.getSnapshot();
     channel.ui.input('', { ...none, return: true });
     const notification = await result;
+    // The persistent last step draws the file it wrote ONCE, as the first row under the sentence (`home/framed-flow.ts`); a failed one names none.
+    const named = step.final === 'ok';
     return {
       message: step.message,
-      lines: step.details,
-      target: step.options[0]?.hint,
+      lines: named ? step.details.slice(1) : step.details,
+      target: named ? step.details[0] : undefined,
       tone: step.final,
       step,
       notification,
@@ -188,7 +190,7 @@ function rig(slug = 'code-review', over: { readonly port?: ExportPort } = {}) {
   };
 }
 
-describe('the card says where it would write, and how much, before it asks', () => {
+describe('the confirmation says where it would write, and how much, before it asks', () => {
   it('names the kind, the slug, the destination and the size, with Yes and No in words', async () => {
     const r = rig();
     await r.cardUp();
@@ -225,7 +227,7 @@ describe('the card says where it would write, and how much, before it asks', () 
     );
   });
 
-  it('groups the number and bounds the long parts, so the card keeps its shape', () => {
+  it('groups the number and bounds the long parts, so the popup keeps its shape', () => {
     const text = exportCardText({
       kind: 'agent',
       slug: 'a'.repeat(300),
@@ -242,7 +244,7 @@ describe('the card says where it would write, and how much, before it asks', () 
 });
 
 describe('the default is No', () => {
-  it('a bare letter, Enter, a paste and an arrow leave the card open and write nothing; only a chord answers', async () => {
+  it('a bare letter, Enter, a paste and an arrow leave the confirmation open and write nothing; only a chord answers', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', none);
@@ -282,8 +284,8 @@ describe('the default is No', () => {
   });
 });
 
-describe('a card closes with the work it asks about', () => {
-  it('a signal that aborts while the card is open closes it as a No and writes nothing', async () => {
+describe('a confirmation closes with the work it asks about', () => {
+  it('a signal that aborts while the confirmation is open closes it as a No and writes nothing', async () => {
     const channel = createNativePromptChannel({ now: () => 10_000 });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
     const stop = new AbortController();
@@ -309,7 +311,7 @@ describe('a card closes with the work it asks about', () => {
 });
 
 describe('Yes writes once, through the commit, and only past the chord guard', () => {
-  it('Ctrl+Y after the card has settled writes the file once; a second Ctrl+Y finds no card and writes nothing more', async () => {
+  it('Ctrl+Y after the confirmation has settled writes the file once; a second Ctrl+Y finds no confirmation and writes nothing more', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', ctrl);
@@ -330,7 +332,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.ui.getSnapshot().active).toBe(false);
   });
 
-  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the card has been on screen long enough', async () => {
+  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the confirmation has been on screen long enough', async () => {
     const r = rig();
     await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
     r.at(0);
@@ -346,7 +348,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+Y on a card that is not on screen is not a Yes', async () => {
+  it('Ctrl+Y on a confirmation that is not on screen is not a Yes', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility(() => false); // the exact frame was never measured and flushed
@@ -366,7 +368,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(existsSync(target())).toBe(false);
   });
 
-  it('a write the file system refuses at the commit is a reason on the Home, not a fault, and the card never overwrites', async () => {
+  it('a write the file system refuses at the commit is a reason on the Home, not a fault, and the export never overwrites', async () => {
     const r = rig();
     await r.cardUp();
     // Between the card and the answer something else took the place (a directory here).
@@ -380,7 +382,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
-  it('a file that appeared between the card and the answer is kept, not overwritten', async () => {
+  it('a file that appeared between the confirmation and the answer is kept, not overwritten', async () => {
     const r = rig();
     await r.cardUp();
     writeFileSync(target(), 'someone else wrote this\n');
@@ -392,8 +394,8 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
   });
 });
 
-describe('a refusal is shown in the card, and writes nothing', () => {
-  it('a destination that exists is refused before the card asks, and the file is kept as it was', async () => {
+describe('a refusal is shown in the popup, and writes nothing', () => {
+  it('a destination that exists is refused before the confirmation asks, and the file is kept as it was', async () => {
     writeFileSync(target(), 'pre-existing\n');
     const before = tree(root);
     const r = rig();
@@ -401,7 +403,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const card = r.ui.getSnapshot();
     expect(card.message).toBe("Cannot export 'code-review'.");
     expect(card.details.join('\n')).toContain(
-      `${DESTINATION} already exists, and this card never overwrites.`,
+      `${DESTINATION} already exists, and this export never overwrites.`,
     );
     expect(card.final, 'drawn as what failed').toBe('failed');
     expect(card.options.map((option) => option.label)).toEqual([EXPORT_CLOSE_LABEL]);
@@ -415,7 +417,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     expect(r.ui.getSnapshot().active).toBe(false);
   });
 
-  it('refuses an id two workflow files declare, before the card asks, naming both files', async () => {
+  it('refuses an id two workflow files declare, before the confirmation asks, naming both files', async () => {
     writeFileSync(join(root, '.relavium', 'workflows', 'code-review-copy.relavium.yaml'), WORKFLOW);
     const before = tree(root);
     const r = rig();
@@ -458,7 +460,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     },
   );
 
-  it('opens no card for a Home that is closing, and prepares nothing', async () => {
+  it('opens no popup for a Home that is closing, and prepares nothing', async () => {
     const prepare = vi.fn();
     const channel = createNativePromptChannel();
     await expect(
@@ -510,7 +512,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
   });
 });
 
-describe('the card fits 80×24 and can be answered there', () => {
+describe('the popup fits 80×24 and can be answered there', () => {
   it('draws within 23 rows and 80 columns with the longest destination, and a Ctrl+Y at that size writes', async () => {
     // A destination as long as the card allows, so the wrapped card is as tall as it gets.
     const long = `${'nested-directory/'.repeat(12)}code-review.relavium.yaml`;

@@ -1,5 +1,5 @@
 import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
-import { flowText } from './flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
 import type { NativeChordPort, NativePromptFlow } from './native-prompt-channel.js';
 import { clipLine } from './sheet-frame.js';
 
@@ -56,7 +56,7 @@ const REVIEW = 0;
 
 export const EXPORT_ALLOW_LABEL = 'Write the file';
 export const EXPORT_DENY_LABEL = 'Write nothing';
-export const EXPORT_CLOSE_LABEL = 'Close';
+export const EXPORT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 /** The notification when the popup was answered with anything but a Yes. */
 export const EXPORT_NOT_WRITTEN = 'Nothing was written.';
 /** What the Done step says when the write itself was refused. */
@@ -154,7 +154,6 @@ export async function runExportCard(
       await flow.done({
         message: EXPORT_FAILED,
         lines: [shown(attempt.reason, REASON_COLUMNS)],
-        label: EXPORT_CLOSE_LABEL,
         tone: 'failed',
       });
     return undefined;

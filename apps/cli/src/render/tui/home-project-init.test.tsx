@@ -29,11 +29,16 @@ import { RootApp } from './home-app.js';
 import { createNativePromptChannel } from './native-prompt-channel.js';
 import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { bracketed, settleFrames } from './harness-util.js';
-import { APPROVAL_QUIET_MS, APPROVAL_SETTLE_MS } from './tool-review-model.js';
+import { APPROVAL_LOCKOUT_MS, APPROVAL_QUIET_MS, APPROVAL_SETTLE_MS } from './tool-review-model.js';
 
 /** A real wait past the flow's opening settle and the chord card's dwell and quiet gap (the channel's clock is the real one). */
 const PAST_THE_GUARDS_MS =
   Math.max(POPUP_SELECT_SETTLE_MS, APPROVAL_SETTLE_MS) + APPROVAL_QUIET_MS + 150;
+/**
+ * A real wait, from the moment the card is on screen, past the lockout that runs from the moment it opened (the `/init` card is the flow's
+ * first prompt: no answer came before it, so its own opening is what a held key meets). The other guards are shorter.
+ */
+const PAST_THE_LOCKOUT_MS = APPROVAL_LOCKOUT_MS + 150;
 /** How long a key that must change nothing is watched. */
 const WATCH_MS = 150;
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -188,9 +193,9 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
     await vi.waitFor(() => expect(shownNow()).toBe(true));
     expect(existsSync(join(cwd, '.relavium'))).toBe(false);
   };
-  /** `Ctrl+Y` once, after the card's guards: a key pressed inside them would be refused and restart the lockout. */
+  /** `Ctrl+Y` once, after the card's guards (its lockout the longest): a key pressed inside them would be refused and restart the lockout. */
   const approve = async (): Promise<void> => {
-    await pause(PAST_THE_GUARDS_MS);
+    await pause(PAST_THE_LOCKOUT_MS);
     input.push(CTRL_Y);
   };
   /** The Done step, measured and flushed: what it says and what its one option names. */
@@ -260,7 +265,9 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       expect(done.details).toEqual(
         expect.arrayContaining(['.relavium/', '.relavium/workflows/', '.relavium/agents/']),
       );
-      expect(done.options[0]?.hint).toBe('.relavium/');
+      // The target is drawn once, as the first row under the sentence; the step's one option (`Close`) names nothing.
+      expect(done.details[0]).toBe('.relavium/');
+      expect(done.options[0]?.hint).toBeUndefined();
       expect(f.frame()).toContain(INIT_CREATED);
       // the write happened behind the Done step, before it closed
       expect(readdirSync(join(f.cwd, '.relavium')).sort()).toEqual(['agents', 'workflows']);
@@ -317,7 +324,7 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       expect(f.announced).toEqual([INIT_CANCELLED]);
     },
   );
-  it('a Ctrl+Y inside the card’s dwell creates nothing (the chord guard is the channel’s, unchanged)', async () => {
+  it('a Ctrl+Y inside the card’s dwell and the lockout that runs from its opening creates nothing (the chord guard is the channel’s)', async () => {
     const f = fixture(alternate, false);
     await f.open();
     f.input.push(CTRL_Y);

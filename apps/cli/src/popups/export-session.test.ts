@@ -10,6 +10,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { createChordGuard } from '../render/tui/chord-guard.js';
 import { CTRL, ENTER, ESC } from './doctor.test-support.js';
 import {
+  EXPORT_ALLOW_LABEL,
+  EXPORT_FAILED as HOME_EXPORT_FAILED,
+} from '../render/tui/export-card.js';
+import {
+  EXPORT_DONE,
   EXPORT_FAILED,
   EXPORT_NEW_FILE,
   EXPORT_OVERWRITES,
@@ -102,7 +107,7 @@ describe('the confirmation says where the scaffold goes before anything is writt
     expect(r.content().kind).toBe('report');
   });
 
-  it('names the file project-relative, says it is a new file, and states the review sentence; its legend is `Ctrl+Y export · Esc cancel`', async () => {
+  it('names the file project-relative, says it is a new file, and states the review sentence; its legend is the Defined export’s: `Ctrl+Y Write the file · Esc denies`', async () => {
     const { r } = await opened();
     const words = r.words();
     expect(words.split('\n')[0]).toBe(TARGET);
@@ -113,8 +118,11 @@ describe('the confirmation says where the scaffold goes before anything is writt
     expect(frame.spec.title).toBe('/export');
     expect(frame.spec.origin).toBe('chat');
     const legend = popupLegend(frame);
-    expect(legend.items).toEqual([{ keys: 'Ctrl+Y', verb: 'export' }]);
-    expect(JSON.stringify(legend.exit)).toContain('cancel');
+    // one answer, one way out, in the words of `/init`, `/import`, `/pricing` and the Defined tab's `x`: same effect, same legend
+    expect(legend.items).toEqual([{ keys: 'Ctrl+Y', verb: EXPORT_ALLOW_LABEL }]);
+    expect(EXPORT_ALLOW_LABEL).toBe('Write the file');
+    expect(JSON.stringify(legend.exit)).toContain('denies');
+    expect(JSON.stringify(legend.exit)).not.toContain('cancel');
   });
 
   it('says so when the write rewrites this session’s own earlier export', async () => {
@@ -154,7 +162,9 @@ describe('only Ctrl+Y answers it, through the host’s chord guard', () => {
     ctrlY(r);
     expect(fake.calls).toEqual(['prepare', 'prepare', 'commit']);
     expect(r.step()).toBe(EXPORT_STEP.done);
-    expect(r.words()).toBe(`Exported · ${TARGET}`);
+    // what was exported, then the file on a row of its own (as every flow's last step names its target), once
+    expect(r.words()).toBe(`${EXPORT_DONE}\n${TARGET}`);
+    expect(r.words().split(TARGET)).toHaveLength(2);
     expect(r.notifications.getSnapshot().current).toBeUndefined();
     // the Done step takes no chord: a second Ctrl+Y writes nothing more, and Enter closes it
     ctrlY(r);
@@ -215,6 +225,25 @@ function composerKeys(r: ReportRig, times: readonly number[]): void {
     composer.stamp();
   }
 }
+
+describe('the result says it in the Defined export’s words, with the file on a row of its own', () => {
+  it('a failed write says `Not exported.` as the Defined tab does: one name is one text', () => {
+    expect(EXPORT_FAILED).toBe(HOME_EXPORT_FAILED);
+    expect(EXPORT_FAILED).toBe('Not exported.');
+  });
+
+  it('the file of a write that was made is its own row, through the full scrub (the Done step draws no hostile text)', async () => {
+    const hostile = `.relavium/workflows/\u001b]52;c;cGF5bG9hZA==\u0007x\u202e[Ctrl+Y]\u200by ${'z'.repeat(150)}.relavium.yaml`;
+    const { r } = await opened(fakeExport({ target: hostile, overwrites: false }));
+    ctrlY(r);
+    expect(r.step()).toBe(EXPORT_STEP.done);
+    const rows = r.words().split('\n');
+    expect(rows[0], 'what was exported, then the file').toBe(EXPORT_DONE);
+    expect(rows.length).toBeGreaterThan(1);
+    for (const bad of ['\u001b', '\u0007', '\u202e', '\u200b', '[Ctrl+Y]'])
+      expect(r.words(), JSON.stringify(bad)).not.toContain(bad);
+  });
+});
 
 describe('a Ctrl+Y held through the open never writes (the held-key matrix)', () => {
   const DELAYS = [250, 600, 1000, 1400, 1800] as const;

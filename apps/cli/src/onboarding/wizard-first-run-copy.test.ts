@@ -10,7 +10,7 @@ import type { CliIo } from '../process/io.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { KeychainUnavailableError } from '../secrets/keychain.js';
 import { keyStepNote, leftoverSetupNote, setupSkippedNotice } from './setup-notes.js';
-import { runOnboardingWizard, type OnboardingDefaultResult } from './wizard.js';
+import { runNativeSetup, type OnboardingDefaultResult } from './wizard.js';
 
 /**
  * What the native first run SAYS (MVP-11 Step 2.4, ADR-0146 §6), read from the native prompt channel the Home and a stand-alone chat both
@@ -104,12 +104,24 @@ async function run(options: {
             { cancel: () => {}, cleanup: () => Promise.resolve() },
           )
         : undefined;
-    const running = runOnboardingWizard({
-      ...(workOwner === undefined ? {} : { workOwner }),
-      ...(options.initialProvider === undefined
-        ? {}
-        : { initialProvider: options.initialProvider }),
-      native: {
+    const running = runNativeSetup(
+      {
+        ...(workOwner === undefined ? {} : { workOwner }),
+        ...(options.initialProvider === undefined
+          ? {}
+          : { initialProvider: options.initialProvider }),
+        io,
+        store: createProviderStore(client.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: {
+          get: () => null,
+          set: options.keychainSet ?? (() => {}),
+          delete: () => false,
+        },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve(options.validation),
+        writeDefaultModel,
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
@@ -119,17 +131,7 @@ async function run(options: {
           : { selectStarterDefault: options.selectStarterDefault }),
         ...(options.surface === undefined ? {} : { surface: options.surface }),
       },
-      io,
-      store: createProviderStore(client.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: {
-        get: () => null,
-        set: options.keychainSet ?? (() => {}),
-        delete: () => false,
-      },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve(options.validation),
-      writeDefaultModel,
-    });
+    );
     // The provider list (when no provider was given) takes its first option; the key is pasted; each later card takes the answer in turn.
     if (options.initialProvider === undefined) {
       await until(() => channel.ui.getSnapshot().kind === 'select');
@@ -243,7 +245,7 @@ describe('a provider is named the way a person reads it', () => {
     expect(text).not.toContain('private store detail');
   });
 
-  it('an unverified save says how to check it without naming a doctor check that does not exist', async () => {
+  it('an unverified save says how to check it with the check that exists on this surface (the doctor’s deep tier), not by opening a chat', async () => {
     const result = await run({
       initialProvider: 'openai',
       validation: NETWORK,
@@ -251,8 +253,9 @@ describe('a provider is named the way a person reads it', () => {
     });
     const text = result.notes.join('\n');
     expect(text).toContain(
-      "Saved: Your OpenAI key is in the OS keychain, but it couldn't be verified now. Open a chat to check it.",
+      "Saved: Your OpenAI key is in the OS keychain, but it couldn't be verified now. Check it later with /doctor, then [d].",
     );
+    expect(text).not.toContain('Open a chat');
     expect(text).not.toContain('Run /doctor');
   });
 

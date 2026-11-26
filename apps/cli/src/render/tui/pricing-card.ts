@@ -9,11 +9,12 @@ import {
 } from '../../commands/pricing-fields.js';
 import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
-import { flowText } from './flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
 import {
   NATIVE_PROMPT_BACK,
   type NativeChordPort,
   type NativePromptFlow,
+  type NativePromptOption,
 } from './native-prompt-channel.js';
 import { clipLine } from './sheet-frame.js';
 
@@ -35,11 +36,16 @@ import { clipLine } from './sheet-frame.js';
  * - **The default is No.** `Ctrl+N`, `Esc`, `Ctrl+C`, a flow cancelled under the card, a closed Home and every key that is not a chord
  *   all write nothing: only an `allow` the channel returned is a Yes. The card says that the override belongs to this machine's operator.
  * - **A refusal is a sentence, never a crash.** The pairing rule (input and output are set together, or not at all) and every other
- *   refusal of the core comes back as text in the card's place, with a way to change the prices or to close it; nothing is written. A
- *   write the database refuses is a fixed sentence.
- * - **The result is the Done step** (§6): what was recorded (or removed) and the rates, closed by `Enter` or `Esc`; a write the database
- *   refused says so there. Nothing goes to the Home's notice: leaving with nothing written is one notification, the sentence
- *   {@link runPricingCard} resolves with.
+ *   refusal of the core comes back as text in the popup's place; nothing is written. Where the prices could be changed to get past it the
+ *   person is asked (`Change the prices` or close); where nothing the form asks can help, it ends in a failed Done step. A write the
+ *   database refuses is a fixed sentence.
+ * - **A model whose provider has no row is refused before any price is asked** (a price is keyed by the provider, and the registry holds only
+ *   a provider the person has connected): the failed Done step says to connect it with `/providers`, in the Home's words. The shell core's
+ *   own refusal of the same thing names `relavium provider …`, which a popup never says, so every reason is read through
+ *   {@link pricingRefusalText} on its way to the screen.
+ * - **The result is the Done step** (§6): what was recorded (or removed) and the core's own sentence, which carries the rates once, closed by
+ *   `Enter` or `Esc`; a write the database refused says so there. Nothing goes to the Home's notice: leaving with nothing written is one
+ *   notification, the sentence {@link runPricingCard} resolves with.
  *
  * **Every string a model, a provider or the core supplied passes the full scrub ({@link flowText}) before it reaches the channel**, and a
  * model id that the scrub would change is refused before the card asks (the card shows the id that is stored, or none); the bounds here
@@ -110,7 +116,10 @@ export type PricingPrepared =
 export interface PricingPort {
   /** The models the picker offers: the catalog the `/models` picker lists. Read when the form opens. */
   readonly models: () => readonly PricingModelChoice[];
-  /** The registered providers' slugs, for a model id the catalog does not list. */
+  /**
+   * The registered providers' slugs: the ones offered for a model id the catalog does not list, and the ones a model of the catalog can be
+   * priced under (the catalog lists models of providers the person has not connected, and a price is keyed by a provider that has a row).
+   */
   readonly providers: () => readonly string[];
   /** What a person reads for a provider's slug (`OpenAI`, not `openai`); absent ⇒ the slug itself. */
   readonly providerName?: (slug: string) => string;
@@ -123,7 +132,7 @@ export const PRICING_OTHER_MODEL = 'Another model…';
 export const PRICING_SET_ALLOW_LABEL = 'Record the price';
 export const PRICING_CLEAR_ALLOW_LABEL = 'Remove the override';
 export const PRICING_DENY_LABEL = 'Write nothing';
-export const PRICING_CLOSE_LABEL = 'Close';
+export const PRICING_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 export const PRICING_EDIT_LABEL = 'Change the prices';
 /** The notification when the card was answered with anything but a Yes, or the form was left. */
 export const PRICING_NOT_RECORDED = 'Nothing was written.';
@@ -190,21 +199,57 @@ export function pricingCardText(offer: PricingOffer): PricingCardText {
   };
 }
 
-/** What the refusal step says above the reason (the prepare's own sentence, which says why): a set and a clear alike changed nothing. */
+/**
+ * What a failed last step says above the reason (the prepare's own sentence, which says why) where nothing the form asks can change the
+ * outcome: a clear that has nothing to clear, a model whose provider is not connected. It is the Done step's message, so the person reads
+ * the result where results are, and it is true of a set and a clear alike: nothing was changed.
+ */
 export const PRICING_REFUSED = 'Nothing was changed.';
+/**
+ * What the question says above the reason where the prices could be changed to get past the refusal (the pairing rule, a ceiling): the
+ * person is asked, so it is a step of the form and not a result.
+ */
+export const PRICING_CANNOT_RECORD = 'These prices cannot be recorded.';
 
-/** What the Done step says for a write that was made: what was recorded (or removed) and the rates, and the core's own sentence under it. */
+/**
+ * What a model whose provider has no row says, right after the model is chosen and before any price is asked. A price is keyed by the model
+ * AND the provider, and only a provider the person connected has a row: for a SET the remedy is the Home's own `/providers`; for a CLEAR
+ * there can be no override of theirs, so there is nothing to remove and nothing to connect.
+ */
+export function pricingUnconnectedText(action: 'set' | 'clear', providerName: string): string {
+  const name = clipLine(flowText(providerName), MODEL_COLUMNS);
+  return action === 'set'
+    ? `Connect ${name} with /providers first, then set its prices.`
+    : `${name} is not connected, so there is no price of yours to clear.`;
+}
+
+/** The shell core's refusal of a provider that has no row (`unknown provider 'x' — register it first (e.g. `relavium provider add x` …)`). */
+const UNKNOWN_PROVIDER_REASON = /^unknown provider '/u;
+/** Any shell remedy for a provider (`relavium provider add`, `provider set-key`): a popup names none. */
+const SHELL_PROVIDER_REMEDY = /\brelavium\s+provider\b|\bprovider\s+(?:add|set-key)\b/u;
+
+/**
+ * A refusal of the core as the popup says it: the shell core's sentence about a provider that is not registered names `relavium provider …`,
+ * which a person at this prompt cannot and should not type, so it is replaced by `unconnected` (the Home's own words for it). The ONE place
+ * every reason passes through before it is drawn; any other refusal is the core's own sentence, which says why in the field's label.
+ */
+export function pricingRefusalText(reason: string, unconnected: string): string {
+  return UNKNOWN_PROVIDER_REASON.test(reason) || SHELL_PROVIDER_REMEDY.test(reason)
+    ? unconnected
+    : reason;
+}
+
+/**
+ * What the Done step says for a write that was made: what was recorded (or removed), and the core's own sentence under it, which carries the
+ * rates (a price is said once: the sentence is the stored integers printed exactly, so a second copy in the headline could only drift).
+ */
 export function pricingDoneText(
   offer: PricingOffer,
   written: string,
 ): { readonly message: string; readonly lines: readonly string[] } {
   const model = clipLine(flowText(offer.model), MODEL_COLUMNS);
-  const rates = offer.prices.map((price) => `${price.id} ${price.amount}`).join(', ');
   return {
-    message:
-      offer.kind === 'clear'
-        ? `Removed · ${model}`
-        : `Recorded · ${model}${rates === '' ? '' : ` · ${rates}`}`,
+    message: `${offer.kind === 'clear' ? 'Removed' : 'Recorded'} · ${model}`,
     lines: [clipLine(flowText(written), REASON_COLUMNS)],
   };
 }
@@ -248,10 +293,10 @@ export const PRICING_MODEL_ID_FAULTS: Readonly<Record<PricingModelIdFault, strin
   empty: 'Type a model id.',
   // `padded` and `invisible` are refused by the SHELL's core too (`modelIdFault`), so no command is named: there is none that prices them.
   padded:
-    'This model id starts or ends with a space, so the card cannot show it as it is stored, and it cannot be priced.',
+    'This model id starts or ends with a space, so this screen cannot show it as it is stored, and it cannot be priced.',
   invisible:
     'This model id has invisible or formatting characters, so it cannot be shown safely, and it cannot be priced.',
-  'too-long': `This model id is longer than the ${String(MODEL_COLUMNS)} columns the card can show in full, so it cannot be priced from here. Use relavium models pricing.`,
+  'too-long': `This model id is longer than the ${String(MODEL_COLUMNS)} columns this screen can show in full, so it cannot be priced from here. Use relavium models pricing.`,
   unsafe:
     'This model id has characters that cannot be shown safely, so it cannot be priced from here. Use relavium models pricing.',
 };
@@ -276,7 +321,11 @@ interface Draft {
   readonly prices: Map<PricingFieldId, string>;
 }
 
-type StepResult = 'next' | 'back' | 'stop';
+/**
+ * What a step left: on to the next, back one, the flow left, or (the model step only) a model whose provider has no row, which the form
+ * says before it asks a price.
+ */
+type StepResult = 'next' | 'back' | 'stop' | 'unconnected';
 
 interface Step {
   readonly applies: (draft: Draft) => boolean;
@@ -286,6 +335,44 @@ interface Step {
 /** An answer that is not text: `Esc` where it steps back one step, or anything else (`Ctrl+C`, a closed Home) which leaves the flow. */
 const awayFrom = (answer: symbol): 'back' | 'stop' =>
   answer === NATIVE_PROMPT_BACK ? 'back' : 'stop';
+
+/**
+ * The row the model list opens on when the person comes back to it (`Esc` from a price): the model they chose, or `Another model…` when it
+ * was typed, so a step back does not throw the cursor to the first of the catalog's many rows. None the first time.
+ */
+function modelInitialValue(
+  draft: Draft,
+  choices: readonly PricingModelChoice[],
+): string | undefined {
+  const { target } = draft;
+  if (target === undefined) return undefined;
+  const at = choices.findIndex(
+    (choice) => choice.modelId === target.modelId && choice.provider === target.provider,
+  );
+  return at >= 0 ? String(at) : OTHER_VALUE;
+}
+
+/** The model list's rows: every model the port offers, then the way to type one it does not. */
+function modelOptions(choices: readonly PricingModelChoice[]): readonly NativePromptOption[] {
+  return [
+    ...choices.map((choice, index) => ({
+      value: String(index),
+      label: clipLine(flowText(choice.modelId), MODEL_COLUMNS),
+      // the port's display text: a known provider's display name and the port's own words, its separator the product's own
+      hint: clipLine(choice.hint, HINT_COLUMNS),
+    })),
+    { value: OTHER_VALUE, label: PRICING_OTHER_MODEL, hint: 'a model id the list does not show' },
+  ];
+}
+
+/** What a row of the model list stands for, or none for a value the list does not hold. */
+function listedTarget(
+  choices: readonly PricingModelChoice[],
+  answer: string,
+): PricingTarget | undefined {
+  const choice = choices[Number(answer)];
+  return choice === undefined ? undefined : { modelId: choice.modelId, provider: choice.provider };
+}
 
 /** The steps of the form, in order, each asked on its step of the rail. The per-field steps are one per row of the field table. */
 function stepsOf(
@@ -348,39 +435,28 @@ function stepsOf(
     }
   };
 
+  /** The model is chosen: the form goes on, unless its provider has no row (nothing can be priced under one that is not connected). */
+  const chosen = (draft: Draft, target: PricingTarget): 'next' | 'unconnected' => {
+    draft.target = target;
+    return port.providers().includes(target.provider) ? 'next' : 'unconnected';
+  };
+
   const model: Step = {
     applies: () => true,
     run: async (draft) => {
+      const initialValue = modelInitialValue(draft, choices);
       for (;;) {
         const answer = await flow.at(RAIL.model).select({
           message: 'Which model?',
-          options: [
-            ...choices.map((choice, index) => ({
-              value: String(index),
-              label: clipLine(flowText(choice.modelId), MODEL_COLUMNS),
-              // the port's display text: a known provider's display name and the port's own words, its separator the product's own
-              hint: clipLine(choice.hint, HINT_COLUMNS),
-            })),
-            {
-              value: OTHER_VALUE,
-              label: PRICING_OTHER_MODEL,
-              hint: 'a model id the list does not show',
-            },
-          ],
+          options: modelOptions(choices),
+          ...(initialValue === undefined ? {} : { initialValue }),
           escape: 'back',
         });
         if (typeof answer !== 'string') return awayFrom(answer);
-        if (answer === OTHER_VALUE) {
-          const typed = await askOther();
-          if (typed === 'back') continue;
-          if (typed === 'stop') return 'stop';
-          draft.target = typed;
-          return 'next';
-        }
-        const choice = choices[Number(answer)];
-        if (choice === undefined) return 'stop';
-        draft.target = { modelId: choice.modelId, provider: choice.provider };
-        return 'next';
+        const target = answer === OTHER_VALUE ? await askOther() : listedTarget(choices, answer);
+        if (target === 'back') continue;
+        if (target === 'stop' || target === undefined) return 'stop';
+        return chosen(draft, target);
       }
     },
   };
@@ -405,12 +481,15 @@ function stepsOf(
   return [action, model, ...fields];
 }
 
-/** Walk the steps from `from`, forward on an answer and back on `Esc`; leaving the first step leaves the flow. */
+/**
+ * Walk the steps from `from`, forward on an answer and back on `Esc`; leaving the first step leaves the flow, and a model whose provider
+ * has no row ends the walk before any price is asked.
+ */
 async function walk(
   steps: readonly Step[],
   draft: Draft,
   from: number,
-): Promise<'done' | 'stopped'> {
+): Promise<'done' | 'stopped' | 'unconnected'> {
   let index = from;
   let direction: 1 | -1 = 1;
   while (index >= 0 && index < steps.length) {
@@ -421,6 +500,7 @@ async function walk(
     }
     const result = await step.run(draft);
     if (result === 'stop') return 'stopped';
+    if (result === 'unconnected') return 'unconnected';
     direction = result === 'back' ? -1 : 1;
     index += direction;
   }
@@ -428,19 +508,28 @@ async function walk(
 }
 
 /**
- * The refusal where the card would have been, on the rail's Confirm step: the reason, and the ways out. Resolves `true` when the person wants
- * to change the prices. Whatever closes it writes nothing.
+ * The last step of a refusal that nothing the form asks can change (a clear with nothing to clear, a model whose provider is not
+ * connected): a failed Done, so the result is read where results are, and the way out is to close it. Writes nothing.
  */
-async function showRefusal(
-  flow: FramedChordFlow,
-  reason: string,
-  canEdit: boolean,
-): Promise<boolean> {
-  const answer = await flow.at(RAIL.confirm).select({
+async function failWith(flow: FramedChordFlow, reason: string): Promise<undefined> {
+  await flow.done({
     message: PRICING_REFUSED,
+    lines: [clipLine(flowText(reason), REASON_COLUMNS)],
+    tone: 'failed',
+  });
+  return undefined;
+}
+
+/**
+ * The refusal where the card would have been, on the rail's Confirm step, for a SET whose prices could be changed to get past it: the
+ * reason, and the ways out. Resolves `true` when the person wants to change the prices. Whatever closes it writes nothing.
+ */
+async function askToChange(flow: FramedChordFlow, reason: string): Promise<boolean> {
+  const answer = await flow.at(RAIL.confirm).select({
+    message: PRICING_CANNOT_RECORD,
     details: [clipLine(flowText(reason), REASON_COLUMNS)],
     options: [
-      ...(canEdit ? [{ value: 'edit', label: PRICING_EDIT_LABEL }] : []),
+      { value: 'edit', label: PRICING_EDIT_LABEL },
       { value: 'close', label: PRICING_CLOSE_LABEL },
     ],
     escape: 'cancel',
@@ -463,6 +552,7 @@ async function confirmAndCommit(
   flow: FramedChordFlow,
   prepared: Extract<PricingPrepared, { readonly ok: true }>,
   signal: AbortSignal,
+  say: (reason: string) => string,
 ): Promise<string | undefined> {
   const text = pricingCardText(prepared.offer);
   const answer = await flow.at(RAIL.confirm).chord({ ...text, escape: 'cancel', signal });
@@ -472,16 +562,51 @@ async function confirmAndCommit(
   else
     await flow.done({
       message: PRICING_FAILED,
-      lines: [clipLine(flowText(attempt.reason), REASON_COLUMNS)],
-      label: PRICING_CLOSE_LABEL,
+      lines: [clipLine(flowText(say(attempt.reason)), REASON_COLUMNS)],
       tone: 'failed',
     });
   return undefined;
 }
 
+/** A draft whose first two answers are in (what to do, and to which model), and how its walk ended. */
+interface Asked {
+  readonly action: 'set' | 'clear';
+  readonly target: PricingTarget;
+  readonly draft: Draft;
+  readonly walked: 'done' | 'unconnected';
+}
+
+/** The answer of {@link prepareAndConfirm} that sends the person back to the prices (a notification, or none, ends the form). */
+const CHANGE_PRICES = Symbol('change the prices');
+
+/**
+ * Prepare what was asked and say what comes of it: the card and its Done step; a refusal a price could get past, asked about; one that nothing
+ * the form asks can change (a model whose provider is not connected, a clear with nothing to clear), a failed Done step.
+ */
+async function prepareAndConfirm(
+  flow: FramedChordFlow,
+  port: PricingPort,
+  asked: Asked,
+  signal: AbortSignal,
+): Promise<string | undefined | typeof CHANGE_PRICES> {
+  const { action, target, draft, walked } = asked;
+  // What a provider with no row is called, in the Home's words: said once the model is chosen, and again for the core's own refusal of it.
+  const unconnected = pricingUnconnectedText(
+    action,
+    port.providerName?.(target.provider) ?? target.provider,
+  );
+  if (walked === 'unconnected') return failWith(flow, unconnected);
+  const say = (reason: string): string => pricingRefusalText(reason, unconnected);
+  const prepared = port.prepare(target, valuesOf(action, draft));
+  if (prepared.ok) return confirmAndCommit(flow, prepared, signal, say);
+  if (action === 'clear') return failWith(flow, say(prepared.reason));
+  // The refusal was read where it was shown: closing it leaves nothing more to say.
+  return (await askToChange(flow, say(prepared.reason))) ? CHANGE_PRICES : undefined;
+}
+
 /**
  * Walk the steps, prepare what was asked, and either confirm it or, on a refusal, offer to change the prices (back to the first
- * price's step) until the person writes, declines or leaves.
+ * price's step) until the person writes, declines or leaves. A refusal that no price can change ends in a failed Done step.
  */
 async function askAndWrite(
   flow: FramedChordFlow,
@@ -494,13 +619,12 @@ async function askAndWrite(
   const firstField = steps.length - PRICING_FIELDS.length;
   let from = 0;
   for (;;) {
-    if ((await walk(steps, draft, from)) === 'stopped') return PRICING_NOT_RECORDED;
+    const walked = await walk(steps, draft, from);
     const { action, target } = draft;
-    if (action === undefined || target === undefined) return PRICING_NOT_RECORDED;
-    const prepared = port.prepare(target, valuesOf(action, draft));
-    if (prepared.ok) return confirmAndCommit(flow, prepared, signal);
-    // The refusal was read where it was shown: closing it leaves nothing more to say.
-    if (!(await showRefusal(flow, prepared.reason, action === 'set'))) return undefined;
+    if (walked === 'stopped' || action === undefined || target === undefined)
+      return PRICING_NOT_RECORDED;
+    const outcome = await prepareAndConfirm(flow, port, { action, target, draft, walked }, signal);
+    if (outcome !== CHANGE_PRICES) return outcome;
     from = firstField;
   }
 }

@@ -1,5 +1,5 @@
 import { framedFlow, type FramedChordFlow } from '../../home/framed-flow.js';
-import { flowText } from './flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from './flow-text.js';
 import type { NativeChordPort, NativePromptFlow } from './native-prompt-channel.js';
 import { clipLine } from './sheet-frame.js';
 
@@ -16,7 +16,8 @@ import { clipLine } from './sheet-frame.js';
  *   `Ctrl+Y`, accepted by the guard, runs the commit, and it runs it once.
  * - **The default is No.** `Ctrl+N`, `Esc`, `Ctrl+C`, a flow cancelled under the card, a closed Home and every key that is not a chord
  *   all write nothing: only an `allow` the channel returned is a Yes. **It never overwrites**: an id the project already has, or a
- *   destination that is already taken, is a refusal before it asks, and its words name the shell command that does overwrite.
+ *   destination that is already taken, is a refusal before it asks, and its words name the shell command that does overwrite (the one
+ *   exception `no-shell-remedy.test.ts` lists: the popup has no way to replace a file).
  * - **A refusal is a step too.** When the import cannot be prepared the person is shown the reason, in the same place, with one way to
  *   close it; nothing is written and nothing is asked.
  * - **The result is the Done step** (§6): what was imported and where it went, project-relative, closed by `Enter` or `Esc`; a write that
@@ -68,7 +69,7 @@ const REVIEW = 1;
 export const IMPORT_PATH_MESSAGE = 'Path of the workflow or agent YAML to import (~ is your home)';
 export const IMPORT_ALLOW_LABEL = 'Write the file';
 export const IMPORT_DENY_LABEL = 'Write nothing';
-export const IMPORT_CLOSE_LABEL = 'Close';
+export const IMPORT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 /** The notification when the popup was answered with anything but a Yes, or the path was never given. */
 export const IMPORT_NOT_WRITTEN = 'Nothing was written.';
 /** What the refusal step says above the reason. */
@@ -191,7 +192,6 @@ export async function runImportCard(deps: ImportCardDeps): Promise<string | unde
       await flow.done({
         message: IMPORT_FAILED,
         lines: [shown(attempt.reason, REASON_COLUMNS)],
-        label: IMPORT_CLOSE_LABEL,
         tone: 'failed',
       });
     return undefined;

@@ -177,7 +177,7 @@ export function createExportPort(deps: ExportPortDeps): ExportPort {
       if (occupied(plan.target))
         return {
           ok: false,
-          reason: `${destination} already exists, and this card never overwrites. Use relavium export ${sanitizeUntrustedInline(plan.slug)} --force to replace it.`,
+          reason: `${destination} already exists, and this export never overwrites. Use relavium export ${sanitizeUntrustedInline(plan.slug)} --force to replace it.`,
         };
       return {
         ok: true,

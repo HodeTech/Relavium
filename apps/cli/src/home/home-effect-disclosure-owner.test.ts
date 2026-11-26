@@ -173,11 +173,6 @@ it.each<Scenario>([
       onContinue: () => () => {},
       suspendSelf: () => {},
     },
-    onboardingTerminalLifecycle: {
-      onInput: () => () => {},
-      isRawMode: () => false,
-      setRawMode: () => {},
-    },
   }).then((code) => {
     settled = true;
     return code;

@@ -10,6 +10,7 @@ import {
   type NativePickerOptions,
   type NativePickerResult,
 } from '../render/tui/native-picker.js';
+import { foldLineSeparators } from '../popups/frame-model.js';
 import { formatAgeOfIso, type DisplayPathRoots } from '../render/notation.js';
 import { flowText } from '../render/tui/flow-text.js';
 import { placeForDisplay } from '../render/tui/place-label.js';
@@ -35,6 +36,8 @@ export function resumePopup(flow: NativePromptFlow, origin: 'home' | 'chat'): Fr
 export const RESUME_STEP = { session: 0, restore: 1 } as const;
 /** What the restore step says while it runs; its legend says what `Esc` does (`Esc cancels it`). */
 export const RESUME_RESTORING = 'Restoring session…';
+/** What the Home says when a session of another directory is picked: the one notification a resume of it leaves (the legend golden records this very string). */
+export const RESUME_ANOTHER_DIRECTORY = 'This session is in another directory: open Home there';
 
 /**
  * The columns a row's directory line may take: the picker is drawn at 80 columns or wider (a narrower terminal is refused), and the line
@@ -71,16 +74,25 @@ function sessionRow(
 ): NativePromptOption {
   const named =
     session.title === undefined
-      ? `Untitled — ${flowText(session.agentSlug)}`
-      : flowText(session.title);
+      ? `Untitled — ${rowText(session.agentSlug)}`
+      : rowText(session.title);
   return {
     value: session.id,
     label: `${named} · ${formatAgeOfIso(session.updatedAt, now)}`,
     // The directory is scrubbed before it is shortened: the ellipsis of a cut is the picker's own (the scrub would blank it as a host glyph).
     ...(allDirectories
-      ? { hint: placeForDisplay(flowText(session.workingDir), deps.paths, PICKER_PLACE_COLUMNS) }
+      ? { hint: placeForDisplay(rowText(session.workingDir), deps.paths, PICKER_PLACE_COLUMNS) }
       : {}),
   };
+}
+
+/**
+ * A word of a saved session as a row may draw it: the full scrub of a Home flow (`flowText`), then its line and paragraph separators folded to
+ * a space, as `run-launch.ts` folds every word of a project it draws. The framed `/resume` popup folds them as it draws, but the stand-alone
+ * `relavium chat resume` card draws these rows UNFRAMED, where a U+2028 or U+2029 would break one row in two (MVP-11 unit 6, round 1: S7).
+ */
+function rowText(text: string): string {
+  return foldLineSeparators(flowText(text));
 }
 
 /** Cursor closures retain no earlier pages or transcripts. Scope is discovery, never workspace authority. */

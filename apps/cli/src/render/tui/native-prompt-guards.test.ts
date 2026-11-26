@@ -1,15 +1,17 @@
 /**
- * The two input guards out of the channel's closure (`native-prompt-guards.ts`): what a key is as a framed flow's opening guard counts it, the
- * opening admission reset per flow, and the guarded option whose lockout runs from the select's opening (the 6.1 sitting's F1).
+ * The input guards out of the channel's closure (`native-prompt-guards.ts`): what a key is as a framed flow's opening guard counts it, the
+ * opening admission reset per flow, the guarded option whose lockout runs from the select's opening (the 6.1 sitting's F1), and the chord card
+ * whose lockout runs from the card's opening (unit 6's round-1 S1/S2: a first-prompt card and a card after a wait a held key repeated through).
  */
 import type { Key } from 'ink';
 import { describe, expect, it } from 'vitest';
 
 import { POPUP_SELECT_SETTLE_MS } from '../../popups/opening-guard.js';
-import { createChordHistory, type ChordStamp } from './chord-guard.js';
+import { createChordGuard, createChordHistory, type ChordStamp } from './chord-guard.js';
 import type { NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   cancelsPrompt,
+  createChordCardGuard,
   createGuardedSelect,
   createOpeningAdmission,
   firstBoundary,
@@ -17,7 +19,12 @@ import {
   nativeOpeningKey,
   navigates,
 } from './native-prompt-guards.js';
-import { APPROVAL_CONFIRM_MIN_MS, APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
+import {
+  APPROVAL_CONFIRM_MIN_MS,
+  APPROVAL_LOCKOUT_MS,
+  APPROVAL_SETTLE_MS,
+  type ApprovalGuard,
+} from './tool-review-model.js';
 
 const none: Key = {
   upArrow: false,
@@ -198,5 +205,81 @@ describe('the guarded option', () => {
     expect(r.guarded.decide(r.stamp(), false)).toBe(false);
     r.at(r.now() + 400);
     expect(r.guarded.decide(r.stamp(), true)).toBe(true);
+  });
+});
+
+describe('the chord card', () => {
+  /** The channel's chord guard on a clock the test moves, with no key in its history, and the card's own guard over it. */
+  function rig(guard?: ApprovalGuard) {
+    let clock = 50_000;
+    const history = createChordHistory();
+    const chord = createChordGuard({ now: () => clock, history, guard });
+    const card = createChordCardGuard({ now: () => clock, chord });
+    /** A card (or another prompt) opens now and its frame is acknowledged at once. */
+    const open = (isChord: boolean): number => {
+      chord.begin();
+      card.open(isChord);
+      chord.shown();
+      return clock;
+    };
+    return {
+      history,
+      card,
+      open,
+      stamp: (): ChordStamp => chord.stamp(),
+      at: (ms: number): void => {
+        clock = ms;
+      },
+      now: (): number => clock,
+    };
+  }
+
+  it('opened as a chord card: its lockout runs from the opening, with no answer before it; a refused Ctrl+Y inside it restarts it on the shared history', () => {
+    const r = rig();
+    const opened = r.open(true);
+    r.at(opened + APPROVAL_LOCKOUT_MS - 1);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBeUndefined();
+    expect(r.history.lastResolvedAt, 'restarted, on the history every card reads').toBe(
+      opened + APPROVAL_LOCKOUT_MS - 1,
+    );
+    r.at(opened + APPROVAL_LOCKOUT_MS - 1 + APPROVAL_LOCKOUT_MS);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBe('allow');
+  });
+
+  it('a Ctrl+N is never delayed: it answers at the very moment the card opened', () => {
+    const r = rig();
+    r.open(true);
+    expect(r.card.decide(r.stamp(), 'deny', true)).toBe('deny');
+  });
+
+  it('opened as another prompt: no lockout of its own, the dwell alone decides', () => {
+    const r = rig();
+    const opened = r.open(false);
+    r.at(opened + APPROVAL_SETTLE_MS);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBe('allow');
+  });
+
+  it('the later of the answer before it and its opening counts: an answer after the card opened runs its own lockout', () => {
+    const r = rig();
+    const opened = r.open(true);
+    r.history.lastResolvedAt = opened + 1000; // another card of the Home answered by a key, on the shared history
+    r.at(opened + APPROVAL_LOCKOUT_MS + 500);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBeUndefined();
+  });
+
+  it('a refusal outside the lockout (the frame was not on screen) restarts nothing', () => {
+    const r = rig();
+    const opened = r.open(true);
+    r.at(opened + APPROVAL_LOCKOUT_MS);
+    expect(r.card.decide(r.stamp(), 'allow', false)).toBeUndefined();
+    expect(r.history.lastResolvedAt).toBe(Number.NEGATIVE_INFINITY);
+    r.at(r.now() + APPROVAL_SETTLE_MS);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBe('allow');
+  });
+
+  it('a channel whose numbers switch the lockout off (`lockoutMs: 0`, a test that isolates another layer) has no opening lockout either', () => {
+    const r = rig({ settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 });
+    r.open(true);
+    expect(r.card.decide(r.stamp(), 'allow', true)).toBe('allow');
   });
 });

@@ -15,6 +15,10 @@
  *   its tallest option and the two marker rows), do not fit its page is "not wholly on the page": {@link NativeBodyLayout.fits} is `false`, the
  *   slot draws the notice in its place and acknowledges nothing, so nothing on it answers (the form's `formFits` and the chord card's "a card
  *   that does not fit the terminal is never answered"). A chord step is on its page only when its legend row keeps `[Ctrl+Y]` too.
+ * - **One flow, one box.** The overlay popup of a flow does not jump between its steps: it is never shorter than the tallest step the flow has
+ *   shown and keeps the row its first prompt took, growing down from it ({@link NativePopupPin}); a resize or another flow drops that, and an
+ *   inline popup is untouched. A flow's last step leads its sentence with its mark (`✓`, `✗`; `ok`, `x`), and a notice in place of a popup names
+ *   only the keys that act on a frame nobody sees ({@link nativePopupNoticeKeys}).
  * - **Text is untrusted.** Every string is drawn through the inline floor (`popupText`: sanitised, host glyphs blanked, line separators
  *   folded). A chord step's body is a decision about what it says, so its message and details also have their key tokens and legend
  *   separators made inert (`inertLegendText`, ADR-0145 §5). What a flow composes from a project's or a provider's words it scrubs itself (the
@@ -33,7 +37,8 @@ import { sanitizeInline } from '../render/sanitize.js';
 import { glyph } from '../render/tui/glyphs.js';
 import { clipLine, type SheetLine } from '../render/tui/sheet-frame.js';
 import { displayWidth, sliceDisplayColumns } from '../render/tui/viewport.js';
-import { fittedLegendItems, popupText, wrapRows } from './frame-model.js';
+import { fittedLegendItems, popupNoticeLegend, popupText, wrapRows } from './frame-model.js';
+import type { PopupBoxGeometry, PopupPlacement } from './geometry.js';
 
 const FRAMED_KINDS: ReadonlySet<NativePromptSnapshot['kind']> = new Set([
   'select',
@@ -120,14 +125,22 @@ function wrapped(kind: SheetLine['kind'], text: string, width: number): SheetLin
   return wrapRows(text, width).map((row) => ({ kind, text: row }));
 }
 
+/**
+ * A prompt's message as rows: a plain message is a question, the sentence of a flow's persistent last step leads with its mark (`✓` for a write
+ * that happened, `✗` for one that did not, `ok` and `x` in the plain form) so the result is a glyph AND a word in both tones.
+ */
+function messageRows(snapshot: NativePromptSnapshot, text: string, width: number): SheetLine[] {
+  if (snapshot.final === 'failed') return wrapped('failed', `${glyph('failed')} ${text}`, width);
+  if (snapshot.final === 'ok') return wrapped('done', `${glyph('completed')} ${text}`, width);
+  return wrapped('message', text, width);
+}
+
 /** The rows above a prompt's own part: its note (dim), its message, and the details of a chord step or a select (a blank one kept). */
 function aboveRows(snapshot: NativePromptSnapshot, width: number): SheetLine[] {
   const scrub = scrubFor(snapshot);
   const rows = [
     ...wrapped('text', scrub(snapshot.note), width),
-    ...(snapshot.final === 'failed'
-      ? wrapped('failed', `${glyph('failed')} ${scrub(snapshot.message)}`, width)
-      : wrapped('message', scrub(snapshot.message), width)),
+    ...messageRows(snapshot, scrub(snapshot.message), width),
   ];
   if (snapshot.kind === 'chord' || snapshot.kind === 'select')
     for (const detail of snapshot.details)
@@ -420,6 +433,93 @@ export function nativeNaturalRows(snapshot: NativePromptSnapshot, innerWidth: nu
   }).lines.length;
 }
 
+/** The terminal a pin was taken in (and the one a frame is drawn in). */
+export interface NativePopupSize {
+  readonly cols: number;
+  readonly rows: number;
+}
+
+/**
+ * What the popup of ONE flow remembers while it is open, so that its steps do not jump (ADR-0148 §4; the overlay only: an inline popup is a
+ * block in the flow and takes the rows it takes): the tallest body any of its prompts has had, and the row its first prompt's popup took. The
+ * popup never shrinks below that body and keeps that top row, growing DOWN from it; where the taller box would not fit below the pinned row, the
+ * geometry's own centring places it (and that row is the new one to keep).
+ *
+ * It belongs to the flow it was taken in (its title, origin and step count) and to the terminal it was taken in: another flow, or ANY resize,
+ * drops it, so a pin can neither carry one flow's height into the next nor hold a box a smaller terminal cannot. It is bounded by the geometry
+ * (`popupGeometry` clamps a body to the rows a terminal gives), so it can never trap the person below the floor either: there the popup is not
+ * drawn at all. The popup slot keeps it for as long as the flow's popup is mounted, so a flow's next popup starts fresh.
+ */
+export interface NativePopupPin {
+  readonly flow: string;
+  readonly cols: number;
+  readonly rows: number;
+  readonly bodyRows: number;
+  readonly top: number;
+}
+
+/** What names a flow's popup for its pin: the descriptor's title, origin and step count (a frame with none has no flow). */
+function pinFlow(snapshot: NativePromptSnapshot): string | undefined {
+  const descriptor = snapshot.popup;
+  return descriptor === undefined
+    ? undefined
+    : [descriptor.title, descriptor.origin, String(descriptor.stepCount)].join('\u0000');
+}
+
+/** The pin that still holds for this frame: the overlay's, of this flow, in this terminal; anything else is no pin. */
+export function livePin(
+  pin: NativePopupPin | undefined,
+  snapshot: NativePromptSnapshot,
+  placement: PopupPlacement,
+  size: NativePopupSize,
+): NativePopupPin | undefined {
+  if (pin === undefined || placement !== 'overlay') return undefined;
+  const same = pin.flow === pinFlow(snapshot) && pin.cols === size.cols && pin.rows === size.rows;
+  return same ? pin : undefined;
+}
+
+/** The body rows a frame asks the geometry for: what its content wants, and never fewer than the flow's tallest step so far. */
+export function pinnedBodyRows(naturalRows: number, pin: NativePopupPin | undefined): number {
+  return Math.max(naturalRows, pin?.bodyRows ?? 0);
+}
+
+/** The frame's top row: the pinned one while the whole box fits below it, else where the geometry centred it. */
+export function pinnedTop(
+  geometry: PopupBoxGeometry,
+  pin: NativePopupPin | undefined,
+  terminalRows: number,
+): number {
+  if (pin === undefined || geometry.placement !== 'overlay') return geometry.top;
+  return pin.top + geometry.height <= terminalRows ? pin.top : geometry.top;
+}
+
+/**
+ * The pin the next frame of this flow starts from, given the box just drawn (`box`, its top already pinned): the first PROMPT of a flow takes
+ * it (a wait before it, the frame right after `begin`, establishes nothing: it is not a step the person stays on), and every later frame, a
+ * wait included, only raises its height and moves its row when the box had to move. A frame drawn in a window (`windowed`: a long list) takes
+ * no part in it. `undefined` for an inline popup.
+ */
+export function nextPin(
+  pin: NativePopupPin | undefined,
+  snapshot: NativePromptSnapshot,
+  placement: PopupPlacement,
+  size: NativePopupSize,
+  box: PopupBoxGeometry,
+  windowed = false,
+): NativePopupPin | undefined {
+  if (placement !== 'overlay') return undefined;
+  // A list drawn in a window takes every row the terminal gives (the `/pricing` model list is 21 rows): it neither sets the height the flow's
+  // other steps keep nor moves the row they keep, or a one-line price field would sit in a box as tall as the list.
+  if (pin !== undefined)
+    return windowed
+      ? pin
+      : { ...pin, bodyRows: Math.max(pin.bodyRows, box.bodyRows), top: box.top };
+  const flow = pinFlow(snapshot);
+  if (windowed || flow === undefined || snapshot.kind === 'busy' || snapshot.kind === 'idle')
+    return undefined;
+  return { flow, cols: size.cols, rows: size.rows, bodyRows: box.bodyRows, top: box.top };
+}
+
 /** `Tab` flips the picker between this directory and all of them, and the legend says which one it goes to. */
 function scopeKey(snapshot: NativePromptSnapshot): LegendKey {
   return {
@@ -455,6 +555,12 @@ export function pickerLegendParts(snapshot: NativePromptSnapshot): {
   return { items: [next, ...before], exit };
 }
 
+/** What `Enter` says on a text or a masked field: the step's own verb where its flow gave one (a product constant), else `continue`. */
+function enterVerbOf(snapshot: NativePromptSnapshot): string {
+  const verb = snapshot.popup?.enterVerb;
+  return verb === undefined || verb === '' ? 'continue' : verb;
+}
+
 /**
  * The ONE legend of a prompt of the channel, as parts, for both of its surfaces: the card (`native-prompt-view.tsx` joins them into its one
  * line) and the popup frame (which fits them to its row and names the way back in the descriptor's words). They differ in one place only: a
@@ -484,7 +590,7 @@ export function nativeLegendParts(
     case 'text':
     case 'password': {
       const { before, exit } = nativeLeave(back);
-      return { items: [{ keys: 'Enter', verb: 'continue' }, ...before], exit };
+      return { items: [{ keys: 'Enter', verb: enterVerbOf(snapshot) }, ...before], exit };
     }
     case 'chord': {
       // The answers, named on the legend row: the affirmative first (it is kept longest), then the refusal, then the way back (which refuses).
@@ -511,18 +617,53 @@ export function nativeLegendParts(
   }
 }
 
+/** The key of a legend item that pages a windowed select: the first to go when the row is too short (the choice outranks it). */
+const PAGING_KEYS = 'PgUp/PgDn';
+
+/**
+ * How long each legend item is kept when the row does not fit (higher is kept longer; the keys that leave are kept by the frame whatever this
+ * says): by position, except that paging gives way to every other key, `Enter choose` included. Absent when nothing pages, so the frame's own
+ * order by position stands.
+ */
+function legendPriority(items: readonly LegendItem[]): readonly number[] | undefined {
+  if (!items.some((item) => 'keys' in item && item.keys === PAGING_KEYS)) return undefined;
+  return items.map((item, index) =>
+    'keys' in item && item.keys === PAGING_KEYS ? 0 : items.length - index,
+  );
+}
+
 /**
  * The legend of a framed prompt: what its keys do, and the way back the channel's `escape` gives it, in the descriptor's words where it
- * closes. A flow's persistent last step says `Enter / Esc close` and nothing else; a select drawn in a window names `PgUp/PgDn page`.
+ * closes. A flow's persistent last step says `Enter / Esc close` and nothing else; a select drawn in a window names `PgUp/PgDn page`, which
+ * is the first thing a short row drops.
  */
 export function nativePopupLegend(
   snapshot: NativePromptSnapshot,
   windowed = false,
-): { readonly items: readonly LegendItem[]; readonly exit: LegendExit } {
+): {
+  readonly items: readonly LegendItem[];
+  readonly exit: LegendExit;
+  readonly priority?: readonly number[];
+} {
   if (snapshot.kind === 'select' && snapshot.final !== undefined)
     return { items: [], exit: exitKey.close(['Enter', 'Esc'], 'close') };
   const { items, exit } = nativeLegendParts(snapshot, windowed, 'popup');
   const label = snapshot.popup?.exitLabel ?? '';
   const named = exit.class === 'close' && label !== '' ? exitKey.close(exit.keys, label) : exit;
-  return { items, exit: named };
+  const priority = legendPriority(items);
+  return priority === undefined ? { items, exit: named } : { items, exit: named, priority };
+}
+
+/**
+ * The keys a framed prompt names in the notice drawn in its place (below the floor, no room, too long): only the ones that act on a frame
+ * nobody can see. `Esc` and `Ctrl+C` reach the channel blind and do what the prompt says they do; `Enter` and a chord's answers do not (nothing
+ * on an unseen frame answers), so the Done step's `Enter / Esc close` is `Esc close` here.
+ */
+export function nativePopupNoticeKeys(snapshot: NativePromptSnapshot): {
+  readonly items: readonly LegendItem[];
+  readonly exit: LegendExit;
+} {
+  if (snapshot.kind === 'select' && snapshot.final !== undefined)
+    return { items: [], exit: exitKey.close('Esc', 'close') };
+  return popupNoticeLegend(nativePopupLegend(snapshot));
 }

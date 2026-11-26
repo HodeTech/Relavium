@@ -231,11 +231,6 @@ describe.each([false, true])(
             onContinue: () => () => {},
             suspendSelf: () => {},
           },
-          onboardingTerminalLifecycle: {
-            onInput: () => () => {},
-            isRawMode: () => false,
-            setRawMode: () => {},
-          },
           writeControl: () => {},
           exit: () => {},
         });

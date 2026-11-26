@@ -9,10 +9,10 @@ import {
   resumePopup,
   runSessionPicker,
 } from '../../../home/session-picker.js';
-import { nativePopupFrameLines, nativePopupGeometry } from '../../../popups/popup-slot.js';
 import { displayRoots } from '../../display-roots.js';
 import { NATIVE_PROMPT_RESIZED, type NativePromptSnapshot } from '../native-prompt-channel.js';
 import type { HomeMount, HomeSetup, NativePromptChannel } from './home-host.js';
+import { pinnedNativePopupBox, recordNativePopups } from './native-popup-recorder.js';
 import { recordBaseline } from './popup-fixture.js';
 import type { PopupBox } from './properties.js';
 import type { HomeSurface } from './surface-types.js';
@@ -28,12 +28,16 @@ import type { Variant } from './variants.js';
 
 const NATIVE: HomeSetup = { nativePrompt: true };
 
-/** The snapshot each cell's surface left on the channel, by the cell's variant: what its box is computed from. */
-const LIVE = new WeakMap<Variant, NativePromptSnapshot>();
+/** The snapshot each cell's surface left on the channel, by the cell's variant, and the channel it is on: what its box is computed from. */
+const LIVE = new WeakMap<
+  Variant,
+  { readonly snapshot: NativePromptSnapshot; readonly channel: NativePromptChannel }
+>();
 
 function channelOf(m: HomeMount): NativePromptChannel {
   const channel = m.channel;
   if (channel === undefined) throw new Error('the surface needs a native prompt channel');
+  recordNativePopups(channel);
   return channel;
 }
 
@@ -59,30 +63,14 @@ async function settled(
 ): Promise<void> {
   const channel = channelOf(m);
   await m.until(() => holds(channel.ui.getSnapshot()) && shownOn(channel));
-  LIVE.set(m.variant, channel.ui.getSnapshot());
+  LIVE.set(m.variant, { snapshot: channel.ui.getSnapshot(), channel });
 }
 
-/** Where the open native popup is drawn in a cell, and its rows: the slot's own geometry and frame lines over the snapshot the surface left. */
+/** Where the open native popup is drawn in a cell, and its rows: the slot's own geometry and frame lines over the snapshot the surface left, pinned as the flow's earlier steps left it (`native-popup-recorder.ts`). */
 function liveBox(variant: Variant): PopupBox {
-  const snapshot = LIVE.get(variant);
-  if (snapshot === undefined) throw new Error('the surface left no popup on the channel');
-  const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
-  const { geometry, layout } = nativePopupGeometry(
-    snapshot,
-    placement,
-    variant.size,
-    variant.color,
-  );
-  if (!geometry.fits || layout === undefined || !layout.fits)
-    throw new Error('the popup does not fit this cell');
-  return {
-    placement,
-    top: geometry.top,
-    left: geometry.left,
-    width: geometry.width,
-    height: geometry.height,
-    rows: nativePopupFrameLines(snapshot, geometry, layout, variant.color).map((line) => line.text),
-  };
+  const live = LIVE.get(variant);
+  if (live === undefined) throw new Error('the surface left no popup on the channel');
+  return pinnedNativePopupBox(live.channel, live.snapshot, variant);
 }
 
 // ---- /resume ------------------------------------------------------------------------------------------------------------------------

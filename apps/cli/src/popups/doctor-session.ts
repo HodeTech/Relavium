@@ -454,7 +454,7 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
         context.goToStep(DOCTOR_STEP.detail);
         return;
       }
-      // The seam for the provider popup: a remedy that exists on this surface opens as a child popup (depth two).
+      // The seam for the provider popup: a remedy that exists on this surface is handed to the host (the Home closes the doctor and opens `/providers`).
       if (step === DOCTOR_STEP.detail && detail !== undefined) {
         const remedy = remedyOf(detail.tier, detail.check, port.surface);
         if (remedy !== undefined) port.openRemedy?.(remedy, context);

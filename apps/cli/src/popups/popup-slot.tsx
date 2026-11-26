@@ -55,12 +55,18 @@ import {
   type PopupPlacement,
 } from './geometry.js';
 import {
+  livePin,
   nativeFramed,
   nativeNaturalRows,
   nativePopupLayout,
   nativePopupLegend,
+  nativePopupNoticeKeys,
+  nextPin,
+  pinnedBodyRows,
+  pinnedTop,
   withLiveBullets,
   type NativeBodyLayout,
+  type NativePopupPin,
 } from './native-popup-body.js';
 import { Text } from '../render/tui/text.js';
 import {
@@ -317,24 +323,56 @@ function HostPopup(
  * The geometry and the body of a framed native prompt in a terminal of `size`: the one geometry function asked for the body's wrapped rows at
  * the popup's inner width, then the body laid out on the page it gives (whether it is wholly on it, and how far a windowed select pages). Both
  * in the glyph form colour asks for. Exported so the matrix and the golden draw the frame exactly as the slot does.
+ *
+ * `pin` is what the flow's popup remembers while it is open (`NativePopupPin`, taken by the slot): the popup is never shorter than the tallest
+ * step the flow has shown and keeps the row it first took. Absent (a fresh flow, the matrix, the golden) ⇒ the frame as its own content sizes it.
  */
 export function nativePopupGeometry(
   snapshot: NativePromptSnapshot,
   placement: PopupPlacement,
   size: Size,
   color: boolean,
+  pin?: NativePopupPin,
 ): { readonly geometry: PopupGeometry; readonly layout: NativeBodyLayout | undefined } {
   return withGlyphForm(!color, () => {
-    const geometry = popupGeometry({
+    const natural = nativeNaturalRows(snapshot, popupInnerWidth(size.cols, 'standard'));
+    const sized = popupGeometry({
       columns: size.cols,
       rows: size.rows,
       kind: 'standard',
       placement,
       rail: (snapshot.popup?.stepCount ?? 1) > 1,
-      bodyRows: nativeNaturalRows(snapshot, popupInnerWidth(size.cols, 'standard')),
+      bodyRows: pinnedBodyRows(natural, pin),
     });
+    const geometry = sized.fits ? { ...sized, top: pinnedTop(sized, pin, size.rows) } : sized;
     return { geometry, layout: geometry.fits ? nativePopupLayout(snapshot, geometry) : undefined };
   });
+}
+
+/**
+ * The pin a flow's popup holds after the slot drew `snapshots`, in order, in a terminal of `size`: what the slot does render by render, as a
+ * pure fold (a snapshot that is not framed is the popup unmounted, so the next framed one starts a fresh pin; one that does not fit is not
+ * drawn and changes nothing). For the matrix, whose expected box of a flow's LATER step must be the one the slot draws after the steps before
+ * it; `undefined` for an inline popup or before the flow's first prompt.
+ */
+export function nativePopupPinAfter(
+  snapshots: readonly NativePromptSnapshot[],
+  placement: PopupPlacement,
+  size: Size,
+  color: boolean,
+): NativePopupPin | undefined {
+  let pin: NativePopupPin | undefined;
+  for (const snapshot of snapshots) {
+    if (!nativeFramed(snapshot)) {
+      pin = undefined;
+      continue;
+    }
+    const live = livePin(pin, snapshot, placement, size);
+    const { geometry, layout } = nativePopupGeometry(snapshot, placement, size, color, live);
+    if (geometry.fits && layout?.fits === true)
+      pin = nextPin(live, snapshot, placement, size, geometry, layout.page !== undefined);
+  }
+  return pin;
 }
 
 /**
@@ -435,7 +473,14 @@ function NativePopup(
   const { snapshot, acknowledgement, size, color, placement } = props;
   const node = useRef<DOMElement | null>(null);
   const descriptor = snapshot.popup;
-  const { geometry, layout } = nativePopupGeometry(snapshot, placement, size, color);
+  // What this flow's popup has shown so far (its tallest step and its first row), for as long as the popup stays mounted: the flow's own end
+  // unmounts it, so the next flow's popup starts fresh. Read and renewed in the render, as the page ref below is: the same frame renews it to
+  // itself.
+  const pinRef = useRef<NativePopupPin | undefined>(undefined);
+  const pin = livePin(pinRef.current, snapshot, placement, size);
+  const { geometry, layout } = nativePopupGeometry(snapshot, placement, size, color, pin);
+  if (geometry.fits && layout?.fits === true)
+    pinRef.current = nextPin(pin, snapshot, placement, size, geometry, layout.page !== undefined);
   // The page a windowed select's `PgUp`/`PgDn` move by is the window THIS frame draws: read through a ref, so the channel reads the last one.
   const pageRef = useRef<number | undefined>(undefined);
   pageRef.current = layout?.page;
@@ -466,7 +511,7 @@ function NativePopup(
         color={color}
         placement={placement}
         columns={size.cols}
-        legend={withGlyphForm(!color, () => nativePopupLegend(snapshot))}
+        legend={withGlyphForm(!color, () => nativePopupNoticeKeys(snapshot))}
       />
     );
   const lines = nativePopupFrameLines(snapshot, geometry, layout, color);

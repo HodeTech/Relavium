@@ -4,12 +4,12 @@ import { join } from 'node:path';
 
 import { runHomeProjectInit } from '../../../home/project-init.js';
 import { POPUP_SELECT_SETTLE_MS } from '../../../popups/opening-guard.js';
-import { nativePopupFrameLines, nativePopupGeometry } from '../../../popups/popup-slot.js';
 import { runExportCard, type ExportPort } from '../export-card.js';
 import { bracketed } from '../harness-util.js';
 import { runImportCard, type ImportPort } from '../import-card.js';
 import { runPricingCard, type PricingPort } from '../pricing-card.js';
 import { KEYS, type HomeMount, type NativePromptChannel } from './home-host.js';
+import { pinnedNativePopupBox, recordNativePopups } from './native-popup-recorder.js';
 import { recordBaseline } from './popup-fixture.js';
 import type { PopupBox } from './properties.js';
 import type { HomeSurface } from './surface-types.js';
@@ -29,6 +29,7 @@ let current: NativePromptChannel | undefined;
 function channelOf(m: HomeMount): NativePromptChannel {
   if (m.channel === undefined) throw new Error('the surface needs a native prompt channel');
   current = m.channel;
+  recordNativePopups(m.channel);
   return m.channel;
 }
 
@@ -47,27 +48,10 @@ const leave = (running: Promise<unknown>): void => {
   running.catch(() => undefined);
 };
 
-/** Where the framed prompt the channel shows now is drawn in a cell, and its rows: the slot's own geometry and frame lines over it. */
+/** Where the framed prompt the channel shows now is drawn in a cell, and its rows: the slot's own geometry and frame lines over it, pinned as the flow's earlier steps left it (`native-popup-recorder.ts`). */
 export function liveNativePopupBox(variant: Variant): PopupBox {
   if (current === undefined) throw new Error('no flow is open');
-  const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
-  const snapshot = current.ui.getSnapshot();
-  const { geometry, layout } = nativePopupGeometry(
-    snapshot,
-    placement,
-    variant.size,
-    variant.color,
-  );
-  if (!geometry.fits || layout === undefined || !layout.fits)
-    throw new Error('the framed prompt does not fit this cell');
-  return {
-    placement,
-    top: geometry.top,
-    left: geometry.left,
-    width: geometry.width,
-    height: geometry.height,
-    rows: nativePopupFrameLines(snapshot, geometry, layout, variant.color).map((line) => line.text),
-  };
+  return pinnedNativePopupBox(current, current.ui.getSnapshot(), variant);
 }
 
 const IMPORT_PORT: ImportPort = {

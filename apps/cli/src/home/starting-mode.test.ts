@@ -263,19 +263,7 @@ async function fixture(
       onContinue: () => () => undefined,
       suspendSelf: () => undefined,
     },
-    onboardingTerminalLifecycle: {
-      onInput: () => () => undefined,
-      isRawMode: () => false,
-      setRawMode: () => undefined,
-    },
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (value): value is symbol => typeof value === 'symbol',
-    },
+    firstRunSetup: 'off',
     writeControl: () => undefined,
     exit: () => undefined,
   };

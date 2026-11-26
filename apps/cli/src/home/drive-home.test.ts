@@ -62,14 +62,13 @@ import { terminalOutboxPath } from '../history/open.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
-import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
-import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
@@ -80,7 +79,6 @@ import {
   defaultSubscribeSignals,
   driveHome,
   type HomeDeps,
-  type OnboardingTerminalLifecycle,
 } from './drive-home.js';
 import {
   answerModelsPopup,
@@ -192,16 +190,6 @@ const type = (props: RootAppProps, text: string): void => {
   for (const ch of text) props.controller.handleKey(ch, {});
 };
 
-/** A scripted onboarding prompter that CANCELS immediately (its `select` returns the cancel sentinel) — the default
- *  for every drive-home test so a key-less resolver never triggers the REAL clack prompts (which render to stdout). */
-const CANCEL_ONBOARDING: ClackOnboardingDeps = {
-  intro: () => undefined,
-  outro: () => undefined,
-  note: () => undefined,
-  select: () => Promise.resolve(Symbol('cancel')),
-  password: () => Promise.resolve(Symbol('cancel')),
-  isCancel: (v): v is symbol => typeof v === 'symbol',
-};
 const ENTER = { return: true } as const;
 const CTRL_C = { ctrl: true } as const;
 const INERT_JOB_CONTROL: JobControlLifecycle = {
@@ -210,12 +198,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
 };
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
-};
-
 const NATIVE_RETURN = {
   upArrow: false,
   downArrow: false,
@@ -340,13 +322,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       // Signal-oriented tests intentionally leave some drives pending after a simulated process exit. Keep their
       // default hermetic: dedicated G0 tests inject a recording POSIX lifecycle instead of leaking real listeners.
       jobControlLifecycle: INERT_JOB_CONTROL,
-      onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
       writeControl,
       exit: () => undefined,
-      // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
-      // resolver over the mocked empty keychain) never invokes the REAL clack prompts in a test (which would render
-      // to stdout / block). A wizard-specific test overrides this with a scripted flow.
-      onboardingPrompter: CANCEL_ONBOARDING,
+      // The automatic first-run setup is OFF by default, so a key-less resolver (e.g. the real keychain-backed resolver over the mocked
+      // empty keychain) does not open the setup popup over what a test drives; a first-run test takes this out (production's default).
+      firstRunSetup: 'off',
       ...overrides,
     };
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
@@ -3122,9 +3102,9 @@ workflow:
         },
         { providers: keylessResolver, keychain: memoryKeychain() },
       );
-      // The production setup is the in-Home card, started when the renderer is ready, unless a legacy prompter is injected: take it out.
-      const { onboardingPrompter, ...production } = deps;
-      void onboardingPrompter;
+      // The production setup is the in-Home popup, started when the renderer is ready, unless the embedding turns it off: take that out.
+      const { firstRunSetup, ...production } = deps;
+      void firstRunSetup;
       const drivePromise = driveHome({ ...production, openPermissions: true });
       const props = capture.props;
       if (props === undefined) throw new Error('the injected render was never invoked');
@@ -3666,74 +3646,28 @@ workflow:
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('a KEY-LESS first run runs the onboarding wizard BEFORE mounting the Home (2.5.G S8)', async () => {
-    // A scripted clack slice + a key-less resolver (keyFor throws for every provider) ⇒ the wizard triggers.
-    const outros: string[] = [];
-    const select = vi.fn(() => Promise.resolve('anthropic'));
-    const onboardingPrompter: ClackOnboardingDeps = {
-      intro: () => undefined,
-      outro: (m) => outros.push(m),
-      note: () => undefined,
-      select,
-      password: () => Promise.resolve('sk-home-9999'),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p), {
-      providers: keylessResolver,
-      onboardingPrompter,
-      // An ISOLATED config file in the per-test cwd — the wizard's success path writes the chosen provider's starter
-      // model here (via writeGlobalDefaultModel), so it must not touch the shared tmp configPath other tests use.
-      global: { ...global, configPath: join(cwd, 'wizard-config.toml') },
-    });
-    const drivePromise = driveHome(deps);
-    await flush(); // the wizard is async — let it settle before render() mounts ink
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after the wizard');
-    expect(select).toHaveBeenCalledTimes(1); // the wizard ran (provider select)
-    // The wizard reached its success path + handed off to the Home. (Real keychain STORAGE is proven in
-    // wizard.test.ts with an inspectable keychain; here the module-level vi.mock discards the key, which is what
-    // keeps the test off the developer's/CI's real OS keychain.)
-    expect(outros.some((o) => o.includes('all set'))).toBe(true);
-
-    props.controller.handleKey('c', CTRL_C); // clean exit
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('registers the exit-safety nets BEFORE a key-less onboarding prompt can await the network (G0, #50)', async () => {
-    // Hold the first clack prompt open. The old ordering subscribed only AFTER the wizard settled, so a Ctrl-C or
-    // Ctrl-Z during the wizard's later key-validation request had no Home-owned safety net at all. Capture the
-    // ordering before settling the prompt, then complete the normal clean-exit path so this regression test leaves
-    // no open db handle or pending Home promise behind.
+  it('registers every exit-safety net BEFORE the pre-mount await, and a stop there with no Ink tree touches no terminal state (G0, #50)', async () => {
+    // Ported from the deleted Clack onboarding tests (MVP-11 unit 6): the pre-mount wizard is gone, and the await left before the mount is
+    // the run reconciliation. Hold it open: the signal, exit and job-control nets must already be live, and a stop that lands there (there is
+    // no Ink tree and no prompt that owns the terminal) is forwarded as it is, with no raw-mode or cursor write of the Home's.
     const order: string[] = [];
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    const onboardingPrompter: ClackOnboardingDeps = {
-      ...CANCEL_ONBOARDING,
-      select: () => {
-        order.push('wizard-select');
-        return select;
-      },
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
+    const terminalEvents: string[] = [];
+    let suspend: (() => void) | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter,
+      openSessionStore: () => ({
+        store: createSessionStore(client.db),
+        db: client.db,
+        close: closeSpy,
+        reconcileInterruptedRuns: async () => {
+          order.push('reconcile');
+          await held;
+        },
+      }),
       subscribeSignals: () => {
         order.push('signals');
         return () => undefined;
@@ -3742,295 +3676,36 @@ workflow:
         order.push('exit-net');
         return () => undefined;
       },
+      writeControl: (sequence) => terminalEvents.push(`control:${sequence}`),
       jobControlLifecycle: {
         supported: true,
-        onSuspend: () => {
+        onSuspend: (listener) => {
           order.push('job-suspend');
+          suspend = listener;
           return () => undefined;
         },
         onContinue: () => {
           order.push('job-continue');
           return () => undefined;
         },
-        suspendSelf: () => undefined,
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    const beforeWizardSettles = [...order];
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-
-    expect(beforeWizardSettles).toEqual([
-      'signals',
-      'exit-net',
-      'job-continue',
-      'job-suspend',
-      'wizard-select',
-    ]);
-  });
-
-  it('hands Clack raw input + cursor back around BOTH raw Ctrl-Z and external SIGTSTP during onboarding (G0)', async () => {
-    // Hold Clack's first raw-mode prompt open. Unlike the earlier order-only regression, this models the terminal
-    // custody that exists before Ink mounts: Ctrl-Z is a SUB byte here, and an external SIGTSTP has no SuspendPort.
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const onboardingPrompter: ClackOnboardingDeps = {
-      ...CANCEL_ONBOARDING,
-      select: () => select,
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let suspend: (() => void) | undefined;
-    let activeSuspend: (() => void) | undefined;
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter,
-      writeControl: (sequence) => terminalEvents.push(`control:${sequence}`),
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: (listener) => {
-          activeSuspend = listener;
-          suspend = listener;
-          return () => {
-            if (activeSuspend === listener) activeSuspend = undefined;
-          };
-        },
-        onContinue: () => () => undefined,
-        // In production this returns only after `fg`/SIGCONT. The synchronous fake therefore observes the exact
-        // release → stop → reclaim order without suspending Vitest itself.
         suspendSelf: () => terminalEvents.push('self-stop'),
       },
     });
 
     const drivePromise = driveHome(deps);
     await flush();
-    if (rawInput === undefined || suspend === undefined)
-      throw new Error('onboarding did not install its raw-input/job-control handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
+    expect(order).toEqual(['signals', 'exit-net', 'job-continue', 'job-suspend', 'reconcile']);
+    expect(captured, 'the Home is not mounted while the await holds').toBeUndefined();
+    if (suspend === undefined) throw new Error('the job-control listener was not installed');
+    suspend();
+    expect(terminalEvents, 'only the stop itself: no raw-mode or cursor write').toEqual([
       'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
     ]);
 
-    terminalEvents.length = 0;
-    activeSuspend?.(); // the external `kill -TSTP` path uses the SAME no-Ink custody pair
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-
-    // After Clack closes its spinner/prompt it has returned cooked input + a visible cursor. The wizard may still be
-    // awaiting keychain/config work, but that interval owns no terminal modes and must not synthesize raw+hidden
-    // state merely because a SIGTSTP arrives.
-    terminalEvents.length = 0;
-    clackOwnsRawMode = false;
-    activeSuspend?.();
-    expect(terminalEvents).toEqual(['self-stop']);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
+    release();
     await flush();
     const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('reclaims Clack cursor ownership when the release write faults after raw mode is handed off (G0)', async () => {
-    // stdout can fail after the terminal accepts part of an escape sequence. In particular, a failed SHOW_CURSOR
-    // must be treated as a possible visible cursor: rolling raw mode back alone would return Clack to a live prompt
-    // with its cursor exposed.
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
-      writeControl: (sequence) => {
-        terminalEvents.push(`control:${sequence}`);
-        if (sequence === SHOW_CURSOR) throw new Error('partial cursor write');
-      },
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: () => () => undefined,
-        onContinue: () => () => undefined,
-        // A failed terminal release must never forward SIGTSTP: there is no safe stopped state to return from.
-        suspendSelf: () => terminalEvents.push('self-stop'),
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-    expect(clackOwnsRawMode).toBe(true);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('retries a failed Clack cursor reclaim before a later stop request (G0)', async () => {
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let captured: RootAppProps | undefined;
-    let failShowOnce = true;
-    let failHideOnce = true;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
-      writeControl: (sequence) => {
-        terminalEvents.push(`control:${sequence}`);
-        if (sequence === SHOW_CURSOR && failShowOnce) {
-          failShowOnce = false;
-          throw new Error('partial cursor release');
-        }
-        if (sequence === HIDE_CURSOR && failHideOnce) {
-          failHideOnce = false;
-          throw new Error('partial cursor reclaim');
-        }
-      },
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: () => () => undefined,
-        onContinue: () => () => undefined,
-        suspendSelf: () => terminalEvents.push('self-stop'),
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-
-    // The second request must first retry the cursor reclaim left latched above, then safely release/stop/reclaim.
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-      `control:${HIDE_CURSOR}`,
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-    expect(clackOwnsRawMode).toBe(true);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
+    if (props === undefined) throw new Error('the Home did not mount after the await');
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -4121,29 +3796,6 @@ workflow:
       .map((call) => String(call[0]));
     expect(controlsAfterTerminalTeardown).not.toContain(ENABLE_MOUSE);
     expect(exit).toHaveBeenCalledWith(143);
-  });
-
-  it('a run WITH a resolvable key SKIPS the onboarding wizard entirely', async () => {
-    // The default scriptedResolver's keyFor returns 'test-key' ⇒ not key-less ⇒ the wizard must never run.
-    const select = vi.fn(() => Promise.resolve('anthropic'));
-    const onboardingPrompter: ClackOnboardingDeps = {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select,
-      password: () => Promise.resolve('sk-x'),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    };
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p), { onboardingPrompter });
-    const drivePromise = driveHome(deps);
-    const props = captured;
-    if (props === undefined) throw new Error('render was not invoked');
-    expect(select).not.toHaveBeenCalled(); // no wizard on a keyed run
-
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
   it('an external SIGINT tears the live chat down and exits 130 (128+SIGINT)', async () => {

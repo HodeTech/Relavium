@@ -267,11 +267,6 @@ describe('atomic resumed session display after first subsequent attempt', () => 
           onContinue: () => () => {},
           suspendSelf: () => {},
         },
-        onboardingTerminalLifecycle: {
-          onInput: () => () => {},
-          isRawMode: () => false,
-          setRawMode: () => {},
-        },
         writeControl: () => {},
         exit: () => {},
       });

@@ -71,11 +71,6 @@ it('the Home’s /doctor opens its popup, which names /import and no shell comma
       onContinue: () => () => {},
       suspendSelf: () => {},
     },
-    onboardingTerminalLifecycle: {
-      onInput: () => () => {},
-      isRawMode: () => false,
-      setRawMode: () => {},
-    },
   });
   try {
     await vi.waitFor(() => expect(props).toBeDefined());

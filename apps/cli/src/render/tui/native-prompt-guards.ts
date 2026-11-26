@@ -1,5 +1,5 @@
 /**
- * The two input guards the native prompt channel gained for its flows drawn as popups (MVP-11 unit 6; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * The input guards the native prompt channel gained for its flows drawn as popups (MVP-11 unit 6; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §3), out of the channel's closure so each is one small thing with its own tests:
  *
  * - **The opening admission** ({@link createOpeningAdmission}, {@link nativeOpeningKey}): a framed flow's opening guard (`popups/opening-guard.ts`),
@@ -11,6 +11,11 @@
  *   resolution; a select reached after a wait with the key held through it) would otherwise let a held `Enter` answer it on its first repeat
  *   after the dwell. So a deliberate `Enter` on a guarded option needs about two seconds after the select appeared, and a key held at any
  *   repeat rate never gets there: each refused repeat inside the lockout restarts it (`createChordGuard`'s strict rule).
+ * - **The chord card** ({@link createChordCardGuard}): the same rule for a card answered by `Ctrl+Y`, framed or not. Its lockout runs from the
+ *   moment the card opened, so a card that is the FIRST prompt of a flow (`/init`, the Defined export, `/run` started on a workflow with no
+ *   inputs) and a card that appears after a wait with the key held through it (the MCP consent card a `/run` start or a gate's resume raises,
+ *   the repeats of the `Ctrl+Y` that answered the card before landing on the wait as typing) are locked against a held `Ctrl+Y` as a card
+ *   right after an answer always was. A deliberate `Ctrl+Y` needs about two seconds after the card appeared; `Ctrl+N` is never delayed.
  *
  * Pure but for the clock and the shared key history they are handed.
  */
@@ -22,7 +27,14 @@ import {
   type OpeningGuard,
   type OpeningKey,
 } from '../../popups/opening-guard.js';
-import { chordOf, createChordGuard, type ChordHistory, type ChordStamp } from './chord-guard.js';
+import {
+  chordOf,
+  createChordGuard,
+  type ChordAnswer,
+  type ChordGuard,
+  type ChordHistory,
+  type ChordStamp,
+} from './chord-guard.js';
 import type { NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   APPROVAL_CONFIRM_MIN_MS,
@@ -124,6 +136,45 @@ export function createOpeningAdmission(options: {
   };
 }
 
+/**
+ * The key's evidence with a prompt's OPENING (`openedAt`) counted as an answer just before it: the lockout then runs from whichever came later,
+ * the last answer or the opening. `-Infinity` (a prompt that carries no such lockout) leaves the evidence as it is.
+ */
+function openedAsAnswer(stamp: ChordStamp, openedAt: number): ChordStamp {
+  return { ...stamp, lastResolvedAt: Math.max(stamp.lastResolvedAt, openedAt) };
+}
+
+/** The `Ctrl+Y` of a chord card (see the module header). */
+export interface ChordCardGuard {
+  /** A prompt opened: a chord card starts its lockout now; any other prompt carries none. */
+  readonly open: (chord: boolean) => void;
+  /**
+   * Whether `answer`, stamped `stamp`, answers the open chord card on a frame that is (`painted`) or is not on screen: the channel's chord guard
+   * decides, with the card's opening counted as an answer just before the key. A refused `Ctrl+Y` inside that lockout restarts it on the shared
+   * history (`createChordGuard`'s strict rule), so a key held at any repeat rate keeps the card locked; `Ctrl+N` is never delayed.
+   */
+  readonly decide: (
+    stamp: ChordStamp,
+    answer: ChordAnswer,
+    painted: boolean,
+  ) => ChordAnswer | undefined;
+}
+
+export function createChordCardGuard(options: {
+  readonly now: () => number;
+  /** The channel's chord guard: its numbers, its dwell and the shared history are the card's. */
+  readonly chord: ChordGuard;
+}): ChordCardGuard {
+  let openedAt = Number.NEGATIVE_INFINITY;
+  return {
+    open: (chord) => {
+      openedAt = chord ? options.now() : Number.NEGATIVE_INFINITY;
+    },
+    decide: (stamp, answer, painted) =>
+      options.chord.decide(openedAsAnswer(stamp, openedAt), answer, painted),
+  };
+}
+
 /** The `Enter` of a guarded option (see the module header). */
 export interface GuardedSelect {
   /** A prompt opened: a select with a guarded option starts its lockout now; any other prompt carries none. Its dwell has not started. */
@@ -147,10 +198,7 @@ export function createGuardedSelect(options: {
   });
   let openedAt = Number.NEGATIVE_INFINITY;
   /** The key's evidence with the select's opening counted as an answer just before it: the lockout runs from whichever came later. */
-  const fromOpening = (stamp: ChordStamp): ChordStamp => ({
-    ...stamp,
-    lastResolvedAt: Math.max(stamp.lastResolvedAt, openedAt),
-  });
+  const fromOpening = (stamp: ChordStamp): ChordStamp => openedAsAnswer(stamp, openedAt);
   return {
     open: (guarded) => {
       confirm.begin();

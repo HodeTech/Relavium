@@ -34,10 +34,14 @@ export interface DoctorRemedy {
 }
 
 /**
- * **The seam for the provider popup** (a later unit of MVP-11 turns `/providers` into a popup): when a host wires this, the detail step of a
- * `provider keys` warning or a failed provider row on the HOME offers `Enter` as one more step, which calls it to open the provider popup as a
- * CHILD of the doctor popup (`context.openChild`, depth two, its own settle time, buffers and abort; `Esc` on it returns to the doctor with its
- * state intact). It returns whether the child opened. Until then no host wires it, and the detail step names `/providers` in words.
+ * **The seam for the provider popup.** When a host wires this, the detail step of a `provider keys` warning or a failed provider row on the
+ * HOME offers `Enter` as one more step, which calls it to hand the person to `/providers`. The Home's is a HAND-OFF (maintainer, 2026-11-25;
+ * `homeDoctor` in `home/drive-home.tsx`): it closes the doctor (`context.close()`) and then opens the provider popup through the Home's own
+ * opening gate, so the two are never open together and `Esc` on the provider popup returns to the Home, not to the doctor. It returns whether
+ * the hand-off was made. A host that wires none leaves the detail step naming `/providers` in words (a chat has no provider popup).
+ *
+ * (`context.openChild` and the popup stack's depth two remain in the host as a mechanism: the channel's flow is a sheet source that would
+ * close every open popup unanswered, so the provider popup cannot be a child, and no production caller opens one.)
  */
 export type DoctorRemedyOpener = (remedy: DoctorRemedy, context: PopupContext) => boolean;
 
@@ -67,7 +71,7 @@ export interface DoctorPort extends PopupPortBase {
   readonly workOwner?: DoctorWorkOwner | undefined;
   /** The key presence the host already sampled (the Home samples it when it opens and after a provider run); a check past its bound falls back on it. */
   readonly cachedKeys?: (() => readonly DoctorKeySample[] | undefined) | undefined;
-  /** The seam for the provider popup ({@link DoctorRemedyOpener}); absent today. */
+  /** The seam for the provider popup ({@link DoctorRemedyOpener}): the Home wires its hand-off; a chat wires none. */
   readonly openRemedy?: DoctorRemedyOpener | undefined;
 }
 

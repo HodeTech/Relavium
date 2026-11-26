@@ -380,7 +380,7 @@ describe('the Home runs the whole resume inside the frame, and says what it has 
     expect(h.controller.getSnapshot().notice).toBeUndefined();
   });
 
-  it('the conversation that is already open: one notification inside the frame, nothing restored, nothing in the conversation', async () => {
+  it('the conversation that is already open: one notification once the frame has closed, nothing restored, nothing in the conversation', async () => {
     const h = home({ pick: 'open-chat', resume: () => Promise.resolve(undefined) });
     await toChat(h);
     await typeResume(h.controller);

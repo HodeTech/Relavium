@@ -13,6 +13,7 @@ import { selectLegend } from '../render/tui/native-select-window.js';
 import { fittedLegendItems, popupNoticeText, wrapRows } from './frame-model.js';
 import { INLINE_LIST_MAX_ROWS, popupInnerWidth } from './geometry.js';
 import {
+  livePin,
   NATIVE_LIST_MIN_ROWS,
   NATIVE_PICKER_EMPTY,
   NATIVE_PICKER_LOADING,
@@ -22,11 +23,19 @@ import {
   nativePopupLayout,
   nativeLegendParts,
   nativePopupLegend,
+  nativePopupNoticeKeys,
   nativeWindowPage,
+  nextPin,
   withLiveBullets,
   type NativeBodyGeometry,
+  type NativePopupPin,
 } from './native-popup-body.js';
-import { nativeNoticeReason, nativePopupFrameLines, nativePopupGeometry } from './popup-slot.js';
+import {
+  nativeNoticeReason,
+  nativePopupFrameLines,
+  nativePopupGeometry,
+  nativePopupPinAfter,
+} from './popup-slot.js';
 
 /** The inner width of a standard popup at the floor (80 columns): 66. */
 const WIDTH = popupInnerWidth(80, 'standard');
@@ -252,24 +261,92 @@ describe('a select', () => {
     }
   });
 
-  it('a flow’s persistent last step: its lines, its one option naming the target, and `Enter / Esc close`', () => {
+  it('a flow’s persistent last step: its sentence led by its mark, its target and lines, its one option `Close`, and `Enter / Esc close`', () => {
     const done: NativePromptSnapshot = {
       ...BASE,
       message: 'Created the project directories.',
-      details: ['.relavium/workflows', '.relavium/agents'],
-      options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
+      details: ['.relavium', '.relavium/workflows', '.relavium/agents'],
+      options: [{ value: 'done', label: 'Close' }],
       final: 'ok',
     };
     expect(texts(done)).toEqual([
-      'Created the project directories.',
+      'ok Created the project directories.',
+      '.relavium',
       '.relavium/workflows',
       '.relavium/agents',
-      '> Done  .relavium',
+      '> Close',
     ]);
     expect(legendText(done)).toBe('Enter / Esc close');
     expect(legendText({ ...done, popup: { ...BASE.popup!, exitLabel: 'skip for now' } })).toBe(
       'Enter / Esc close',
     );
+  });
+});
+
+describe('the Done step is one shape: a mark AND a word in both tones (ADR-0148 §6, ADR-0145 §5)', () => {
+  const done = (final: 'ok' | 'failed'): NativePromptSnapshot => ({
+    ...BASE,
+    message: final === 'ok' ? 'Exported workflow deploy' : 'Not exported.',
+    details:
+      final === 'ok'
+        ? ['.relavium/workflows/deploy.relavium.yaml', 'Canonical YAML.']
+        : ['The folder is read-only.'],
+    options: [{ value: 'done', label: 'Close' }],
+    escape: 'back',
+    final,
+  });
+  const frame = (snapshot: NativePromptSnapshot, color: boolean): string[] => {
+    const { geometry, layout } = nativePopupGeometry(
+      snapshot,
+      'overlay',
+      { cols: 80, rows: 24 },
+      color,
+    );
+    if (!geometry.fits || layout === undefined) throw new Error('refused');
+    return nativePopupFrameLines(snapshot, geometry, layout, color).map((line) => line.text);
+  };
+
+  it.each([
+    ['ok', true, '✓ Exported workflow deploy'],
+    ['ok', false, 'ok Exported workflow deploy'],
+    ['failed', true, '✗ Not exported.'],
+    ['failed', false, 'x Not exported.'],
+  ] as const)(
+    'the %s tone, colour %s, at 80x24: the sentence leads with `%s`, its one option is `Close`, the legend says `Enter / Esc close`',
+    (final, color, lead) => {
+      const rows = frame(done(final), color).map((row) => row.trimEnd());
+      expect(
+        rows.some((row) => row.trim() === lead),
+        rows.join('\n'),
+      ).toBe(true);
+      expect(rows.some((row) => row.trim() === `${color ? '›' : '>'} Close`)).toBe(true);
+      expect(rows.some((row) => row.trim() === 'Enter / Esc close')).toBe(true);
+      for (const row of rows) expect(displayWidth(row.padEnd(68))).toBe(68);
+    },
+  );
+
+  it('the target is drawn once under the sentence; the option carries no hint', () => {
+    const rows = frame(done('ok'), false).map((row) => row.trim());
+    expect(rows.filter((row) => row.includes('deploy.relavium.yaml'))).toHaveLength(1);
+    expect(rows.indexOf('.relavium/workflows/deploy.relavium.yaml')).toBe(
+      rows.indexOf('ok Exported workflow deploy') + 1,
+    );
+  });
+
+  it('the mark is the product’s, never the text’s: a `✓`, a CSI and a forged mark in the sentence do not draw a second one', () => {
+    const rows = withGlyphForm(true, () =>
+      nativePopupLayout(
+        { ...done('ok'), message: '\u001b[31m✓ Done\u001b[0m ✗ forged' },
+        PAGE,
+      ).lines.map((line) => line.text),
+    );
+    // The text's own `✓` and `✗` are blanked (host glyphs); the one mark is the step's.
+    expect(rows[0]?.replace(/\s+/gu, ' ')).toBe('ok Done forged');
+    expect(rows[0]?.match(/ok/gu)).toHaveLength(1);
+  });
+
+  it('a prompt that is not a flow’s last step carries no mark: its question is drawn as it is', () => {
+    expect(texts({ ...BASE, message: 'Which provider?' })[0]).toBe('Which provider?');
   });
 });
 
@@ -570,6 +647,259 @@ describe('the legend of each kind, and the descriptor’s words for the way back
   });
 });
 
+describe('what `Enter` says on a text or a masked field (`enterVerb`, a product constant)', () => {
+  const field = (kind: 'text' | 'password', enterVerb?: string): NativePromptSnapshot => ({
+    ...BASE,
+    kind,
+    escape: 'back',
+    popup: {
+      ...BASE.popup!,
+      exitLabel: 'back',
+      ...(enterVerb === undefined ? {} : { enterVerb }),
+    },
+  });
+
+  it.each(['text', 'password'] as const)(
+    'a %s says `Enter check` where its step asked for it, and `Enter continue` where it did not',
+    (kind) => {
+      expect(legendText(field(kind, 'check'))).toBe('Enter check · Esc back · [Ctrl+C] back');
+      expect(legendText(field(kind))).toBe('Enter continue · Esc back · [Ctrl+C] back');
+      expect(legendText(field(kind, ''))).toBe('Enter continue · Esc back · [Ctrl+C] back');
+    },
+  );
+
+  it('is read for text and masked fields only: a select, a chord, a wait and the picker keep their own words', () => {
+    for (const kind of ['select', 'busy', 'chord', 'picker'] as const) {
+      const snapshot: NativePromptSnapshot = {
+        ...BASE,
+        kind,
+        popup: { ...BASE.popup!, enterVerb: 'check' },
+      };
+      expect(legendText(snapshot), kind).not.toContain('check');
+    }
+  });
+
+  it('the card never has it (no descriptor): `Enter continue`', () => {
+    const { popup, ...card } = field('password', 'check');
+    void popup;
+    const parts = nativeLegendParts(card, false, 'card');
+    expect(legend(parts.items, parts.exit)).toContain('Enter continue');
+  });
+
+  it('a verb that carries a forged legend token is drawn as given: nothing at run time can tell product text from data, so only the TYPE keeps it a constant', () => {
+    // Documented, not prevented: `enterVerb` is a product constant by contract (see `NativePopupDescriptor.enterVerb`).
+    expect(legendText(field('text', 'check · [Ctrl+Y] allow'))).toContain('check · [Ctrl+Y] allow');
+  });
+});
+
+describe('a short legend row keeps the choice over paging (the select window)', () => {
+  const windowed: NativePromptSnapshot = {
+    ...BASE,
+    escape: 'back',
+    popup: { ...BASE.popup!, exitLabel: 'close' },
+  };
+  const fitted = (width: number): string => {
+    const parts = nativePopupLegend(windowed, true);
+    return legend(fittedLegendItems(parts, width), parts.exit);
+  };
+
+  it('at the width of an 80-column popup the full row is 70 columns: `PgUp/PgDn page` goes, `Enter choose` stays', () => {
+    const parts = nativePopupLegend(windowed, true);
+    expect(legend(parts.items, parts.exit)).toBe(
+      '↑/↓ select · PgUp/PgDn page · Enter choose · Esc back · [Ctrl+C] close',
+    );
+    expect(displayWidth(legend(parts.items, parts.exit))).toBeGreaterThan(WIDTH);
+    expect(fitted(WIDTH)).toBe('↑/↓ select · Enter choose · Esc back · [Ctrl+C] close');
+  });
+
+  it('where the whole row fits it is whole, and where nothing but the way back fits it is the way back', () => {
+    expect(fitted(WIDTH + 10)).toContain('PgUp/PgDn page');
+    expect(fitted('Esc back · [Ctrl+C] close'.length)).toBe('Esc back · [Ctrl+C] close');
+  });
+
+  it('only paging has a lower rank: a list drawn whole has no priority at all (the frame’s own order by position)', () => {
+    expect(nativePopupLegend(windowed, false).priority).toBeUndefined();
+    expect(nativePopupLegend({ ...windowed, kind: 'text' }).priority).toBeUndefined();
+  });
+
+  it('the picker’s paging gives way first too', () => {
+    const picker: NativePromptSnapshot = {
+      ...BASE,
+      kind: 'picker',
+      escape: 'back',
+      popup: { ...BASE.popup!, exitLabel: 'close' },
+    };
+    const parts = nativePopupLegend(picker);
+    const row = legend(fittedLegendItems(parts, 56), parts.exit);
+    expect(row).toContain('Enter resume');
+    expect(row).not.toContain('PgUp/PgDn');
+  });
+});
+
+describe('the notice drawn in place of a popup names only the keys that act on a frame nobody sees', () => {
+  const noticeOf = (snapshot: NativePromptSnapshot): string => {
+    const keys = withGlyphForm(true, () => nativePopupNoticeKeys(snapshot));
+    return legend(keys.items, keys.exit);
+  };
+
+  it.each([
+    ['select', 'cancel', 'Esc close'],
+    ['select', 'back', 'Esc back · [Ctrl+C] close'],
+    ['text', 'back', 'Esc back · [Ctrl+C] close'],
+    ['password', 'cancel', 'Esc close'],
+    ['busy', 'cancel', 'Esc cancels it'],
+    ['chord', 'cancel', 'Esc denies'],
+    ['chord', 'back', 'Esc back · [Ctrl+C] denies'],
+    ['picker', 'back', 'Esc back · [Ctrl+C] close'],
+  ] as const)('%s, escape %s: `%s` (what Esc really does there)', (kind, escape, expected) => {
+    expect(noticeOf({ ...BASE, kind, escape })).toBe(expected);
+  });
+
+  it('the Done step: `Esc close` (its `Enter` is not delivered to a frame nobody sees)', () => {
+    const done: NativePromptSnapshot = {
+      ...BASE,
+      options: [{ value: 'done', label: 'Close' }],
+      escape: 'back',
+      final: 'ok',
+    };
+    expect(legendText(done)).toBe('Enter / Esc close');
+    expect(noticeOf(done)).toBe('Esc close');
+    expect(noticeOf({ ...done, final: 'failed' })).toBe('Esc close');
+  });
+
+  it.each(['select', 'text', 'password', 'busy', 'chord', 'picker'] as const)(
+    '%s: never `Enter`, `Ctrl+Y` or `Ctrl+N` (nothing on an unseen frame answers)',
+    (kind) => {
+      for (const escape of ['cancel', 'back'] as const) {
+        const text = noticeOf({ ...BASE, kind, escape });
+        expect(text).not.toMatch(/Enter|Ctrl\+Y|Ctrl\+N/u);
+      }
+    },
+  );
+});
+
+describe('the popup of one flow does not jump between its steps (the pin, the overlay only)', () => {
+  const SIZE = { cols: 80, rows: 24 };
+  const prompt = (
+    details: number,
+    extra: Partial<NativePromptSnapshot> = {},
+  ): NativePromptSnapshot => ({
+    ...BASE,
+    details: Array.from({ length: details }, (_, index) => `row ${String(index)}`),
+    ...extra,
+  });
+  const draw = (snapshot: NativePromptSnapshot, pin?: NativePopupPin) => {
+    const { geometry } = nativePopupGeometry(snapshot, 'overlay', SIZE, false, pin);
+    if (!geometry.fits) throw new Error('refused');
+    return geometry;
+  };
+
+  it('the first prompt takes its own place (centred); a taller step grows DOWN from that row and a shorter one never shrinks it', () => {
+    const first = draw(prompt(1));
+    const pin = nextPin(undefined, prompt(1), 'overlay', SIZE, first);
+    expect(pin).toMatchObject({ cols: 80, rows: 24, bodyRows: first.bodyRows, top: first.top });
+    expect(typeof pin?.flow).toBe('string');
+    const taller = draw(prompt(6), pin);
+    expect(taller.top).toBe(first.top);
+    expect(taller.height).toBeGreaterThan(first.height);
+    const pin2 = nextPin(pin, prompt(6), 'overlay', SIZE, taller);
+    const shorter = draw(prompt(0, { kind: 'busy' }), pin2);
+    expect(shorter.top).toBe(first.top);
+    expect(shorter.height).toBe(taller.height);
+  });
+
+  it('a step that would not fit below the pinned row is centred by the geometry, and that row is the one kept from then on', () => {
+    const first = draw(prompt(1));
+    const pin = nextPin(undefined, prompt(1), 'overlay', SIZE, first);
+    const tall = draw(prompt(15), pin);
+    expect(tall.top).toBe(draw(prompt(15)).top);
+    expect(tall.top + tall.height).toBeLessThanOrEqual(SIZE.rows);
+    const pin2 = nextPin(pin, prompt(15), 'overlay', SIZE, tall);
+    expect(draw(prompt(1), pin2).top).toBe(tall.top);
+  });
+
+  it('a wait before the first prompt (the frame right after `begin`) takes no pin: the first prompt does, and sits where it would have alone', () => {
+    const waiting = prompt(0, { kind: 'busy', message: '' });
+    expect(nextPin(undefined, waiting, 'overlay', SIZE, draw(waiting))).toBeUndefined();
+    const alone = draw(prompt(5));
+    const pin = nextPin(undefined, prompt(5), 'overlay', SIZE, alone);
+    expect(pin?.top).toBe(alone.top);
+  });
+
+  it('a list drawn in a window sets neither the height nor the row the flow keeps (a price field after the 21-row model list stays short)', () => {
+    const first = draw(prompt(3));
+    const pin = nextPin(undefined, prompt(3), 'overlay', SIZE, first);
+    const list = draw(prompt(15), pin);
+    // The windowed frame leaves the pin exactly as it was; a later short step is drawn where and as tall as the flow's own steps are.
+    expect(nextPin(pin, prompt(15), 'overlay', SIZE, list, true)).toBe(pin);
+    expect(nextPin(undefined, prompt(15), 'overlay', SIZE, list, true)).toBeUndefined();
+    // Not windowed, the same frame would have raised the pin (the flag is what keeps it out).
+    expect(nextPin(pin, prompt(15), 'overlay', SIZE, list, false)?.bodyRows).toBe(list.bodyRows);
+    expect(draw(prompt(3), nextPin(pin, prompt(15), 'overlay', SIZE, list, true)).height).toBe(
+      first.height,
+    );
+  });
+
+  it('a wait between two prompts keeps the height of the step it follows', () => {
+    const first = draw(prompt(6));
+    const pin = nextPin(undefined, prompt(6), 'overlay', SIZE, first);
+    const wait = draw(prompt(0, { kind: 'busy', message: 'Checking' }), pin);
+    expect(wait.height).toBe(first.height);
+    expect(wait.top).toBe(first.top);
+  });
+
+  it('an inline popup is a block in the flow: no pin is taken and none is read (not even one of this very flow taken in the overlay)', () => {
+    const inline = nativePopupGeometry(prompt(1), 'replace', SIZE, false).geometry;
+    if (!inline.fits) throw new Error('refused');
+    expect(nextPin(undefined, prompt(1), 'replace', SIZE, inline)).toBeUndefined();
+    const overlay = draw(prompt(6));
+    const pin = nextPin(undefined, prompt(6), 'overlay', SIZE, overlay);
+    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBeDefined();
+    expect(livePin(pin, prompt(6), 'replace', SIZE)).toBeUndefined();
+    expect(nextPin(pin, prompt(6), 'replace', SIZE, inline)).toBeUndefined();
+  });
+
+  it('any resize drops the pin (it can never hold a box a smaller terminal cannot), and so does another flow', () => {
+    const first = draw(prompt(6));
+    const pin = nextPin(undefined, prompt(6), 'overlay', SIZE, first);
+    expect(livePin(pin, prompt(6), 'overlay', SIZE)).toBeDefined();
+    expect(livePin(pin, prompt(6), 'overlay', { cols: 80, rows: 30 })).toBeUndefined();
+    expect(livePin(pin, prompt(6), 'overlay', { cols: 100, rows: 24 })).toBeUndefined();
+    const other = prompt(6, { popup: { ...BASE.popup!, title: '/import' } });
+    expect(livePin(pin, other, 'overlay', SIZE)).toBeUndefined();
+    const longer = prompt(6, { popup: { ...BASE.popup!, stepCount: 4 } });
+    expect(livePin(pin, longer, 'overlay', SIZE)).toBeUndefined();
+  });
+
+  it('the fold the matrix expects boxes with (`nativePopupPinAfter`) is the slot’s own: a frame that is not framed is the popup unmounted, so the next flow starts fresh', () => {
+    const idle: NativePromptSnapshot = { ...BASE, kind: 'idle', active: false };
+    const tall = prompt(6);
+    const both = nativePopupPinAfter([tall, idle, prompt(1)], 'overlay', SIZE, false);
+    const alone = nativePopupPinAfter([prompt(1)], 'overlay', SIZE, false);
+    expect(both).toEqual(alone);
+    const held = nativePopupPinAfter([prompt(1), tall], 'overlay', SIZE, false);
+    expect(held?.bodyRows).toBeGreaterThan(alone?.bodyRows ?? 0);
+    expect(held?.top).toBe(alone?.top);
+    expect(nativePopupPinAfter([prompt(1), tall], 'replace', SIZE, false)).toBeUndefined();
+  });
+
+  it('a step that cannot fit below the first row moves the pin: the row it was centred on is the one kept afterwards', () => {
+    const first = draw(prompt(1));
+    const pin = nextPin(undefined, prompt(1), 'overlay', SIZE, first);
+    const tall = draw(prompt(15), pin);
+    const moved = nextPin(pin, prompt(15), 'overlay', SIZE, tall);
+    expect(moved?.top).toBe(tall.top);
+    expect(moved?.top).not.toBe(first.top);
+  });
+
+  it('the pinned height is clamped by the terminal like any body: it can never exceed what the floor gives (21 rows at 80x24)', () => {
+    const pin: NativePopupPin = { flow: 'x', cols: 80, rows: 24, bodyRows: 999, top: 0 };
+    const box = draw(prompt(1), pin);
+    expect(box.height).toBe(21);
+    expect(box.top + box.height).toBeLessThanOrEqual(SIZE.rows);
+  });
+});
+
 describe('the frame the slot draws (the rail’s step names, ADR-0148 §1)', () => {
   const frame = (snapshot: NativePromptSnapshot, color = false): string[] => {
     const { geometry, layout } = nativePopupGeometry(
@@ -662,6 +992,30 @@ describe('hostile text in every sink', () => {
         ],
       },
       pickerLabel: { ...BASE, kind: 'picker', options: [{ value: 'x', label: text, hint: text }] },
+      // The Done step: its sentence (led by the step's own mark) and the target and lines under it, in both tones.
+      doneOkMessage: {
+        ...BASE,
+        message: text,
+        options: [{ value: 'done', label: 'Close' }],
+        escape: 'back',
+        final: 'ok',
+      },
+      doneOkTarget: {
+        ...BASE,
+        message: 'Created',
+        details: [text, text],
+        options: [{ value: 'done', label: 'Close' }],
+        escape: 'back',
+        final: 'ok',
+      },
+      doneFailedMessage: {
+        ...BASE,
+        message: text,
+        details: [text],
+        options: [{ value: 'done', label: 'Close' }],
+        escape: 'back',
+        final: 'failed',
+      },
       title: { ...BASE, popup: { ...BASE.popup!, title: text, stepNames: [text, text, text] } },
     };
     const out = new Map<string, readonly string[]>();

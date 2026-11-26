@@ -118,11 +118,6 @@ async function withHome(use: (host: Host) => Promise<void>): Promise<void> {
       onContinue: () => () => {},
       suspendSelf: () => {},
     },
-    onboardingTerminalLifecycle: {
-      onInput: () => () => {},
-      isRawMode: () => false,
-      setRawMode: () => {},
-    },
   });
   try {
     if (props === undefined) throw new Error('Expected the Home to be mounted.');

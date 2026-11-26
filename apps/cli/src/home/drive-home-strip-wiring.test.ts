@@ -29,7 +29,7 @@ import type { RootAppProps } from '../render/tui/home-app.js';
 import { STRIP_REFRESH_MS } from '../render/tui/home-controller.js';
 import { runLabel } from '../render/tui/home-projection.js';
 import { seedRun } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 
 /** The bound of every wait in this file, in turns of the event loop. */
 const WAIT_TURNS = 500;
@@ -39,11 +39,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onSuspend: () => () => undefined,
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
-};
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
 };
 
 let root: string;
@@ -140,17 +135,9 @@ async function mountHome(seed?: () => Promise<void>) {
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
   };
   const running = driveHome(deps);
   await until(() => captured !== undefined, 'the Home mounting');

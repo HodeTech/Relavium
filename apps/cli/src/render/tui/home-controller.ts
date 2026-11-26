@@ -792,8 +792,9 @@ export interface HomeControllerDeps {
   ) => Promise<HomeChatSession | { readonly notice: string } | undefined>;
   /**
    * The `/resume` popup's ONE frame (ADR-0148 §1; MVP-11 unit 6): run `run` (the picker, the check that the session is not the one open, the
-   * restore) inside a popup frame the host opens first and closes after, so nothing closes between the picker and the restore. `origin` is the
-   * surface the resume was asked on. Absent ⇒ the stages run as they are (a test's Home).
+   * restore) inside a popup frame the host opens first and closes after, so nothing closes between the picker and the restore. It resolves
+   * only once the frame is closed and the channel idle: the controller adopts the conversation the restore built, and says what the stages
+   * had to say, only then. `origin` is the surface the resume was asked on. Absent ⇒ the stages run as they are (a test's Home).
    */
   readonly resumeFrame?: (origin: 'home' | 'chat', run: () => Promise<void>) => Promise<void>;
   readonly providerSetup?: {
@@ -2181,17 +2182,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const announceFlowResult = (notification: string | undefined): void => {
     if (!exiting && notification !== undefined) deps.announce?.(notification);
   };
-  /**
-   * The key that opens a Home flow that writes (the composer's `Enter` of `/init`, `/import` or `/pricing`, `x` on a Defined row) is stamped
-   * as a RESOLUTION on the Home's one key history, before the flow opens: a flow whose first prompt is its `Ctrl+Y` card (`/init`, the Defined
-   * export) is then armed against it, as a popup that opens on its own confirmation line is armed against the last key before it
-   * (`popup-host.ts`, ADR-0148 §3). Unstamped, a `Ctrl+Y` held from the moment the card appeared met no lockout (a refused early press restarts
-   * one only inside it) and, at a slow repeat rate past the quiet gap, answered once the card's dwell had passed. A deliberate `Ctrl+Y` there
-   * now needs the lockout (2 s) after the key that opened the flow.
-   */
-  const resolveOpeningKey = (): void => {
-    landingKeys.resolved(landingKeys.stamp());
-  };
+  // The key that opens a Home flow (the composer's `Enter` of `/init`, `/import` or `/pricing`, `x` or `r` on a Defined row) is NOT stamped as an
+  // answer: a chord card's lockout runs from the moment the card opened (`createChordCardGuard`, `native-prompt-guards.ts`), so a flow whose
+  // first prompt is its `Ctrl+Y` card (`/init`, the Defined export, `/run` on a workflow with no inputs) is armed against a held key by the card
+  // itself, and so is a card that appears after a wait (the MCP consent card a start raises).
   const openProjectInit = (): void => {
     const open = deps.initializeProject;
     if (open === undefined) {
@@ -2199,7 +2193,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note('Project initialization is unavailable in this session.');
       return;
     }
-    resolveOpeningKey();
     openNativeAction(async () => {
       // The popup's Done step said what was created; a cancel or a folder that is already a project is one notification (ADR-0148 §6).
       announceFlowResult(await open());
@@ -2331,7 +2324,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       noteOnDefinedTab('Export is unavailable in this session.');
       return;
     }
-    resolveOpeningKey();
     openNativeAction(async () => {
       announceFlowResult(await exportDefined(slug));
     }, 'Export');
@@ -2347,7 +2339,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: 'Import is unavailable in this session.' });
       return;
     }
-    resolveOpeningKey();
     openNativeAction(async () => {
       announceFlowResult(await importDefined());
     }, 'Import');
@@ -2360,7 +2351,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: 'Model pricing is not available here.' });
       return;
     }
-    resolveOpeningKey();
     openNativeAction(async () => {
       announceFlowResult(await pricing());
     }, 'Model pricing');
@@ -2442,12 +2432,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   /**
    * Resume a saved conversation: the one in `selectedId`, or the one the picker returns, as the `/resume` popup (ADR-0148 §1; MVP-11 unit 6).
-   * The whole resume (the picker, the check below, the restore) runs inside the ONE frame the host holds open
-   * ({@link HomeControllerDeps.resumeFrame}), so nothing closes between the picker and the restore. What it has to say (the conversation is
-   * already open, a cancelled restore, a session that cannot be resumed here, a Home that cannot resume) is one notification on the Home's
-   * channel, never the Home's notice and never a line in the conversation (§6); a resume that opens its conversation says nothing, the
-   * conversation is the result. `leaving` is published with the action's first state change (see {@link openNativeAction}); it is used only
-   * when the action starts, so a resume that is not available leaves it unpublished.
+   * The stages ({@link resumeStages}: the picker, the check that the session is not the one open, the restore) run inside the ONE frame the
+   * host holds open ({@link HomeControllerDeps.resumeFrame}), so nothing closes between the picker and the restore; what they come to is acted
+   * on only once that frame has closed ({@link resumeStagesFramed}). What it has to say (the conversation is already open, a cancelled restore,
+   * a session that cannot be resumed here, a Home that cannot resume) is one notification on the Home's channel, never the Home's notice and
+   * never a line in the conversation (§6); a resume that opens its conversation says nothing, the conversation is the result. `leaving` is
+   * published with the action's first state change (see {@link openNativeAction}); it is used only when the action starts, so a resume that is
+   * not available leaves it unpublished.
    */
   const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
@@ -2455,39 +2446,68 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       deps.announce?.(SESSIONS_RESUME_UNAVAILABLE);
       return;
     }
-    const say = (text: string): void => {
-      if (!exiting) deps.announce?.(text);
-    };
-    const resumeIn = async (old: HomeChatSession | undefined): Promise<void> => {
-      const id = selectedId ?? (await deps.pickSession?.());
-      if (id === undefined || exiting) return;
-      if (old?.sessionId === id) {
-        say(RESUME_ALREADY_OPEN);
-        return;
-      }
-      const result = await resume(id);
-      if (result === undefined) {
-        // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the Home says so instead of
-        // coming back as if nothing had been asked.
-        say(RESUME_CANCELLED);
-        return;
-      }
-      if ('notice' in result) {
-        say(result.notice);
-        return;
-      }
-      await adoptResumed(old, result);
-    };
     const operation = async (): Promise<void> => {
       const old = state.session;
-      const frame = deps.resumeFrame;
-      if (frame === undefined) await resumeIn(old);
-      else await frame(old === undefined ? 'home' : 'chat', () => resumeIn(old));
+      const outcome = await resumeStagesFramed(old, () => resumeStages(old, resume, selectedId));
+      if (outcome === undefined) return;
+      if ('adopt' in outcome) await adoptResumed(old, outcome.adopt);
+      else if (!exiting) deps.announce?.(outcome.say);
     };
     openNativeAction(operation, 'Session resume', leaving);
   };
 
-  /** The resumed conversation takes the place of the one open (`old`, if any), unless the Home left or another took it meanwhile. */
+  /** What the `/resume` stages came to: a restored conversation to adopt, the one notification to say, or nothing (the picker was left). */
+  type ResumeOutcome = { readonly adopt: HomeChatSession } | { readonly say: string } | undefined;
+
+  /** The `/resume` stages: the session (`selectedId`, or the picker's answer), the check that it is not the one open (`old`), its restore. */
+  const resumeStages = async (
+    old: HomeChatSession | undefined,
+    resume: NonNullable<HomeControllerDeps['resumeChat']>,
+    selectedId: string | undefined,
+  ): Promise<ResumeOutcome> => {
+    const id = selectedId ?? (await deps.pickSession?.());
+    if (id === undefined || exiting) return undefined;
+    if (old?.sessionId === id) return { say: RESUME_ALREADY_OPEN };
+    const result = await resume(id);
+    // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the Home says so instead of
+    // coming back as if nothing had been asked.
+    if (result === undefined) return { say: RESUME_CANCELLED };
+    if ('notice' in result) return { say: result.notice };
+    return { adopt: result };
+  };
+
+  /**
+   * Run the `/resume` stages inside the host's frame and hand back what they came to only once the frame has CLOSED and the Home's prompt
+   * channel is idle (MVP-11 unit 6, round 1). A conversation adopted while the frame was still open was activated under it: its effect
+   * disclosure waits until the frame that shows it is flushed (`useVisibleRenderFlush`), the frame's close aborted that wait, and a
+   * disclosure that cannot be delivered ends the CLI (`effect-retention.ts`, exit 9). A conversation the restore built is torn down, and never
+   * adopted, when the frame fails to close.
+   */
+  const resumeStagesFramed = async (
+    old: HomeChatSession | undefined,
+    stages: () => Promise<ResumeOutcome>,
+  ): Promise<ResumeOutcome> => {
+    const frame = deps.resumeFrame;
+    if (frame === undefined) return stages();
+    const came: { outcome?: ResumeOutcome } = {};
+    try {
+      await frame(old === undefined ? 'home' : 'chat', async () => {
+        came.outcome = await stages();
+      });
+    } catch (cause) {
+      const built = came.outcome;
+      if (built !== undefined && 'adopt' in built)
+        await built.adopt.teardown().catch(() => undefined);
+      throw cause;
+    }
+    return came.outcome;
+  };
+
+  /**
+   * The resumed conversation takes the place of the one open (`old`, if any), unless the Home left or another took it meanwhile (both read
+   * here, after the `/resume` frame closed, and again after `old`'s teardown). Called with the frame closed: its activation may wait on a
+   * flushed frame, and an open popup's close would abort that wait.
+   */
   const adoptResumed = async (
     old: HomeChatSession | undefined,
     result: HomeChatSession,

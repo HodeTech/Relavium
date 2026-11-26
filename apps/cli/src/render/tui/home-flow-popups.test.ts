@@ -11,15 +11,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseWorkflow } from '@relavium/core';
 import type { Key } from 'ink';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { INIT_CANCELLED, runHomeProjectInit } from '../../home/project-init.js';
-import { scrubPopupText } from '../../popups/popup-text.js';
+import type { HostedLaunch } from '../../home/run-host.js';
+import { createRunLaunch, type LaunchCatalog } from '../../home/run-launch.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../../popups/geometry.js';
-import { createChordGuard, createChordHistory } from './chord-guard.js';
+import { createChordHistory } from './chord-guard.js';
 import { EXPORT_NOT_WRITTEN, runExportCard, type ExportPort } from './export-card.js';
-import { flowText } from './flow-text.js';
 import { IMPORT_NOT_WRITTEN, runImportCard, type ImportPort } from './import-card.js';
 import { createNativePromptChannel, type NativePromptSnapshot } from './native-prompt-channel.js';
 import { PRICING_NOT_RECORDED, runPricingCard, type PricingPort } from './pricing-card.js';
@@ -179,21 +180,14 @@ function ports(text = 'nightly-report') {
 }
 
 /**
- * One flow over the real channel on a manual clock, its frame acknowledged by hand. The key that opened it is stamped first as the Home stamps
- * it (`resolveOpeningKey` in `home-controller.ts`): a resolution on the one key history, so a flow whose first prompt is its chord is armed
- * against it (`opening: false` leaves it out, to show what the stamp is for).
+ * One flow over the real channel on a manual clock, its frame acknowledged by hand. The key that opened it is on the one key history as the
+ * landing stamps its keys: a KEY, never a resolution (the Home no longer stamps it as an answer: a chord card's lockout runs from the moment the
+ * card opened, `createChordCardGuard`, so a flow whose first prompt is its chord is locked by the card alone).
  */
-function start(
-  name: FlowName,
-  text?: string,
-  options: { readonly opening?: boolean; readonly initialized?: boolean } = {},
-) {
+function start(name: FlowName, text?: string, options: { readonly initialized?: boolean } = {}) {
   let clock = 10_000;
   const history = createChordHistory();
-  if (options.opening !== false) {
-    const opener = createChordGuard({ now: () => clock, history });
-    opener.resolved(opener.stamp());
-  }
+  history.previousKeyAt = clock;
   const channel = createNativePromptChannel({ now: () => clock, history });
   channel.ui.bindVisibility(() => true);
   const fakes = ports(text);
@@ -315,7 +309,12 @@ describe.each(FLOWS)('%s as a popup', (name) => {
     expect(f.wrote()).toBe(true);
     expect(done.final).toBe('ok');
     expect(done.popup?.stepIndex).toBe(RAIL[name].names.length - 1);
-    const target = done.options[0]?.hint;
+    // The Done step draws its target once, as the first row under the sentence (never as the option's hint).
+    expect(
+      done.options[0]?.hint,
+      'the one option names nothing: the target is a row',
+    ).toBeUndefined();
+    const target = done.details[0];
     if (name !== 'pricing') {
       expect(target, 'a flow that writes a file names it').toBeDefined();
       expect(target?.startsWith('/')).toBe(false);
@@ -415,36 +414,121 @@ describe('/init in a folder that is already a project', () => {
   });
 });
 
-describe('the key that opened the flow is what a first-prompt chord is armed against (the Home stamps it: `resolveOpeningKey`)', () => {
+/** A workflow with no inputs: `/run` started on it from the Defined tab (`r`) opens on its confirmation. */
+const NO_INPUTS = `schema_version: '1.0'
+workflow:
+  id: no-inputs
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
+const NO_INPUTS_CATALOG: LaunchCatalog = {
+  list: () => [
+    { path: 'no-inputs.yaml', slug: 'no-inputs', name: undefined, tags: [], valid: true },
+  ],
+  load: (path) => ({
+    definition: parseWorkflow(NO_INPUTS, { source: path }),
+    sourceDigest: 'd'.repeat(64),
+    fsScope: { tier: 'sandboxed', fromRepository: false },
+  }),
+};
+
+describe('a chord card that is the first prompt of a flow is locked from the moment it appeared (nothing stamps the key that opened it)', () => {
   it.each(['init', 'export'] as const)(
-    '%s: without the stamp, a Ctrl+Y held at a slow repeat from the moment the card appeared answers once the dwell has passed',
+    '%s: a Ctrl+Y held at a slow repeat from the moment the card appeared never writes, past the dwell and the quiet gap; a patient press after it does',
     async (name) => {
-      const f = start(name, undefined, { opening: false });
+      // Before unit 6's round 1 the held key wrote here unless the Home stamped the key that opened the flow as an answer; that stamp is gone.
+      const f = start(name);
       await f.toChord();
       const t0 = f.now();
       f.channel.ui.unseenInput('y', CTRL);
       f.at(t0 + 16);
       f.show();
+      let last = t0;
       for (let at = t0 + 250; at <= t0 + 6000; at += 450) {
         f.at(at);
+        last = at;
         f.key('y', CTRL);
       }
       await flush();
-      // The evidence of the hole the stamp closes: the held key wrote.
-      expect(f.wrote()).toBe(true);
+      expect(f.wrote()).toBe(false);
+      f.at(last + APPROVAL_LOCKOUT_MS);
+      f.key('y', CTRL);
       await f.closeDone();
-      await f.result;
+      expect(f.wrote()).toBe(true);
+      expect(await f.result).toBeUndefined();
+    },
+  );
+
+  /**
+   * Unit 6 round 1, S2/A1: `r` on a Defined row starts the launch on that workflow, and one with no inputs opens on its `Ctrl+Y` confirmation,
+   * which no answer came before (`r` is a screen's key: nothing stamped it at all). A held `Ctrl+Y` started the run in 17 of 25 initial delays
+   * and repeat gaps; the card's own lockout now holds it, and one patient press after the key was let go starts it once.
+   */
+  it.each(['legacy', 'kitty'] as const)(
+    '/run by `r` on a workflow with no inputs: a held Ctrl+Y (%s repeats) from the moment the confirmation appeared never starts the run',
+    async (mode) => {
+      const DELAYS = [250, 600, 1000, 1400, 1800] as const;
+      const RATES = [30, 100, 450, 1000, 1800] as const;
+      const HELD_FOR_MS = 6000;
+      const started: string[] = [];
+      for (const delay of DELAYS)
+        for (const rate of RATES) {
+          let clock = 10_000;
+          const history = createChordHistory();
+          const channel = createNativePromptChannel({ now: () => clock, history });
+          /** The frame the host measured and flushed (none yet). */
+          const screen: { frame?: NativePromptSnapshot } = {};
+          channel.ui.bindVisibility((snapshot) => snapshot === screen.frame);
+          const start = vi.fn(
+            (): Promise<HostedLaunch> =>
+              Promise.resolve({
+                kind: 'started',
+                leg: 'start',
+                runId: '0123456789abcdef-run',
+                ended: new Promise(() => undefined),
+              }),
+          );
+          const launch = createRunLaunch({
+            flow: channel.flow,
+            host: { start },
+            catalog: NO_INPUTS_CATALOG,
+          });
+          const t0 = clock;
+          const opened = launch.open('no-inputs', 'no-inputs.yaml');
+          await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
+            timeout: 5000,
+            interval: 2,
+          });
+          // The key is down as the confirmation appears: its first event lands before the frame is on screen.
+          channel.ui.unseenInput('y', CTRL);
+          clock = t0 + 16;
+          screen.frame = channel.ui.getSnapshot();
+          channel.ui.shown(screen.frame);
+          let last = t0;
+          for (let at = t0 + delay; at <= t0 + HELD_FOR_MS; at += rate) {
+            clock = at;
+            last = at;
+            channel.ui.input('y', mode === 'kitty' ? { ...CTRL, eventType: 'repeat' } : CTRL);
+          }
+          await flush();
+          if (start.mock.calls.length > 0) started.push(`${String(delay)}/${String(rate)}`);
+          clock = last + APPROVAL_LOCKOUT_MS + 1;
+          channel.ui.input('y', CTRL);
+          expect(await opened, `the patient press after ${String(delay)}/${String(rate)}`).toMatch(
+            /^Started /u,
+          );
+          expect(start).toHaveBeenCalledTimes(1);
+        }
+      expect(started).toEqual([]);
     },
   );
 });
 
 describe('every untrusted string passes the full scrub before it reaches the channel', () => {
-  it('`flowText` IS the popups’ scrub: equal to `scrubPopupText` over the hostile corpus, piece by piece and whole', () => {
-    for (const piece of [...HOSTILE.split(' '), HOSTILE, HOSTILE_LONG, 'gpt-5', 'nightly-report'])
-      expect(flowText(piece), JSON.stringify(piece)).toBe(scrubPopupText(piece));
-    for (const bad of FORBIDDEN) expect(flowText(HOSTILE)).not.toContain(bad);
-  });
-
   it.each(['import', 'export', 'pricing'] as const)(
     '%s: an id, a path, a provider and a notice that hold the corpus reach the chord card, the Done step and every other prompt without it',
     async (name) => {

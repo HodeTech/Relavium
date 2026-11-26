@@ -1,7 +1,7 @@
 /**
  * The native prompt's snapshot identity ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §2): the measured-frame proof compares today's fields (`note` and `picker` included, and `final`, the mark of a flow's persistent last step)
- * PLUS the popup descriptor's (`title`, `origin`, `stepIndex`, `stepCount`, the rail's `stepNames`, `exitLabel`, the stack depth). Every key of
+ * PLUS the popup descriptor's (`title`, `origin`, `stepIndex`, `stepCount`, the rail's `stepNames`, `exitLabel`, `enterVerb`, the stack depth). Every key of
  * the snapshot is enumerated against the comparison and the explicit exclusion list, so a field added to the snapshot without a decision fails
  * here; and the descriptor reaches the snapshot through the flow's one setter, sanitised. The descriptor has no placement: the renderer's
  * placement decides where a popup is drawn, and a field nobody reads is no proof.
@@ -46,6 +46,7 @@ const FULL: Required<NativePromptSnapshot> = {
     stepCount: 3,
     stepNames: ['Provider', 'Key', 'Done'],
     exitLabel: 'close',
+    enterVerb: 'check',
     depth: 1,
   },
   final: 'ok',
@@ -59,6 +60,7 @@ const DESCRIPTOR: Required<NativePopupDescriptor> = {
   stepCount: 3,
   stepNames: ['Provider', 'Key', 'Done'],
   exitLabel: 'close',
+  enterVerb: 'check',
   depth: 1,
 };
 
@@ -94,6 +96,7 @@ function changedDescriptor(key: keyof NativePopupDescriptor): NativePromptSnapsh
     stepCount: 4,
     stepNames: ['Provider', 'Key', 'Finish'],
     exitLabel: 'back',
+    enterVerb: 'send',
     depth: 2,
   };
   return { ...FULL, popup: { ...DESCRIPTOR, [key]: variants[key] } };
@@ -180,6 +183,7 @@ describe('the flow’s one setter plumbs the descriptor into the snapshot', () =
       ...DESCRIPTOR,
       title: '/prov\u001b[31miders',
       exitLabel: 'cl\u0007ose',
+      enterVerb: 'ch\u001b[31meck',
       stepNames: ['Pro\u001b]8;;x\u0007vider', 'Key\u200f', 'Done'],
       stepIndex: 1.7,
     });
@@ -194,6 +198,20 @@ describe('the flow’s one setter plumbs the descriptor into the snapshot', () =
     channel.flow.popup?.(undefined);
     expect(channel.ui.getSnapshot().popup).toBeUndefined();
     expect(sameNativePromptFrame(set, channel.ui.getSnapshot())).toBe(false);
+    channel.ui.dispose();
+  });
+
+  it('a descriptor with no `enterVerb` keeps none (the legend says `continue`), and the verb is identity: a frame that says another one is a new frame', () => {
+    const channel = createNativePromptChannel({ now: () => 0 });
+    channel.flow.begin();
+    const { enterVerb, ...plain } = DESCRIPTOR;
+    void enterVerb;
+    channel.flow.popup?.(plain);
+    const without = channel.ui.getSnapshot();
+    expect(Object.keys(without.popup ?? {})).not.toContain('enterVerb');
+    channel.flow.popup?.(DESCRIPTOR);
+    expect(channel.ui.getSnapshot().popup?.enterVerb).toBe('check');
+    expect(sameNativePromptFrame(without, channel.ui.getSnapshot())).toBe(false);
     channel.ui.dispose();
   });
 

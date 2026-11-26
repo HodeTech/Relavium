@@ -187,7 +187,7 @@ const ALLOWANCES: readonly Allowance[] = [
     file: 'commands/models-pricing.ts',
     includes: '`relavium provider add ',
     reason:
-      "the shell core's refusal of an unregistered provider; the Home's form lists only registered providers, so the form cannot reach it",
+      "the shell core's refusal of an unregistered provider, its words pinned by models-pricing-characterization.test.ts. The Home's popup does not show it: the model list offers every catalog model, so the form refuses a model whose provider has no row right after the model is chosen, before a price is asked (`pricingUnconnectedText`, `/providers` as the remedy), and `pricingRefusalText` replaces this very sentence with that one if the core still raises it (a provider that went away while the popup was open)",
   },
   {
     file: 'commands/models-pricing.ts',
@@ -247,7 +247,7 @@ const ALLOWANCES: readonly Allowance[] = [
     file: 'render/tui/pricing-card.ts',
     includes: 'Use relavium models pricing.',
     reason:
-      'an id the CARD cannot show faithfully (too long, unsafe) can still be priced by the shell core, whose only rule is `modelIdFault`; the padded and invisible ids, which the shell refuses too, name no command',
+      'an id the popup cannot show faithfully (too long, unsafe) can still be priced by the shell core, whose only rule is `modelIdFault`; the padded and invisible ids, which the shell refuses too, name no command',
   },
   {
     file: 'home/consent-card.ts',
@@ -259,13 +259,13 @@ const ALLOWANCES: readonly Allowance[] = [
     file: 'home/defined-port.ts',
     includes: 'Use relavium export ',
     reason:
-      "the Home's export card never overwrites (ADR-0140 §9); `--force` exists only in the shell",
+      "the Defined tab's export never overwrites (ADR-0140 §9); `--force` exists only in the shell, and the popup has no way to replace a file",
   },
   {
     file: 'home/import-port.ts',
     includes: 'run relavium import --force',
     reason:
-      "the Home's import card never overwrites (ADR-0140 §9); `--force` exists only in the shell",
+      '`/import` never overwrites (ADR-0140 §9); `--force` exists only in the shell, and the popup has no way to replace a file',
   },
   {
     file: 'commands/export.ts',

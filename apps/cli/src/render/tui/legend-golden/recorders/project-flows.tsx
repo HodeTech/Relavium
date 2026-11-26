@@ -47,7 +47,7 @@ export const PROJECT_FLOWS_PRODUCERS: readonly Producer[] = [
     id: 'export-popup',
     file: 'popups/export-popup.ts',
     describe:
-      'the in-chat /export confirmation popup (ADR-0148 §10): the file it would write and the review sentence on a `[Ctrl+Y] export · Esc cancel` line, and its result (written, a turn in flight, the target changed, a failure)',
+      'the in-chat /export confirmation popup (ADR-0148 §10): the file it would write and the review sentence on a `[Ctrl+Y] Write the file · Esc denies` line, and its result (written, a turn in flight, the target changed, a failure)',
   },
 ];
 
@@ -125,6 +125,107 @@ function frameStates(state: string, frame: PopupFrame) {
 
 type FlowName = 'init' | 'import' | 'pricing' | 'export';
 
+/** Start flow `name` on `channel`, over a project at `cwd` in `home`, with ports that accept what it offers. */
+function startFlow(
+  name: FlowName,
+  channel: ReturnType<typeof createNativePromptChannel>,
+  cwd: string,
+  home: string,
+): Promise<unknown> {
+  const offer = { kind: 'workflow' as const, slug: 'nightly-report', bytes: 2048 };
+  switch (name) {
+    case 'init':
+      return runHomeProjectInit({
+        cwd,
+        home,
+        flow: channel.flow,
+        ui: channel.ui,
+        flushVisible: () => Promise.resolve(),
+        assertAdmitting: () => {},
+      });
+    case 'import':
+      return runImportCard({
+        flow: channel.flow,
+        port: {
+          pathIssue: () => undefined,
+          prepare: () => ({
+            ok: true,
+            offer: {
+              ...offer,
+              source: 'shared/nightly-report.yaml',
+              destination: '.relavium/workflows/nightly-report.relavium.yaml',
+              target: '.relavium/workflows/nightly-report.relavium.yaml',
+              warnings: [],
+            },
+            commit: () => ({ ok: true, written: 'written' }),
+          }),
+        },
+      });
+    case 'export':
+      return runExportCard(
+        {
+          flow: channel.flow,
+          port: {
+            prepare: (slug) => ({
+              ok: true,
+              offer: { ...offer, slug, destination: `${slug}.relavium.yaml` },
+              commit: () => ({ ok: true, written: 'written' }),
+            }),
+          },
+        },
+        'nightly-report',
+      );
+    case 'pricing':
+      return runPricingCard({
+        flow: channel.flow,
+        port: {
+          models: () => [{ modelId: 'gpt-5', provider: 'openai', hint: 'OpenAI · catalog price' }],
+          providers: () => ['openai'],
+          providerName: () => 'OpenAI',
+          prepare: () => ({
+            ok: true,
+            offer: {
+              kind: 'set',
+              model: 'gpt-5',
+              provider: 'openai',
+              providerName: 'OpenAI',
+              prices: [
+                { id: 'input', label: 'Input price', amount: '$3 per M', microcents: 3e8 },
+                { id: 'output', label: 'Output price', amount: '$9 per M', microcents: 9e8 },
+              ],
+              keeps: true,
+              replaces: undefined,
+              fallback: undefined,
+            },
+            commit: () => ({ ok: true, written: 'Set user pricing for gpt-5 (OpenAI).' }),
+          }),
+        },
+      });
+  }
+}
+
+/** Answer the step on screen as a person does (`Enter`, `Ctrl+Y`, a path or a price); `false` on the Done step, which closes the flow. */
+function answerStep(
+  channel: ReturnType<typeof createNativePromptChannel>,
+  name: FlowName,
+  now: NativePromptSnapshot,
+): boolean {
+  if (now.final !== undefined) {
+    // The Done step closes the flow: what the channel shows while the flow ends is not a step of it.
+    channel.ui.input('', ENTER);
+    return false;
+  }
+  if (now.kind === 'select') channel.ui.input('', ENTER);
+  else if (now.kind === 'chord') channel.ui.input('y', CTRL);
+  else if (now.kind === 'text') {
+    if (/^Input price/u.test(now.message)) channel.ui.paste('3');
+    else if (/^Output price/u.test(now.message)) channel.ui.paste('9');
+    else if (name === 'import') channel.ui.paste('shared/nightly-report.yaml');
+    channel.ui.input('', ENTER);
+  }
+  return true;
+}
+
 /**
  * Run `name` on a channel with a manual clock, answering every step with what a person types and `Ctrl+Y` at the chord, and capture the
  * snapshot of each step it draws (by its rail step and kind), the Done step included.
@@ -141,80 +242,7 @@ async function capture(name: FlowName): Promise<Map<string, NativePromptSnapshot
   const cwd = join(home, 'project');
   mkdirSync(cwd, { recursive: true });
   const seen = new Map<string, NativePromptSnapshot>();
-  const offer = { kind: 'workflow' as const, slug: 'nightly-report', bytes: 2048 };
-  const running = (() => {
-    switch (name) {
-      case 'init':
-        return runHomeProjectInit({
-          cwd,
-          home,
-          flow: channel.flow,
-          ui: channel.ui,
-          flushVisible: () => Promise.resolve(),
-          assertAdmitting: () => {},
-        });
-      case 'import':
-        return runImportCard({
-          flow: channel.flow,
-          port: {
-            pathIssue: () => undefined,
-            prepare: () => ({
-              ok: true,
-              offer: {
-                ...offer,
-                source: 'shared/nightly-report.yaml',
-                destination: '.relavium/workflows/nightly-report.relavium.yaml',
-                target: '.relavium/workflows/nightly-report.relavium.yaml',
-                warnings: [],
-              },
-              commit: () => ({ ok: true, written: 'written' }),
-            }),
-          },
-        });
-      case 'export':
-        return runExportCard(
-          {
-            flow: channel.flow,
-            port: {
-              prepare: (slug) => ({
-                ok: true,
-                offer: { ...offer, slug, destination: `${slug}.relavium.yaml` },
-                commit: () => ({ ok: true, written: 'written' }),
-              }),
-            },
-          },
-          'nightly-report',
-        );
-      case 'pricing':
-        return runPricingCard({
-          flow: channel.flow,
-          port: {
-            models: () => [
-              { modelId: 'gpt-5', provider: 'openai', hint: 'OpenAI · catalog price' },
-            ],
-            providers: () => ['openai'],
-            providerName: () => 'OpenAI',
-            prepare: () => ({
-              ok: true,
-              offer: {
-                kind: 'set',
-                model: 'gpt-5',
-                provider: 'openai',
-                providerName: 'OpenAI',
-                prices: [
-                  { id: 'input', label: 'Input price', amount: '$3 per M', microcents: 3e8 },
-                  { id: 'output', label: 'Output price', amount: '$9 per M', microcents: 9e8 },
-                ],
-                keeps: true,
-                replaces: undefined,
-                fallback: undefined,
-              },
-              commit: () => ({ ok: true, written: 'Set user pricing for gpt-5 (OpenAI).' }),
-            }),
-          },
-        });
-    }
-  })();
+  const running = startFlow(name, channel, cwd, home);
   try {
     for (let step = 0; step < 16; step += 1) {
       await flush();
@@ -224,19 +252,7 @@ async function capture(name: FlowName): Promise<Map<string, NativePromptSnapshot
       if (!seen.has(key)) seen.set(key, now);
       channel.ui.shown(now);
       clock += 3000;
-      if (now.final !== undefined) {
-        // The Done step closes the flow: what the channel shows while the flow ends is not a step of it.
-        channel.ui.input('', ENTER);
-        break;
-      }
-      if (now.kind === 'select') channel.ui.input('', ENTER);
-      else if (now.kind === 'chord') channel.ui.input('y', CTRL);
-      else if (now.kind === 'text') {
-        if (/^Input price/u.test(now.message)) channel.ui.paste('3');
-        else if (/^Output price/u.test(now.message)) channel.ui.paste('9');
-        else if (name === 'import') channel.ui.paste('shared/nightly-report.yaml');
-        channel.ui.input('', ENTER);
-      }
+      if (!answerStep(channel, name, now)) break;
     }
     await running;
   } finally {

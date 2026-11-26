@@ -247,7 +247,7 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(prepared('acme-custom-1', { input: '3', output: '9' }).offer.replaces).toBeUndefined();
   });
 
-  it('commits exactly the plan: the row read back holds every integer the card showed, and no other price', () => {
+  it('commits exactly the plan: the row read back holds every integer the confirmation showed, and no other price', () => {
     const result = prepared('acme-custom-1', {
       input: '3',
       output: '9',
@@ -779,7 +779,7 @@ describe('--clear', () => {
     });
   });
 
-  it('an override another process removed after the card opened is "nothing changed", not a fault', () => {
+  it('an override another process removed after the confirmation opened is "nothing changed", not a fault', () => {
     prepared('gpt-5.5', { input: '3', output: '9' }).commit();
     const result = port.prepare(OPENAI('gpt-5.5'), { action: 'clear' });
     if (!result.ok) throw new Error(result.reason);
@@ -830,7 +830,7 @@ describe('a write the database refuses is a fixed sentence', () => {
   });
 });
 
-describe('the id on the card is the id that is stored', () => {
+describe('the id in the confirmation is the id that is stored', () => {
   it.each([
     ['an escape sequence', 'acme\u001b[31m-1'],
     ['a bidirectional override', `acme${String.fromCodePoint(0x202e)}-1`],
@@ -910,7 +910,7 @@ describe('the id on the card is the id that is stored', () => {
     expect(catalog.listAll()).toHaveLength(0);
   });
 
-  it("refuses an id with a space at either end: inside the card's quotes it reads as the id without it", () => {
+  it("refuses an id with a space at either end: inside the confirmation's quotes it reads as the id without it", () => {
     for (const modelId of [' gpt-5', 'gpt-5 ', '\tgpt-5']) {
       expect(refused(modelId, { input: '3', output: '9' }), JSON.stringify(modelId)).toBe(
         PRICING_MODEL_ID_FAULTS.padded,
@@ -962,7 +962,7 @@ describe('the id on the card is the id that is stored', () => {
   });
 });
 
-describe('the commit checks the one rule another process can break while the card is open', () => {
+describe('the commit checks the one rule another process can break while the confirmation is open', () => {
   /** The deepseek registry row's id, for a price a shell writes in the meantime. */
   const deepseekId = (): string => providers.list().find((p) => p.name === 'deepseek')?.id ?? '';
 

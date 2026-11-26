@@ -115,11 +115,6 @@ it.each(['doctor on the bare Home', 'a report over the chat the Home hosts'] as 
         onContinue: () => () => {},
         suspendSelf: () => {},
       },
-      onboardingTerminalLifecycle: {
-        onInput: () => () => {},
-        isRawMode: () => false,
-        setRawMode: () => {},
-      },
     });
     try {
       if (props === undefined) throw new Error('Expected the actual Home mount.');

@@ -40,7 +40,7 @@ import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 import { HOSTED_LEG_SETTLE_BOUND_MS, RunHost } from './run-host.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
 
@@ -80,11 +80,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onSuspend: () => () => undefined,
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
-};
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
 };
 
 let root: string;
@@ -286,17 +281,9 @@ async function mountOwnedHome(options: { readonly closeRejects?: boolean } = {})
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
     run: host,
     // THE OWNED PATH: the Home holds the invocation, so the connection is the surface's to close.
     invocation: f.invocation,

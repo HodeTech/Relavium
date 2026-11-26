@@ -1,10 +1,11 @@
 /**
  * The Home's half of the flows that write (MVP-11 unit 6, 6.3; ADR-0148 §3, §6): the key that opens `/init`, `/import`, `/pricing` or the
- * Defined tab's `x` export is stamped as a RESOLUTION on the Home's one key history before the flow opens, so a flow whose first prompt is its
- * `Ctrl+Y` card is armed against it (the run-function half, a held key that never answers, is `home-flow-popups.test.ts`); and what the flow
- * resolves with is one notification on the Home's channel, never the Home's notice or a transcript line.
+ * Defined tab's `x` export is NOT stamped as an answer on the Home's one key history (unit 6 round 1: a chord card's lockout runs from the moment
+ * the card opened, so a flow whose first prompt is its `Ctrl+Y` card is armed by the card itself; a held key that never answers it is
+ * `home-flow-popups.test.ts` and `native-prompt-framed.test.ts`); and what the flow resolves with is one notification on the Home's channel,
+ * never the Home's notice or a transcript line.
  *
- * The controller is real; each flow is a spy that stays open, so the stamp is read at the moment the flow begins.
+ * The controller is real; each flow is a spy that stays open, so the history is read at the moment the flow begins.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -106,12 +107,14 @@ function mount(resolveWith: string | undefined = undefined) {
 }
 
 describe.each(['init', 'import', 'pricing', 'export'] as const)('%s', (opener) => {
-  it('the key that opened the flow is a resolution on the Home’s key history, stamped before the flow began', async () => {
+  it('the key that opened the flow is never stamped as an answer: the flow’s own chord card is what locks a held key out', async () => {
     const m = mount();
     await m.open(opener);
     expect(m.flow).toHaveBeenCalledTimes(1);
-    expect(m.begun, 'the flow began after the stamp').toEqual([m.now()]);
-    expect(m.history.lastResolvedAt).toBe(m.now());
+    expect(m.begun, 'no answer on the history when the flow began').toEqual([
+      Number.NEGATIVE_INFINITY,
+    ]);
+    expect(m.history.lastResolvedAt).toBe(Number.NEGATIVE_INFINITY);
   });
 
   it('what it resolves with is ONE notification; the Home’s notice and the tab’s row stay as they were', async () => {

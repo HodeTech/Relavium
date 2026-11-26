@@ -105,6 +105,8 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/models-popup.ts',
   'apps/cli/src/popups/permissions-popup.ts',
   'apps/cli/src/popups/export-popup.ts',
+  'apps/cli/src/home/framed-flow.ts',
+  'apps/cli/src/render/tui/flow-text.ts',
   DATA_MODULE,
 ];
 

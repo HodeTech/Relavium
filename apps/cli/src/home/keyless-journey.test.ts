@@ -12,9 +12,11 @@ import { invocationFixture } from '../process/invocation.test-support.js';
 import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { KEY_SHAPED_DRAFT_NOTICE } from '../render/tui/home-controller.js';
+import { SETUP_SKIP_NOT_SAVED, setupClosedNotice } from '../onboarding/setup-notes.js';
 import { keychainAccount } from '../secrets/keychain.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
+import { FIRST_RUN_POPUP_TITLE } from './provider-setup.js';
 import {
   acknowledgePopupFrames,
   choose as choosePopup,
@@ -259,32 +261,31 @@ const type = (p: RootAppProps, text: string): void => {
 async function choose(p: RootAppProps, value: string): Promise<void> {
   await choosePopup(ui(p), value);
 }
-/** The first-run popup is on screen: on its first step, `Which provider?`, its way back `skip for now`. */
+/**
+ * The first-run popup is on screen: titled `Connect a provider` (O7), on its first step, `Which provider?`; that step is opened to step back,
+ * so its `Esc` is the skip and `Ctrl+C` closes.
+ */
 async function untilFirstRun(p: RootAppProps): Promise<void> {
   await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
   expect(ui(p).getSnapshot().popup).toMatchObject({
-    title: '/providers',
+    title: FIRST_RUN_POPUP_TITLE,
     origin: 'home',
     stepIndex: 0,
     stepCount: 3,
     stepNames: ['Provider', 'Key', 'Done'],
-    exitLabel: 'skip for now',
+    exitLabel: 'close',
   });
+  expect(ui(p).getSnapshot().escape).toBe('back');
 }
 /**
- * `Esc` on the first step skips the first run. On a hand-made config the skip is remembered behind the rewrite disclosure, drawn in the popup
- * again, which ends in its Done step (`Setup skipped`): closed here with `Esc`.
+ * `Esc` on the first step skips the first run. On a hand-made config (the journey's default) the skip is NOT remembered (C-F3: a skip never
+ * rewrites a config that exists): the popup closes, the config is byte for byte as it was, and one notification says it opens again.
  */
-async function skipFirstRun(p: RootAppProps): Promise<void> {
+async function skipFirstRun(p: RootAppProps, notified: readonly string[]): Promise<void> {
   await untilFirstRun(p);
   ui(p).input('', { ...key, escape: true });
-  await settled(() => expect(ui(p).getSnapshot().final).toBe('ok'));
-  expect(ui(p).getSnapshot().message).toBe('Setup skipped');
-  expect(ui(p).getSnapshot().note).toBe(
-    'Saving preferences rewrites the global config and removes its comments and ordering.',
-  );
-  await closeDone(ui(p), 'esc');
   await settled(() => expect(ui(p).getSnapshot().active).toBe(false));
+  await settled(() => expect(notified).toEqual([SETUP_SKIP_NOT_SAVED]));
   await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
 }
 
@@ -293,14 +294,14 @@ describe('the keyless journey', () => {
     const j = journey();
     const p = await j.ready();
     try {
-      // 1. The first-run popup opens by itself; `Esc` skips, and the skip is remembered in the global config (a hand-made one: behind the
-      // rewrite disclosure, which ends in a Done step). Nothing is a Home notice.
+      // 1. The first-run popup opens by itself; `Esc` skips. The global config is a hand-made one, so the skip is not remembered: the file is
+      // left as it was, and one notification says so. Nothing is a Home notice.
       await settled(() => expect(ui(p).getSnapshot().active).toBe(true));
       expect(ui(p).getSnapshot().note).toContain('First-run setup');
-      await skipFirstRun(p);
+      await skipFirstRun(p, j.notified);
       expect(p.controller.getSnapshot().keyless).toBe(true);
       expect(p.controller.getSnapshot().notice).toBeUndefined();
-      expect(readFileSync(j.path, 'utf8')).toContain('first_run_setup_skipped = true');
+      expect(readFileSync(j.path, 'utf8')).toBe(baseline);
 
       // 2. Type a message and press Enter: the explicit setup opens, the draft is still in the prompt, and nothing is started.
       type(p, 'hello');
@@ -323,12 +324,13 @@ describe('the keyless journey', () => {
         'no key yet · Enter add one',
       ]);
 
-      // 3. Close the setup (Esc): the draft is still `hello`, still unsent; the skip is one notification, never a Home notice.
+      // 3. Close the setup (Esc): the draft is still `hello`, still unsent; a setup the person opened says nothing when it is closed (O13).
       ui(p).input('', { ...key, escape: true });
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(p.controller.getSnapshot().input.text).toBe('hello');
       expect(p.controller.getSnapshot().notice).toBeUndefined();
-      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(j.notified, 'no second notification').toEqual([SETUP_SKIP_NOT_SAVED]);
       expect(p.controller.getSnapshot().keyless).toBe(true);
       expect(j.built).toEqual([]);
 
@@ -398,7 +400,7 @@ describe('the keyless journey', () => {
       const p = await j.ready();
       try {
         await settled(() => expect(ui(p).getSnapshot().active).toBe(true));
-        await skipFirstRun(p);
+        await skipFirstRun(p, j.notified);
 
         p.controller.handlePaste(keyShaped);
         expect(p.controller.getSnapshot().input.text).toBe(keyShaped);
@@ -596,7 +598,10 @@ describe('the offer that waited for room is spent by what happened meanwhile (ro
       ui(p).input('', { ...key, escape: true });
       await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(p.controller.getSnapshot().notice).toBeUndefined();
-      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(j.notified, 'a setup the person opened says nothing when it is closed (O13)').toEqual(
+        [],
+      );
       expect(
         existsSync(j.path) ? readFileSync(j.path, 'utf8') : '',
         'an explicit close is no remembered skip',
@@ -761,6 +766,44 @@ describe('the first-run skip is remembered beyond the process (ADR-0146 §6, rul
     }
   });
 
+  it('an embedding that turns the first run off (`firstRunSetup: off`) gets no popup by itself; the keyless `Enter` still opens the setup', async () => {
+    const j = journey({ cols: 80, rows: 24 }, {}, { firstRunSetup: 'off' }, 'none');
+    const p = await j.ready();
+    try {
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(ui(p).getSnapshot().active, 'nothing opened by itself').toBe(false);
+      p.controller.handleKey('', { return: true });
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      ui(p).input('', { ...key, escape: true });
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+    } finally {
+      await j.end(p);
+    }
+  });
+
+  it('C-F3: a hand-made config is never rewritten by a skip: it stays byte for byte, one notification says so, and the next launch offers the setup again', async () => {
+    const first = journey({ cols: 80, rows: 24 }, {}, {}, 'hand-made');
+    const p = await first.ready();
+    try {
+      await skipFirstRun(p, first.notified);
+      expect(readFileSync(first.path, 'utf8')).toBe(baseline);
+    } finally {
+      await first.end(p);
+    }
+    const second = journey({ cols: 80, rows: 24 }, {}, {}, { reuse: first.cwd });
+    const q = await second.ready();
+    try {
+      await untilFirstRun(q);
+    } finally {
+      ui(q).input('c', { ...key, ctrl: true });
+      await settled(() => expect(ui(q).getSnapshot().active).toBe(false));
+      await second.end(q);
+    }
+    expect(readFileSync(first.path, 'utf8'), 'and the Ctrl+C there wrote nothing either').toBe(
+      baseline,
+    );
+  });
+
   it('`Ctrl+C` at the key step is a cancel, not a remembered skip; `Esc` there steps back to the provider list first', async () => {
     const j = journey({ cols: 80, rows: 24 }, {}, {}, 'none');
     const p = await j.ready();
@@ -777,7 +820,7 @@ describe('the first-run skip is remembered beyond the process (ADR-0146 §6, rul
       await settled(() => expect(ui(p).getSnapshot().kind).toBe('password'));
       expect(ui(p).getSnapshot().display, 'nothing of the old key survived the step back').toBe('');
       ui(p).input('c', { ...key, ctrl: true });
-      await settled(() => expect(j.notified).toEqual([SKIP_NOTE]));
+      await settled(() => expect(j.notified).toEqual([setupClosedNotice('home')]));
       expect(existsSync(j.path), 'a cancel writes no remembered skip').toBe(false);
       expect([...j.frames, ...j.notified].join(' ')).not.toContain('8841');
     } finally {
@@ -853,6 +896,8 @@ describe('the doctor’s remedy hands off to /providers (maintainer, 2026-11-25;
       expect(ui(p).getSnapshot().active).toBe(false);
       expect(popups.getSnapshot().open, 'Esc returns to the Home, not to the doctor').toBe(false);
       expect(p.controller.getSnapshot().notice).toBeUndefined();
+      await sleep(POPUP_ANSWER_WAIT_MS);
+      expect(j.notified, 'the hand-off says nothing when it is closed (O13)').toEqual([]);
     } finally {
       await j.end(p);
     }

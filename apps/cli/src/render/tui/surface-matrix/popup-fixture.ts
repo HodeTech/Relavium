@@ -15,10 +15,10 @@ import {
   type PopupSpec,
 } from '../../../popups/popup-reducer.js';
 import { framedFlow } from '../../../home/framed-flow.js';
-import { nativePopupFrameLines, nativePopupGeometry } from '../../../popups/popup-slot.js';
 import { withGlyphForm } from '../glyphs.js';
 import { NATIVE_PROMPT_RESIZED, type NativePromptSnapshot } from '../native-prompt-channel.js';
 import type { NativePromptChannel } from './home-host.js';
+import { pinnedNativePopupBox, recordNativePopups } from './native-popup-recorder.js';
 import type { PopupBox } from './properties.js';
 import type { ScreenCell } from './terminal.js';
 import type { Variant } from './variants.js';
@@ -206,7 +206,7 @@ export const NATIVE_POPUP_SELECTED_ROW: Readonly<Record<NativePopupKind, string 
   busy: undefined,
   chord: undefined,
   picker: 'Fix the flaky test',
-  done: 'Done',
+  done: 'Close',
 };
 
 /** The step each kind is drawn on. */
@@ -320,8 +320,9 @@ export function nativePopupSnapshot(
         ...base,
         kind: 'select',
         message: NATIVE_POPUP_LANDMARK.done,
-        details: [...DONE_LINES],
-        options: [{ value: 'done', label: 'Done', hint: '.relavium' }],
+        // The Done step's one shape: the target once under the sentence, then the lines, and the one option `Close`.
+        details: ['.relavium', ...DONE_LINES],
+        options: [{ value: 'done', label: 'Close' }],
         escape: 'back',
         final: 'ok',
       };
@@ -343,6 +344,9 @@ const leaveOpen = (running: Promise<unknown>): void => {
   running.catch(() => undefined);
 };
 
+/** The channel of the cell whose native popup is open now: the expected box is computed against what it published (cells run one after another). */
+let opened: NativePromptChannel | undefined;
+
 /**
  * Open the prompt of `kind` on `channel` through `framedFlow`, as a flow of the product does, and leave it open. The password surface pastes a
  * key once its frame is on screen and is then told of a resize, so its field shows the line that says the key was cleared.
@@ -357,6 +361,8 @@ export async function openNativePopup(
 ): Promise<void> {
   const channel = mount.channel;
   if (channel === undefined) throw new Error('the surface needs a native prompt channel');
+  recordNativePopups(channel);
+  opened = channel;
   const flow = framedFlow(channel.flow, {
     title: NATIVE_POPUP_TITLE,
     origin,
@@ -411,31 +417,18 @@ export async function openNativePopup(
   await mount.until(() => shownOn(channel));
 }
 
-/** Where the framed prompt of `kind` is drawn in a cell, and its rows: the slot's own geometry and frame lines over the expected snapshot. */
+/**
+ * Where the framed prompt of `kind` is drawn in a cell, and its rows: the slot's own geometry and frame lines over the expected snapshot, held
+ * where the frames the channel published before it left the flow's popup (a field that grows an error row, a picker that loads its rows: the
+ * popup grows down from its first row and never shrinks, `native-popup-recorder.ts`).
+ */
 export function nativePopupBox(
   kind: NativePopupKind,
   origin: PopupOrigin,
 ): (variant: Variant) => PopupBox {
   return (variant) => {
-    const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
     const snapshot = nativePopupSnapshot(kind, origin);
-    const { geometry, layout } = nativePopupGeometry(
-      snapshot,
-      placement,
-      variant.size,
-      variant.color,
-    );
-    if (!geometry.fits || layout === undefined || !layout.fits)
-      throw new Error('the framed prompt does not fit this cell');
-    return {
-      placement,
-      top: geometry.top,
-      left: geometry.left,
-      width: geometry.width,
-      height: geometry.height,
-      rows: nativePopupFrameLines(snapshot, geometry, layout, variant.color).map(
-        (line) => line.text,
-      ),
-    };
+    if (opened === undefined) throw new Error('no native popup is open');
+    return pinnedNativePopupBox(opened, snapshot, variant);
   };
 }

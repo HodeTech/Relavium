@@ -2,8 +2,9 @@
  * `framedFlow` (ADR-0148 §1, §3, §6; MVP-11 unit 6, 6.1 and its fix wave): the one helper a flow calls to be drawn as a popup. It sets the
  * channel's descriptor before every prompt (the rail moving on per answered prompt in a `linear` flow, staying put in a `manual` one, named per
  * prompt with `at`, and rewound on a step back), keeps ONE frame across nested stages, takes the frame away around a raw prompt (`unframed`), and
- * ends a flow that wrote in a persistent Done step whose `Esc` never aborts the flow's signal. Driven on the real channel, its acknowledgement
- * played by hand.
+ * ends a flow that wrote in a persistent Done step whose `Esc` never aborts the flow's signal. A note belongs to the prompt it precedes (it goes
+ * when that prompt is resolved, and the Done step starts with none), the Done step is ONE shape in both tones, and a step may say what its
+ * `Enter` does. Driven on the real channel, its acknowledgement played by hand.
  */
 import type { Key } from 'ink';
 import { readFileSync } from 'node:fs';
@@ -435,7 +436,7 @@ describe('a raw prompt asked while a framed flow is open (`unframed`)', () => {
 });
 
 describe('the Done step (ADR-0148 §6)', () => {
-  it('is the last step: a select of one option `Done` naming the target, its lines above it, marked final (ok), closed by `Enter`', async () => {
+  it('is the last step: a select of one option `Close`, the target once and then its lines above it, marked final (ok), closed by `Enter`', async () => {
     const r = rig();
     r.flow.begin();
     const done = r.flow.done({
@@ -449,27 +450,62 @@ describe('the Done step (ADR-0148 §6)', () => {
     expect(snapshot.final).toBe('ok');
     expect(snapshot.escape).toBe('back');
     expect(snapshot.message).toBe('Connected · Anthropic · claude-haiku-5-5');
-    expect(snapshot.details).toEqual(['Type a message to start, or /init to set up this folder']);
-    expect(snapshot.options).toEqual([
-      { value: FRAMED_DONE_VALUE, label: FRAMED_DONE_LABEL, hint: '~/.relavium/config.toml' },
+    expect(snapshot.details).toEqual([
+      '~/.relavium/config.toml',
+      'Type a message to start, or /init to set up this folder',
     ]);
+    expect(snapshot.options).toEqual([{ value: FRAMED_DONE_VALUE, label: 'Close' }]);
     r.answer();
     await expect(done).resolves.toBeUndefined();
     // the mark belongs to the step that set it: the flow's next state carries none
     expect(r.snapshot().final).toBeUndefined();
   });
 
-  it('says a failure in its own words and tone, with its own label', () => {
+  it('says a failure in its own words and tone, in the same one shape as a success', () => {
     const r = rig();
     r.flow.begin();
     void r.flow.done({
       message: 'Could not save the key.',
       lines: ['The keychain refused the write.'],
-      label: 'Close',
       tone: 'failed',
     });
     expect(r.snapshot().final).toBe('failed');
-    expect(r.snapshot().options[0]?.label).toBe('Close');
+    expect(r.snapshot().options).toEqual([{ value: FRAMED_DONE_VALUE, label: 'Close' }]);
+    expect(r.snapshot().details).toEqual(['The keychain refused the write.']);
+  });
+
+  it.each(['ok', 'failed'] as const)(
+    'ONE option label in the %s tone, whatever a caller passes (the deprecated `label` is ignored): the legend under it says `close`',
+    (tone) => {
+      const r = rig();
+      r.flow.begin();
+      void r.flow.done({ message: 'Done.', label: 'Finish', tone });
+      expect(r.snapshot().options.map((option) => option.label)).toEqual([FRAMED_DONE_LABEL]);
+      expect(FRAMED_DONE_LABEL).toBe('Close');
+    },
+  );
+
+  it('draws the target ONCE: as the first row under the sentence, never as the option’s hint, and not again when a line is the target word for word', () => {
+    const r = rig();
+    r.flow.begin();
+    void r.flow.done({
+      message: 'Created',
+      lines: ['.relavium/', '.relavium/workflows/', 'No files were written.'],
+      target: '.relavium/',
+    });
+    expect(r.snapshot().details).toEqual([
+      '.relavium/',
+      '.relavium/workflows/',
+      'No files were written.',
+    ]);
+    expect(r.snapshot().options[0]?.hint).toBeUndefined();
+  });
+
+  it('a step with no target and no lines has no body rows of its own', () => {
+    const r = rig();
+    r.flow.begin();
+    void r.flow.done({ message: 'Setup skipped' });
+    expect(r.snapshot().details).toEqual([]);
   });
 
   it.each([
@@ -508,6 +544,197 @@ describe('the Done step (ADR-0148 §6)', () => {
     expect(early).toBe('open');
     r.flow.cancel();
     await done;
+  });
+});
+
+describe('a note belongs to the prompt it precedes (it never outlives its step)', () => {
+  const KEY_NOTE =
+    'Stored in your OS keychain, never on disk. Sent only to api.example.com, once, to check it.';
+
+  it('shows on the prompt it was set before, and is gone when that prompt is answered (the key step’s disclosure is not on the next step)', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    r.flow.note(KEY_NOTE);
+    const key = r.flow.at(1).password({ message: 'Key' });
+    expect(r.snapshot().note).toBe(KEY_NOTE);
+    r.key(none, 'sk-x');
+    r.answer();
+    await key;
+    expect(r.snapshot().note).toBe('');
+    r.flow.at(1).busy('Checking your key · one request to api.example.com');
+    expect(r.snapshot().note).toBe('');
+    const retry = r.flow.select({ message: 'The check failed', options: OPTIONS });
+    expect(r.snapshot().note).toBe('');
+    r.flow.cancel();
+    await retry;
+  });
+
+  it('is gone when the prompt is stepped back from: the list a step back returns to has no heading above it (`/providers`, a provider action)', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const list = r.flow.at(0).select({ message: 'Which provider?', options: OPTIONS });
+    expect(r.snapshot().note).toBe('');
+    r.answer();
+    await list;
+    r.flow.note('Anthropic: a key is stored in the OS keychain.');
+    const action = r.flow
+      .at(0, { exitLabel: 'close' })
+      .select({ message: 'Provider action', options: OPTIONS, escape: 'back' });
+    expect(r.snapshot().note).toBe('Anthropic: a key is stored in the OS keychain.');
+    r.back();
+    expect(await action).toBe(NATIVE_PROMPT_BACK);
+    expect(r.snapshot().note).toBe('');
+    const again = r.flow.select({ message: 'Which provider?', options: OPTIONS });
+    expect(r.snapshot().note, 'nothing of the action is above the list').toBe('');
+    expect(r.snapshot().message).toBe('Which provider?');
+    r.flow.cancel();
+    await again;
+  });
+
+  it('is gone with a flow that was aborted: the next flow on the channel starts with none', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    r.flow.note('Setup note');
+    const first = r.flow.select({ message: 'One', options: OPTIONS });
+    r.flow.cancel();
+    expect(await first).toBe(NATIVE_PROMPT_CANCEL);
+    await r.flow.end();
+    r.flow.begin();
+    const next = r.flow.select({ message: 'Two', options: OPTIONS });
+    expect(r.snapshot().note).toBe('');
+    r.flow.cancel();
+    await next;
+  });
+
+  it('a note set after one prompt and before the next is the next one’s, and only its', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const one = r.flow.at(0).select({ message: 'One', options: OPTIONS });
+    r.answer();
+    await one;
+    r.flow.note('Could not save source consent.');
+    const recovery = r.flow
+      .at(0)
+      .select({ message: 'How would you like to continue?', options: OPTIONS });
+    expect(r.snapshot().note).toBe('Could not save source consent.');
+    r.answer();
+    await recovery;
+    const after = r.flow.at(0).select({ message: 'Next', options: OPTIONS });
+    expect(r.snapshot().note).toBe('');
+    r.flow.cancel();
+    await after;
+  });
+
+  it('a note set after a chord card resolved shows on the next prompt (the restore a flow does after its card)', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const card = r.flow.at(2).chord({ message: 'Start?', allow: 'Start', deny: 'Not now' });
+    r.key(none, 'n');
+    r.key({ ...none, ctrl: true }, 'n');
+    expect(await card).toBe('deny');
+    r.flow.note('Not offered, the file is not valid: broken.');
+    const picker = r.flow.at(0).select({ message: 'Run which workflow?', options: OPTIONS });
+    expect(r.snapshot().note).toBe('Not offered, the file is not valid: broken.');
+    r.flow.cancel();
+    await picker;
+  });
+
+  it('a wait clears nothing: a disclosure set for a write is on screen while the write publishes, and goes at the Done step (after it)', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const consent = r.flow.at(0).select({ message: 'Use it?', options: OPTIONS });
+    r.answer();
+    await consent;
+    // the Home's disclosure-before-write: noted on the RAW channel (it does not go through the framed flow), then a wait, then the write
+    r.channel.flow.note(
+      'Saving preferences rewrites the global config and removes its comments and ordering.',
+    );
+    r.flow.at(0).busy('Saving preferences…');
+    let writing: () => void = () => undefined;
+    const write = new Promise<void>((resolve) => {
+      writing = resolve;
+    });
+    const written = write.then(() => r.snapshot().note);
+    expect(r.snapshot().note).toContain('rewrites the global config');
+    writing();
+    expect(await written, 'still up when the write completed').toContain(
+      'rewrites the global config',
+    );
+    void r.flow.done({ message: 'Connected', lines: ['Type a message to start.'] });
+    expect(r.snapshot().note).toBe('');
+  });
+
+  it('the Done step starts with no note, wherever it came from: the key step’s, the keychain’s, a rewrite disclosure on the raw channel', () => {
+    for (const [source, set] of [
+      ['the key step’s disclosure', (r: ReturnType<typeof rig>) => r.flow.note(KEY_NOTE)],
+      [
+        'the keychain note',
+        (r: ReturnType<typeof rig>) => r.flow.note('The keychain is still unavailable.'),
+      ],
+      [
+        'a raw rewrite disclosure',
+        (r: ReturnType<typeof rig>) =>
+          r.channel.flow.note(
+            'Saving preferences rewrites the global config and removes its comments and ordering.',
+          ),
+      ],
+    ] as const) {
+      const r = rig({ progress: 'manual' });
+      r.flow.begin();
+      set(r);
+      expect(r.snapshot().note, source).not.toBe('');
+      void r.flow.done({ message: 'Connected · Anthropic', lines: ['Kept by the Done step'] });
+      expect(r.snapshot().note, source).toBe('');
+      expect(r.snapshot().details, source).toEqual(['Kept by the Done step']);
+      expect(r.snapshot().final).toBe('ok');
+    }
+  });
+
+  it('the retry question’s sentence goes with the question, with no explicit clear (`/resume`’s restore: the wait that follows has none)', async () => {
+    const r = rig({ progress: 'manual', stepNames: ['Session', 'Restore'] });
+    r.flow.begin();
+    r.flow.begin();
+    r.flow.at(1).busy('Restoring session…');
+    r.flow.note('Saved display text could not be read.');
+    const retry = r.flow.select({ message: 'Restore session history?', options: OPTIONS });
+    expect(r.snapshot().note).toBe('Saved display text could not be read.');
+    r.answer();
+    await retry;
+    r.flow.at(1).busy('Restoring session…');
+    expect(r.snapshot().note).toBe('');
+    await r.flow.end();
+    await r.flow.end();
+  });
+});
+
+describe('what `Enter` says on a step’s text or masked field (`enterVerb`)', () => {
+  it('is carried on the descriptor of THAT step’s prompts and on no other: the key step says `check`, the step after it nothing', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const key = r.flow
+      .at(1, { exitLabel: 'back', enterVerb: 'check' })
+      .password({ message: 'Key' });
+    expect(r.snapshot().popup?.enterVerb).toBe('check');
+    expect(r.snapshot().popup?.exitLabel).toBe('back');
+    r.key(none, 'sk-x');
+    r.answer();
+    await key;
+    r.flow.at(1).busy('Checking');
+    expect(r.snapshot().popup?.enterVerb).toBeUndefined();
+    const retry = r.flow.at(1).select({ message: 'The check failed', options: OPTIONS });
+    expect(r.snapshot().popup?.enterVerb).toBeUndefined();
+    r.flow.cancel();
+    await retry;
+  });
+
+  it('is part of what makes a frame this frame: the same step and way back with another verb is republished (the legend must change)', () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    r.flow.at(1).busy('Working');
+    expect(r.snapshot().popup?.enterVerb).toBeUndefined();
+    void r.flow.at(1, { enterVerb: 'check' }).text({ message: 'Name' });
+    expect(r.snapshot().popup?.stepIndex).toBe(1);
+    expect(r.snapshot().popup?.enterVerb).toBe('check');
   });
 });
 

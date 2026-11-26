@@ -1,5 +1,5 @@
 import { lstatSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
   SlugClashError,
@@ -16,17 +16,19 @@ import { assertProjectArtifactPath } from '../config/project-directory.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
+import { flowText } from '../render/tui/flow-text.js';
 import type { ImportAttempt, ImportPort, ImportPrepared } from '../render/tui/import-card.js';
-import { reasonOf, writeFaultReasonOf } from './defined-port.js';
+import { writeFaultReasonOf } from './defined-port.js';
 
 /**
- * What the Home's `/import` card reads and writes ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * What the Home's `/import` popup reads and writes ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §9, MVP-8 step 5, increment 6). It is thin, as the export port is: the file is read, validated and placed by `relavium import`'s own
- * {@link prepareImport}, and written by its own {@link commitImport}, so the card writes exactly the bytes and to exactly the place the
- * command would. What the port adds is the path as a person types it (bounded, `~` expanded, no control characters), the words the card
- * needs where the command's say `--force`, and the fixed sentences for a write the file system refuses.
+ * {@link prepareImport}, and written by its own {@link commitImport}, so the popup writes exactly the bytes and to exactly the place the
+ * command would. What the port adds is the path as a person types it (bounded, `~` expanded, no control characters), the words the popup
+ * needs where the command's say `--force`, the fixed sentences for a write the file system refuses, and a refusal's text as a person reads
+ * it: the file named once, scrubbed, and cut at a word with its parentheses closed ({@link importReason}).
  *
- * The card never overwrites, so it never asks for `--force`: every plan is prepared with it off and committed with it off.
+ * `/import` never overwrites, so it never asks for `--force`: every plan is prepared with it off and committed with it off.
  */
 
 export interface ImportPortDeps {
@@ -77,17 +79,90 @@ function occupantOf(path: string): 'none' | 'file' | 'other' {
 
 const REPLACE_WITH_SHELL = 'To replace it, run relavium import --force with the same file.';
 
-/** The refusal for a destination that is taken, in the card's words: it never overwrites, and says what does and what to do otherwise. */
+/** The refusal for a destination that is taken, in the popup's words: `/import` never overwrites, and says what does and what to do otherwise. */
 function takenReason(destination: string, occupant: 'file' | 'other'): string {
   return occupant === 'file'
-    ? `${destination} already exists, and this card never overwrites. ${REPLACE_WITH_SHELL}`
-    : `${destination} already exists and is not a regular file, and this card never overwrites. Move it aside, then import again.`;
+    ? `${destination} already exists, and /import never overwrites. ${REPLACE_WITH_SHELL}`
+    : `${destination} already exists and is not a regular file, and /import never overwrites. Move it aside, then import again.`;
 }
 
-/** The refusal for an id the project already has, as the card words it, or none for any other fault. The prepare and the commit share it. */
+/** The refusal for an id the project already has, as the popup words it, or none for any other fault. The prepare and the commit share it. */
 function clashReason(cause: unknown): string | undefined {
   if (!(cause instanceof SlugClashError) || cause.clash !== 'same-kind') return undefined;
-  return `${cause.kind} '${sanitizeUntrustedInline(cause.slug)}' already exists in this project, and this card never overwrites. ${REPLACE_WITH_SHELL}`;
+  return `${cause.kind} '${sanitizeUntrustedInline(cause.slug)}' already exists in this project, and /import never overwrites. ${REPLACE_WITH_SHELL}`;
+}
+
+/** The longest reason a refusal shows, in code units: a CliError's message can quote a path and the parser's own words. */
+const REASON_LIMIT = 240;
+
+/**
+ * `text` with `source` said once: its first mention stays, and the ones the parser adds inside its own parentheses go
+ * (`(incoming.yaml — line 1, column 5)` becomes `(line 1, column 5)`, `invalid agent (incoming.yaml): …` becomes `invalid agent: …`).
+ * The command's sentence says `<file> is not a valid workflow (…) or agent (…)`, and each reason names the file again.
+ */
+function sayPathOnce(text: string, source: string): string {
+  const first = source === '' ? -1 : text.indexOf(source);
+  if (first < 0) return text;
+  const head = first + source.length;
+  return (
+    text.slice(0, head) +
+    text.slice(head).replaceAll(` (${source} — `, ' (').replaceAll(` (${source}): `, ': ')
+  );
+}
+
+/** How many parentheses `text` leaves open. */
+function openParentheses(text: string): number {
+  let open = 0;
+  for (const character of text) {
+    if (character === '(') open += 1;
+    else if (character === ')' && open > 0) open -= 1;
+  }
+  return open;
+}
+
+/** How far back from the limit a cut looks for the end of a word: a longer run without a space (a path) is cut where the limit falls. */
+const WORD_REACH = 48;
+
+/** `kept` with `…` and the parentheses it left open closed again, or none when that does not fit `limit`. */
+function closedWithin(kept: string, limit: number): string | undefined {
+  const closing = ')'.repeat(openParentheses(kept));
+  return kept.length + 1 + closing.length <= limit ? `${kept}…${closing}` : undefined;
+}
+
+/**
+ * `text` within `limit`: whole, or cut where a word ends (never inside one) with `…` and the parentheses it left open closed again, so a
+ * reason does not stop in the middle of a clause (`… received 'x…`) or of a bracket. A run of {@link WORD_REACH} characters without a
+ * space (a long path) has no word to cut at, and is cut where the limit falls rather than dropped.
+ */
+function cutAtWord(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  for (let at = Math.min(limit - 1, text.length); at > limit - 1 - WORD_REACH; at -= 1) {
+    if (text[at] !== ' ') continue;
+    const closed = closedWithin(text.slice(0, at).trimEnd(), limit);
+    if (closed !== undefined) return closed;
+  }
+  for (let at = limit - 1; at > 0; at -= 1) {
+    const closed = closedWithin(text.slice(0, at), limit);
+    if (closed !== undefined) return closed;
+  }
+  return '…';
+}
+
+/**
+ * A refusal of the command as a person reads it: the sentence it raised, scrubbed as the popup draws it ({@link flowText}, BEFORE the cut,
+ * so a cut can never leave a piece of a secret the scrub no longer recognises), the file named once, then cut at a word. Any other fault
+ * is not a refusal: none. `source` is the file as the command names it (relative to the working directory).
+ */
+function importReason(cause: unknown, source: string): string | undefined {
+  if (!isCliError(cause)) return undefined;
+  const scrubbed = (text: string): string => flowText(sanitizeUntrustedInline(text));
+  return cutAtWord(sayPathOnce(scrubbed(cause.message), scrubbed(source)), REASON_LIMIT);
+}
+
+/** The file as `relavium import` names it in its own sentences: relative to the working directory. */
+function sourceOf(pathText: string, deps: ImportPortDeps): string {
+  const cwd = deps.global.cwd;
+  return relative(cwd, resolve(cwd, expandImportPath(pathText, deps.homeDir)));
 }
 
 /**
@@ -140,7 +215,7 @@ function commitOf(plan: ImportPlan, deps: ImportPortDeps): () => ImportAttempt {
         if (occupant !== 'none') return { ok: false, reason: takenReason(destination, occupant) };
       }
       // A fault the person can act on is a refusal, not the end of the Home: an unwritable directory is the destination's, not ours.
-      const reason = reasonOf(cause) ?? writeFaultReasonOf(cause);
+      const reason = importReason(cause, plan.source) ?? writeFaultReasonOf(cause);
       // Anything else is a defect, and an unclassified fault ends the Home (ADR-0139).
       if (reason === undefined) throw cause;
       return { ok: false, reason };
@@ -173,7 +248,7 @@ export function createImportPort(deps: ImportPortDeps): ImportPort {
       } catch (cause) {
         const clash = clashReason(cause);
         if (clash !== undefined) return { ok: false, reason: clash };
-        const reason = reasonOf(cause);
+        const reason = importReason(cause, sourceOf(pathText, deps));
         if (reason === undefined) throw cause;
         return { ok: false, reason };
       }

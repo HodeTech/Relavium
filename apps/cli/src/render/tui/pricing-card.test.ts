@@ -10,9 +10,10 @@
  *
  * MVP-11 unit 6 (6.3): the form is a popup now (`framedFlow`, rail `Action · Model · Rates · Confirm · Done`), so the rig plays the flow's
  * first frame as shown before it answers (the opening guard drops a key no frame was shown for) and moves the highlight as a popup does (the
- * arrows stop at the ends); a write ends in the persistent Done step (what was recorded and the core's own sentence; a refused write says so
- * there), a refusal is a step of the popup with its reason under it, and the flow resolves with a notification only when nothing was written
- * and nothing said so (`PRICING_NOT_RECORDED`).
+ * arrows stop at the ends); a write ends in the persistent Done step (what was recorded and the core's own sentence, which says the prices
+ * once; a refused write says so there), a refusal that a price could get past is a question of the popup with its reason under it, one that
+ * nothing the form asks could change (a model whose provider is not connected, a clear with nothing to clear) is a failed Done step, and the
+ * flow resolves with a notification only when nothing was written and nothing said so (`PRICING_NOT_RECORDED`).
  */
 import {
   createClient,
@@ -36,6 +37,7 @@ import {
   PRICING_ACTION_CLEAR,
   PRICING_ACTION_SET,
   PRICING_CLEAR_ALLOW_LABEL,
+  PRICING_CANNOT_RECORD,
   PRICING_CLEAR_OWNERSHIP,
   PRICING_CLOSE_LABEL,
   PRICING_DENY_LABEL,
@@ -50,6 +52,8 @@ import {
   pricingCardText,
   pricingFieldMessage,
   pricingModelIdIssue,
+  pricingRefusalText,
+  pricingUnconnectedText,
   runPricingCard,
   type PricingOffer,
   type PricingPort,
@@ -221,9 +225,18 @@ function rig(
     channel.ui.shown(snap());
     now = CARD_ANSWERED_AT;
   };
-  /** The refusal, where the card would have been: its reason is the line under it. */
+  /** The question that a refusal a price could get past is, where the card would have been: its reason is the line under it. */
   const refusalUp = async (): Promise<string> => {
+    await until('select', PRICING_CANNOT_RECORD);
+    return snap().details.join('\n');
+  };
+  /** The failed Done step of a refusal that nothing the form asks could change: its reason is the line under it. */
+  const failedUp = async (): Promise<string> => {
     await until('select', PRICING_REFUSED);
+    expect(snap().final, 'the result of a refusal is the Done step, in the failed tone').toBe(
+      'failed',
+    );
+    expect(snap().popup?.stepIndex, 'on the rail’s last step').toBe(4);
     return snap().details.join('\n');
   };
   /**
@@ -262,6 +275,7 @@ function rig(
     escape,
     cardUp,
     refusalUp,
+    failedUp,
     done,
     start,
     fill,
@@ -369,7 +383,7 @@ describe('the form asks one question per row of the field table', () => {
   });
 });
 
-describe('the card shows exactly what will be recorded, and whose override it is', () => {
+describe('the confirmation shows exactly what will be recorded, and whose override it is', () => {
   it("names the model, every price in the table's unit, the catalog price it replaces and the operator's ownership", async () => {
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'gpt-5.5');
@@ -414,7 +428,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(await r.result).toBe(PRICING_NOT_RECORDED);
   });
 
-  it("is built from the plan: the card's text is the offer's, and the row read back holds the offer's integers", async () => {
+  it("is built from the plan: the confirmation's text is the offer's, and the row read back holds the offer's integers", async () => {
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ input: '0.12345679', output: '9', video: '0.5' });
@@ -425,17 +439,20 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(r.snap().details).toContain('input       $0.12345679 per M');
     expect(
       r.snap().details.some((line) => /^(cached|image|audio)/u.test(line)),
-      'a price that was left empty is not on the card',
+      'a price that was left empty is not on the confirmation',
     ).toBe(false);
     expect(r.snap().details).toContain('A price you left empty keeps what is stored now.');
     r.ui.input('y', ctrl);
     const done = await r.done();
-    expect(done.message).toBe(
-      'Recorded · acme-custom-1 · input $0.12345679 per M, output $9 per M, video $0.5 per second',
-    );
+    // The prices are said once, in the core's own sentence under the headline (the stored integers, printed exactly), not twice.
+    expect(done.message).toBe('Recorded · acme-custom-1');
     expect(done.lines[0]).toContain(
-      'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679 per M',
+      'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679 per M, output $9 per M, video $0.5 per second',
     );
+    expect(
+      `${done.message}\n${done.lines.join('\n')}`.match(/\$9 per M/gu),
+      'the price is said once',
+    ).toHaveLength(1);
     expect(done.notification).toBeUndefined();
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
@@ -455,7 +472,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(stored.audio).toBeNull();
   });
 
-  it('keeps every line inside the card: a long model id is clipped, not allowed to push the card past the screen', () => {
+  it('keeps every line inside the popup: a long model id is clipped, not allowed to push the confirmation past the screen', () => {
     const text = pricingCardText({
       kind: 'set',
       model: 'm'.repeat(400),
@@ -506,7 +523,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
   it('a CLEAR of a model with no override says so and asks for nothing', async () => {
     const r = rig();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
-    expect(await r.refusalUp()).toBe(
+    expect(await r.failedUp()).toBe(
       'gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
     );
     expect(
@@ -520,7 +537,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
 });
 
 describe('the default is No', () => {
-  it('a bare letter, Enter, a paste and an arrow leave the card open and write nothing; only a chord answers', async () => {
+  it('a bare letter, Enter, a paste and an arrow leave the confirmation open and write nothing; only a chord answers', async () => {
     const r = rig();
     await atCard(r);
     r.ui.input('y', none);
@@ -557,7 +574,7 @@ describe('the default is No', () => {
     expect(r.snap().active).toBe(false);
   });
 
-  it('Esc at the card of a CLEAR removes nothing either', async () => {
+  it('Esc at the confirmation of a CLEAR removes nothing either', async () => {
     const r = rig();
     const seed = r.port.prepare(
       { modelId: 'gpt-5.5', provider: 'openai' },
@@ -574,7 +591,7 @@ describe('the default is No', () => {
     expect(rowsFor('gpt-5.5'), 'the override is still there').toHaveLength(1);
   });
 
-  it('a signal that aborts while the card is open closes it as a No and writes nothing', async () => {
+  it('a signal that aborts while the confirmation is open closes it as a No and writes nothing', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
@@ -629,7 +646,7 @@ describe('the default is No', () => {
 });
 
 describe('Yes writes once, through the commit, and only past the chord guard', () => {
-  it('Ctrl+Y after the card has settled records the price once; a second Ctrl+Y finds no card and writes nothing more', async () => {
+  it('Ctrl+Y after the confirmation has settled records the price once; a second Ctrl+Y finds no confirmation and writes nothing more', async () => {
     const r = rig();
     await atCard(r);
     r.ui.input('y', ctrl);
@@ -643,7 +660,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await Promise.resolve();
     expect(r.snap().final, 'the Done step stays').toBe('ok');
     const done = await r.done();
-    expect(done.message).toBe('Recorded · acme-custom-1 · input $3 per M, output $9 per M');
+    expect(done.message).toBe('Recorded · acme-custom-1');
     expect(done.lines).toEqual([
       'Set user pricing for acme-custom-1 (OpenAI): input $3 per M, output $9 per M. It applies to your next run/chat and survives a model refresh.',
     ]);
@@ -653,7 +670,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.snap().active).toBe(false);
   });
 
-  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the card has been on screen long enough', async () => {
+  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the confirmation has been on screen long enough', async () => {
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
     await r.fill({ input: '3', output: '9' });
@@ -671,7 +688,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+Y on a card that is not on screen is not a Yes', async () => {
+  it('Ctrl+Y on a confirmation that is not on screen is not a Yes', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility(() => false); // the exact frame was never measured and flushed
@@ -735,7 +752,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.snap().active, 'the flow is ended').toBe(false);
   });
 
-  it("a second provider's price that appears while the card is open is refused at Yes, in the shell's words, and nothing is written", async () => {
+  it("a second provider's price that appears while the confirmation is open is refused at Yes, in the shell's words, and nothing is written", async () => {
     const r = rig();
     await atCard(r);
     // A `models pricing acme-custom-1 --provider deepseek` from another terminal, while the card is open.
@@ -782,7 +799,7 @@ describe('a refusal is a sentence, with a way to change the prices or to close',
     await r.cardUp();
     expect(r.snap().details).toContain('output      $9 per M');
     r.ui.input('y', ctrl);
-    expect((await r.done()).message).toContain('input $3 per M, output $9 per M');
+    expect((await r.done()).lines[0]).toContain('input $3 per M, output $9 per M');
     expect(rowsFor('acme-custom-1')).toHaveLength(1);
   });
 
@@ -836,7 +853,7 @@ describe('Esc steps back, and leaving the first question leaves the form', () =>
   it('a CLEAR does not ask for prices', async () => {
     const r = rig();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
-    expect(await r.refusalUp()).not.toContain('Input price'); // no override: refused before any price is asked
+    expect(await r.failedUp()).not.toContain('Input price'); // no override: refused before any price is asked
     r.choose(PRICING_CLOSE_LABEL);
     await r.result;
   });
@@ -929,7 +946,7 @@ describe('a model the list does not show', () => {
     expect(catalog.listAll()).toHaveLength(0);
   });
 
-  it("a decoy the catalog lists is refused when it is picked, in the card's place, and writes nothing", async () => {
+  it("a decoy the catalog lists is refused when it is picked, in the confirmation's place, and writes nothing", async () => {
     const listed = `gpt-5.5${String.fromCodePoint(0x200b)}`;
     const r = rig([entry('gpt-5.5', { pricingSource: 'catalog' }), entry(listed)]);
     await r.until('select', 'what do you want to do');
@@ -948,6 +965,164 @@ describe('a model the list does not show', () => {
     expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(catalog.listAll(), 'the decoy was not written as a row of its own').toHaveLength(0);
+  });
+});
+
+/** The shell core's own refusal of a provider that has no row (`commands/models-pricing.ts`), word for word. */
+const SHELL_UNKNOWN_PROVIDER =
+  "unknown provider 'openai' — register it first (e.g. `relavium provider add openai` or `relavium provider set-key openai`).";
+
+describe('a model whose provider has no row is refused before any price is asked, in the Home’s words', () => {
+  const noRow = (): Rig =>
+    rig([entry('claude-haiku-5-5', { provider: 'anthropic' }), entry('acme-custom-1')]);
+
+  it('SET: the person is told right after the model, to connect it with /providers, and no price is asked', async () => {
+    const r = noRow();
+    const prepare = vi.spyOn(r.port, 'prepare');
+    await r.start(PRICING_ACTION_SET, 'claude-haiku-5-5');
+    const said = await r.failedUp();
+    expect(said).toBe('Connect Anthropic with /providers first, then set its prices.');
+    expect(said, 'a popup never names a shell command').not.toMatch(
+      /relavium|set-key|provider add/u,
+    );
+    expect(r.snap().kind, 'no price field was asked').toBe('select');
+    expect(r.snap().message).toBe(PRICING_REFUSED);
+    expect(prepare, 'nothing was prepared: the form never reached the core').not.toHaveBeenCalled();
+    r.choose(PRICING_CLOSE_LABEL);
+    expect(await r.result, 'the popup said what happened').toBeUndefined();
+    expect(r.commits).not.toHaveBeenCalled();
+    expect(catalog.listAll()).toHaveLength(0);
+  });
+
+  it('CLEAR: there can be no override of theirs under a provider that is not connected, and it says so', async () => {
+    const r = noRow();
+    await r.start(PRICING_ACTION_CLEAR, 'claude-haiku-5-5');
+    expect(await r.failedUp()).toBe(
+      'Anthropic is not connected, so there is no price of yours to clear.',
+    );
+    r.choose(PRICING_CLOSE_LABEL);
+    expect(await r.result).toBeUndefined();
+  });
+
+  it('a model typed by hand is priced under a provider the person can pick: only connected ones are offered', async () => {
+    const r = noRow();
+    await r.until('select', 'what do you want to do');
+    r.choose(PRICING_ACTION_SET);
+    await r.until('select', 'Which model');
+    r.choose(PRICING_OTHER_MODEL);
+    await r.until('text', 'Model id');
+    r.type('house-model');
+    await r.until('select', "Which provider serves 'house-model'");
+    expect(
+      r
+        .snap()
+        .options.map((option) => option.label)
+        .sort(),
+    ).toEqual(['DeepSeek', 'OpenAI']);
+    r.escape();
+    r.escape();
+    r.escape();
+    r.escape();
+    await r.result;
+  });
+
+  it('the words name the provider as the person reads it, through the scrub (a hostile display name is not drawn raw)', () => {
+    expect(pricingUnconnectedText('set', 'Anthropic')).toBe(
+      'Connect Anthropic with /providers first, then set its prices.',
+    );
+    const hostile = pricingUnconnectedText('set', `Evil\u001b]52;c;cGF5\u0007 [Ctrl+Y] Esc denies`);
+    for (const bad of ['\u001b', '\u0007', '[Ctrl+Y]']) expect(hostile).not.toContain(bad);
+  });
+});
+
+describe('no engine message that names a shell command reaches the popup', () => {
+  it('a refusal of the core about an unregistered provider is replaced by the Home’s own sentence, on the question that follows the prices', async () => {
+    const r = rig();
+    vi.spyOn(r.port, 'prepare').mockReturnValue({ ok: false, reason: SHELL_UNKNOWN_PROVIDER });
+    await r.start(PRICING_ACTION_SET, 'gpt-5.5');
+    await r.fill({ input: '3', output: '9' });
+    const reason = await r.refusalUp();
+    expect(reason).toBe('Connect OpenAI with /providers first, then set its prices.');
+    for (const shell of ['relavium', 'set-key', 'provider add', 'unknown provider'])
+      expect(reason, shell).not.toContain(shell);
+    r.choose(PRICING_CLOSE_LABEL);
+    await r.result;
+  });
+
+  it('a commit that fails with that refusal ends in a failed Done step in the same words, and a CLEAR says it too', async () => {
+    const r = rig();
+    const real = r.port.prepare;
+    vi.spyOn(r.port, 'prepare').mockImplementation((target, values) => {
+      const prepared = real(target, values);
+      return prepared.ok
+        ? { ...prepared, commit: () => ({ ok: false, reason: SHELL_UNKNOWN_PROVIDER }) }
+        : prepared;
+    });
+    await atCard(r);
+    r.ui.input('y', ctrl);
+    const done = await r.done();
+    expect(done.tone).toBe('failed');
+    expect(done.message).toBe(PRICING_FAILED);
+    expect(done.lines).toEqual(['Connect OpenAI with /providers first, then set its prices.']);
+  });
+
+  it('`pricingRefusalText` replaces the shell’s provider remedy and leaves every other sentence as it is', () => {
+    const fallback = 'Connect X with /providers first, then set its prices.';
+    expect(pricingRefusalText(SHELL_UNKNOWN_PROVIDER, fallback)).toBe(fallback);
+    expect(pricingRefusalText('Run `relavium provider set-key acme` first.', fallback)).toBe(
+      fallback,
+    );
+    expect(pricingRefusalText('Try provider add acme.', fallback)).toBe(fallback);
+    for (const own of [
+      'Output price is missing: set it together with the input price.',
+      'Set at least one price.',
+      "'acme-custom-1' is already user-priced under 'deepseek'.",
+    ])
+      expect(pricingRefusalText(own, fallback), own).toBe(own);
+  });
+});
+
+describe('a step back to the model list lands on the model that was chosen', () => {
+  it('Esc from a price returns to the list with the chosen model highlighted, not the first row', async () => {
+    const r = rig([entry('a-1'), entry('b-2'), entry('c-3')]);
+    await r.start(PRICING_ACTION_SET, 'c-3');
+    await r.until('text', 'Input price');
+    r.escape();
+    await r.until('select', 'Which model');
+    expect(r.snap().options[r.snap().selected]?.label).toBe('c-3');
+    // and it is the same model that is asked about again
+    r.ui.input('', enter);
+    await r.until('text', 'Input price');
+    expect(r.snap().message).toContain("'c-3'");
+    r.escape();
+    await r.until('select', 'Which model');
+    r.escape();
+    await r.until('select', 'what do you want to do');
+    expect(r.snap().options[r.snap().selected]?.label, 'the action list already did').toBe(
+      PRICING_ACTION_SET,
+    );
+    r.escape();
+    await r.result;
+  });
+
+  it('a model that was typed returns to `Another model…`, where it was typed', async () => {
+    const r = rig([entry('a-1'), entry('b-2')]);
+    await r.until('select', 'what do you want to do');
+    r.choose(PRICING_ACTION_SET);
+    await r.until('select', 'Which model');
+    r.choose(PRICING_OTHER_MODEL);
+    await r.until('text', 'Model id');
+    r.type('house-model');
+    await r.until('select', 'Which provider');
+    r.choose('DeepSeek');
+    await r.until('text', 'Input price');
+    r.escape();
+    await r.until('select', 'Which model');
+    expect(r.snap().options[r.snap().selected]?.label).toBe(PRICING_OTHER_MODEL);
+    r.escape();
+    await r.until('select', 'what do you want to do');
+    r.escape();
+    await r.result;
   });
 });
 

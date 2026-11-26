@@ -17,7 +17,7 @@ import { foldLineSeparators } from '../popups/frame-model.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
-import { flowText } from '../render/tui/flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from '../render/tui/flow-text.js';
 import { keyToken } from '../render/tui/legend.js';
 import {
   NATIVE_PROMPT_BACK,
@@ -85,7 +85,7 @@ const STEP = { workflow: 0, inputs: 1, confirm: 2 } as const;
 export const RUN_CONFIRM_ALLOW = 'Start it';
 export const RUN_CONFIRM_DENY = 'Cancel';
 /** The words of the one option of the last step that says a start failed. */
-export const RUN_FAILED_CLOSE = 'Close';
+export const RUN_FAILED_CLOSE = FLOW_CLOSE_LABEL;
 
 /** A workflow the picker offers. */
 export interface LaunchChoice {
@@ -1131,6 +1131,8 @@ function runSession(options: {
   const { flow, deps, hold, signal, preselect, skipped } = options;
   const { host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
+  /** The workflow the person chose last: the list a step back returns to opens on it, not on its first row. */
+  let chosenSlug: string | undefined;
   let state: LaunchState = { kind: 'idle', turn: 0 };
   let loaded: WorkflowDefinition | undefined;
   let finish: (notice: string) => void = () => undefined;
@@ -1210,7 +1212,8 @@ function runSession(options: {
   }
 
   async function pick(effect: Extract<LaunchEffect, { kind: 'pick' }>): Promise<void> {
-    const at = preselect === undefined ? -1 : effect.choices.findIndex((c) => c.slug === preselect);
+    const wanted = chosenSlug ?? preselect;
+    const at = wanted === undefined ? -1 : effect.choices.findIndex((c) => c.slug === wanted);
     let answer: string | symbol;
     if (preselected && at >= 0) {
       // The Defined tab asked for this workflow: the picker is skipped this once, and everything after it is the ordinary flow.
@@ -1234,6 +1237,7 @@ function runSession(options: {
       dispatch({ kind: 'stop' });
       return;
     }
+    chosenSlug = choice.slug;
     const fresh = catalog.load(choice.path);
     // The file is read again here, after the list: what it declares now must be what the list showed, or the form and the confirmation
     // would name one workflow and run another.

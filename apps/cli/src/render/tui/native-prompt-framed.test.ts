@@ -26,6 +26,7 @@ import {
 import {
   createNativePromptChannel,
   GUARDED_SELECT_GUARD,
+  NATIVE_PROMPT_BACK,
   NATIVE_PROMPT_CANCEL,
   NATIVE_PROMPT_RESIZED,
   type NativePopupDescriptor,
@@ -67,6 +68,7 @@ const UP: Key = { ...none, upArrow: true };
 const ESC: Key = { ...none, escape: true };
 const CTRL: Key = { ...none, ctrl: true };
 const REPEAT_ENTER: Key = { ...ENTER, eventType: 'repeat' };
+const REPEAT_CTRL: Key = { ...CTRL, eventType: 'repeat' };
 
 const DESCRIPTOR: NativePopupDescriptor = {
   title: '/flow',
@@ -574,6 +576,71 @@ describe('a guarded option (the consent’s affirmative, ADR-0148 §3)', () => {
     expect(r.history.lastForeignKeyAt).toBe(foreignBefore);
   });
 
+  describe('on a select opened with `escape: back` (a failed key check’s `Retry the check`, guarded and highlighted)', () => {
+    const RETRY: readonly NativePromptOption[] = [
+      { value: 'retry', label: 'Retry the check', guarded: true },
+      { value: 'save', label: 'Save it anyway' },
+    ];
+    const retryAfterTheCheck = (r: ReturnType<typeof rig>): Promise<string | symbol> => {
+      const retry = r.channel.flow.select({
+        message: 'The check failed',
+        options: RETRY,
+        escape: 'back',
+      });
+      r.show();
+      return retry;
+    };
+
+    /**
+     * The key step's `Enter` sent the key and stays down: its repeats land on the check's wait as typing, then on the retry select that the
+     * failed check opens 700 ms later. Returns whether a repeat answered it; one patient press after the key is let go must.
+     */
+    async function heldFromTheKeyStep(delay: number, rate: number): Promise<boolean> {
+      const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+      const key = r.channel.flow.password({ message: 'Paste your key', escape: 'back' });
+      r.show();
+      r.advance(POPUP_SELECT_SETTLE_MS);
+      r.channel.ui.paste('sk-test');
+      r.advance(APPROVAL_QUIET_MS);
+      r.key('', ENTER);
+      expect(await key).toBe('sk-test');
+      const t0 = r.now();
+      r.channel.flow.busy('Checking your key · one request to api.example.com');
+      r.show();
+      let retry: Promise<string | symbol> | undefined;
+      let last = t0;
+      for (let at = t0 + delay; at <= t0 + 8000; at += rate) {
+        r.at(at);
+        last = at;
+        if (retry === undefined && at >= t0 + 700) retry = retryAfterTheCheck(r);
+        r.key('', ENTER);
+      }
+      if (retry === undefined) throw new Error('the retry select never opened');
+      const answered = (await settled(retry)) !== PENDING;
+      r.at(last + APPROVAL_LOCKOUT_MS);
+      r.key('', ENTER);
+      expect(await retry, `the patient press after ${String(delay)}/${String(rate)}`).toBe('retry');
+      return answered;
+    }
+
+    it('the Enter held from the key step never re-sends the check; a patient Enter after it was let go does', async () => {
+      const answered: string[] = [];
+      for (const delay of [250, 1000] as const)
+        for (const rate of [30, 450, 1800] as const)
+          if (await heldFromTheKeyStep(delay, rate))
+            answered.push(`${String(delay)}/${String(rate)}`);
+      expect(answered).toEqual([]);
+    });
+
+    it('Esc steps back at once: never delayed by the guarded row it sits on', async () => {
+      const r = rig({ settleMs: POPUP_SELECT_SETTLE_MS });
+      const retry = retryAfterTheCheck(r);
+      r.advance(1);
+      r.key('', ESC);
+      expect(await retry).toBe(NATIVE_PROMPT_BACK);
+    });
+  });
+
   describe('a held key never answers it; one patient press after it was let go does', () => {
     const DELAYS = [250, 400, 516, 660, 1000, 1400, 1800] as const;
     const RATES = [30, 60, 100, 300, 450, 700, 1000, 1100, 1400, 1800] as const;
@@ -987,4 +1054,141 @@ describe('a held key never answers what it was not pressed for (F1, F2)', () => 
     r.channel.ui.unseenInput('y', CTRL);
     expect(r.history.lastResolvedAt).toBe(r.now());
   });
+
+  /**
+   * Hold `Ctrl+Y` from `from` (the first repeat one initial delay later, then one per `rate`) to `until`, a repeat the host could not deliver
+   * (before `visibleFrom`) dropped as unseen, as the host drops it. Returns the time of the last repeat.
+   */
+  function holdCtrlY(
+    r: ReturnType<typeof rig>,
+    from: number,
+    until: number,
+    delay: number,
+    rate: number,
+    mode: (typeof MODES)[number],
+    visibleFrom: () => number,
+  ): number {
+    let last = from;
+    for (let at = from + delay; at <= until; at += rate) {
+      r.at(at);
+      last = at;
+      const key = mode === 'kitty' ? REPEAT_CTRL : CTRL;
+      if (at < visibleFrom()) r.channel.ui.unseenInput('y', key);
+      else r.key('y', key);
+    }
+    return last;
+  }
+
+  /**
+   * Unit 6 round 1 (S2/A1, the hunt of S1): a chord card that is the FIRST prompt of a flow (`/init`, the Defined export, `/run` started by `r` on
+   * a workflow with no inputs) had no answer before it, so its lockout ran from nothing: a `Ctrl+Y` held from the moment it appeared answered it
+   * once the dwell and the quiet gap had passed (624 of 1,680 held-key configurations on the channel, every legacy one with a repeat gap past the
+   * quiet gap). Its lockout now runs from the moment it opened. Framed, the early repeats meet the flow's opening guard (refused there, they
+   * restart the lockout); before the frame is on screen, the host drops them as unseen (they restart it too).
+   */
+  it.each(firstPromptCases)(
+    'framed=%s, frame acknowledged at %i ms, %s repeats: a chord card that is the first prompt of a flow a key opened',
+    async (framed, ack, mode) => {
+      const answered: string[] = [];
+      for (const delay of DELAYS)
+        for (const rate of RATES) {
+          const history = createChordHistory();
+          const r = rig({ framed, history });
+          const t0 = r.now();
+          history.previousKeyAt = t0; // the key that opened the flow: a key, never a resolution
+          const card = r.channel.flow.chord({ message: 'Write?', allow: 'Write', deny: 'Skip' });
+          // No key lands at the very moment the card appears: the first repeat is the first thing to meet the card, so the path that refuses it
+          // (the host's unseen drop before the frame, the flow's opening guard inside its settle, the card itself) is the one that must restart
+          // the lockout from the card's opening.
+          let shownAt = Number.POSITIVE_INFINITY;
+          const last = holdCtrlY(r, t0, t0 + HELD_FOR_MS, delay, rate, mode, () => {
+            if (r.now() >= t0 + ack && shownAt === Number.POSITIVE_INFINITY) {
+              const now = r.now();
+              r.at(t0 + ack);
+              r.show();
+              r.at(now);
+              shownAt = t0 + ack;
+            }
+            return shownAt;
+          });
+          if ((await settled(card)) !== PENDING) answered.push(`${String(delay)}/${String(rate)}`);
+          if (shownAt === Number.POSITIVE_INFINITY) r.show();
+          r.at(last + APPROVAL_LOCKOUT_MS);
+          r.key('y', CTRL);
+          expect(await card, `the patient press after ${String(delay)}/${String(rate)}`).toBe(
+            'allow',
+          );
+        }
+      expect(answered).toEqual([]);
+    },
+  );
+
+  const chordWaitCases = [300, 1500, 2500, 5000].flatMap((wait) =>
+    [true, false].flatMap((framed) =>
+      ACKS.flatMap((ack) => MODES.map((mode) => [wait, framed, ack, mode] as const)),
+    ),
+  );
+
+  /**
+   * Unit 6 round 1 (S1): the `Ctrl+Y` that answered one chord card stays down through a wait (`Starting the run…`), and the card that wait raises
+   * (the MCP consent card of the start) appears under its repeats. The repeats on the wait are typing only, so once the wait outlasted the
+   * lockout of the answer before it nothing was left to hold the next card: the held key answered it. The card's own opening now starts a
+   * lockout that each refused repeat restarts. The whole launch over the real `/run` flow is `run-card-cross-lockout.test.ts`'s.
+   */
+  it.each(chordWaitCases)(
+    'a chord card reached after a %i ms wait with the Ctrl+Y that answered the card before held through it, framed=%s, frame at %i ms, %s repeats',
+    async (wait, framed, ack, mode) => {
+      const answered: string[] = [];
+      for (const delay of DELAYS)
+        for (const rate of RATES) {
+          const r = rig({ framed });
+          const first = r.channel.flow.chord({ message: 'Start?', allow: 'Start', deny: 'No' });
+          r.show();
+          r.advance(5000);
+          r.key('y', CTRL); // the deliberate press that the key then stays down after
+          expect(await first).toBe('allow');
+          const t0 = r.now();
+          r.channel.flow.busy('Starting the run…');
+          let card: Promise<string | symbol> | undefined;
+          let busyShown = false;
+          let shownAt = Number.POSITIVE_INFINITY;
+          const last = holdCtrlY(r, t0, t0 + wait + HELD_FOR_MS, delay, rate, mode, () => {
+            const now = r.now();
+            if (!busyShown && now >= t0 + 16) {
+              r.at(t0 + 16);
+              r.show();
+              r.at(now);
+              busyShown = true;
+            }
+            if (card === undefined && now >= t0 + wait) {
+              r.at(t0 + wait);
+              card = r.channel.flow.chord({ message: 'Allow?', allow: 'Allow', deny: 'Refuse' });
+              r.at(now);
+            }
+            if (
+              card !== undefined &&
+              shownAt === Number.POSITIVE_INFINITY &&
+              now >= t0 + wait + ack
+            ) {
+              r.at(t0 + wait + ack);
+              r.show();
+              r.at(now);
+              shownAt = t0 + wait + ack;
+            }
+            // a key while the wait is on screen is delivered (typing); one between the card's publication and its frame is not
+            if (card === undefined) return busyShown ? t0 + 16 : Number.POSITIVE_INFINITY;
+            return shownAt;
+          });
+          card ??= r.channel.flow.chord({ message: 'Allow?', allow: 'Allow', deny: 'Refuse' });
+          if ((await settled(card)) !== PENDING) answered.push(`${String(delay)}/${String(rate)}`);
+          r.show();
+          r.at(Math.max(last, r.now()) + APPROVAL_LOCKOUT_MS);
+          r.key('y', CTRL);
+          expect(await card, `the patient press after ${String(delay)}/${String(rate)}`).toBe(
+            'allow',
+          );
+        }
+      expect(answered).toEqual([]);
+    },
+  );
 });

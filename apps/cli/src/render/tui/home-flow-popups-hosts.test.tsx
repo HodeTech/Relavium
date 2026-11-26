@@ -60,7 +60,7 @@ const JOURNEY: Readonly<
     names: ['Check', 'Confirm', 'Done'],
     chordStep: 2,
     legend: '[Ctrl+Y] Create them · [Ctrl+N] Create nothing · Esc denies',
-    done: 'Created · .relavium/',
+    done: 'Created the project directories',
   },
   import: {
     title: '/import',
@@ -374,11 +374,12 @@ describe.each(VARIANTS)('/export in a chat, $renderer at 80×24', (variant) => {
         expect(card).toContain('/export');
         expect(card).toContain('A new file in the project.');
         expect(card).toContain('Ctrl+Y');
-        expect(card).toContain('export');
+        expect(card).toContain('Write the file');
         expect(m.submitted, 'the line is the popup’s, never the chat’s dispatch').toEqual([]);
         await pause(PAST_THE_LOCKOUT_MS);
         m.key(KEYS.ctrlY);
-        await m.until(() => m.text().includes('Exported · .relavium/workflows/'), 2000);
+        await m.until(() => m.text().includes('Exported this chat as a workflow'), 2000);
+        expect(m.text(), 'the file is on a row of its own').toContain('.relavium/workflows/');
         expect(commit).toHaveBeenCalledTimes(1);
         await m.settle();
         m.key(KEYS.enter);

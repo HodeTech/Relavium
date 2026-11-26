@@ -2,12 +2,9 @@ import '../frames.js';
 import { label, type Producer, type Recorder } from '../golden.js';
 
 import type { RunHostSnapshot } from '../../../../home/run-host.js';
-import {
-  ANOTHER_DIRECTORY_NOTICE,
-  NO_USABLE_KEY_NOTICE,
-  RESTORING_NOTE,
-} from '../../../../home/drive-home.js';
+import { NO_USABLE_KEY_NOTICE } from '../../../../home/drive-home.js';
 import { launchBusy } from '../../../../home/run-launch.js';
+import { RESUME_ANOTHER_DIRECTORY, RESUME_RESTORING } from '../../../../home/session-picker.js';
 import { STARTING_CHAT_LINE } from '../../home-app.js';
 import { PROVIDER_KEYS_AT_THE_HOME } from '../../home-controller.js';
 import { STDIN_PROMPT_NOTE } from '../../../../commands/agent-run.js';
@@ -101,25 +98,29 @@ const scrollbackDumpPrompt: Recorder = () => {
   };
 };
 
-/** The three sentences `driveHome` writes: a chat refused for want of a key, a session of another directory, and the note while one restores. */
+/**
+ * The three sentences `driveHome` writes: a chat refused for want of a key, a session of another directory, and the wait while one restores.
+ * The last two are the REAL strings (`RESUME_ANOTHER_DIRECTORY`, `RESUME_RESTORING` of `home/session-picker.ts`, which `driveHome` draws),
+ * not exports that only this recorder reads.
+ */
 const driveHomeSentences: Recorder = () => {
-  const restoring = RESTORING_NOTE;
   const out: Record<string, readonly string[] | string> = {
     'chat notice: no usable key (source literal)': NO_USABLE_KEY_NOTICE,
-    'home notice: another directory (source literal)': ANOTHER_DIRECTORY_NOTICE,
-    'resume note (source literal)': restoring,
+    'resume notice: another directory (source literal)': RESUME_ANOTHER_DIRECTORY,
+    'resume wait (source literal)': RESUME_RESTORING,
   };
-  // The restoring note is published through the native prompt channel, so a real card draws it above the legend of a busy card.
+  // The restore's wait is the native prompt channel's busy card (`restoring.busy(RESUME_RESTORING)`): the real view draws it, and its legend says
+  // what `Esc` does to it.
   for (const size of [SIZE_80, SIZE_100]) {
     withCard(
       (channel) => {
-        channel.flow.note(restoring);
+        channel.flow.busy(RESUME_RESTORING);
       },
       ({ ui }) =>
         Object.assign(
           out,
           cardStates(
-            `resume note frame size=${String(size.cols)}x${String(size.rows)}`,
+            `resume wait frame size=${String(size.cols)}x${String(size.rows)}`,
             ui,
             ui.getSnapshot(),
             size,

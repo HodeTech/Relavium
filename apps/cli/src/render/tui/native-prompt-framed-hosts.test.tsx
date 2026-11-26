@@ -24,11 +24,16 @@ import {
 } from './surface-matrix/chat-host.js';
 import { KEYS, mountHome, type HomeMount } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
-import { APPROVAL_QUIET_MS, APPROVAL_SETTLE_MS } from './tool-review-model.js';
+import { APPROVAL_LOCKOUT_MS, APPROVAL_QUIET_MS, APPROVAL_SETTLE_MS } from './tool-review-model.js';
 
 /** A real wait past the flow's opening settle and a chord card's dwell (the hosts' clocks are the real one). */
 const PAST_THE_GUARDS_MS =
   Math.max(POPUP_SELECT_SETTLE_MS, APPROVAL_SETTLE_MS) + APPROVAL_QUIET_MS + 100;
+/**
+ * A real wait past a chord card's lockout, which runs from the moment the card opened and which a refused `Ctrl+Y` inside it restarts: counted
+ * from the last `Ctrl+Y` pressed (the other guards are shorter).
+ */
+const PAST_THE_LOCKOUT_MS = APPROVAL_LOCKOUT_MS + 150;
 /** How long a pending answer is watched before the test says it did not come. */
 const WATCH_MS = 150;
 
@@ -102,7 +107,8 @@ describe('a chord step drawn in the popup frame', () => {
         expect(text).not.toContain('│ from');
         m.key(KEYS.ctrlY);
         expect(await within(answer)).toBe(PENDING);
-        await pause(PAST_THE_GUARDS_MS);
+        // That early press was refused inside the lockout that runs from the card's opening, and restarted it: the next one waits it out.
+        await pause(PAST_THE_LOCKOUT_MS);
         m.key(KEYS.ctrlY);
         expect(await answer).toBe('allow');
         await channel.flow.end();

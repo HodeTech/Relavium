@@ -19,10 +19,18 @@
  * **A prompt that is not the popup's.** `unframed(run)` takes the descriptor away while `run` asks something on the RAW channel (the MCP
  * consent card a run raises while it starts, which is the run's own card, not a step of the popup) and puts it back after.
  *
- * **The Done step** (§6): a flow that WRITES ends in `done(…)`, a persistent last step that says what was written (project-relative, the
- * caller's words) or that it failed, closed by `Enter` or `Esc`; a timed notification is not evidence of a write. `Esc` there steps back (it
- * never aborts the flow's signal: a flow that reads the signal after its Done step must not take a completed write for a cancel); `Ctrl+C`
- * still cancels.
+ * **A note belongs to the step it precedes.** A note a flow sets (the key step's disclosure, a failed write's reason, the sentence that goes
+ * with a recovery question) is the line above the NEXT prompt, and it goes when that prompt is resolved, whether it was answered, stepped back
+ * from or aborted: a note never outlives its step, so it is never found above a later step, the list a step back returns to, or the Done step.
+ * The Done step starts with no note at all. What the person must still read there is the Done step's own `lines`. A disclosure that must be on
+ * screen while a write publishes is set after the prompt that came before it and is gone only when the NEXT prompt is resolved or the Done
+ * step opens, both after the write.
+ *
+ * **The Done step** (§6): a flow that WRITES ends in `done(…)`, a persistent last step that says what was written or that it failed, closed
+ * by `Enter` or `Esc`; a timed notification is not evidence of a write. It has ONE shape: the sentence led by its mark (`✓` for a write that
+ * happened, `✗` for one that did not; `ok` and `x` where the glyphs are plain), the target (project-relative, the caller's words) once under
+ * it, the caller's lines, and one option, `Close`. `Esc` there steps back (it never aborts the flow's signal: a flow that reads the signal
+ * after its Done step must not take a completed write for a cancel); `Ctrl+C` still cancels.
  *
  * Never used where no popup slot is drawn: the stand-alone chat's pre-chat mount draws the channel's card alone (`standalone-native-flow.ts`),
  * where a framed prompt would draw nothing and every key would be dropped as unseen. That mount's coordinator receives the raw flow.
@@ -41,7 +49,7 @@ export type FramedProgress = 'linear' | 'manual';
 
 /** What the popup frame says around a flow. */
 export interface FramedFlowOptions {
-  /** The command's name on the top edge (`/providers`, or `Connect a provider` for the first run). */
+  /** The command's name on the top edge (`/providers`, or `Connect a provider` for the first run, which names itself so). */
   readonly title: string;
   readonly origin: NativePopupDescriptor['origin'];
   /** The steps the rail names, in order (`Provider`, `Key`, `Done`). A flow of one step passes one name and draws no rail. */
@@ -56,6 +64,13 @@ export interface FramedFlowOptions {
 export interface FramedStepOptions {
   /** The way back of THESE prompts (`back` on a later step of the first run, whose first step says `skip for now`). */
   readonly exitLabel?: string;
+  /**
+   * What `Enter` says on the legend of THESE prompts when they are a text or a masked field whose `Enter` does more than continue (`check` on
+   * the key step: that `Enter` sends the key to the provider, once). Default `continue`; it is read for no other kind of prompt. A PRODUCT
+   * constant, never data: it is drawn on the legend row as given (sanitised by the channel, not scrubbed), so a word a person, a project or a
+   * provider wrote must never reach it. Only this type keeps it so; there is no runtime path that tells where a string came from.
+   */
+  readonly enterVerb?: string;
 }
 
 /** What the persistent last step says. */
@@ -64,9 +79,12 @@ export interface FramedDone {
   readonly message: string;
   /** The lines under it: what was written, one per line, or why it failed. None by default. */
   readonly lines?: readonly string[];
-  /** Where the write went, project-relative: the hint of the step's one option. Absent ⇒ the option names nothing. */
+  /**
+   * Where the write went, project-relative: drawn ONCE, as the first row under the sentence (a line that is the target word for word is not
+   * drawn a second time). A caller does not put it in the sentence as well. Absent ⇒ no row.
+   */
   readonly target?: string;
-  /** The words of the step's one option; default {@link FRAMED_DONE_LABEL}. */
+  /** @deprecated Ignored: the step has one option, worded {@link FRAMED_DONE_LABEL}, whatever the result (its legend says `Enter / Esc close`). */
   readonly label?: string;
   /** `failed` draws the sentence as a failure (a write that did not happen); default `ok`. */
   readonly tone?: NativeFinalTone;
@@ -74,8 +92,8 @@ export interface FramedDone {
 
 /** The value the Done step's one option answers with. */
 export const FRAMED_DONE_VALUE = 'done';
-/** The default words of the Done step's one option. */
-export const FRAMED_DONE_LABEL = 'Done';
+/** The words of the Done step's one option, in both tones: the legend under it says `Enter / Esc close`. */
+export const FRAMED_DONE_LABEL = 'Close';
 
 /** The prompts of a framed flow, on the step their caller names (`at`) or on the step the rail is on. */
 export type FramedPrompts = Pick<
@@ -106,6 +124,14 @@ export interface FramedChordFlow extends FramedFlow, NativeChordPort {
 interface Shown {
   readonly step: number;
   readonly exitLabel: string;
+  readonly enterVerb: string | undefined;
+}
+
+/** Where a prompt of a step is drawn and what its legend says: a step (or the one the rail is on), its way back and its `Enter`. */
+interface StepWords {
+  readonly step: number | undefined;
+  readonly exitLabel?: string | undefined;
+  readonly enterVerb?: string | undefined;
 }
 
 /** Where a flow's rail is and what it remembers (one per framed flow). */
@@ -139,6 +165,7 @@ function describeStep(facts: RailFacts, shown: Shown): NativePopupDescriptor {
     stepCount: facts.count,
     stepNames: facts.options.stepNames,
     exitLabel: shown.exitLabel,
+    ...(shown.enterVerb === undefined ? {} : { enterVerb: shown.enterVerb }),
     depth: 1,
   };
 }
@@ -147,7 +174,12 @@ function describeStep(facts: RailFacts, shown: Shown): NativePopupDescriptor {
 function publishStep(facts: RailFacts, state: RailState): void {
   if (state.suspended > 0) return;
   const { drawn, wanted } = state;
-  if (drawn?.step === wanted.step && drawn.exitLabel === wanted.exitLabel) return;
+  if (
+    drawn?.step === wanted.step &&
+    drawn.exitLabel === wanted.exitLabel &&
+    drawn.enterVerb === wanted.enterVerb
+  )
+    return;
   state.drawn = wanted;
   facts.flow.popup?.(describeStep(facts, wanted));
 }
@@ -170,7 +202,7 @@ function clampStep(facts: RailFacts, index: number): number {
 
 /** A fresh rail, on the first step. */
 function freshRail(options: FramedFlowOptions): RailState {
-  const shown = { step: 0, exitLabel: options.exitLabel ?? 'close' };
+  const shown: Shown = { step: 0, exitLabel: options.exitLabel ?? 'close', enterVerb: undefined };
   return { next: 0, trail: [], drawn: undefined, suspended: 0, wanted: shown };
 }
 
@@ -179,8 +211,8 @@ function createRail(flow: NativePromptFlow, options: FramedFlowOptions) {
   const count = Math.max(1, options.stepNames.length);
   const facts: RailFacts = { flow, options, count, last: count - 1 };
   let state = freshRail(options);
-  const show = (step: number, exitLabel?: string): void => {
-    state.wanted = { step, exitLabel: exitLabel ?? options.exitLabel ?? 'close' };
+  const show = (step: number, exitLabel?: string, enterVerb?: string): void => {
+    state.wanted = { step, exitLabel: exitLabel ?? options.exitLabel ?? 'close', enterVerb };
     publishStep(facts, state);
   };
   return {
@@ -197,6 +229,8 @@ function createRail(flow: NativePromptFlow, options: FramedFlowOptions) {
     },
     show,
     settled: (step: number, result: unknown): void => settleStep(facts, state, step, result),
+    /** The prompt the note was set for is resolved: the note goes with it (and the Done step opens with none). */
+    clearNote: (): void => flow.note(''),
     suspend: (): void => {
       if (state.suspended === 0 && state.drawn !== undefined) flow.popup?.(undefined);
       state.suspended += 1;
@@ -213,75 +247,55 @@ function createRail(flow: NativePromptFlow, options: FramedFlowOptions) {
 type Rail = ReturnType<typeof createRail>;
 type Prompt<Args extends unknown[], Result> = (...args: Args) => Promise<Result>;
 
-/** A prompt on `step` (or, when `undefined`, on the step the rail is at): drawn before it is published, and recorded on the rail when it resolves. */
+/**
+ * A prompt on `words.step` (or, when `undefined`, on the step the rail is at): drawn before it is published, and, when it resolves (answered,
+ * stepped back from, or aborted), recorded on the rail and its note taken away: a note belongs to the prompt it precedes.
+ */
 function promptOn<Args extends unknown[], Result>(
   rail: Rail,
   ask: Prompt<Args, Result>,
-  step: number | undefined,
-  exitLabel: string | undefined,
+  words: StepWords,
 ): Prompt<Args, Result> {
   return async (...args) => {
-    const at = step ?? rail.next();
-    rail.show(at, exitLabel);
+    const at = words.step ?? rail.next();
+    rail.show(at, words.exitLabel, words.enterVerb);
     const result = await ask(...args);
     rail.settled(at, result);
+    rail.clearNote();
     return result;
   };
 }
 
-/** The prompts of one step (`step` ⇒ that step; `undefined` ⇒ wherever the rail is), with this step's way back where given. */
+/** The prompts of one step (`words.step` ⇒ that step; `undefined` ⇒ wherever the rail is), with this step's way back and `Enter` where given. */
 function stepPrompts(
   flow: NativePromptFlow & Partial<NativeChordPort>,
   rail: Rail,
-  step: number | undefined,
-  exitLabel?: string,
+  words: StepWords,
 ): FramedPrompts & Partial<NativeChordPort> {
   const chord = flow.chord;
   return {
     busy: (message) => {
-      if (step !== undefined) rail.moveTo(step, exitLabel);
+      if (words.step !== undefined) rail.moveTo(words.step, words.exitLabel);
       flow.busy(message);
     },
-    pick: promptOn(
-      rail,
-      (o: Parameters<NativePromptFlow['pick']>[0]) => flow.pick(o),
-      step,
-      exitLabel,
-    ),
-    select: promptOn(
-      rail,
-      (o: Parameters<NativePromptFlow['select']>[0]) => flow.select(o),
-      step,
-      exitLabel,
-    ),
+    pick: promptOn(rail, (o: Parameters<NativePromptFlow['pick']>[0]) => flow.pick(o), words),
+    select: promptOn(rail, (o: Parameters<NativePromptFlow['select']>[0]) => flow.select(o), words),
     confirm: promptOn(
       rail,
       (message: string, initial?: boolean, escape?: Parameters<NativePromptFlow['confirm']>[2]) =>
         flow.confirm(message, initial, escape),
-      step,
-      exitLabel,
+      words,
     ),
-    text: promptOn(
-      rail,
-      (o: Parameters<NativePromptFlow['text']>[0]) => flow.text(o),
-      step,
-      exitLabel,
-    ),
+    text: promptOn(rail, (o: Parameters<NativePromptFlow['text']>[0]) => flow.text(o), words),
     password: promptOn(
       rail,
       (o: Parameters<NativePromptFlow['password']>[0]) => flow.password(o),
-      step,
-      exitLabel,
+      words,
     ),
     ...(chord === undefined
       ? {}
       : {
-          chord: promptOn(
-            rail,
-            (o: Parameters<NativeChordPort['chord']>[0]) => chord(o),
-            step,
-            exitLabel,
-          ),
+          chord: promptOn(rail, (o: Parameters<NativeChordPort['chord']>[0]) => chord(o), words),
         }),
   };
 }
@@ -317,19 +331,22 @@ function createNesting(flow: NativePromptFlow, rail: Rail) {
   };
 }
 
+/** The rows under the Done step's sentence: the target once (unless a line already is it), then the caller's lines. */
+function doneRows(done: FramedDone): readonly string[] {
+  const lines = done.lines ?? [];
+  return done.target === undefined || lines.includes(done.target) ? lines : [done.target, ...lines];
+}
+
 /** The persistent last step (see {@link FramedFlow.done}). */
 async function doneStep(flow: NativePromptFlow, rail: Rail, done: FramedDone): Promise<void> {
+  // The step starts with no note: what an earlier step said is not what this one reports (its own lines are the place for what must stay).
+  rail.clearNote();
   rail.show(rail.last);
+  const rows = doneRows(done);
   await flow.select({
     message: done.message,
-    options: [
-      {
-        value: FRAMED_DONE_VALUE,
-        label: done.label ?? FRAMED_DONE_LABEL,
-        ...(done.target === undefined ? {} : { hint: done.target }),
-      },
-    ],
-    ...(done.lines === undefined ? {} : { details: done.lines }),
+    options: [{ value: FRAMED_DONE_VALUE, label: FRAMED_DONE_LABEL }],
+    ...(rows.length === 0 ? {} : { details: rows }),
     // A lone `Esc` closes it as a step back: the flow's signal is not aborted by closing what it already did.
     escape: 'back',
     final: done.tone ?? 'ok',
@@ -357,8 +374,13 @@ export function framedFlow(
       : {
           committedNote: (message: string, title?: string) => flow.committedNote?.(message, title),
         }),
-    ...stepPrompts(flow, rail, undefined),
-    at: (step, stepOptions) => stepPrompts(flow, rail, rail.clamp(step), stepOptions?.exitLabel),
+    ...stepPrompts(flow, rail, { step: undefined }),
+    at: (step, stepOptions) =>
+      stepPrompts(flow, rail, {
+        step: rail.clamp(step),
+        exitLabel: stepOptions?.exitLabel,
+        enterVerb: stepOptions?.enterVerb,
+      }),
     done: (done) => doneStep(flow, rail, done),
     unframed: async (run) => {
       rail.suspend();

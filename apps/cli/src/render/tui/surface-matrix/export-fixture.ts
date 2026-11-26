@@ -11,8 +11,8 @@ import type { ChatSurfaceDefinition } from './surfaces-chat.js';
  */
 
 export const EXPORT_LANDMARK = 'A new file in the project.';
-/** The confirmation's legend row: its one answer and its way back. */
-export const EXPORT_LEGEND_ROW = '[Ctrl+Y] export · Esc cancel';
+/** The confirmation's legend row: its one answer and its way back, in the words of every flow that writes a file (`Esc` refuses it). */
+export const EXPORT_LEGEND_ROW = '[Ctrl+Y] Write the file · Esc denies';
 
 /** A reports port that holds only `/export`, over a fake that writes nothing. */
 export function exportReportsPort(surface: ReportSurface): ReportsPort {

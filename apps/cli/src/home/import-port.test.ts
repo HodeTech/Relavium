@@ -244,8 +244,57 @@ describe('prepare reads and validates through the command’s own first half, an
   });
 });
 
+describe('a refusal is said as a person reads it: the file once, scrubbed, cut at a word', () => {
+  it('a YAML syntax error names the file once, not in every parenthesis the parser adds', () => {
+    writeFileSync(join(root, 'bad-indent.yaml'), 'id: x\n  provider: [unclosed\nmodel: "abc\n');
+    const reason = refused('bad-indent.yaml');
+    expect(reason.startsWith('bad-indent.yaml is not a valid workflow (')).toBe(true);
+    expect(reason.split('bad-indent.yaml'), `the file is named once in: ${reason}`).toHaveLength(2);
+    expect(reason).toMatch(/\(line 1, column \d+\)/u);
+    expect(reason.length).toBeLessThanOrEqual(240);
+  });
+
+  it('a schema error names the file once too (`invalid agent (file):` loses the file it already named)', () => {
+    writeFileSync(join(root, 'not-map.yaml'), '- a\n- b\n');
+    const reason = refused('not-map.yaml');
+    expect(reason.split('not-map.yaml'), `the file is named once in: ${reason}`).toHaveLength(2);
+    expect(reason).toContain('invalid agent: agent: expected object');
+  });
+
+  it('a reason too long is cut where a word ends, never inside one, and says so with an ellipsis', () => {
+    // the command's own few words (`could not read `), then words of 8 letters and a space: a hard cut at the bound would fall inside a word
+    const reason = refused(`${'abcdefgh '.repeat(40).trimEnd()}.yaml`);
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason).toMatch(/^[a-z ]+ (abcdefgh )+abcdefgh…$/u);
+  });
+
+  it('a cut inside a parenthesis closes it, so a reason does not stop in the middle of a clause', () => {
+    const reason = refused(`(${'abcdefgh '.repeat(40).trimEnd()}.yaml`);
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason).toMatch(/^[a-z ]+ \((abcdefgh )+abcdefgh…\)$/u);
+    expect([...reason].filter((c) => c === '(')).toHaveLength(
+      [...reason].filter((c) => c === ')').length,
+    );
+  });
+
+  it('a long run with no space (a path) is cut where the bound falls, not dropped', () => {
+    const reason = refused(`${'d/'.repeat(300)}missing.yaml`);
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason.startsWith('no file at d/d/d/')).toBe(true);
+    expect(reason.endsWith('…')).toBe(true);
+  });
+
+  it('the text is scrubbed BEFORE it is cut: a key-shaped file name never reaches the popup, nor does a chord token', () => {
+    const key = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
+    const reason = refused(`${key} [Ctrl+Y] ${'abcdefgh '.repeat(40)}.yaml`);
+    expect(reason).not.toContain(key);
+    expect(reason).not.toContain('[Ctrl+Y]');
+    expect(reason.length).toBeLessThanOrEqual(240);
+  });
+});
+
 describe.skipIf(process.platform === 'win32')(
-  'a catalog directory that is a link: the card shows where the file really goes',
+  'a catalog directory that is a link: the confirmation shows where the file really goes',
   () => {
     it('a link that stays inside the project: the `to` row is the real directory, and the write lands there', () => {
       mkdirSync(join(root, '.relavium', 'shared'), { recursive: true });
@@ -259,7 +308,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(readdirSync(join(root, '.relavium', 'shared'))).toEqual(['reviewer.agent.yaml']);
     });
 
-    it('a link that leaves the project is refused before the card asks (here by the id check, which scans the directory first), and nothing is written there', () => {
+    it('a link that leaves the project is refused before the confirmation asks (here by the id check, which scans the directory first), and nothing is written there', () => {
       symlinkSync(outside, join(root, '.relavium', 'agents'));
       expect(refused('incoming.agent.yaml')).toBe('could not read the agents catalog directory.');
       expect(readdirSync(outside)).toEqual([]);
@@ -267,13 +316,13 @@ describe.skipIf(process.platform === 'win32')(
   },
 );
 
-describe('the card never overwrites: whatever holds the place is a refusal before it asks', () => {
+describe('/import never overwrites: whatever holds the place is a refusal before it asks', () => {
   it('an id the project already has names the shell command that replaces it', () => {
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), AGENT);
     const before = tree(root);
     expect(refused('incoming.agent.yaml')).toBe(
-      `agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
+      `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`,
     );
     expect(tree(root)).toEqual(before);
     expect(readFileSync(target(), 'utf8')).toBe(AGENT);
@@ -293,7 +342,7 @@ describe('the card never overwrites: whatever holds the place is a refusal befor
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), 'not an agent at all\n');
     expect(refused('incoming.agent.yaml')).toBe(
-      `${AGENT_PATH} already exists, and this card never overwrites. ${REPLACE}`,
+      `${AGENT_PATH} already exists, and /import never overwrites. ${REPLACE}`,
     );
     expect(readFileSync(target(), 'utf8')).toBe('not an agent at all\n');
   });
@@ -302,20 +351,20 @@ describe('the card never overwrites: whatever holds the place is a refusal befor
     mkdirSync(target(), { recursive: true });
     const reason = refused('incoming.agent.yaml');
     expect(reason).toBe(
-      `${AGENT_PATH} already exists and is not a regular file, and this card never overwrites. Move it aside, then import again.`,
+      `${AGENT_PATH} already exists and is not a regular file, and /import never overwrites. Move it aside, then import again.`,
     );
     expect(reason).not.toContain('--force');
   });
 
   it.skipIf(process.platform === 'win32')(
-    'a link at the destination is refused before the card asks, and what it points at is never written',
+    'a link at the destination is refused before the confirmation asks, and what it points at is never written',
     () => {
       mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
       const victim = join(outside, 'victim.yaml');
       writeFileSync(victim, 'untouched\n');
       symlinkSync(victim, target());
       expect(refused('incoming.agent.yaml')).toBe(
-        `${AGENT_PATH} already exists and is not a regular file, and this card never overwrites. Move it aside, then import again.`,
+        `${AGENT_PATH} already exists and is not a regular file, and /import never overwrites. Move it aside, then import again.`,
       );
       expect(readFileSync(victim, 'utf8')).toBe('untouched\n');
       expect(readFileSync(victim, 'utf8')).not.toContain('reviewer');
@@ -365,13 +414,13 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     expect(readFileSync(target(), 'utf8')).toContain(LITERAL);
   });
 
-  it('a file that appeared since the card was drawn is kept, and the refusal is in the card’s words', () => {
+  it('a file that appeared since the confirmation was drawn is kept, and the refusal is in the popup’s words', () => {
     const result = prepared('incoming.agent.yaml');
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), 'someone else wrote this\n');
     expect(result.commit()).toEqual({
       ok: false,
-      reason: `${AGENT_PATH} already exists, and this card never overwrites. ${REPLACE}`,
+      reason: `${AGENT_PATH} already exists, and /import never overwrites. ${REPLACE}`,
     });
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
@@ -382,7 +431,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     // Another valid file declares the same id; the name `wx` guards is free, so only the id's rule can refuse.
     writeFileSync(join(root, '.relavium', 'agents', 'renamed.agent.yaml'), AGENT);
     const before = tree(root);
-    const sentence = `agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`;
+    const sentence = `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`;
     expect(result.commit()).toEqual({ ok: false, reason: sentence });
     expect(existsSync(target()), 'the destination was not created').toBe(false);
     expect(tree(root)).toEqual(before);
@@ -412,7 +461,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     expect(attempt.ok).toBe(false);
     if (attempt.ok) return;
     expect(attempt.reason).toBe(
-      `${AGENT_PATH} already exists and is not a regular file, and this card never overwrites. Move it aside, then import again.`,
+      `${AGENT_PATH} already exists and is not a regular file, and /import never overwrites. Move it aside, then import again.`,
     );
   });
 
@@ -431,7 +480,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
   );
 
   it.skipIf(process.platform === 'win32')(
-    'a link put in the destination’s directory since the card was drawn, into global configuration, is refused again at the write',
+    'a link put in the destination’s directory since the confirmation was drawn, into global configuration, is refused again at the write',
     () => {
       const result = prepared('incoming.agent.yaml');
       // The card is open for as long as a person takes; meanwhile the project's `.relavium` becomes a link to the operator's own.
@@ -451,7 +500,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
   );
 
   it.skipIf(process.platform === 'win32')(
-    'a link put in the destination’s directory since the card was drawn, out of the project, is refused at the write in fixed words, and nothing is written there',
+    'a link put in the destination’s directory since the confirmation was drawn, out of the project, is refused at the write in fixed words, and nothing is written there',
     () => {
       const result = prepared('incoming.agent.yaml');
       // The card is open for as long as a person takes; meanwhile the project's `agents` becomes a link to a directory elsewhere.
@@ -471,7 +520,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     const attempt = result.commit();
     expect(attempt.ok).toBe(false);
     if (attempt.ok) return;
-    expect(attempt.reason).not.toContain('this card never overwrites');
+    expect(attempt.reason).not.toContain('/import never overwrites');
     expect(readFileSync(join(root, '.relavium', 'agents'), 'utf8')).toBe(
       'a file where the catalog directory goes\n',
     );

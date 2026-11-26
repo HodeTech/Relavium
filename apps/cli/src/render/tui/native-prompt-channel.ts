@@ -12,6 +12,7 @@ import {
 import { exitKey, legend, type LegendExit, type LegendItem } from './legend.js';
 import {
   cancelsPrompt,
+  createChordCardGuard,
   createGuardedSelect,
   createOpeningAdmission,
   firstBoundary,
@@ -101,6 +102,13 @@ export interface NativePopupDescriptor {
   readonly stepNames?: readonly string[];
   /** What the way back says on the legend where `Esc` (or `Ctrl+C`) closes the popup (`close`, `skip for now`). */
   readonly exitLabel: string;
+  /**
+   * What `Enter` says on the legend of a text or a masked field of this step where it does more than continue (`check` on the key step: that
+   * `Enter` sends the key to the provider); default `continue`. A PRODUCT constant a flow writes, never data: it is drawn on the legend row as
+   * given (sanitised, not scrubbed), so a word a person, a project or a provider wrote must never reach it. Only the type keeps it so: there is
+   * no runtime path that checks the origin of a string.
+   */
+  readonly enterVerb?: string;
   /** The popup stack's depth this flow is at (one: the channel holds one flow; the reducer driver owns stacking, ADR-0148 §5). */
   readonly depth: 1 | 2;
 }
@@ -228,7 +236,9 @@ export interface NativeChordPort {
    * A card answered by a Ctrl chord alone: `Ctrl+Y` is `allow`, `Ctrl+N` is `deny`, and nothing else answers. A bare letter, a
    * pasted block, `Esc` and `Ctrl+C` decide nothing: the last two settle it with {@link NATIVE_PROMPT_BACK} or
    * {@link NATIVE_PROMPT_CANCEL}, which the caller maps (a consent card refuses on both). `allow` passes the approval guards
-   * ({@link createChordGuard}) and needs the card's frame to be on screen; `deny` is never delayed.
+   * ({@link createChordGuard}), their lockout running from the moment the card opened as well as from the answer before it
+   * (`createChordCardGuard`: a deliberate `Ctrl+Y` needs about two seconds after the card appeared), and needs the card's frame to be on
+   * screen; `deny` is never delayed.
    */
   readonly chord: (options: {
     message: string;
@@ -304,6 +314,9 @@ function sanitizedDescriptor(descriptor: NativePopupDescriptor): NativePopupDesc
       ? {}
       : { stepNames: descriptor.stepNames.map((name) => sanitizeInline(name)) }),
     exitLabel: sanitizeInline(descriptor.exitLabel),
+    ...(descriptor.enterVerb === undefined
+      ? {}
+      : { enterVerb: sanitizeInline(descriptor.enterVerb) }),
     depth: descriptor.depth,
   };
 }
@@ -317,6 +330,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   // ONE history for every guard of the channel (and the Home's other cards, when it shares it): a key that answered one locks the next.
   const history = options?.history ?? createChordHistory();
   const chord = createChordGuard({ now, guard: options?.guard, history });
+  /**
+   * The `Ctrl+Y` of a chord card (`native-prompt-guards.ts`): every chord a card is asked about is decided here, its lockout running from the
+   * card's opening, on the same history (a card that is a flow's first prompt, or that appears after a wait a held key repeated through).
+   */
+  const chordCard = createChordCardGuard({ now, chord });
   /** The `Enter` of a guarded option (`native-prompt-guards.ts`): its lockout runs from the select's opening, on the same history. */
   const guarded = createGuardedSelect({ now, history });
   /**
@@ -429,6 +447,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     clear();
     heldNote = undefined;
     chord.begin();
+    chordCard.open(kind === 'chord');
     guarded.open(kind === 'select' && options.some((option) => option.guarded === true));
     validate = check;
     const selected = Math.max(
@@ -514,7 +533,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       chord.foreign(stamp);
       return;
     }
-    const decided = chord.decide(stamp, answer, visibility?.(snapshot) === true);
+    const decided = chordCard.decide(stamp, answer, visibility?.(snapshot) === true);
     if (decided !== undefined) finish(decided);
   };
   /**
@@ -656,7 +675,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     if (snapshot.popup === undefined) return true;
     const kind = nativeOpeningKey(snapshot, settle !== undefined, input, key);
     if (opening.admits(kind, stamp.now)) return true;
-    if (kind === 'answer' && snapshot.kind === 'chord') chord.decide(stamp, 'allow', false);
+    if (kind === 'answer' && snapshot.kind === 'chord') chordCard.decide(stamp, 'allow', false);
     else if (kind === 'answer' && onGuardedOption()) guarded.refuse(stamp);
     else chord.foreign(stamp);
     return false;
@@ -715,7 +734,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       const mayAnswer = key === undefined || key.return || firstBoundary(input ?? '') >= 0;
       if (onGuardedOption() && mayAnswer) guarded.refuse(stamp);
       if (onChordCard() && (key === undefined || chordOf(input ?? '', key) === 'allow'))
-        chord.decide(stamp, 'allow', false);
+        chordCard.decide(stamp, 'allow', false);
     },
     resized: () => {
       if (snapshot.kind !== 'password' || settle === undefined) return;

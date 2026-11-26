@@ -4,7 +4,7 @@ import { prepareProjectInit, type ProjectInitResult } from '../authoring/project
 import type { NoticeFlush } from '../engine/effect-retention.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
 import { CliError } from '../process/cli-error.js';
-import { flowText } from '../render/tui/flow-text.js';
+import { FLOW_CLOSE_LABEL, flowText } from '../render/tui/flow-text.js';
 import {
   NativePromptVisibilityRefusedError,
   type NativeChordPort,
@@ -46,12 +46,16 @@ export const INIT_CREATING = 'Creating project directories…';
 export const INIT_CANCELLED = 'Project initialization cancelled.';
 /** The notification when the folder was already a project and its own place could not be named in the room a notification has. */
 export const INIT_ALREADY_HERE = 'This folder is already in a project.';
-export const INIT_CREATED = 'Created · .relavium/';
+/**
+ * The Done step's sentence: what was done, with no path in it. The directories are the rows under it (the first of them, `.relavium/`, is the
+ * target), so each is said once; a sentence that named the target as well would say it a second time.
+ */
+export const INIT_CREATED = 'Created the project directories';
 /** What to type next, on the Done step: the Home's own words for what a project is for. */
 export const INIT_NEXT = 'Next: /import brings a workflow or an agent into this project.';
 export const INIT_REFUSED = 'Cannot initialize this folder.';
 export const INIT_FAILED = 'Project initialization did not complete.';
-export const INIT_CLOSE_LABEL = 'Close';
+export const INIT_CLOSE_LABEL = FLOW_CLOSE_LABEL;
 
 /** `path` relative to the working directory, as a directory (`.relavium/`), through the full scrub; `undefined` when it is not relative there. */
 function directoryLabel(cwd: string, path: string): string | undefined {
@@ -133,7 +137,6 @@ async function finish(
     await flow.done({
       message: alreadyInitializedNotice(cwd, result.projectConfigDir),
       lines: ['Nothing was created: this folder became a project while the popup was open.'],
-      label: INIT_CLOSE_LABEL,
     });
     return undefined;
   }
@@ -195,7 +198,6 @@ async function confirmAndCreate(
     await flow.done({
       message: INIT_FAILED,
       lines: [flowText(error.message)],
-      label: INIT_CLOSE_LABEL,
       tone: 'failed',
     });
     return undefined;

@@ -27,8 +27,8 @@ export const NATIVE_PROMPT_IDENTITY_EXCLUDED: Readonly<
 
 /**
  * Whether two snapshots are the same card as far as the measured-frame proof goes: every field but the ones of
- * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps and their names, exit label and
- * depth). The lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
+ * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps and their names, exit label,
+ * the verb of `Enter`, and depth). The lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
  */
 export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSnapshot): boolean {
   return (
@@ -65,6 +65,7 @@ function samePopupDescriptor(
     a.stepCount === b.stepCount &&
     sameNames(a.stepNames, b.stepNames) &&
     a.exitLabel === b.exitLabel &&
+    a.enterVerb === b.enterVerb &&
     a.depth === b.depth
   );
 }

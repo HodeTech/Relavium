@@ -2,7 +2,7 @@
  * The import card of the Home's `/import` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §9, MVP-8 step 5, increment 6): a path field, then a card that shows what would be written, whose default is No, and whose only Yes is a
  * `Ctrl+Y` the chord guard accepts, once, through the commit. `Esc`, `Ctrl+C`, `Ctrl+N`, a flow cancelled under the card and every key that
- * is not a chord write nothing; a refusal is shown in the same place and writes nothing; the card never overwrites.
+ * is not a chord write nothing; a refusal is shown in the same place and writes nothing; /import never overwrites.
  *
  * The prompt channel is the real one (keys go in through `ui.input` and `ui.paste`, as the host's `useInput` delivers them) and so is the
  * port over a temporary project, so "writes nothing" is read from the directory and not from a flag the card keeps. Every project and
@@ -204,7 +204,7 @@ function rig(over: { readonly port?: ImportPort } = {}) {
     });
   };
   /**
-   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file its one option names; then `Enter` closes it and the flow's
+   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file it names (its first row); then `Enter` closes it and the flow's
    * result (the notification it asks the Home for: none, the step said it) is read.
    */
   const done = async () => {
@@ -214,10 +214,12 @@ function rig(over: { readonly port?: ImportPort } = {}) {
     const step = channel.ui.getSnapshot();
     channel.ui.input('', enter);
     const notification = await result;
+    // The persistent last step draws the file it wrote ONCE, as the first row under the sentence (`home/framed-flow.ts`); a failed one names none.
+    const named = step.final === 'ok';
     return {
       message: step.message,
-      lines: step.details,
-      target: step.options[0]?.hint,
+      lines: named ? step.details.slice(1) : step.details,
+      target: named ? step.details[0] : undefined,
       tone: step.final,
       step,
       notification,
@@ -237,7 +239,7 @@ function rig(over: { readonly port?: ImportPort } = {}) {
 }
 
 describe('the path field asks for a path, and nothing more', () => {
-  it('is one text field with the card’s question, and reads nothing until Enter', async () => {
+  it('is one text field with the popup’s question, and reads nothing until Enter', async () => {
     const before = tree(root);
     const r = rig();
     await r.fieldUp();
@@ -310,7 +312,7 @@ describe('the path field asks for a path, and nothing more', () => {
   });
 });
 
-describe('the card says what it would write, and where, before it asks', () => {
+describe('the confirmation says what it would write, and where, before it asks', () => {
   it('names the kind, the id, where it comes from and where it goes, the size, and Yes and No in words', async () => {
     const before = tree(root);
     const r = rig();
@@ -363,7 +365,7 @@ describe('the card says what it would write, and where, before it asks', () => {
     expect(readFileSync(join(root, SOURCE), 'utf8'), 'the file named is not changed').toBe(AGENT);
   });
 
-  it('a workflow file is a workflow on the card, and lands under workflows/', async () => {
+  it('a workflow file is a workflow in the confirmation, and lands under workflows/', async () => {
     writeFileSync(join(root, 'flow.yaml'), WORKFLOW.replace('id: reviewer', 'id: code-review'));
     const r = rig();
     await r.cardUp('flow.yaml');
@@ -407,7 +409,7 @@ describe('the card says what it would write, and where, before it asks', () => {
     expect(readFileSync(target(), 'utf8')).toContain(LITERAL);
   });
 
-  it('groups the number and bounds the long parts, so the card keeps its shape', () => {
+  it('groups the number and bounds the long parts, so the popup keeps its shape', () => {
     const text = importCardText({
       kind: 'agent',
       slug: 'a'.repeat(300),
@@ -491,7 +493,7 @@ describe('what an authored file says is drawn as text and never as a terminal co
 });
 
 describe('the default is No', () => {
-  it('a bare letter, Enter, a paste and an arrow leave the card open and write nothing; only a chord answers', async () => {
+  it('a bare letter, Enter, a paste and an arrow leave the confirmation open and write nothing; only a chord answers', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', none);
@@ -532,8 +534,8 @@ describe('the default is No', () => {
   });
 });
 
-describe('a card closes with the work it asks about', () => {
-  it('a signal that aborts while the card is open closes it as a No and writes nothing', async () => {
+describe('a confirmation closes with the work it asks about', () => {
+  it('a signal that aborts while the confirmation is open closes it as a No and writes nothing', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
@@ -584,7 +586,7 @@ describe('a card closes with the work it asks about', () => {
 });
 
 describe('Yes writes once, through the commit, and only past the chord guard', () => {
-  it('Ctrl+Y after the card has settled writes the file once; a second Ctrl+Y finds no card and writes nothing more', async () => {
+  it('Ctrl+Y after the confirmation has settled writes the file once; a second Ctrl+Y finds no confirmation and writes nothing more', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', ctrl);
@@ -603,7 +605,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.ui.getSnapshot().active).toBe(false);
   });
 
-  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the card has been on screen long enough', async () => {
+  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the confirmation has been on screen long enough', async () => {
     const r = rig();
     await r.fieldUp();
     r.submit(SOURCE);
@@ -621,7 +623,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+Y on a card that is not on screen is not a Yes', async () => {
+  it('Ctrl+Y on a confirmation that is not on screen is not a Yes', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility(() => false); // the exact frame was never measured and flushed
@@ -649,7 +651,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(existsSync(target())).toBe(false);
   });
 
-  it('a file that appeared between the card and the answer is kept, and the refusal says the card never overwrites', async () => {
+  it('a file that appeared between the confirmation and the answer is kept, and the refusal says /import never overwrites', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
@@ -659,28 +661,28 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(done.tone).toBe('failed');
     expect(done.message).toBe(IMPORT_FAILED);
     expect(done.lines).toEqual([
-      `${DESTINATION} already exists, and this card never overwrites. ${REPLACE}`,
+      `${DESTINATION} already exists, and /import never overwrites. ${REPLACE}`,
     ]);
     expect(done.notification).toBeUndefined();
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
 
-  it('an id that appeared under another name between the card and the answer is refused, and the card writes nothing', async () => {
+  it('an id that appeared under another name between the confirmation and the answer is refused, and nothing is written', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(join(root, '.relavium', 'agents', 'renamed.agent.yaml'), AGENT);
     r.ui.input('y', ctrl);
     expect((await r.done()).lines).toEqual([
-      `agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
+      `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`,
     ]);
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(existsSync(target())).toBe(false);
     expect(readdirSync(join(root, '.relavium', 'agents'))).toEqual(['renamed.agent.yaml']);
   });
 
-  it('a directory that appeared between the card and the answer is refused, with no --force offered for it', async () => {
+  it('a directory that appeared between the confirmation and the answer is refused, with no --force offered for it', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(target(), { recursive: true });
@@ -692,7 +694,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
   });
 
   it.skipIf(process.platform === 'win32')(
-    'a link that appeared between the card and the answer is not written through',
+    'a link that appeared between the confirmation and the answer is not written through',
     async () => {
       const r = rig();
       await r.cardUp();
@@ -709,8 +711,8 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
   );
 });
 
-describe('a refusal is shown in the card, and writes nothing', () => {
-  it('an id the project already has is refused before the card asks, naming the shell command, and the file is kept', async () => {
+describe('a refusal is shown in the popup, and writes nothing', () => {
+  it('an id the project already has is refused before the confirmation asks, naming the shell command, and the file is kept', async () => {
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), AGENT);
     const before = tree(root);
@@ -719,7 +721,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const card = r.ui.getSnapshot();
     expect(card.message).toBe(IMPORT_CANNOT);
     expect(card.details).toEqual([
-      `agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
+      `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`,
     ]);
     expect(card.final, 'drawn as what failed').toBe('failed');
     expect(card.popup?.stepIndex, 'on the Review step').toBe(1);
@@ -739,7 +741,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const r = rig();
     await r.refusalUp(SOURCE);
     expect(r.ui.getSnapshot().details).toEqual([
-      `${DESTINATION} already exists, and this card never overwrites. ${REPLACE}`,
+      `${DESTINATION} already exists, and /import never overwrites. ${REPLACE}`,
     ]);
     r.ui.input('', enter);
     expect(await r.result).toBeUndefined();
@@ -879,7 +881,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
   });
 });
 
-describe('the card fits 80×24 and can be answered there', () => {
+describe('the popup fits 80×24 and can be answered there', () => {
   /** The two notices the command can write, as long as they are. */
   const WARNINGS = [
     'Warning: authored definition has 2 string(s) matching known credential shapes. Authored content is preserved in files and run snapshots; review literals before sharing or running. This check is best effort.',

@@ -32,7 +32,7 @@ import { DISABLE_MOUSE } from '../render/alt-screen.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 import { RunHost, type HostedExitFact, type HostedLegEnd } from './run-host.js';
 
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
@@ -223,11 +223,6 @@ describe('driveHome prints the line once the screen is restored', () => {
     onContinue: () => () => undefined,
     suspendSelf: () => undefined,
   };
-  const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-    onInput: () => () => undefined,
-    isRawMode: () => false,
-    setRawMode: () => undefined,
-  };
 
   /**
    * The Home over an injected mount (no TTY), recording the order of what reached the terminal and what closed.
@@ -325,7 +320,6 @@ describe('driveHome prints the line once the screen is restored', () => {
       },
       subscribeProcessExit: () => () => undefined,
       jobControlLifecycle: INERT_JOB_CONTROL,
-      onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
       writeControl: (sequence) => {
         // The unowned Home writes its restoration piece by piece; the mouse reporting going off is the last of them.
         if (sequence.includes(DISABLE_MOUSE)) order.push('screen restored');
@@ -333,14 +327,7 @@ describe('driveHome prints the line once the screen is restored', () => {
       exit: (code) => {
         exitCodes.push(code);
       },
-      onboardingPrompter: {
-        intro: () => undefined,
-        outro: () => undefined,
-        note: () => undefined,
-        select: () => Promise.resolve(Symbol('cancel')),
-        password: () => Promise.resolve(Symbol('cancel')),
-        isCancel: (v): v is symbol => typeof v === 'symbol',
-      },
+      firstRunSetup: 'off',
       run,
       ...(options.invocation === undefined ? {} : { invocation: options.invocation }),
     };

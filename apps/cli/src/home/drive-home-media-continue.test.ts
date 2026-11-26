@@ -27,7 +27,7 @@ import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo, seedRun } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 import { RunHost, type HostedLaunch } from './run-host.js';
 
 /** The bound of every wait in this file, in turns of the event loop. */
@@ -65,11 +65,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onSuspend: () => () => undefined,
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
-};
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
 };
 const STARTED: HostedLaunch = {
   kind: 'started',
@@ -178,17 +173,9 @@ async function mountHome() {
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
     run,
   };
   const running = driveHome(deps);
