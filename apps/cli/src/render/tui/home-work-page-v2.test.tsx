@@ -40,7 +40,6 @@ const run = (id: string, status: HomeRunRow['status'], minutes: number): HomeRun
 });
 const session = (n: number): HomeSessionRow => ({
   sessionId: `session-${String(n)}`,
-  workingDir: '/work/here',
   title: `Session ${String(n)}`,
   agentSlug: 'chat',
   modelId: undefined,

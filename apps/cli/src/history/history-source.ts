@@ -7,6 +7,7 @@ import { formatCostShort } from '../render/tui/format.js';
 import { buildHistoryRows, type HistoryRow } from './history-model.js';
 import { keysetCursorOf, type KeysetCursor } from './keyset-cursor.js';
 import { readPerRunOrDegrade } from './per-run-read.js';
+import { isProjectRootHere, recordedProjectRoot } from './project-root.js';
 import { isFinishedRun, scrubbedBounded } from './run-detail-model.js';
 import { readRunUsageCoverage } from './usage-coverage.js';
 
@@ -159,6 +160,10 @@ export function createHistorySource(
 
   /** One fetch of page `page`: one `listRunSummaries` call, at most {@link HISTORY_FETCH_ROWS} rows. */
   function fetchPage(page: number, scope: HistoryScope, status: RunStatus | undefined): PageSlot {
+    // A Home handed no absolute directory has an empty project scope: matched as text, its directory would make the runs recorded
+    // relative (`.`) in any directory this project's (`recordedProjectRoot`). The Home always hands its canonical root.
+    if (scope === 'project' && recordedProjectRoot(deps.projectRoot) === undefined)
+      return { records: [], labels: new Map(), next: undefined };
     const before = cursors[page];
     const limit = status === undefined ? HISTORY_FETCH_ROWS : HISTORY_VIEW_ROWS + 1;
     const raw = reader.listRunSummaries({
@@ -249,7 +254,7 @@ export function createHistorySource(
           label: `${scrubbedBounded(pin.ref)}${pin.oversized ? '…' : ''}`,
           pinRowid: pin.rowid,
         });
-      } else if (scope === 'all' || record.projectRoot === deps.projectRoot) {
+      } else if (scope === 'all' || isProjectRootHere(record.projectRoot, deps.projectRoot)) {
         entries.push({ kind: 'run', row, pinRowid: pin.rowid });
       }
     }

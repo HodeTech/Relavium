@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -104,6 +106,23 @@ describe('resolveGlobalOptions', () => {
       noAltScreen: false,
       noMouse: false,
     });
+  });
+
+  it('makes --cwd absolute, as text: `.`, a relative path, `..`, a trailing slash and a missing directory (MVP-11 unit 7, round 2)', () => {
+    const cwd = (value: string): string => resolveGlobalOptions({ cwd: value }, '/work').cwd;
+    expect(cwd('.')).toBe(resolve('/work'));
+    expect(cwd('app')).toBe(resolve('/work', 'app'));
+    expect(cwd('app/')).toBe(resolve('/work', 'app'));
+    expect(cwd('..')).toBe(resolve('/work', '..'));
+    expect(cwd('/x/')).toBe(resolve('/x'));
+    expect(cwd('/x/y/../z')).toBe(resolve('/x/z'));
+    // No filesystem read: meta grammar resolves before any admission, so a directory that does not exist is still just a path.
+    expect(cwd('/relavium-missing-directory/sub')).toBe(resolve('/relavium-missing-directory/sub'));
+    expect(isAbsolute(cwd('a/b/./c'))).toBe(true);
+  });
+
+  it('keeps the process directory as given when --cwd is absent', () => {
+    expect(resolveGlobalOptions({}, '/work').cwd).toBe('/work');
   });
 
   it('maps --no-alt-screen to noAltScreen (absent ⇒ false)', () => {

@@ -35,6 +35,7 @@ import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { assertWorkflowCatalogValid } from '../commands/drive.js';
 import type { ResolvedConfig } from '../config/resolve.js';
 import { terminalOutboxPath } from '../history/open.js';
+import { projectRootOf, recordedProjectRoot } from '../history/project-root.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
@@ -106,15 +107,18 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed'
  * file (a non-dir would only fail the downstream `mkdir`/write with an opaque ENOTDIR) from being used as the jail
  * root; each falls back gracefully, as does a `null` (pre-column run). Known benign window: the dir is checked
  * here but `realpath`'d again at write time (media-write.ts), so a symlink-target swap in between changes only the
- * destination — the realpath+commonpath jail still holds, never escaping the root.
+ * destination — the realpath+commonpath jail still holds, never escaping the root. A root that is not absolute is unrecorded, and a
+ * resumer whose own directory IS the recorded root keeps its spelling of it (MVP-11 unit 7, round 2).
  */
 export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
-  if (
-    projectRoot !== null &&
-    statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true
-  ) {
-    return projectRoot;
-  }
+  // A stored root that is not an absolute path (`.`, written before roots were canonical) names no directory: read against this
+  // process's cwd it would jail the resumed run to wherever the resumer happens to stand. It is unrecorded, as `null` is.
+  const recorded = recordedProjectRoot(projectRoot);
+  if (recorded === undefined) return resumerCwd;
+  // A run records its directory's canonical spelling. A resumer standing in that very directory keeps its own spelling of it, the one its
+  // filesystem floor was admitted with (a lexical spelling only ever adds views to the floor, ADR-0105), as the run's first leg did.
+  if (projectRootOf(resumerCwd) === recorded) return resumerCwd;
+  if (statSync(recorded, { throwIfNoEntry: false })?.isDirectory() === true) return recorded;
   return resumerCwd;
 }
 

@@ -29,7 +29,6 @@ const EMPTY: HomeSnapshot = {
 };
 const session: HomeSessionRow = {
   sessionId: 'session-1',
-  workingDir: '/work/1',
   title: 'Conversation 1',
   agentSlug: 'chat',
   modelId: undefined,

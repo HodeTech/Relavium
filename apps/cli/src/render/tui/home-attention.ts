@@ -18,7 +18,12 @@
 
 import type { RunHistoryReader } from '@relavium/db';
 
-import type { HomeRunRow, HomeSnapshot, HomeUnreadableRun } from '../../home/home-store.js';
+import {
+  DEFAULT_HOME_LIMIT,
+  type HomeRunRow,
+  type HomeSnapshot,
+  type HomeUnreadableRun,
+} from '../../home/home-store.js';
 import type { HostedRunDisposition } from '../../home/hosted-run-terminal.js';
 import {
   isMediaOnlyPark,
@@ -29,11 +34,21 @@ import {
 import { formatAgeOfIso, shortId } from '../notation.js';
 import { flowLine } from './flow-text.js';
 import { glyph } from './glyphs.js';
-import { expiryLabel, fitRow } from './home-projection.js';
+import {
+  classOfRanges,
+  expiryLabel,
+  fitRow,
+  MARKER_LOOKALIKE_RANGES,
+  workRowText,
+  type CodeRange,
+} from './home-projection.js';
 import { clipLine } from './sheet-frame.js';
 
-/** The most parked runs the Home keeps rows for. */
-export const PARKED_RUNS_MAX = 8;
+/**
+ * The most parked runs the Home keeps rows for: the Home's one list limit ({@link DEFAULT_HOME_LIMIT}, owned by the store), so the parked
+ * rows and the paused runs the store probes for an unreadable log are the same newest runs.
+ */
+export const PARKED_RUNS_MAX = DEFAULT_HOME_LIMIT;
 
 /**
  * What a parked run waits on: one gate's type, a budget gate, several gates, media jobs and nothing else (`Enter` asks whether to continue
@@ -270,13 +285,13 @@ export function parkedRunLabel(
   return fitRow(
     glyph('paused'),
     [
-      { text: row.workflow === undefined ? '' : flowLine(row.workflow), role: 'name' },
+      { text: row.workflow === undefined ? '' : workRowText(row.workflow), role: 'name' },
       { text: parkedKindWords(row), role: 'keep' },
       {
         text: (nowMs === undefined ? undefined : expiryLabel(row.expiresAt, nowMs)) ?? '',
         role: 'age',
       },
-      { text: shortId(flowLine(row.runId)), role: 'detail' },
+      { text: shortId(workRowText(row.runId)), role: 'detail' },
     ],
     maxColumns,
   );
@@ -284,8 +299,74 @@ export function parkedRunLabel(
 
 // ---- Page 1's most urgent item (MVP-11 unit 7, the maintainer's ruling 5) ---------------------------------------------------------
 
-/** Every arrow (U+2190 to U+21FF): the hint's own `↓` must be the only arrow on its row. Built from its code points, never an escape in the source. */
-const ARROWS = new RegExp(`[${String.fromCharCode(0x2190)}-${String.fromCharCode(0x21ff)}]`, 'gu');
+/**
+ * Every character that draws as an arrow, an arrowhead, a triangle or the return key, so that the hint's own `↓` is the only one on its row
+ * (round 2: F4). The ranges, each named; the table is data, and the test walks every code point of every range:
+ *
+ * - U+2190 to U+21FF the arrows block (`← ↑ → ↓ ↵ ⇩ …`);
+ * - U+27F0 to U+27FF the supplemental arrows A (`⟰ ⟱ ⟶ …`), U+2900 to U+297F the supplemental arrows B (`⤓ ⤒ …`);
+ * - U+2B00 to U+2BFF the miscellaneous symbols and arrows (`⬇ ⬆ ⭣ ⮟ ⯆ …`: the triangle-headed arrows and the arrowheads among them);
+ * - U+1F800 to U+1F8FF the supplemental arrows C (`🡓 🠗 🢓 …`);
+ * - U+2304 the down arrowhead (`⌄`; its twin `⌃` is the Mac control sign, which the scrub already turns into a chord);
+ * - U+2324, U+2386 and U+23CE the keys that draw the return key (`⌤ ⎆ ⏎`);
+ * - every triangle that passes for the work page's marker ({@link MARKER_LOOKALIKE_RANGES}: `▲ ▼ ⏶ ⏷ ⯅ ⯆ 🔺 🔻 …`).
+ */
+export const ARROW_LOOKALIKE_RANGES: readonly CodeRange[] = [
+  [0x2190, 0x21ff],
+  [0x27f0, 0x27ff],
+  [0x2900, 0x297f],
+  [0x2b00, 0x2bff],
+  [0x1f800, 0x1f8ff],
+  [0x2304, 0x2304],
+  [0x2324, 0x2324],
+  [0x2386, 0x2386],
+  [0x23ce, 0x23ce],
+  ...MARKER_LOOKALIKE_RANGES,
+];
+
+/** {@link ARROW_LOOKALIKE_RANGES} as a pattern, built from the code points, never an escape in the source. */
+const ARROWS = new RegExp(`[${classOfRanges(ARROW_LOOKALIKE_RANGES)}]`, 'gu');
+
+/**
+ * The bracket pairs a name could write a key in, beside the ASCII `[ ]` (round 2: F4). In each range the characters alternate, the first one
+ * opening and the next closing it (`【 】`, `〔 〕`, `⟦ ⟧`), so a code point's side is its offset's parity. The ranges, each named:
+ *
+ * - U+2045 and U+2046 the square brackets with a quill (`⁅ ⁆`), U+2308 to U+230B the ceiling and floor brackets (`⌈ ⌉ ⌊ ⌋`);
+ * - U+2768 to U+2775 the ornamental brackets (`❨ ❩ … ❲ ❳ ❴ ❵`);
+ * - U+27E6 to U+27EF the mathematical brackets (`⟦ ⟧ ⟨ ⟩ ⟪ ⟫ ⟬ ⟭ ⟮ ⟯`);
+ * - U+2983 to U+2998 the miscellaneous mathematical symbols B brackets (`⦃ ⦄ … ⦗ ⦘`), U+29D8 to U+29DB (`⧘ ⧙ ⧚ ⧛`), U+29FC and U+29FD (`⧼ ⧽`);
+ * - U+2E22 to U+2E29 the half brackets (`⸢ ⸣ ⸤ ⸥ ⸦ ⸧ ⸨ ⸩`);
+ * - U+3008 to U+3011 the CJK angle, double angle, corner, white corner and black lenticular brackets (`〈 〉 《 》 「 」 『 』 【 】`);
+ * - U+3014 to U+301B the CJK tortoise-shell, white lenticular, white tortoise-shell and white square brackets (`〔 〕 〖 〗 〘 〙 〚 〛`).
+ *
+ * The fullwidth square brackets (U+FF3B and U+FF3D, `［ ］`) are not in a range of their own: the scrub's compatibility fold makes them the ASCII
+ * pair before this runs (`home-lookalike-text.test.ts` pins that, so a scrub that stopped folding them fails there).
+ */
+export const BRACKET_PAIR_RANGES: readonly CodeRange[] = [
+  [0x2045, 0x2046],
+  [0x2308, 0x230b],
+  [0x2768, 0x2775],
+  [0x27e6, 0x27ef],
+  [0x2983, 0x2998],
+  [0x29d8, 0x29db],
+  [0x29fc, 0x29fd],
+  [0x2e22, 0x2e29],
+  [0x3008, 0x3011],
+  [0x3014, 0x301b],
+];
+
+/** The characters of {@link BRACKET_PAIR_RANGES} and the ASCII pair that OPEN a pair, as characters. */
+const OPENING_BRACKETS: ReadonlySet<string> = new Set([
+  '[',
+  ...BRACKET_PAIR_RANGES.flatMap(([from, to]) =>
+    Array.from({ length: to - from + 1 }, (_, offset) => offset)
+      .filter((offset) => offset % 2 === 0)
+      .map((offset) => String.fromCodePoint(from + offset)),
+  ),
+]);
+
+/** Every bracket a name could write a key in: the ASCII pair and {@link BRACKET_PAIR_RANGES}. */
+const BRACKETS = new RegExp(`[\\[\\]${classOfRanges(BRACKET_PAIR_RANGES)}]`, 'gu');
 
 /** The most columns the most urgent item's name takes on page 1's hint before the hint's own fit cuts it further. */
 export const URGENT_NAME_COLUMNS = 24;
@@ -323,13 +404,17 @@ function parkedHeadWords(row: ParkedRunRow): string {
 /**
  * A stored name as page 1's hint draws it, on a sink of its own: the Home's full row scrub (`flowLine`) FIRST, then every bracket a
  * parenthesis (the scrub makes a chord token inert, but a bracketed universal key such as `[Enter]` is not the grammar's and it leaves it, so a
- * name could still dress up as a key beside the real ones), then every arrow a space (the hint's own `↓` is the only one on the row), then
- * bounded to {@link URGENT_NAME_COLUMNS} columns, by display width. The legend's separator a name brings is already inert (` - `).
+ * name could still dress up as a key beside the real ones: the CJK and mathematical brackets too, {@link BRACKET_PAIR_RANGES}, and the fullwidth
+ * ones, which the scrub has already folded to the ASCII pair), then
+ * every arrow, arrowhead, triangle and return key a space (the hint's own `↓` is the only one on the row, {@link ARROW_LOOKALIKE_RANGES}), then
+ * every run of whitespace ONE space, then bounded to {@link URGENT_NAME_COLUMNS} columns, by display width. The legend's separator a name
+ * brings is already inert (` - `).
  */
 export function urgentName(stored: string): string {
   const scrubbed = flowLine(stored)
-    .replace(/[[\]]/gu, (bracket) => (bracket === '[' ? '(' : ')'))
+    .replace(BRACKETS, (bracket) => (OPENING_BRACKETS.has(bracket) ? '(' : ')'))
     .replace(ARROWS, ' ')
+    .replace(/\s+/gu, ' ')
     .trim();
   return clipLine(scrubbed, URGENT_NAME_COLUMNS);
 }

@@ -13,7 +13,6 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const sessionRow = (sessionId: string): HomeSessionRow => ({
   sessionId,
-  workingDir: '/work',
   title: undefined,
   agentSlug: 'chat',
   modelId: undefined,

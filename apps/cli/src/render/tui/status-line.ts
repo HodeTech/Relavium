@@ -43,7 +43,8 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
  *   a caller's mistake shows as a missing figure, never as a wrong one.
  * - **Every free string** (provider, model, directory, mode, effort, the cost forms) is bounded to {@link FREE_VALUE_BOUND} code points and goes
  *   through `flowLine` BEFORE it is measured or cut
- *   (secrets, control and bidirectional characters, host glyphs and chord tokens made inert, a ` · ` inside a value made a ` - `), and every
+ *   (secrets, control and bidirectional characters, host glyphs and chord tokens made inert, a ` · ` inside a value made a ` - `, every run of
+ *   blank characters one space, so a value cannot draw the three-space gap), and every
  *   width is a DISPLAY width, so a wide character cannot overflow the budget. Cuts write the host's own `…` AFTER that pass (the pass
  *   folds an ellipsis a value brought into three dots, which is how a cut stays distinguishable from a value).
  *
@@ -160,6 +161,14 @@ export const FREE_VALUE_BOUND = 256;
  */
 const FREE_VALUE_WINDOW = FREE_VALUE_BOUND * 4;
 
+/**
+ * A run of blank characters in a free value (round 2: F5): every character `\s` matches (the space, the tab, the no-break space, U+2000 to
+ * U+200A, U+3000, the line breaks) and the braille blank (U+2800, which the scrub leaves and a terminal draws as a space). The scrub folds
+ * most of them to the space but keeps each one, so a value of three of them drew the Home's own three-space gap and a fake second directory.
+ * Built from its code point, never an escape in the source.
+ */
+const BLANK_RUN = new RegExp(`[\\s${String.fromCodePoint(0x2800)}]+`, 'gu');
+
 /** The first `count` code points of `text` (the text itself when it has no more), never splitting a surrogate pair. */
 function headCodePoints(text: string, count: number): string {
   if (text.length <= count) return text;
@@ -170,12 +179,13 @@ function headCodePoints(text: string, count: number): string {
 }
 
 /**
- * One free string made safe to draw and measure: bounded to a window, the one scrub of a Home flow, one line, trimmed, and bounded again to
- * {@link FREE_VALUE_BOUND} code points with the host's ellipsis in the last of them, so a cut value shows that it was cut. A value under the
- * bound comes back exactly as the scrub leaves it.
+ * One free string made safe to draw and measure: bounded to a window, the one scrub of a Home flow, one line, every run of blank characters
+ * one space ({@link BLANK_RUN}: a value can never draw the Home's three-space gap, or a second directory after it), trimmed, and bounded again
+ * to {@link FREE_VALUE_BOUND} code points with the host's ellipsis in the last of them, so a cut value shows that it was cut. A value with
+ * no run of blanks under the bound comes back exactly as the scrub leaves it.
  */
 function clean(text: string): string {
-  const scrubbed = flowLine(headCodePoints(text, FREE_VALUE_WINDOW)).trim();
+  const scrubbed = flowLine(headCodePoints(text, FREE_VALUE_WINDOW)).replace(BLANK_RUN, ' ').trim();
   const bounded = headCodePoints(scrubbed, FREE_VALUE_BOUND);
   return bounded === scrubbed
     ? scrubbed

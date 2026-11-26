@@ -936,7 +936,6 @@ describe('RootApp — the Home landing and its title', () => {
     attention: { failedRuns: [] },
     recentSessions: [
       {
-        workingDir: '/workspace',
         sessionId: 'sess-9',
         title: 'a chat',
         agentSlug: 'default',

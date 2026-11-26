@@ -10,7 +10,7 @@
  *
  * Nothing sleeps and no operator home is read: every home is a temporary directory handed to the Home.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -103,7 +103,10 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
 async function mountHome() {
   // A run parked on an async media job and on nothing else: `seedRun` leaves a `media_job:submitted` and a `run:paused` that names it.
   await seedRun(client.db, { slug: 'wf', runId: RUN, state: 'paused' });
-  client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, RUN);
+  // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+  client.sqlite
+    .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+    .run(realpathSync.native(root), RUN);
 
   const run = new RunHost({
     invocation: invocationFixture().invocation,

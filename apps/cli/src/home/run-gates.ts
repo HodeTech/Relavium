@@ -6,6 +6,7 @@ import type { BudgetPromptContext } from '../gate/budget.js';
 import { pendingParkDisplays, type PendingBudgetGate } from '../gate/pending.js';
 import { keysetCursorOf, type KeysetCursor } from '../history/keyset-cursor.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { isProjectRootHere } from '../history/project-root.js';
 
 /**
  * The open gates of the runs parked in THIS project
@@ -197,8 +198,9 @@ interface GatesScan {
 }
 
 /**
- * Fold one page of run summaries into the scan: a run of another directory is skipped whatever the reader handed back, a run past
- * `maxRuns` marks the scan truncated and ends the page, and a run whose log is damaged is kept degraded and named.
+ * Fold one page of run summaries into the scan: a run of another directory (or of none: a stored root that is not absolute is unrecorded,
+ * `isProjectRootHere`) is skipped whatever the reader handed back, a run past `maxRuns` marks the scan truncated and ends the page, and a
+ * run whose log is damaged is kept degraded and named.
  */
 function foldPage(
   scan: GatesScan,
@@ -208,7 +210,7 @@ function foldPage(
   maxRuns: number,
 ): void {
   for (const run of page) {
-    if (run.projectRoot !== projectRoot) continue;
+    if (!isProjectRootHere(run.projectRoot, projectRoot)) continue;
     if (scan.runs.length >= maxRuns) {
       scan.truncated = true;
       return;
@@ -256,7 +258,8 @@ export function readProjectRunGates(
 
 /**
  * One run's gates, when the run is parked in `projectRoot`: `undefined` for a run that does not exist, is not paused or belongs to
- * another directory. The run view re-reads with this after an answer, so the card shows what the log now says.
+ * another directory (or to none: `isProjectRootHere`). The run view re-reads with this after an answer, so the card shows what the log
+ * now says.
  */
 export function readRunGates(
   reader: Pick<RunGatesReader, 'loadRunDetail' | 'loadRunStateEvents'>,
@@ -264,7 +267,11 @@ export function readRunGates(
   runId: string,
 ): RunGates | undefined {
   const run = reader.loadRunDetail(runId);
-  if (run === undefined || run.status !== 'paused' || run.projectRoot !== projectRoot)
+  if (
+    run === undefined ||
+    run.status !== 'paused' ||
+    !isProjectRootHere(run.projectRoot, projectRoot)
+  )
     return undefined;
   return gatesOfRun(reader, run);
 }

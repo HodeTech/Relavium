@@ -13,7 +13,7 @@
  * The clock is vitest's fake `performance` (the guard's default clock), advanced by hand; nothing else is faked and nothing sleeps. The
  * run host's `resume` is scripted and every home is a temporary directory handed to the Home.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -94,7 +94,10 @@ async function mountHome() {
       { gateId: 'g2', gateType: 'approval', message: 'And this one?', nodeId: 'g2' },
     ],
   });
-  client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, RUN);
+  // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+  client.sqlite
+    .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+    .run(realpathSync.native(root), RUN);
 
   const run = new RunHost({
     invocation: invocationFixture().invocation,

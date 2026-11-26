@@ -31,7 +31,6 @@ const ONE_SLIDE_MS = SLIDE_FRAME_MS * 3;
 
 const sessionRow = (sessionId: string): HomeSessionRow => ({
   sessionId,
-  workingDir: '/work',
   title: undefined,
   agentSlug: 'chat',
   modelId: undefined,

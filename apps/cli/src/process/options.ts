@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 import { CliError } from './cli-error.js';
 import { FS_ROOT_LIMITS } from '@relavium/shared/fs-root-limits';
@@ -255,7 +255,10 @@ export function resolveGlobalOptions(
   return {
     json: policy.json,
     color: resolveColor(raw, env),
-    cwd: raw.cwd ?? defaultCwd,
+    // Absolute, never as typed: `.` or `work/` would name a different directory to every reader that compares or records it. Resolved
+    // as text only (no filesystem read: meta grammar runs before admission); the canonical identity of a run's directory is taken where
+    // it is recorded and compared (`projectRootOf`), and this lexical spelling is what the filesystem floor keeps (ADR-0105).
+    cwd: raw.cwd === undefined ? defaultCwd : resolve(defaultCwd, raw.cwd),
     configPath: raw.config,
     verbosity: policy.verbosity,
     noAltScreen: raw.noAltScreen === true,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -138,7 +138,9 @@ describe('the warnings of a run leg, by the surface that reads them', () => {
     const store = createRunHistoryStore(client.db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
-      projectRoot: root, // a hosted resume answers only a run recorded for the directory the Home is open in
+      // A hosted resume answers only a run recorded for the directory the Home is open in, by its canonical spelling (MVP-11 unit 7,
+      // round 2): a temp directory and its realpath differ on macOS.
+      projectRoot: realpathSync.native(root),
       workflow: {
         slug: def.workflow.id,
         name: def.workflow.id,

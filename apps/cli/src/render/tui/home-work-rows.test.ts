@@ -37,7 +37,6 @@ const run = (over: Partial<HomeRunRow> = {}): HomeRunRow => ({
 });
 const session = (over: Partial<HomeSessionRow> = {}): HomeSessionRow => ({
   sessionId: 's1',
-  workingDir: '/work',
   title: 'Refactor the billing module',
   agentSlug: 'coder',
   modelId: undefined,

@@ -3,6 +3,7 @@ import { MAX_RUN_STEP_SUMMARIES, MAX_RUN_TAIL_EVENTS } from '@relavium/db';
 import type { RunEvent, RunStatus } from '@relavium/shared';
 
 import { readPerRunOrDegrade } from './per-run-read.js';
+import { isProjectRootHere, recordedProjectRoot } from './project-root.js';
 import { buildRunDetailModel, isFinishedRun, type RunDetailModel } from './run-detail-model.js';
 import { readSnapshotNodes } from './snapshot-nodes.js';
 
@@ -157,16 +158,17 @@ export interface ReadRunDetailInput {
 }
 
 /**
- * Where a run was started, against the Home's directory: `undefined` when the Home's directory is not known to the read, `unrecorded` for
- * a run with no project (or an empty one), `here` when the two are the same text (the History list's own comparison), else `elsewhere`.
+ * Where a run was started, against the Home's directory: `undefined` when the Home's directory is not known to the read (absent, or not an
+ * absolute path), `unrecorded` for a run whose stored root names no directory (none, empty or relative: `recordedProjectRoot`), `here` when
+ * the two are the same absolute text (`isProjectRootHere`, the one match every reader of a run's root uses), else `elsewhere`.
  */
 function directoryOf(
   recorded: string | undefined,
   home: string | undefined,
 ): RunDirectory | undefined {
-  if (home === undefined) return undefined;
-  if (recorded === undefined || recorded === '') return 'unrecorded';
-  return recorded === home ? 'here' : 'elsewhere';
+  if (recordedProjectRoot(home) === undefined) return undefined;
+  if (recordedProjectRoot(recorded) === undefined) return 'unrecorded';
+  return isProjectRootHere(recorded, home) ? 'here' : 'elsewhere';
 }
 
 /**

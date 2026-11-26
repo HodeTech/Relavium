@@ -48,6 +48,7 @@ import {
 } from '../engine/providers.js';
 import { unwiredToolArms } from '../engine/tool-host/assemble.js';
 import type { OpenedHistory } from '../history/open.js';
+import { projectRootOf } from '../history/project-root.js';
 import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
@@ -229,10 +230,13 @@ function openHistory(
 ): OpenedHistory | undefined {
   const openRunStore = deps.openRunStore;
   if (openRunStore === undefined) return undefined;
+  // The root the run records is the directory's canonical identity, the one every "this directory" reader compares with; the run itself
+  // still works in `deps.global.cwd` as spelled, the path its filesystem floor keeps.
+  const projectRoot = projectRootOf(deps.global.cwd);
   try {
     return acquireNativeResource(
       (captureClose) =>
-        openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose, {
+        openRunStore(runWorkflow, homeDir, projectRoot, captureClose, {
           io: deps.io,
           invocation: lifetime.invocation,
         }),

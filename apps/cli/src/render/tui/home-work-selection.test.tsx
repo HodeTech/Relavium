@@ -42,7 +42,6 @@ const failedRun: HomeRunRow = {
 };
 const sessionRow: HomeSessionRow = {
   sessionId: 'session-1',
-  workingDir: '/work',
   title: 'Plan the launch',
   agentSlug: 'chat',
   modelId: undefined,

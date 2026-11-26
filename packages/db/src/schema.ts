@@ -319,8 +319,9 @@ export const runs = sqliteTable(
       .where(sql`${t.deletedAt} is null`),
     // Backs the project-scoped keyset page of the Home's History tab (ADR-0140 §2, migration 0022): the cursor
     // `(created_at, id)` order within one `project_root` is served off this partial index with no filesort. A
-    // project-and-status filter rides the same index with a residual filter; a second index is added only if its
-    // plan test (apps/cli/src/harness/perf-budget.e2e.test.ts) fails.
+    // project-and-terminal-status filter rides the same index with a residual filter; a project with the status of a
+    // run in flight (the Home's paused runs) reads `idx_runs_status` instead (run-history-store.ts `projectTerm`, MVP-11
+    // unit 7). A second index is added only if its plan test (apps/cli/src/harness/perf-budget.e2e.test.ts) fails.
     index('idx_runs_project_created')
       .on(t.projectRoot, desc(t.createdAt), desc(t.id))
       .where(sql`${t.deletedAt} is null`),

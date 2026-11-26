@@ -19,8 +19,9 @@ import { displayWidth } from './viewport.js';
  * Pure projection helpers for the 2.5.B Home strip (ADR-0054) — the read-only display of recent sessions /
  * runs / agents + an "attention" section. Like the chat projection, all logic lives here (clock-injected, no
  * ink) so the `HomeView` is a thin render and every label is unit-tested. Every stored string a work-page row draws (a
- * session title, an agent, a workflow, a run id) goes through the Home's full row scrub (`flowLine`) before the row is cut
- * to its width (MVP-11 unit 7: see "The work page's rows" below); the closed enums (`status`) are safe by construction.
+ * session title, an agent, a workflow, a run id) goes through the Home's full row scrub (`flowLine`) and then through the triangles the page's
+ * own overflow marker could be imitated by ({@link workRowText}) before the row is cut to its width (MVP-11 unit 7: see "The work page's
+ * rows" below); the closed enums (`status`) are safe by construction.
  * Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
  */
 
@@ -49,7 +50,8 @@ const SEP = '  ·  ';
 // ---- The work page's rows (MVP-11 unit 7: the rows simplified) --------------------------------------------------------------------
 // One row per item, its fields joined by the legend's own ` · `, cut at its width and never wrapped. Every stored field (a title, an agent,
 // a workflow, a run id) passes the Home's full row scrub (`flowLine`: secrets, control, bidirectional, invisible and line-separator
-// characters, host glyphs, answer chords, and the legend's separators and key tokens made inert) BEFORE it is cut, so the row's own
+// characters, host glyphs, answer chords, and the legend's separators and key tokens made inert) and then the triangles that pass for the
+// page's own `▲`/`▼ N more` marker are blanked ({@link workRowText}) BEFORE it is cut, so the row's own
 // separators are the only ones on it and a cut never splits an escape. A run is named by the first eight characters of its id (`shortId`),
 // last on its row: the whole id is in its detail.
 
@@ -186,14 +188,82 @@ export function fitRow(
   return clipLine(joinRow(lead, fields, dropped, kept), max);
 }
 
+/** An inclusive range of code points: a block of Unicode, or the part of it that is named. */
+export type CodeRange = readonly [from: number, to: number];
+
+/** A character class (the inside of a regular expression's brackets) of `ranges`, built from the code points so no escape is written in the source. */
+export function classOfRanges(ranges: readonly CodeRange[]): string {
+  return ranges
+    .map(([from, to]) =>
+      from === to
+        ? String.fromCodePoint(from)
+        : `${String.fromCodePoint(from)}-${String.fromCodePoint(to)}`,
+    )
+    .join('');
+}
+
+/**
+ * The triangles a stored name may not carry onto the work page (MVP-11 unit 7, round 2: F3): every one that draws like the page's own overflow
+ * marker, `▲ N more` and `▼ N more`, which stands in the marker column of a row, where a session's or a run's name starts. The shared scrub
+ * leaves `▲` and `▼` alone ({@link blankHostGlyphs}: they are ordinary text in a path, a name, a rating) so the work page blanks them in the
+ * names it draws, and nowhere else. The ranges, each named:
+ *
+ * - U+23E9 to U+23EF the media triangles (`⏩ ⏪ ⏫ ⏬ ⏭ ⏮ ⏯`), U+23F4 to U+23F7 the medium triangles (`⏴ ⏵ ⏶ ⏷`);
+ * - U+25B2 to U+25C5 the black and white triangles and pointers (`▲ △ ▴ ▵ ▶ ▷ ▸ ▹ ► ▻ ▼ ▽ ▾ ▿ ◀ ◁ ◂ ◃ ◄ ◅`);
+ * - U+25E2 to U+25E5 the black corner triangles, U+25EC to U+25EE the triangles with a dot or a black half, U+25F8 to U+25FA and U+25FF the
+ *   corner triangles;
+ * - U+2B9C to U+2BA0 the equilateral arrowheads and the triangle-headed arrow `⮠` that follows them, U+2BC5 to U+2BC8 the centred medium
+ *   triangles (`⯅ ⯆ ⯇ ⯈`);
+ * - U+1F53A to U+1F53D the red triangles (`🔺 🔻 🔼 🔽`), U+1F780 to U+1F783 the black isosceles right triangles.
+ */
+export const MARKER_LOOKALIKE_RANGES: readonly CodeRange[] = [
+  [0x23e9, 0x23ef],
+  [0x23f4, 0x23f7],
+  [0x25b2, 0x25c5],
+  [0x25e2, 0x25e5],
+  [0x25ec, 0x25ee],
+  [0x25f8, 0x25fa],
+  [0x25ff, 0x25ff],
+  [0x2b9c, 0x2ba0],
+  [0x2bc5, 0x2bc8],
+  [0x1f53a, 0x1f53d],
+  [0x1f780, 0x1f783],
+];
+
+const MARKER_LOOKALIKES = new RegExp(`[${classOfRanges(MARKER_LOOKALIKE_RANGES)}]`, 'gu');
+
+/**
+ * The plain form of the marker, `^ N more` and `v N more` (the form without colour draws these, never a triangle), at the START of a name: a
+ * lone `^` or `v`, a space, a number and the word `more`. A name that only begins with the letter `v` (`v2 migration`, `vet`) is not this shape.
+ */
+const PLAIN_MARKER_SHAPE = /^(\s*)[\^v](?=\s+\d[\d,]*\s+more(?![\p{L}\p{N}]))/iu;
+
+/**
+ * A stored name with every triangle that could pass for the work page's `▲`/`▼ N more` marker replaced by a space ({@link MARKER_LOOKALIKE_RANGES}),
+ * and the plain form's `^ N more` or `v N more` at its start blanked the same way: a name that was changed loses the spaces it begins with, so no
+ * row of the page begins with a marker the allocator did not draw. A name with none of them comes back exactly as it was.
+ */
+export function blankMarkerLookalikes(text: string): string {
+  const blanked = text.replace(MARKER_LOOKALIKES, ' ').replace(PLAIN_MARKER_SHAPE, '$1 ');
+  return blanked === text ? text : blanked.trimStart();
+}
+
+/**
+ * A stored field as a work-page row draws it: the Home's full row scrub ({@link flowLine}), then {@link blankMarkerLookalikes}. Every stored
+ * field of a row (a title, an agent, a workflow, a run id) passes it before the row is cut.
+ */
+export function workRowText(stored: string): string {
+  return blankMarkerLookalikes(flowLine(stored));
+}
+
 /** A run's id as its row names it: the first eight characters of the scrubbed id. */
 function rowId(runId: string): string {
-  return shortId(flowLine(runId));
+  return shortId(workRowText(runId));
 }
 
 /** A stored name as a row draws it: scrubbed, or none when it is absent. */
 function rowName(stored: string | undefined): string | undefined {
-  return stored === undefined ? undefined : flowLine(stored);
+  return stored === undefined ? undefined : workRowText(stored);
 }
 
 /** The time a run row's age is counted from: a running run from its start, a finished one from its end, a queued one from its creation. */
@@ -212,7 +282,7 @@ function costOf(row: HomeRunRow | HomeSessionRow): string {
  * ({@link SESSION_ROW_FIT}).
  */
 export function sessionLabel(row: HomeSessionRow, nowMs: number, maxColumns?: number): string {
-  const agent = flowLine(row.agentSlug);
+  const agent = workRowText(row.agentSlug);
   const title = rowName(row.title);
   const head: readonly RowField[] =
     title === undefined || title.trim().length === 0
@@ -287,7 +357,7 @@ export function agentLabel(row: HomeAgentRow, nowMs: number, maxColumns?: number
   return fitRow(
     undefined,
     [
-      { text: flowLine(row.agentSlug), role: 'name' },
+      { text: workRowText(row.agentSlug), role: 'name' },
       { text: formatAgeOfIso(row.lastUsedAt, nowMs), role: 'age' },
     ],
     maxColumns,

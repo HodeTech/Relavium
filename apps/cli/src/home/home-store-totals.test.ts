@@ -22,6 +22,7 @@ import { describe, expect, it } from 'vitest';
 
 import { UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { PARKED_RUNS_MAX, readParkedRuns } from '../render/tui/home-attention.js';
+import { ATTENTION_ROWS_MAX } from '../render/tui/home-work-budget.js';
 import {
   ATTENTION_FAILED_WINDOW_MS,
   buildHomeSnapshot,
@@ -216,7 +217,13 @@ function fakeReader(world: {
         .slice(0, opts.limit)
         .map(summary);
     },
-    countRunSummaries: (filter) => world.runs.filter((run) => matches(run, filter)).length,
+    countRunSummaries: (filter) => {
+      // The Runs total is every run less the two Attention counts: a count by the Runs section's own filter would check the status on
+      // every run of the directory's history (MVP-11 unit 7 round 2), so this store refuses one, and the totals below must still be exact.
+      if (filter.exceptStatus !== undefined || filter.failedOnlyBefore !== undefined)
+        throw new Error('the Runs section is never counted by its own filter');
+      return world.runs.filter((run) => matches(run, filter)).length;
+    },
     loadRunStateEvents: (runId) => {
       readLog(runId, false);
       return [];
@@ -479,8 +486,14 @@ describe('the Home’s totals over random run sets (fake store, fixed seeds)', (
     }
   });
 
+  it('one Home limit: the parked rows and the work page’s Attention cap are the store’s eight, not three eights that happen to agree', () => {
+    // The parked rows take the store's constant (one source); the work page's cap lives in a fenced data module that does not import the
+    // store, so it is tied here: the work page shows at most as many Attention rows as one list of the store loads.
+    expect(PARKED_RUNS_MAX).toBe(DEFAULT_HOME_LIMIT);
+    expect(ATTENTION_ROWS_MAX).toBe(DEFAULT_HOME_LIMIT);
+  });
+
   it('the parked rows the controller shows and the paused runs the store probes are the same runs (both read the newest eight)', () => {
-    expect(DEFAULT_HOME_LIMIT).toBe(PARKED_RUNS_MAX);
     for (let seed = 1; seed <= 200; seed++) {
       const world = randomWorld(seed);
       const reader = fakeReader(world);
@@ -667,6 +680,14 @@ describe('the Home’s totals over a real history.db file', () => {
         sessions: world.sessions.filter((s) => !s.deleted && s.workingDir === HERE).length,
         runs: sets.runsSection.size - moved,
       });
+      // The Runs total is a difference of three counts; SQLite counting the Runs section's own filter on the same file says the same.
+      expect(snapshot.totals.runs + moved).toBe(
+        reader.countRunSummaries({
+          projectRoot: HERE,
+          exceptStatus: 'paused',
+          failedOnlyBefore: SINCE,
+        }),
+      );
       const reasons = new Map(snapshot.unreadableRuns.map((run) => [run.runId, run.reason]));
       expect(reasons.get('z-paused-bad')).toBe('corrupt-row');
       expect(reasons.get('z-newer')).toBe('newer-version');

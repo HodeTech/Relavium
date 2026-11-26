@@ -19,7 +19,6 @@ const SAID = 'Global startup default saved: plan.';
 const ARMED = '[Ctrl+C] exit (again)';
 const sessionRow = (n: number): HomeSessionRow => ({
   sessionId: `session-${String(n)}`,
-  workingDir: `/work/${String(n)}`,
   title: `Conversation ${String(n)}`,
   agentSlug: 'chat',
   modelId: undefined,

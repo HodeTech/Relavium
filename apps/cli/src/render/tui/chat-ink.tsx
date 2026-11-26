@@ -56,6 +56,7 @@ import { colorProps, dimProps, transcriptStyleProps } from './projection.js';
 import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
+  draftText,
   editorFromText,
   emptyEditor,
   insertAtCursor,
@@ -1795,9 +1796,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     if (!acceptsInput()) return;
     if (!activationReady.current) return;
-    const pasted = text.replace(/\r\n?/g, '\n');
-    if (pasted.length === 0) return;
+    // Line breaks normalised and control characters dropped, as a typed chunk is (`draftText`, MVP-11 unit 7 round 2: F6).
+    const pasted = draftText(text);
+    if (text.length === 0) return;
     disarmInterrupt();
+    if (pasted.length === 0) return; // nothing but controls: a key that edits nothing
     const snap = props.store.getSnapshot();
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
     if (snap.question !== undefined) {

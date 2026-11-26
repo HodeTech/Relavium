@@ -12,9 +12,9 @@
  * Time moves only when the test says so (the controller's own timer is the one faked), and every home is a temporary directory handed to
  * the Home.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
@@ -59,8 +59,19 @@ afterEach(() => {
   if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
   rmSync(operatorHome, { recursive: true, force: true });
+  for (const parent of links.splice(0)) rmSync(parent, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
+
+const links: string[] = [];
+/** A symlink to `dir`, in a directory of its own that the test removes. */
+function linkTo(dir: string): string {
+  const parent = mkdtempSync(join(tmpdir(), 'relavium-strip-wired-link-'));
+  links.push(parent);
+  const link = join(parent, 'here');
+  symlinkSync(dir, link, 'junction');
+  return link;
+}
 
 const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /** Turn the event loop until `predicate` holds, and FAIL when it does not within {@link WAIT_TURNS}. */
@@ -73,7 +84,7 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
 }
 
 /** The Home over an injected mount (no TTY), on `client`'s file, with only the controller's timers faked. */
-async function mountHome(seed?: () => Promise<void>) {
+async function mountHome(seed?: () => Promise<void>, cwd: string = root) {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   await seed?.();
   const opened: OpenedSessionStore = {
@@ -94,7 +105,7 @@ async function mountHome(seed?: () => Promise<void>) {
   const global: GlobalOptions = {
     json: false,
     color: false,
-    cwd: root,
+    cwd,
     configPath: join(tmpdir(), 'no-such-relavium-config.toml'),
     verbosity: 'normal',
   };
@@ -167,7 +178,10 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
     // nothing bumped the generation): the tick finds the token where the Home read it, and reads nothing.
     // (Each run is recorded for the directory the Home was opened in: the Home lists this directory's runs only, MVP-11 unit 7.)
     await seedRun(client.db, { slug: 'wf', runId: 'own-write', state: 'completed' });
-    client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, 'own-write');
+    // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+    client.sqlite
+      .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+      .run(realpathSync.native(root), 'own-write');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS * 3);
     expect(home.runIds(), 'the token did not move, so the strip was not read').toEqual([]);
 
@@ -175,7 +189,7 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
     await seedRun(other.db, { slug: 'wf', runId: 'another-terminal', state: 'completed' });
     other.sqlite
       .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
-      .run(root, 'another-terminal');
+      .run(realpathSync.native(root), 'another-terminal');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS);
     expect(new Set(home.runIds())).toEqual(new Set(['own-write', 'another-terminal']));
 
@@ -191,7 +205,8 @@ describe('driveHome tells the store which directory this Home is, so it lists th
       await seedRun(client.db, { slug: 'wf', runId: 'other-project', state: 'paused' });
       await seedRun(client.db, { slug: 'wf', runId: 'no-project', state: 'completed' });
       const record = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
-      record.run(root, 'this-project'); // the directory the Home was opened in (`global.cwd`)
+      // The directory the Home was opened in (`global.cwd`), as a run records it: canonical (MVP-11 unit 7, round 2).
+      record.run(realpathSync.native(root), 'this-project');
       record.run(elsewhere, 'other-project');
       // `no-project` recorded none: unknown is not this directory
     });
@@ -206,4 +221,32 @@ describe('driveHome tells the store which directory this Home is, so it lists th
     );
     expect(await home.leave()).toBe(0);
   });
+
+  it.each([
+    ['a trailing slash', (dir: string): string => `${dir}${sep}`],
+    ['a symlink', (dir: string): string => linkTo(dir)],
+  ])(
+    'opened through %s, lists the runs recorded under the canonical root, and none recorded under another spelling or `.` (MVP-11 unit 7, round 2)',
+    async (_name, spell) => {
+      const cwd = spell(root);
+      const home = await mountHome(async () => {
+        const record = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+        for (const [runId, stored] of [
+          ['canonical', realpathSync.native(root)],
+          ['as-typed', cwd],
+          ['dot', '.'],
+        ] as const) {
+          await seedRun(client.db, { slug: 'wf', runId, state: 'completed' });
+          record.run(stored, runId);
+        }
+      }, cwd);
+      expect(home.runIds()).toEqual(['canonical']);
+      expect(home.props.controller.getSnapshot().snapshot.totals).toEqual({
+        attention: 0,
+        sessions: 0,
+        runs: 1,
+      });
+      expect(await home.leave()).toBe(0);
+    },
+  );
 });

@@ -179,6 +179,55 @@ describe('countRunSummaries and the filters it shares with listRunSummaries', ()
     }
   });
 
+  it('a project read with the status of a run in flight names exactly the runs a terminal status’s read would: that project’s, of that status', () => {
+    // For `pending` / `running` / `paused` the project is compared outside index selection (`projectTerm`: the status range is read and
+    // the project checked on each of its runs). The runs named must be the same as the plain comparison names: an oracle over the
+    // seeded rows, for every status, over roots that differ only by a trailing slash, a case, a prefix, a numeric spelling or nothing.
+    const roots = [HERE, `${HERE}/`, `${HERE}/sub`, '/work/HERE', '/work/her', '1000', '1e3', null];
+    const seeded: {
+      id: string;
+      at: number;
+      root: string | null;
+      status: RunStatus;
+      gone: boolean;
+    }[] = [];
+    let seed = 11;
+    const next = (): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed;
+    };
+    for (let index = 0; index < 160; index++) {
+      const row = {
+        id: `q${String(index).padStart(3, '0')}`,
+        // Shared milliseconds on purpose: the keyset walk's id tiebreak is exercised on the status range too.
+        at: T0 + (next() % 15),
+        root: roots[next() % roots.length] ?? null,
+        status: STATUSES[next() % STATUSES.length] ?? 'completed',
+        gone: next() % 11 === 0,
+      };
+      seeded.push(row);
+      seedRun(row.id, row.at, {
+        projectRoot: row.root,
+        status: row.status,
+        ...(row.gone ? { deletedAt: T0 + 100 } : {}),
+      });
+    }
+    for (const projectRoot of [HERE, '/work/HERE', '1000'])
+      for (const status of STATUSES) {
+        const expected = seeded
+          .filter((row) => !row.gone && row.root === projectRoot && row.status === status)
+          .sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1))
+          .map((row) => row.id);
+        const label = `${projectRoot} ${status}`;
+        expect(walk({ projectRoot, status }), label).toEqual(expected);
+        expect(reader.countRunSummaries({ projectRoot, status }), label).toBe(expected.length);
+        expect(
+          reader.listRunSummaries({ projectRoot, status, limit: 2 }).map((row) => row.id),
+          label,
+        ).toEqual(expected.slice(0, 2));
+      }
+  });
+
   it('refuses a project root that is not a non-empty string, with a typed error whose message names no value', () => {
     seedRun('a', T0);
     for (const projectRoot of ['', undefined, 42, null]) {
@@ -189,6 +238,21 @@ describe('countRunSummaries and the filters it shares with listRunSummaries', ()
       expect(isRunHistoryReadError(refusal), String(projectRoot)).toBe(true);
       expect(refusal).toMatchObject({ code: 'invalid_filter' });
     }
+    // The page refuses an empty (or non-string) root the same way, with or without a status, rather than read it as "no project" (an
+    // empty page) or as every project. Absent, a page is every project's (the History browser's `all` scope).
+    for (const projectRoot of ['', 42, null])
+      for (const status of [undefined, 'paused', 'failed'] as const) {
+        const refusal = refusalOf(() =>
+          Reflect.apply(reader.listRunSummaries, undefined, [
+            { limit: 5, projectRoot, ...(status === undefined ? {} : { status }) },
+          ]),
+        );
+        expect(isRunHistoryReadError(refusal), `${String(projectRoot)} ${String(status)}`).toBe(
+          true,
+        );
+        expect(refusal).toMatchObject({ code: 'invalid_filter' });
+      }
+    expect(reader.listRunSummaries({ limit: 5 }).map((row) => row.id)).toEqual(['a']);
   });
 
   it('refuses a time bound that is not a safe integer, on the count and on the page alike, never reading it as no bound', () => {

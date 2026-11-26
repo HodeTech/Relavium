@@ -46,7 +46,6 @@ const runRow = (runId: string, status: HomeRunRow['status'] = 'completed'): Home
 });
 const sessionRow = (sessionId: string): HomeSessionRow => ({
   sessionId,
-  workingDir: '/work',
   title: undefined,
   agentSlug: 'chat',
   modelId: undefined,

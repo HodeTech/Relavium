@@ -44,7 +44,6 @@ const WITH_SESSION: HomeSnapshot = {
     {
       sessionId: 'saved',
       title: 'Saved conversation',
-      workingDir: '/workspace',
       agentSlug: 'chat',
       modelId: undefined,
       status: 'ended',
@@ -435,8 +434,10 @@ describe('a word the registry does not know', () => {
   it('shows a line that is not a word as the chat does: printable ASCII only, and at most 64 characters', () => {
     const control = mount();
     pasted(control, '/Users/x\u001b[31mred');
+    // The escape never enters the draft (a paste drops every C0, DEL and C1 control but TAB and LF: `draftText`, round 2 F6), so the notice has no `?`
+    // where it stood; what the notice itself does with a character it cannot show is pinned by the next case (`é` and the line break).
     expect(control.controller.getSnapshot().notice).toBe(
-      'Unknown command: /Users/x?[31mred. /help lists the commands.',
+      'Unknown command: /Users/x[31mred. /help lists the commands.',
     );
 
     const multiline = mount();

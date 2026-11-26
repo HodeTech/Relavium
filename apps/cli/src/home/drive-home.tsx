@@ -360,6 +360,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const startingModes = createStartingModeRuntime(initialConfig, true);
   const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+  // "This directory", ONCE (MVP-11 unit 7, round 2): the canonical spelling of the directory the Home was opened in, the very root a run
+  // records (`projectRootOf`) and the `working_dir` a chat records. Every reader that asks whether a run is this directory's (the lists,
+  // the parked rows and their cards, the History, Active and Defined tabs, `r`, the run host's resume) compares a run's root with this
+  // text, never with `deps.global.cwd` as it was typed (`.`, `work/`, a symlink, a case variant).
+  const here = fsPolicyWorkspace(fsPolicy);
   // One chord history for every card the Home shows (ADR-0139 §4): the MCP consent card (this channel), the gate and budget cards and the
   // exit guard (the controller). What one answered, the next is locked against, so a key held through an answer cannot answer the next card.
   const chordHistory = createChordHistory();
@@ -614,11 +619,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const homeStore = createHomeStore({
       sessions: opened.store,
       runs: runReader,
-      // The Home lists THIS directory only (MVP-11 unit 7): its runs by the project root a run records (the root the parked rows, the
-      // Defined and the History tabs use), its sessions by the canonical workspace a chat records, the directory `/resume` calls "this
-      // directory". Another directory's work stays in `/resume` (Tab) and `/history`.
-      projectRoot: deps.global.cwd,
-      workingDir: fsPolicyWorkspace(fsPolicy),
+      // The Home lists THIS directory only (MVP-11 unit 7): its runs by the root a run records and its sessions by the workspace a chat
+      // records, one canonical value (`here`), the directory `/resume` calls "this directory" and the root the parked rows, the Defined
+      // and the History tabs use. Another directory's work stays in `/resume` (Tab) and `/history`.
+      projectRoot: here,
+      workingDir: here,
       // The failed-run window's clock (a failed run is under Attention for seven days).
       now,
     });
@@ -660,6 +665,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       mcpSecretResolver,
       consent: createNativeConsentPrompter(promptFlow),
       renderer: runFeed.renderer,
+      // The runs it answers are this directory's, by the one root the lists use; its legs still work in the cwd as spelled.
+      projectRoot: here,
     }));
     // The key presence the Home last sampled (when it opened, and after a provider run): the `/doctor` popup falls back on it for a key it could
     // not read in time. Booleans only, never a value.
@@ -1970,11 +1977,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       };
       const defined = createDefinedPort({
         catalog: launchCatalog,
-        // The latest run of each workflow in this project, as the runs recorded it (the working directory, as `status` reads them).
+        // The latest run of each workflow in this directory, by the canonical root the runs recorded (`here`).
         lastRuns: () =>
           new Map(
             runReader
-              .loadLatestRunPerWorkflowInProject(deps.global.cwd)
+              .loadLatestRunPerWorkflowInProject(here)
               .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
           ),
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
@@ -1996,7 +2003,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...createHistorySource({
           reader: runReader,
           listRunPins: () => definedPins.listPins({ kind: 'run' }),
-          projectRoot: deps.global.cwd,
+          projectRoot: here,
           paths: displayRoots(deps.global.cwd, homeDir),
           now,
         }),
@@ -2005,7 +2012,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
           loadSnapshot: frozenSnapshot,
           // Where a run was started, against this directory: what `r` on the detail needs to run it again (the list's own `this project`).
-          projectRoot: deps.global.cwd,
+          projectRoot: here,
         }),
         loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
       };
@@ -2109,7 +2116,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           token: changeToken,
           read: createActiveReader({
             reader: runReader,
-            projectRoot: deps.global.cwd,
+            projectRoot: here,
             hostedRunId: () => hostedRuns.snapshot().active?.runId,
             listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
             outboxStamp: () => terminalOutboxStamp(terminalOutboxPath(homeDir)),
@@ -2149,8 +2156,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // run's gates when it opens, and an answer is the run host's `resume` with the native flow around it, so a masked slot and the
         // MCP consent card of a resumed leg open on the same prompt channel. A run recorded for another directory is never read or answered.
         gateCards: {
-          list: () => readParkedRuns(runReader, deps.global.cwd),
-          read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
+          list: () => readParkedRuns(runReader, here),
+          read: (runId) => readRunGates(runReader, here, runId),
           resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
         },
         // A run parked on media jobs alone has no gate to answer: `Enter` on it asks whether to continue it here (default No), and a Yes is the

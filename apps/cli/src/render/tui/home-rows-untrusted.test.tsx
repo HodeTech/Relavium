@@ -49,7 +49,6 @@ const HOSTILE: Readonly<Record<string, string>> = {
 
 const sessionRow = (title: string, n: number): HomeSessionRow => ({
   sessionId: `session-${String(n)}`,
-  workingDir: `/work/${title}`,
   title,
   agentSlug: title,
   modelId: undefined,

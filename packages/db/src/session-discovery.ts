@@ -9,7 +9,11 @@ export interface SessionPageCursor {
   readonly id: string;
 }
 export interface SessionPageOptions {
-  /** Absent means every directory. This is discovery, never workspace authority. */
+  /**
+   * Absent means every directory. This is discovery, never workspace authority. An undefined value is absent here (unlike
+   * `SessionStore.listSessions`, where a present `workingDir` key is a scope even when undefined, and `countSessions`, where it is
+   * required); an empty or non-string one is refused (`SessionDiscoveryBoundaryError`).
+   */
   readonly workingDir?: string;
   /** Literal title substring; SQL wildcards in the input remain literal. */
   readonly title?: string;

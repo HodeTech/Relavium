@@ -88,6 +88,7 @@ import type { RunNotices } from '../../home/run-notices.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
   applyEditorAction,
+  draftText,
   editorFromText,
   emptyEditor,
   insertAtCursor,
@@ -4333,11 +4334,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
       return;
     }
-    // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
+    // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline), and every C0, DEL and C1 control
+    // but TAB and LF dropped, as a typed chunk's are (`draftText`, MVP-11 unit 7 round 2: F6).
     // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
     // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
     // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
-    const pasted = text.replace(/\r\n?/g, '\n');
+    const pasted = draftText(text);
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
     if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
     if (pasted.length === 0 || !pasteEditable()) return;

@@ -360,8 +360,9 @@ export type RunHistoryReadErrorCode =
   /** More run ids than the read's cap ({@link MAX_RUN_LEASE_IDS}, {@link MAX_RUN_STATE_EVENT_BATCH_IDS}) in one `IN` lookup. */
   | 'too_many_run_ids'
   /**
-   * A {@link RunSummaryFilter} value that is not usable: a time bound (`since`, `failedOnlyBefore`) that is not a safe integer, or a
-   * count with no project root (an empty or non-string one). Refused, never read as "no bound" or as "every project".
+   * A {@link RunSummaryFilter} value that is not usable: a time bound (`since`, `failedOnlyBefore`) that is not a safe integer, a project
+   * root that is empty or not a string (a page and a count alike), or a count with no project root. Refused, never read as "no bound",
+   * "no project" or "every project".
    */
   | 'invalid_filter';
 
@@ -438,6 +439,10 @@ function boundedLimit(limit: number, max: number): number {
  */
 export interface RunSummaryFilter {
   readonly status?: RunStatus;
+  /**
+   * Only the runs of this project (`project_root`). Absent on a page means every project; a count requires it. A value that is present must
+   * be a non-empty string; an empty one is refused (`invalid_filter`), on a page as on a count.
+   */
   readonly projectRoot?: string;
   readonly workflowId?: string;
   /** Only runs created at or after this time (epoch ms, inclusive). A safe integer; anything else is refused (`invalid_filter`). */
@@ -464,6 +469,29 @@ function timeBound(value: number | undefined): number | undefined {
 }
 
 /**
+ * The project term of a {@link RunSummaryFilter}: absent, or a non-empty string (anything else is refused, `invalid_filter`, never read as
+ * "every project" or as "no project").
+ *
+ * WHICH index serves a project read with a status is chosen here. A status of a run still in flight (`pending`, `running`, `paused`) names
+ * few runs at any time, whatever the project's history holds; the project's own range of `idx_runs_project_created` holds its whole
+ * history, and checking the status there costs one table row per run of the project (MVP-11 unit 7 round 2: 30 ms for the paused count of a
+ * 50,000-run project, on every Home refresh). So for those statuses the project is compared with SQLite's no-op unary `+`, which keeps the
+ * term out of index selection (sqlite.org/optoverview.html, "Disqualifying WHERE Clause Terms Using Unary-+"): the read is the status
+ * range of `idx_runs_status`, in `created_at DESC` order, with the project checked on each of those runs. The comparison itself is
+ * unchanged (TEXT against a bound TEXT, the column's collation). A terminal status (`completed`, `failed`, `cancelled`: the History
+ * browser's filter) keeps the project's range, where the newest rows come first. Plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts.
+ */
+function projectTerm(filter: RunSummaryFilter): SQL | undefined {
+  const projectRoot: unknown = filter.projectRoot;
+  if (projectRoot === undefined) return undefined;
+  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+    throw new RunHistoryReadError('invalid_filter', 'a project root must be a non-empty string');
+  }
+  const inFlight = NON_TERMINAL_STATUSES.some((status) => status === filter.status);
+  return inFlight ? sql`+${runs.projectRoot} = ${projectRoot}` : eq(runs.projectRoot, projectRoot);
+}
+
+/**
  * The ONE `WHERE` of a run summary page and of its count ({@link RunSummaryFilter}): soft-deleted runs out, then each filter that is
  * present. Shared, so the two can never disagree on which runs a filter names.
  */
@@ -473,7 +501,7 @@ function runSummaryWhere(filter: RunSummaryFilter): SQL | undefined {
   return and(
     isNull(runs.deletedAt),
     filter.status === undefined ? undefined : eq(runs.status, filter.status),
-    filter.projectRoot === undefined ? undefined : eq(runs.projectRoot, filter.projectRoot),
+    projectTerm(filter),
     filter.workflowId === undefined ? undefined : eq(runs.workflowId, filter.workflowId),
     since === undefined ? undefined : gte(runs.createdAt, since),
     filter.exceptStatus === undefined ? undefined : ne(runs.status, filter.exceptStatus),
@@ -603,9 +631,11 @@ export interface RunHistoryReader {
    * clamp that would read as the end of the list. The statement selects summary columns only — never the
    * frozen snapshot or a JSON document — and `projectRoot` / `workflowId` / `status` are filters on the same
    * ordering. Unfiltered and project-scoped pages are index-served with no filesort
-   * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts).
+   * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts);
+   * a project page with the status of a run still in flight (`pending`, `running`, `paused`: the Home's parked runs) reads
+   * that status's range of `idx_runs_status` instead, so it costs the runs of that status, not the project's history.
    * The time and exclusion filters of a {@link RunSummaryFilter} (`since`, `exceptStatus`, `failedOnlyBefore`) narrow the same
-   * ordered read; a time bound that is not a safe integer is refused (`invalid_filter`).
+   * ordered read; a time bound that is not a safe integer, or a `projectRoot` that is empty, is refused (`invalid_filter`).
    * The existing {@link listRuns} and its callers are unchanged.
    */
   listRunSummaries: (
@@ -617,9 +647,11 @@ export interface RunHistoryReader {
   /**
    * How many runs of ONE project a {@link RunSummaryFilter} names — the number of rows {@link listRunSummaries} would list for the same
    * filter walked to its end (the one `WHERE` both build), soft-deleted runs excluded. Read-only and one statement (`count(*)`), served off
-   * `idx_runs_project_created` (plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts): the Home's true totals of this directory
-   * (MVP-11 unit 7). The project root is required and must be a non-empty string, and a time bound a safe integer; anything else is a
-   * {@link RunHistoryReadError} (`invalid_filter`), never a count of every project.
+   * an index as the page is (plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts): the project alone counts its range of
+   * `idx_runs_project_created` without reading a run's row; a status of a run in flight, or a status with `since`, counts that status's range
+   * of `idx_runs_status`. The Home's true totals of this directory (MVP-11 unit 7). The project root is required and must be a non-empty
+   * string, and a time bound a safe integer; anything else is a {@link RunHistoryReadError} (`invalid_filter`), never a count of every
+   * project.
    */
   countRunSummaries: (filter: RunSummaryFilter & { readonly projectRoot: string }) => number;
   /**

@@ -6,6 +6,7 @@ import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
 import type { ReadSnapshot } from './change-probe.js';
 import { keysetCursorOf } from './keyset-cursor.js';
+import { isProjectRootHere } from './project-root.js';
 
 /**
  * The read behind the Home's Active tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -197,7 +198,7 @@ export function readActiveParkCounts(
   } = {},
 ): ActiveParkCounts | undefined {
   const here = paused
-    .filter((run) => run.projectRoot === projectRoot)
+    .filter((run) => isProjectRootHere(run.projectRoot, projectRoot))
     .slice(0, ACTIVE_STATUS_LIMIT);
   const { cache } = options;
   if (here.length === 0) {

@@ -1197,12 +1197,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
   it('reconciles a crashed run BEFORE the first strip read (2.6.G liveness, #229)', async () => {
     // A run whose process died: `run:started` is durable, there is no terminal and no lease. It was started in this Home's directory
-    // (the Home lists this directory's runs only, MVP-11 unit 7).
+    // (the Home lists this directory's runs only, MVP-11 unit 7), recorded as a run records it: canonical (round 2).
     const runs = createRunHistoryStore(client.db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
       workflow: { slug: 'crashed', name: 'crashed', definitionJson: '{}' },
-      projectRoot: cwd,
+      projectRoot: realpathSync.native(cwd),
     });
     const runId = randomUUID();
     await runs.persistEvent(
@@ -2784,7 +2784,10 @@ workflow:
         state: 'completed',
         atMs: 1_750_000_000_000 - 60_000,
       });
-      client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(cwd, runId);
+      // Recorded as a run records its directory: canonical (MVP-11 unit 7, round 2).
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(realpathSync.native(cwd), runId);
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
       const drivePromise = driveHome(deps);

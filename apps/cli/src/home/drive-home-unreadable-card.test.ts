@@ -7,7 +7,7 @@
  *
  * Time moves only when the test says so (the controller's own timer is the one faked), and every home is a temporary directory.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -156,9 +156,10 @@ describe('driveHome wires the card of an unreadable run to its row', () => {
   it('opens the card of a run whose log has a damaged row, over the Home’s popup host, on Enter; Esc closes it, the focus on the row', async () => {
     const home = await mountHome(async () => {
       await seedRun(client.db, { slug: 'release-notes', runId: 'damaged-run', state: 'completed' });
+      // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
       client.sqlite
         .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
-        .run(root, 'damaged-run');
+        .run(realpathSync.native(root), 'damaged-run');
       // A type this binary knows, with a body that does not parse: damaged, not newer.
       client.sqlite
         .prepare(

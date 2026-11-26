@@ -4,6 +4,7 @@ import type { RunStatus } from '@relavium/shared';
 import { formatAgeOfIso, formatDuration, type DisplayPathRoots } from '../render/notation.js';
 import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
 import { placeForDisplay } from '../render/tui/place-label.js';
+import { recordedProjectRoot } from './project-root.js';
 import {
   MAX_PROJECT_ROOT_CHARS,
   isFinishedRun,
@@ -106,6 +107,9 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       ? spanMs(run.startedAt, run.completedAt)
       : undefined;
     const createdAtMs = Date.parse(run.createdAt);
+    // A stored root that names no directory (a relative one, written before roots were canonical) is not shown: `.` would read as
+    // "this project" in every Home's History (`recordedProjectRoot`, MVP-11 unit 7, round 2).
+    const recorded = recordedProjectRoot(run.projectRoot);
     return {
       id: run.id,
       shortId: shortRunId(run.id),
@@ -119,10 +123,10 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       ...(Number.isNaN(createdAtMs) ? {} : { createdAtMs }),
       createdAt: run.createdAt,
       totalCostMicrocents: run.totalCostMicrocents,
-      ...(run.projectRoot === undefined
+      ...(recorded === undefined
         ? {}
         : {
-            projectRoot: storedPlace(run.projectRoot, input.paths, MAX_PROJECT_ROOT_CHARS),
+            projectRoot: storedPlace(recorded, input.paths, MAX_PROJECT_ROOT_CHARS),
           }),
     };
   });

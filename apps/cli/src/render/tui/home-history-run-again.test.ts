@@ -44,7 +44,6 @@ const WITH_SESSION: HomeSnapshot = {
   recentSessions: [
     {
       sessionId: 'session-1',
-      workingDir: '/work/1',
       title: 'Conversation 1',
       agentSlug: 'chat',
       modelId: undefined,

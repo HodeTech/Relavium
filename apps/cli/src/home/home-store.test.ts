@@ -362,9 +362,9 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       session({ id: 's1', title: 'Plan the launch', agentSlug: 'planner' }),
     );
     const [row] = buildHomeSnapshot(deps).recentSessions;
+    // No directory: every session listed is this directory's, and a session row draws none.
     expect(row).toEqual({
       sessionId: 's1',
-      workingDir: HERE,
       title: 'Plan the launch',
       agentSlug: 'planner',
       modelId: undefined,
@@ -615,6 +615,89 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       expect(later.recentRuns.map((run) => run.runId)).toEqual(['f']);
       expect(now).toHaveBeenCalledTimes(1);
     });
+
+    it('a fractional clock is floored to whole milliseconds, never refused as a bound the reader cannot use', async () => {
+      // The run created exactly at the floored bound is inside the window (inclusive); the fraction would have made the bound a
+      // non-integer, which the reader refuses (`invalid_filter`), and the whole snapshot with it.
+      await seed({ slug: 'wf', runId: 'edge', state: 'failed', atMs: T0 });
+      await seed({ slug: 'wf', runId: 'before', state: 'failed', atMs: T0 - 1 });
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        now: () => T0 + ATTENTION_FAILED_WINDOW_MS + 0.75,
+      });
+      expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['edge']);
+      expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['before']);
+      expect(snapshot.totals).toEqual({ attention: 1, sessions: 0, runs: 1 });
+    });
+
+    it('a clock that is not a finite number is refused with the reader’s own error, before any read', () => {
+      const reader = createRunHistoryReader(client.db);
+      const list = vi.fn(reader.listRunSummaries);
+      const count = vi.fn(reader.countRunSummaries);
+      for (const clock of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        let refusal: unknown;
+        try {
+          buildHomeSnapshot({
+            ...deps,
+            runs: { ...reader, listRunSummaries: list, countRunSummaries: count },
+            now: () => clock,
+          });
+        } catch (error) {
+          refusal = error;
+        }
+        expect(isRunHistoryReadError(refusal), String(clock)).toBe(true);
+        expect(refusal).toMatchObject({ code: 'invalid_filter' });
+      }
+      expect(list, 'refused before any read').not.toHaveBeenCalled();
+      expect(count, 'refused before any read').not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the totals are three counts, none of them a residual filter over the directory’s history', () => {
+    it('counts the paused runs, the failed runs of the window and then every run; the Runs total is the difference', async () => {
+      await seed({ slug: 'wf', runId: 'p', state: 'paused', atMs: T0 + 3 });
+      await seed({ slug: 'wf', runId: 'f', state: 'failed', atMs: T0 + 2 });
+      await seed({ slug: 'wf', runId: 'old', state: 'failed', atMs: T0 - 8 * DAY });
+      await seed({ slug: 'wf', runId: 'c', state: 'completed', atMs: T0 + 1 });
+      const reader = createRunHistoryReader(client.db);
+      const count = vi.fn(reader.countRunSummaries);
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        runs: { ...reader, countRunSummaries: count },
+      });
+      // Every run of the directory is counted LAST: a run that changes status between the statements is then never subtracted without
+      // also being counted, so the difference cannot fall below the truth by it.
+      expect(count.mock.calls.map(([filter]) => filter)).toEqual([
+        { projectRoot: HERE, status: 'paused' },
+        { projectRoot: HERE, status: 'failed', since: NOW - ATTENTION_FAILED_WINDOW_MS },
+        { projectRoot: HERE },
+      ]);
+      expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 2 });
+      // The difference is the Runs section's own filter, counted (the identity the totals rest on).
+      expect(snapshot.totals.runs).toBe(
+        reader.countRunSummaries({
+          projectRoot: HERE,
+          exceptStatus: 'paused',
+          failedOnlyBefore: NOW - ATTENTION_FAILED_WINDOW_MS,
+        }),
+      );
+    });
+
+    it('the Runs total is never below zero when a counted run leaves before every run is counted (a soft delete between statements)', async () => {
+      await seed({ slug: 'wf', runId: 'p', state: 'paused', atMs: T0 + 2 });
+      await seed({ slug: 'wf', runId: 'f', state: 'failed', atMs: T0 + 1 });
+      const reader = createRunHistoryReader(client.db);
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        runs: {
+          ...reader,
+          // The paused run is deleted by another process after it was counted: the last count no longer holds it.
+          countRunSummaries: (filter) =>
+            reader.countRunSummaries(filter) - (filter.status === undefined ? 1 : 0),
+        },
+      });
+      expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 0 });
+    });
   });
 
   describe('why a run cannot be read: a closed vocabulary, never an error message', () => {
@@ -625,6 +708,74 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       expect(unreadableReasonOf(new UnreadableRunEventLogError('r', [9]))).toBe('newer-version');
       expect(unreadableReasonOf(new Error('a disk said no'))).toBe('could-not-read');
       expect(unreadableReasonOf('not even an error')).toBe('could-not-read');
+    });
+
+    it('is total: a value whose type cannot be read without throwing is "could not be read", never a throw', () => {
+      const refuse = (): never => {
+        throw new Error('this value cannot be inspected');
+      };
+      // A `code` getter that throws.
+      expect(
+        unreadableReasonOf(Object.defineProperty(new Error('x'), 'code', { get: refuse })),
+      ).toBe('could-not-read');
+      // Proxies whose traps throw: the prototype (`instanceof`), the key test (`in`) and the read.
+      const target = Object.assign(new Error('x'), { code: 'corrupt_run_event' });
+      for (const handler of [
+        { getPrototypeOf: refuse },
+        { has: refuse },
+        { get: refuse },
+      ] satisfies ProxyHandler<Error>[])
+        expect(unreadableReasonOf(new Proxy(target, handler))).toBe('could-not-read');
+    });
+
+    it('a run whose error answers its type once and then throws is named "could not be read", and the snapshot is built', async () => {
+      // The per-run read judged each a per-run condition on its first look (a corrupt row, a newer row); reading the type again for the
+      // reason throws. That run is an unreadable item with the closed word, and every other run is read as usual.
+      await seed({ slug: 'wf', runId: 'paused-1', state: 'paused', atMs: T0 + 3 });
+      await seed({ slug: 'wf', runId: 'done-1', state: 'completed', atMs: T0 + 2 });
+      await seed({ slug: 'wf', runId: 'done-2', state: 'completed', atMs: T0 + 1 });
+      const reader = createRunHistoryReader(client.db);
+      /** An error whose `code` answers `code` for the first `answers` reads, and throws after. */
+      const fickle = (code: string, answers: number): Error => {
+        let reads = 0;
+        return Object.defineProperty(new Error('x'), 'code', {
+          get: () => {
+            reads += 1;
+            if (reads <= answers) return code;
+            throw new Error('the type cannot be read twice');
+          },
+        });
+      };
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        runs: {
+          ...reader,
+          loadRunStateEvents: () => {
+            // A getter: the corrupt check reads it once (and degrades); the reason reads it again.
+            throw fickle('corrupt_run_event', 1);
+          },
+          visitRunEventsForReplay: (runId, ...rest) => {
+            if (runId !== 'done-1') return reader.visitRunEventsForReplay(runId, ...rest);
+            // A Proxy: the corrupt check and the newer-version check each read it once (the second degrades); the reason reads it again.
+            const target = Object.assign(new Error('x'), { code: 'unreadable_run_event_log' });
+            let reads = 0;
+            throw new Proxy(target, {
+              get: (inner, key, receiver): unknown => {
+                if (key !== 'code') return Reflect.get(inner, key, receiver);
+                reads += 1;
+                if (reads <= 2) return inner.code;
+                throw new Error('the type cannot be read a third time');
+              },
+            });
+          },
+        },
+      });
+      expect(snapshot.unreadableRuns.map((run) => [run.runId, run.reason])).toEqual([
+        ['paused-1', 'could-not-read'],
+        ['done-1', 'could-not-read'],
+      ]);
+      expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['done-2']);
+      expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 1 });
     });
 
     it('a hostile error message (a path, a secret, a control sequence) never reaches the snapshot', async () => {

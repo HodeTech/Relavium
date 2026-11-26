@@ -12,6 +12,7 @@ import { createConsentGate, type ConsentPrompter } from '../engine/mcp-consent-g
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { sweepHostMediaBestEffort } from '../engine/media-gc.js';
 import { terminalOutboxPath, type OpenedHistory } from '../history/open.js';
+import { isProjectRootHere, projectRootOf, recordedProjectRoot } from '../history/project-root.js';
 import { CliError, isCliError, toUserFacing } from '../process/errors.js';
 import { safetyRank } from '../process/exit-observations.js';
 import type { CliInvocation } from '../process/invocation.js';
@@ -226,6 +227,12 @@ export interface RunHostOptions {
    * `setTimeout` (the bound must hold even when nothing else keeps the process alive); a test injects its own clock so nothing sleeps.
    */
   readonly schedule?: ((callback: () => void, delayMs: number) => () => void) | undefined;
+  /**
+   * The directory whose runs this host answers: its canonical root, the text a run records (`projectRootOf`). The Home passes the very
+   * value it lists runs by; absent, it is `projectRootOf(global.cwd)`. A resume of a run recorded under any other root, or under none, is
+   * refused before any work. The legs themselves still work in `global.cwd` as it was spelled.
+   */
+  readonly projectRoot?: string | undefined;
 }
 
 /** The services both cores read, with an absent one left out (the shell's own `exactOptionalPropertyTypes` shape). */
@@ -460,6 +467,9 @@ export class RunHost {
   readonly #env: CliIo['env'];
   readonly #global: GlobalOptions;
   readonly #db: Db;
+  /** The working directory as spelled: what a leg works in and loads its configuration from. */
+  readonly #cwd: string;
+  /** The directory whose runs this host answers, canonical ({@link RunHostOptions.projectRoot}). */
   readonly #projectRoot: string;
   readonly #homeDir: string;
   readonly #consent: ConsentPrompter | undefined;
@@ -484,7 +494,8 @@ export class RunHost {
     this.#env = options.io.env;
     this.#global = options.global;
     this.#db = options.db;
-    this.#projectRoot = options.global.cwd;
+    this.#cwd = options.global.cwd;
+    this.#projectRoot = options.projectRoot ?? projectRootOf(options.global.cwd);
     this.#homeDir = options.homeDir;
     this.#consent = options.consent;
     this.notices = options.notices ?? new RunNotices();
@@ -690,9 +701,10 @@ export class RunHost {
       return refused('rejected', this.#faultMessage(cause));
     }
     // A run that does not exist is the resume core's refusal to word; one recorded elsewhere is ours.
-    if (recorded === undefined || recorded === this.#projectRoot) return undefined;
+    if (recorded === undefined || isProjectRootHere(recorded, this.#projectRoot)) return undefined;
     // A run with no recorded root is not "another directory's": there is no directory to open the Home in, and the words must not say there is.
-    if (recorded === null)
+    // A relative root (`.`, written before roots were canonical) names no directory either: it is unrecorded, never this Home's.
+    if (recordedProjectRoot(recorded) === undefined)
       return refused(
         'other_project',
         'This run was recorded without a project root, so the Home does not answer it. Answer it from the shell; `relavium status` shows how.',
@@ -790,7 +802,7 @@ export class RunHost {
    * from `~` and never by its absolute path (RUNCORE-3): a notice is drawn into a transcript that a screen share carries away.
    */
   #faultMessage(cause: unknown): string {
-    const pathFree = faultForTranscript(cause, { cwd: this.#projectRoot, homeDir: this.#homeDir });
+    const pathFree = faultForTranscript(cause, { cwd: this.#cwd, homeDir: this.#homeDir });
     return sanitizeUntrustedInline(toUserFacing(pathFree).message);
   }
 
@@ -1056,7 +1068,7 @@ export class RunHost {
         io,
         // Every line a leg writes becomes a notice inside the TUI: its remedies name the Home's actions, never a shell command.
         noticeSurface: noticeSurfaceOf('home'),
-        global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
+        global: { cwd: this.#cwd, configPath: this.#global.configPath },
         // The same home a resume loads from, never the OS's: the host is always handed one.
         home: this.#homeDir,
         ...this.#services,
@@ -1088,7 +1100,7 @@ export class RunHost {
   ): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
     const host = loadResolvedConfig({
-      cwd: this.#projectRoot,
+      cwd: this.#cwd,
       configPath: this.#global.configPath,
       home: this.#homeDir,
     });
@@ -1110,7 +1122,7 @@ export class RunHost {
       {
         io,
         noticeSurface: noticeSurfaceOf('home'),
-        global: { cwd: this.#projectRoot },
+        global: { cwd: this.#cwd },
         ...this.#services,
       },
       { config: host.config, homeDir: host.homeDir },

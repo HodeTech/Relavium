@@ -9,9 +9,17 @@
  * is a stale pause, a leg held open until cancelled, an ordered teardown) script the handle and keep everything
  * else real.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import {
   WorkflowEngine,
@@ -445,7 +453,8 @@ describe('a run belongs to the workspace it was started in', () => {
     const path = writeWorkflow('gated.relavium.yaml', GATED);
     const parked = await started(there.host.start({ workflow: path, rawInputs: { n: '3' } }));
     expect(parked.handedOff).toBe(true);
-    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(other);
+    // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(realpathSync.native(other));
 
     const here = rig({}, root);
     const refused = await here.host.resume({
@@ -468,6 +477,46 @@ describe('a run belongs to the workspace it was started in', () => {
       there.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
     );
     expect(answered.terminal.disposition).toBe('completed');
+  });
+
+  it('records the canonical root of a start made through any spelling, and answers it from another spelling of that directory', async () => {
+    const link = join(mkdtempSync(join(tmpdir(), 'relavium-run-host-link-')), 'here-link');
+    scratch.push(join(link, '..'));
+    symlinkSync(root, link, 'junction');
+    const slashed = rig({}, `${root}${sep}`);
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const parked = await started(slashed.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(realpathSync.native(root));
+
+    const viaLink = rig({}, link);
+    const answered = await started(
+      viaLink.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
+    );
+    expect(answered.terminal.disposition).toBe('completed');
+  });
+
+  it('refuses a run whose stored root is relative as unrecorded, for every host, the one spelled `.` included', async () => {
+    const r = rig();
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const parked = await started(r.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    // A root written as typed before roots were canonical: `relavium --cwd . run` in some directory.
+    client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run('.', parked.runId);
+    for (const host of [rig({}, '.'), rig({ projectRoot: '.' }, '.'), rig({}, root)]) {
+      const refused = await host.host.resume({
+        runId: parked.runId,
+        kind: 'human',
+        decision: approvalDecision(),
+      });
+      expect(refused).toEqual({
+        kind: 'refused',
+        reason: 'other_project',
+        message:
+          'This run was recorded without a project root, so the Home does not answer it. Answer it from the shell; `relavium status` shows how.',
+      });
+      expect(host.builds, 'no engine was built').not.toHaveBeenCalled();
+      expect(host.f.registry.activeOwners).toBe(0);
+    }
+    expect(runStatus(parked.runId), 'still parked').toBe('paused');
   });
 
   it('leaves a run that does not exist to the resume core, which names it', async () => {

@@ -13,6 +13,7 @@ import type { AgentSessionRecord, RunStatus, UsageCoverage } from '@relavium/sha
 
 import { pendingParkDisplays } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { recordedProjectRoot } from '../history/project-root.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 
 /**
@@ -24,18 +25,21 @@ import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverag
  *
  * - **This directory only** (MVP-11 unit 7; the maintainer: what belongs to the directory the Home was opened in is shown, the unrelated
  *   is not). A session is this directory's when its `working_dir` is {@link HomeStoreDeps.workingDir} (what `/resume` calls "this
- *   directory"); a run is when its `project_root` is {@link HomeStoreDeps.projectRoot} (what `relavium run` records). A run that recorded no
- *   project is not "here": unknown is not this directory. Every other directory stays reachable in `/resume` (Tab) and `/history`.
+ *   directory"); a run is when its `project_root` is {@link HomeStoreDeps.projectRoot} (the canonical root `relavium run` records). A run
+ *   that recorded no project, or a relative one, is not "here": unknown is not this directory. Every other directory stays reachable in
+ *   `/resume` (Tab) and `/history`.
  * - **Each run is counted ONCE.** A paused run is Attention (the parked row the controller shows, or an unreadable row here). A failed run
  *   created inside {@link ATTENTION_FAILED_WINDOW_MS} is Attention (a failed row, or an unreadable row). Every other run of this directory
  *   is a Runs row, until its log turns out unreadable while this snapshot reads it: it is then an Attention item and no longer a run.
  *   An unreadable run is one unreadable row, never also a parked, failed or Runs row.
  * - **True totals** ({@link HomeTotals}): read-only `count(*)` seams over the same filters the lists use, never the loaded rows, so a
- *   section that shows four rows of 32 says `28 more`.
+ *   section that shows four rows of 32 says `28 more`. The Runs total is every run of this directory less the paused runs and the failed
+ *   runs of the window (its filter is exactly their complement), so no count reads a run's row for each run of the directory's history.
  * - **Bounded + indexed.** Every list is an indexed top-N of this directory (`listRunSummaries` / `listSessions` off
- *   `idx_runs_project_created` / `idx_agent_sessions_working_dir_updated`, plans pinned in `harness/perf-budget.e2e.test.ts`); run rows are
- *   labeled through ONE batched primary-key `loadWorkflowSlugs`; the per-run log reads are one per loaded paused run and one per run a
- *   list shows (or finds unreadable); "recent agents" is derived from the already-read sessions.
+ *   `idx_runs_project_created` / `idx_agent_sessions_working_dir_updated`; the paused runs off `idx_runs_status`, so they cost the paused
+ *   runs and not the directory's history; plans pinned in `harness/perf-budget.e2e.test.ts`); run rows are labeled through ONE batched
+ *   primary-key `loadWorkflowSlugs`; the per-run log reads are one per loaded paused run and one per run a list shows (or finds
+ *   unreadable); "recent agents" is derived from the already-read sessions.
  * - **Text stays raw here.** A slug, a title and an id are returned as stored and scrubbed by the view where it draws them; a reason why a
  *   run cannot be read is a closed word ({@link UnreadableRunReason}), never an error's message (which may carry a path or stored text).
  */
@@ -52,15 +56,19 @@ export const HOME_LIMIT_MAX = Math.floor(MAX_RUN_SUMMARY_PAGE / 2);
 /**
  * How long a failed run stays under "Attention required": seven days from when it was CREATED (the maintainer's ruling, 2026-11-26).
  * After that it is history: it is listed as the run it is in the Runs section (and in `/history`), not dropped. The bound is on
- * `created_at` because that is what `idx_runs_project_created` / `idx_runs_status` order by; a run lasts minutes to hours, so its creation
- * and its failure are hours apart at most against a window of days.
+ * `created_at` because that is what `idx_runs_project_created` / `idx_runs_status` order by. The consequence: a run created more than seven
+ * days ago that fails NOW is not Attention, it is a Runs row with the status `failed` from the moment it fails. A run that waits at a human
+ * gate can last days, so this happens (round 2 measured it: a run created eight days ago that failed a minute ago is a Runs row, Attention
+ * zero). The rule is the ruling, kept as ruled; a window on the time of the failure would need `completed_at` ordered by an index.
  */
 export const ATTENTION_FAILED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** A recent chat session row (the agent-first primary entity of the Home). */
+/**
+ * A recent chat session row (the agent-first primary entity of the Home). It carries no directory: every session the Home lists is this
+ * directory's (`HomeStoreDeps.workingDir`), and a session row draws none.
+ */
 export interface HomeSessionRow {
   readonly sessionId: string;
-  readonly workingDir: string;
   readonly title: string | undefined;
   readonly agentSlug: string;
   readonly modelId: string | undefined;
@@ -102,7 +110,7 @@ export interface HomeAgentRow {
  *
  * - `corrupt-row`: a stored row is damaged (`CorruptRunEventError`); upgrading does not help, and the run is not changed by reading it.
  * - `newer-version`: a row was written by a newer version of Relavium (`UnreadableRunEventLogError`); updating makes it readable.
- * - `could-not-read`: the read degraded for a reason neither of those names.
+ * - `could-not-read`: the read degraded for a reason neither of those names, or the error's type could not be read without throwing.
  */
 export type UnreadableRunReason = 'corrupt-row' | 'newer-version' | 'could-not-read';
 
@@ -131,7 +139,8 @@ export interface HomeUnreadableRun {
  * The invariant every section keeps: the rows it shows + its `N more` = its total. `attention + runs` and `sessions` do not depend on the
  * loaded limit at all; the split between `attention` and `runs` moves only by the unreadable runs a snapshot found, which it shows as
  * Attention rows. The counts and the lists are separate statements on one connection: while another process writes between them, one
- * snapshot can be off by the runs that moved, and the next read (the change token moved) corrects it; a view clamps `N more` at zero.
+ * snapshot can be off by the runs that moved, and the next read (the change token moved) corrects it; `runs` is never below zero, and a
+ * view clamps `N more` at zero.
  */
 export interface HomeTotals {
   readonly attention: number;
@@ -176,16 +185,17 @@ export interface HomeStoreDeps {
     | 'visitRunEventsForReplay'
   >;
   /**
-   * The directory this Home was opened in as a RUN records it (`driveHome` passes its cwd, the root `relavium run`, the run host, the
-   * parked rows and the History tab use): a run is this directory's when its `project_root` is this. REQUIRED: there is no unscoped Home;
-   * a value that is not a non-empty string is refused before any read (`RunHistoryReadError`, `invalid_filter`).
+   * The directory this Home was opened in as a RUN records it: its canonical spelling (`projectRootOf`; `driveHome` passes its policy's
+   * workspace, the root the run host, the parked rows and the History tab use too): a run is this directory's when its `project_root` is
+   * this text. REQUIRED: there is no unscoped Home; a value that is not an absolute path is refused before any read
+   * (`RunHistoryReadError`, `invalid_filter`).
    */
   readonly projectRoot: string;
   /**
    * The same directory as a SESSION records it: the canonical workspace a chat started here keeps as its `working_dir`, the very value
-   * the `/resume` picker and the `/agents` tab call "this directory" (`driveHome` passes `fsPolicyWorkspace(fsPolicy)`; it can differ from
-   * the cwd's spelling, e.g. a symlinked temp directory). REQUIRED; a value that is not a non-empty string is refused before any read
-   * (`SessionDiscoveryBoundaryError`).
+   * the `/resume` picker and the `/agents` tab call "this directory" (`driveHome` passes `fsPolicyWorkspace(fsPolicy)`, the same value
+   * as {@link projectRoot}; it can differ from the cwd's spelling, e.g. a symlinked temp directory). REQUIRED; a value that is not an
+   * absolute path is refused before any read (`SessionDiscoveryBoundaryError`).
    */
   readonly workingDir: string;
   /** The clock (epoch ms) the failed-run window is measured against, read once per snapshot. */
@@ -217,11 +227,17 @@ function homeLimit(requested: number | undefined): number {
 
 /**
  * The closed word for why a per-run read degraded: a log row a newer version wrote, a damaged row, or (anything else) it could not be
- * read. Reads only the error's TYPE (by its code, bundling-safe), never its message.
+ * read. Reads only the error's TYPE (by its code, bundling-safe), never its message. TOTAL: reading the type of a thrown value runs its
+ * code (a `code` getter, a Proxy's traps), and a value whose type cannot be read without throwing is `could-not-read`, never a throw out
+ * of the snapshot (the per-run read already judged it a per-run condition when it degraded).
  */
 export function unreadableReasonOf(error: unknown): UnreadableRunReason {
-  if (isUnreadableRunEventLogError(error)) return 'newer-version';
-  if (isCorruptRunEventError(error)) return 'corrupt-row';
+  try {
+    if (isUnreadableRunEventLogError(error)) return 'newer-version';
+    if (isCorruptRunEventError(error)) return 'corrupt-row';
+  } catch {
+    // The type itself could not be read: the closed word for "neither of those".
+  }
   return 'could-not-read';
 }
 
@@ -339,20 +355,30 @@ function newestFirst(a: FoundUnreadable, b: FoundUnreadable): number {
  */
 export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const projectRoot = deps.projectRoot;
-  // There is no unscoped Home: a directory that is not a non-empty string is refused before any read, with the reader's own typed
-  // error (the reads refuse it too; this says it once, first, for every list and count alike).
-  if (typeof projectRoot !== 'string' || projectRoot.length === 0) {
+  // There is no unscoped Home: a directory that is not an absolute path is refused before any read, with the reader's own typed error
+  // (the reads refuse an empty one too; this says it once, first, for every list and count alike). A relative spelling (`.`) is what a
+  // run recorded before roots were canonical: matched as text it would make every directory's `.` runs this Home's (`recordedProjectRoot`).
+  if (recordedProjectRoot(projectRoot) === undefined) {
     throw new RunHistoryReadError(
       'invalid_filter',
       'the Home reads the directory it was opened in',
     );
   }
   const workingDir = deps.workingDir;
-  if (typeof workingDir !== 'string' || workingDir.length === 0)
-    throw new SessionDiscoveryBoundaryError();
+  // The sessions' directory by the same rule: an absolute path, or no read.
+  if (recordedProjectRoot(workingDir) === undefined) throw new SessionDiscoveryBoundaryError();
   const limit = homeLimit(deps.limit);
-  // The window's lower bound, from ONE reading of the clock, so the lists and the counts draw the same line.
-  const since = deps.now() - ATTENTION_FAILED_WINDOW_MS;
+  // The window's lower bound, from ONE reading of the clock, so the lists and the counts draw the same line. A time bound is whole
+  // milliseconds: a fractional clock is floored; a clock that is not a finite number is refused before any read, with the reader's own
+  // error for a bound it cannot use (it would refuse the bound anyway, but only after the paused runs had been read).
+  const clock = deps.now();
+  if (!Number.isFinite(clock)) {
+    throw new RunHistoryReadError(
+      'invalid_filter',
+      'a time bound must be a safe integer of epoch milliseconds',
+    );
+  }
+  const since = Math.floor(clock) - ATTENTION_FAILED_WINDOW_MS;
   // A page of twice the limit: the rows a section shows, and room for the unreadable runs found on the way.
   const page = Math.min(MAX_RUN_SUMMARY_PAGE, limit * 2);
   const seen = new Set<string>();
@@ -405,18 +431,19 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
 
   // The totals: the same filters as the lists, counted. The runs of the Runs section found unreadable move to Attention.
   const moved = recent.unreadable.length;
+  // Three counts, each a range of an index and none of them a residual filter over the project's history (MVP-11 unit 7 round 2: the
+  // Runs-section filter counted 50,000 table rows for a 50,000-run project on every refresh): the paused runs and the failed runs of the
+  // window off `idx_runs_status`, then EVERY run of the project off `idx_runs_project_created` without reading a run's row. The Runs
+  // section is the rest: its filter (not paused; not failed inside the window) is exactly the complement of the other two within the
+  // project, which are disjoint. All is counted LAST, so a run that changes status between the statements is never subtracted without
+  // being counted; a run soft-deleted between them could still make the difference negative, and a total is never below zero.
+  const paused = deps.runs.countRunSummaries({ projectRoot, status: 'paused' });
+  const failedInWindow = deps.runs.countRunSummaries({ projectRoot, status: 'failed', since });
+  const everyRun = deps.runs.countRunSummaries({ projectRoot });
   const totals: HomeTotals = {
-    attention:
-      deps.runs.countRunSummaries({ projectRoot, status: 'paused' }) +
-      deps.runs.countRunSummaries({ projectRoot, status: 'failed', since }) +
-      moved,
+    attention: paused + failedInWindow + moved,
     sessions: deps.sessions.countSessions({ workingDir }),
-    runs:
-      deps.runs.countRunSummaries({
-        projectRoot,
-        exceptStatus: 'paused',
-        failedOnlyBefore: since,
-      }) - moved,
+    runs: Math.max(0, everyRun - paused - failedInWindow - moved),
   };
 
   const failedRuns = failed.rows.map(runRow);
@@ -466,7 +493,6 @@ function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow 
 function toSessionRow(session: AgentSessionRecord): HomeSessionRow {
   return {
     sessionId: session.id,
-    workingDir: session.context.workingDir,
     title: session.title,
     agentSlug: session.agentSlug,
     modelId: session.modelId,

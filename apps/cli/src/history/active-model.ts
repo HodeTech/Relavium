@@ -3,6 +3,7 @@ import type { RunStatus } from '@relavium/shared';
 
 import type { DisplayPathRoots } from '../render/notation.js';
 import { RUN_STATUS_GLYPH, storedPlace } from './history-model.js';
+import { isProjectRootHere, recordedProjectRoot } from './project-root.js';
 import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detail-model.js';
 
 /**
@@ -132,10 +133,14 @@ function verdictFor(run: RunSummaryRecord, input: ClassifyActiveInput): Verdict 
   if (run.status !== 'paused') {
     return READ_ONLY('other-running', 'running in another process');
   }
-  if (run.projectRoot !== input.currentProjectRoot) {
+  // A paused run is this Home's to answer only when its recorded root is this directory's canonical root (`isProjectRootHere`); a stored
+  // root that is not an absolute path (`.`, written before roots were canonical) is unrecorded, never "another project" that has a place.
+  if (!isProjectRootHere(run.projectRoot, input.currentProjectRoot)) {
     return READ_ONLY(
       'other-paused-elsewhere',
-      run.projectRoot === undefined ? 'project not recorded' : 'another project',
+      recordedProjectRoot(run.projectRoot) === undefined
+        ? 'project not recorded'
+        : 'another project',
     );
   }
   const gates = input.pendingGateCounts?.get(run.id);
@@ -230,6 +235,8 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
         nowMs: input.nowMs,
         leaseTtlMs: input.leaseTtlMs,
       });
+    // Only a root that names a directory is shown: an unrecorded one (none, or relative) is said in words by the row.
+    const recorded = recordedProjectRoot(run.projectRoot);
     rows.push({
       runId: run.id,
       shortId: shortRunId(run.id),
@@ -243,10 +250,10 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       stalled,
       ...(stalled ? { stalledReason: STALLED_REASON } : {}),
       createdAt: run.createdAt,
-      ...(run.projectRoot === undefined
+      ...(recorded === undefined
         ? {}
         : {
-            projectRoot: storedPlace(run.projectRoot, input.paths, MAX_PROJECT_ROOT_CHARS),
+            projectRoot: storedPlace(recorded, input.paths, MAX_PROJECT_ROOT_CHARS),
           }),
     });
   }

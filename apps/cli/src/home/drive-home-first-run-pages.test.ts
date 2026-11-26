@@ -14,7 +14,6 @@ const BUSY: HomeSnapshot = {
   recentSessions: [
     {
       sessionId: 's1',
-      workingDir: '/work',
       title: undefined,
       agentSlug: 'chat',
       modelId: undefined,

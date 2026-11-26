@@ -493,6 +493,13 @@ export interface SessionStore {
    * omit it for the full list (the `chat-list` contract). Pass `{ workingDir }` for the sessions of ONE directory (the Home's, MVP-11
    * unit 7: the directory `/resume` calls "this directory"), served off `idx_agent_sessions_working_dir_updated` with the same order;
    * a `workingDir` that is not a non-empty string is a `SessionDiscoveryBoundaryError`, never read as every directory.
+   *
+   * The three directory reads differ in what an ABSENT directory means, on purpose, and each says so:
+   * - this list: the KEY decides. No `workingDir` key is every directory; a key that is present is a scope, so `{ workingDir: undefined }`
+   *   (possible from untyped code only: `exactOptionalPropertyTypes` refuses it in typed code) is refused, never every directory;
+   * - {@link listSessionPage} (the `/resume` picker): the VALUE decides. `workingDir` undefined, absent or present, is every directory
+   *   (the picker's "all directories" omits it); an empty or non-string one is refused;
+   * - {@link countSessions} (the Home's total): REQUIRED. There is no count of every directory.
    */
   listSessions: (opts?: {
     readonly limit?: number;

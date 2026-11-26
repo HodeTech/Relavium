@@ -125,7 +125,6 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
   });
   const sessionRow = (sessionId: string): HomeSessionRow => ({
     sessionId,
-    workingDir: '/work',
     title: undefined,
     agentSlug: 'chat',
     modelId: undefined,
