@@ -121,6 +121,8 @@ The tab host (`render/tui/tab-host*.ts`, `tab-host-active.ts`, `tab-host-history
 
 **Part F.** `/models`: a second step in which nothing changed (same model, same effort, same scope) closes with "Already …"; the same-model path stays valid because changing the effort for the same model is a real job (so no "skip if same model"). `/effort`: confirm that the current tier closes without a second step.
 
+**Design issues found while drawing the mock-ups (2026-11-27; to settle in the build, not yet ruled):** (a) **the legend does not fit at 80 columns:** `↑/↓ select · Enter use in this chat · [s] startup default · Esc close` is 69 columns against a 66-column inner width, and the product's fit rule would drop `[s]`, which defeats the point; the 80×24 frames therefore write `[s] startup` (61 columns) and the 100×30 frame the full wording; the build must fix one wording and the drop order (`Esc close` and `Enter …` never drop; `select` goes before `[s]`); (b) **state words can overflow a row:** with both `this chat` and `startup` on one row, `accept-edits` needs 68 columns and `auto` 78 against 66; options: a shorter effect text on those rows, the state words wrapping to a second line, or one combined word (`current`) when both apply and the two words only when they sit on different rows; (c) at 100 columns the chat popup (76 wide) sits over the 84-column chat rail and backdrop fragments show beside its left edge: that is what the real geometry does. The Tab-toggle alternative for `[s]` and the silent close on the Home have no frames; `/models` has none (the pair frames show the same principle).
+
 **Unchanged:** the startup-default writer (`chat/mode-settings.ts` `runModeSettings`), its disclosure and revoke rules, `auto`'s admission, the content-free session record of a widening, the refusal while a turn runs, the `startup-writer-*` secrets controls (run them after the change). **Open decisions (recommendation first):** (1) in a chat `Enter` applies to this chat immediately and the persistent write is `[s]` (alternative: keep the two steps and only skip step 2 when the choice equals the current mode); (2) the letter `[s]` (alternative: a `Tab` kind toggle); (3) on the Home, `Enter` on the already-saved value closes with a notification (alternative: closes silently); (4) the "nothing changed closes" rule joins `/models`. **Code:** `popups/mode-popup.ts` (spec: one step, state words, state-aware legend, `[s]` as an action), `popups/settings-session.ts` (the answerer), `popups/mode-home.ts` (the Home variant over the shared confirmation), the surface matrix and legend golden rows. **ADR:** a dated note on [ADR-0148](../../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3 replacing the two-step sentence once the maintainer rules.
 
 ## 7. Documents to write or update
@@ -156,3 +158,14 @@ The mock-ups are drawn, not rendered by the real application. They follow the re
 | ![/run stacked](unit-8/18-workflows-run-stacked.png) | `[r]` stacks the `/run` popup (depth two; `Esc` returns) |
 | ![Runs screen](unit-8/25-runs-history.png) | the Runs screen (D2): History, this directory, `[a] all` |
 | ![Rejected: one big tabbed popup](unit-8/24-alt-history-detail.png) | the rejected alternative B: History detail in a popup, too cramped |
+
+**`/mode` (OD-25, proposed — drawn for review, not ruled):**
+
+| Frame | What it shows |
+|---|---|
+| ![/mode in a chat: keep](unit-8/30-mode-chat-keep.png) | the mode in force highlighted: `Enter keep` closes, no second screen, no `[s]` (it is already the startup default) |
+| ![/mode in a chat: use](unit-8/31-mode-chat-use.png) | another mode highlighted: `Enter` uses it in this chat now, `[s]` saves the startup default; the effect is read before the key |
+| ![/mode in a chat: save the startup default](unit-8/32-mode-chat-save-startup.png) | `[s]`: the only second screen, the persistent write's confirmation (`Ctrl+Y`, the file, the lost comments) |
+| ![/mode on the Home](unit-8/33-mode-home-choose.png) | the Home: the same list without `this chat`; `Enter` saves behind the confirmation |
+| ![/mode on the Home, the saved value](unit-8/34-mode-home-same-value.png) | `Enter` on the saved value closes with a one-line notification |
+| ![Today against proposed](unit-8/35-mode-pair-chat-today-vs-proposed.png) | today's three keys and two screens that change nothing, against one key |
