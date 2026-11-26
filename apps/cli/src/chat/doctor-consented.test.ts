@@ -7,10 +7,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createProviderResolver,
+  KNOWN_PROVIDER_IDS,
+  KNOWN_PROVIDERS,
   providerEndpointOrigin,
   type ProviderResolver,
 } from '../engine/providers.js';
-import { recordingProvider, stubResolver } from '../popups/doctor.test-support.js';
+import { PONG, recordingProvider, stubResolver } from '../popups/doctor.test-support.js';
 import {
   ENDPOINT_CHANGED_DETAIL,
   KEY_GONE_DETAIL,
@@ -87,6 +89,25 @@ describe('providerEndpointOrigin', () => {
 });
 
 describe('runConsentedProviderChecks', () => {
+  it.each(KNOWN_PROVIDER_IDS)(
+    'asks %s with its own starter model, the table entry and no other (MVP-11 unit 6, round 1 test gap S09)',
+    async (id) => {
+      const models: string[] = [];
+      const provider = recordingProvider(id, (request) => {
+        models.push(request.model);
+        return Promise.resolve(PONG);
+      });
+      const seam = stubResolver({ keys: { [id]: KEY }, providers: { [id]: provider } });
+      const origin = providerEndpointOrigin(seam.resolver, id);
+      expect(origin).toBeDefined();
+      await runConsentedProviderChecks([{ providerId: id, origin: origin ?? '' }], {
+        resolver: seam.resolver,
+        lifecycle: lifecycle(),
+      });
+      expect(models).toEqual([KNOWN_PROVIDERS[id].starterModel]);
+    },
+  );
+
   it('contacts exactly the named providers, with their own key', async () => {
     const anthropic = recordingProvider('anthropic');
     const openai = recordingProvider('openai');

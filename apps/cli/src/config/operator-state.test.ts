@@ -44,6 +44,7 @@ import { loadConfigFile, loadResolvedConfig } from './load.js';
 import {
   ConfigWriteRefusedError,
   globalConfigPath,
+  prepareFirstRunSetupSkipped,
   prepareGlobalPreferences,
   prepareKeychainUnavailableAcknowledged,
   prepareStandardEnvKeyConsent,
@@ -193,6 +194,68 @@ describe('operator config publication', () => {
     expect(loaded.globalConfigPath).toBe(selected);
     expect(loaded.globalConfig?.preferences?.standard_env_key_consent).toEqual({
       deepseek: 'DEEPSEEK_API_KEY',
+    });
+  });
+});
+
+describe('the remembered first-run skip is one flag (MVP-11 unit 6, round 1 test gap C02)', () => {
+  let home: string;
+  let target: string;
+  beforeEach(() => {
+    faults.stage = '';
+    home = mkdtempSync(join(tmpdir(), 'relavium-first-run-skip-'));
+    target = globalConfigPath(home);
+    mkdirSync(join(home, '.relavium'));
+  });
+  afterEach(() => {
+    faults.stage = '';
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('writes the flag and keeps every other preference the person had (a rewrite never costs a setting)', () => {
+    writeFileSync(
+      target,
+      [
+        '[preferences]',
+        'theme = "dark"',
+        'default_model = "claude-haiku-5-5"',
+        'default_provider = "anthropic"',
+        'default_mode = "plan"',
+        'keychain_unavailable_acknowledged = true',
+        '',
+        '[preferences.standard_env_key_consent]',
+        'openai = "OPENAI_API_KEY"',
+        '',
+      ].join('\n'),
+    );
+    const prepared = prepareFirstRunSetupSkipped(home);
+    expect(prepared.rewriteNeeded).toBe(true);
+    expect(prepared.publish()).toEqual({ durability: 'confirmed' });
+    expect(loadConfigFile(target, GlobalConfigSchema)?.preferences).toEqual({
+      theme: 'dark',
+      default_model: 'claude-haiku-5-5',
+      default_provider: 'anthropic',
+      default_mode: 'plan',
+      keychain_unavailable_acknowledged: true,
+      standard_env_key_consent: { openai: 'OPENAI_API_KEY' },
+      first_run_setup_skipped: true,
+    });
+  });
+
+  it('keeps the tables outside [preferences] the writer does not own', () => {
+    writeFileSync(target, '[catalog]\nauto_refresh = true\n\n[preferences]\ntheme = "light"\n');
+    prepareFirstRunSetupSkipped(home).publish();
+    const loaded = loadConfigFile(target, GlobalConfigSchema);
+    expect(loaded?.catalog).toEqual({ auto_refresh: true });
+    expect(loaded?.preferences).toEqual({ theme: 'light', first_run_setup_skipped: true });
+  });
+
+  it('with no config at all, it creates one holding the flag alone and needs no rewrite notice', () => {
+    const prepared = prepareFirstRunSetupSkipped(home);
+    expect(prepared.rewriteNeeded).toBe(false);
+    prepared.publish();
+    expect(loadConfigFile(target, GlobalConfigSchema)).toEqual({
+      preferences: { first_run_setup_skipped: true },
     });
   });
 });

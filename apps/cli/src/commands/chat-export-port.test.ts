@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SESSION_EXPORT_REVIEW_SENTENCE } from '../chat/export.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { ReportsPort } from '../popups/report-port.js';
+import { toUserFacing } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
 import {
@@ -161,15 +162,22 @@ describe('the /export popup’s port, as the chat builds it', () => {
       }
       expect(caught).toBeDefined();
       const said = port.failure(caught);
-      expect(said.length).toBeGreaterThan(0);
+      // The refusal's own sentence, as the one user-facing projection says it (the same words the plain chat's `/export` prints): not
+      // merely "something".
+      expect(said).toBe(toUserFacing(caught).message);
+      expect(said).toBe('could not read the workflows catalog directory.');
       expect(said).not.toContain(cwd);
       expect(said).not.toContain(home);
       // A fault that is no refusal of ours (a defect, a database's own error) is said by a fixed sentence, never by its own message.
       const raw = `EACCES: permission denied, open '${join(home, 'private', 'x.relavium.yaml')}'`;
       const internal = port.failure(new Error(raw));
-      expect(internal.length).toBeGreaterThan(0);
+      expect(internal).toBe(toUserFacing(new Error(raw)).message);
+      expect(internal).toBe(
+        'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.',
+      );
       expect(internal).not.toContain('EACCES');
       expect(internal).not.toContain(home);
+      expect(internal).not.toContain('private');
     });
   });
 

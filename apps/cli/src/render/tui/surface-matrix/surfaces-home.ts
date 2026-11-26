@@ -12,6 +12,7 @@ import {
 } from './models-fixture.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
 import { openModeFlow } from './home-flows.js';
+import { FLOW_STEP_SURFACES } from './flow-steps-fixture.js';
 import { PROJECT_FLOW_SURFACES } from './project-flows-fixture.js';
 import { PROVIDER_FLOW_SURFACES } from './providers-flow-fixture.js';
 import { RESUME_RUN_SURFACES } from './resume-run-fixture.js';
@@ -648,6 +649,8 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   },
   // `/init`, `/import`, the Defined tab's export and `/pricing`, as the popups they are (MVP-11 unit 6, 6.3).
   ...PROJECT_FLOW_SURFACES,
+  // The steps of those flows no other cell draws: the Done steps in both tones, `/init`'s refusal, `/import`'s path field and `/pricing`'s rates.
+  ...FLOW_STEP_SURFACES,
   // `/resume` and `/run`, as the popups they are (MVP-11 unit 6, 6.4).
   ...RESUME_RUN_SURFACES,
   // The `/providers` popup and its first run, in each of their states (MVP-11 unit 6, 6.2).

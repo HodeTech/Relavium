@@ -3,7 +3,7 @@ import type { ManagerSkippedTool } from '@relavium/mcp';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ProviderResolver } from '../engine/providers.js';
+import { KNOWN_PROVIDER_IDS, KNOWN_PROVIDERS, type ProviderResolver } from '../engine/providers.js';
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
@@ -201,4 +201,26 @@ describe('mcpSessionChecks (read-only session status — never connects)', () =>
       label: 'shared-fs',
     });
   });
+});
+
+describe('the deep probe asks each provider with its own starter model (MVP-11 unit 6, round 1 test gap S09)', () => {
+  it.each(KNOWN_PROVIDER_IDS)(
+    'the probe of %s sends the table entry of that provider, never another provider’s',
+    async (id) => {
+      const generate = vi.fn(() =>
+        Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+      );
+      const probe = buildProviderProbe({
+        resolver: resolverWith({ [id]: { ...fakeProvider(generate), id } }, { [id]: TEST_KEY }),
+        candidateIds: [id],
+      });
+      const checks = await probe();
+      expect(checks).toHaveLength(1);
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: KNOWN_PROVIDERS[id].starterModel }),
+        TEST_KEY,
+      );
+    },
+  );
 });

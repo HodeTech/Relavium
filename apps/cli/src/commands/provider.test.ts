@@ -1,9 +1,11 @@
 import { createClient, createProviderStore, runMigrations, type DbClient } from '@relavium/db';
 import type { LlmProvider } from '@relavium/llm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createProviderResolver,
+  KNOWN_PROVIDER_IDS,
+  KNOWN_PROVIDERS,
   keyHint,
   providerKeyEnvVar,
   type ProviderResolver,
@@ -340,6 +342,50 @@ describe('relavium provider commands (2.C)', () => {
     expect(code).toBe(0);
     expect(io.out()).toContain('key works');
   });
+
+  it.each(KNOWN_PROVIDER_IDS)(
+    '`provider test %s` pings the provider with its own starter model, the table entry and no other',
+    async (id) => {
+      const generate = vi.fn(() =>
+        Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+      );
+      const d = deps({ resolver: stubResolver(generate) });
+      await runProviderCommand({ action: 'test', name: id }, d);
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: KNOWN_PROVIDERS[id].starterModel }),
+        RAW_KEY,
+      );
+    },
+  );
+
+  it('`provider test --model` is the person’s own choice and wins over the starter model', async () => {
+    const generate = vi.fn(() =>
+      Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+    );
+    const d = deps({ resolver: stubResolver(generate) });
+    await runProviderCommand({ action: 'test', name: 'anthropic', model: 'a-model-of-my-own' }, d);
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'a-model-of-my-own' }),
+      RAW_KEY,
+    );
+  });
+
+  it.each(KNOWN_PROVIDER_IDS)(
+    '`provider list --verify` probes %s with its own starter model, the table entry and no other',
+    async (id) => {
+      const generate = vi.fn(() =>
+        Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+      );
+      const d = deps({ resolver: stubResolver(generate) });
+      await runProviderCommand({ action: 'add', name: id }, d);
+      await runProviderCommand({ action: 'list', verify: true }, d);
+      expect(generate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: KNOWN_PROVIDERS[id].starterModel }),
+        RAW_KEY,
+      );
+    },
+  );
 
   it('test fails cleanly (exit 2) and redacts the key even if the provider error contains it', async () => {
     // The provider error embeds the raw key — the CLI must redact it (the key is in scope at the catch).

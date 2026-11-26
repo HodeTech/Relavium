@@ -332,6 +332,8 @@ describe('one frame across stages (`/resume`: the picker, then the restore)', ()
   it('a stage that begins and ends the flow itself, inside an outer `begin`/`end`, closes no frame between the stages', async () => {
     const r = rig({ progress: 'manual', stepNames: ['Session'] });
     const outer = r.flow.begin();
+    const framed = r.snapshot().popup;
+    expect(framed, 'the frame is open from the first begin').toBeDefined();
     // stage 1: a picker stage that begins and ends the flow itself
     const inner = r.flow.begin();
     expect(inner).toBe(outer);
@@ -344,9 +346,10 @@ describe('one frame across stages (`/resume`: the picker, then the restore)', ()
     expect(r.published.slice(before).some((snapshot) => !snapshot.active)).toBe(false);
     expect(r.snapshot().active).toBe(true);
     expect(r.snapshot().popup?.title).toBe('/providers');
-    // stage 2: the restore, in the same frame
+    // stage 2: the restore, in the same frame: the very descriptor the picker was drawn in (title, origin, step, names, way back, depth)
     r.flow.busy('Restoring the conversation');
-    expect(r.snapshot().popup).toBeDefined();
+    expect(r.snapshot().popup).toEqual(framed);
+    expect(r.snapshot().popup).toMatchObject({ title: '/providers', stepIndex: 0, depth: 1 });
     await r.flow.end();
     expect(r.snapshot().active).toBe(false);
   });
@@ -408,8 +411,10 @@ describe('a raw prompt asked while a framed flow is open (`unframed`)', () => {
   it('a throw inside puts the frame back too', async () => {
     const r = rig({ progress: 'manual' });
     r.flow.begin();
+    const framed = r.snapshot().popup;
+    expect(framed).toMatchObject({ title: '/providers', stepIndex: 0 });
     await expect(r.flow.unframed(() => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
-    expect(r.snapshot().popup).toBeDefined();
+    expect(r.snapshot().popup, 'the very frame that was taken away').toEqual(framed);
   });
 
   it('frames the chord step of a flow that has one, and has no chord where the flow has none', async () => {
@@ -807,5 +812,79 @@ describe('where it is never used', () => {
       'utf8',
     );
     expect(source).not.toMatch(/framed-flow|framedFlow|\.popup\?\.\(/u);
+  });
+});
+
+describe('round 1 test gaps: a step back from the first prompt, and `unframed` outside a begun flow (F01, F06, F18)', () => {
+  it('F01: a step back from the first prompt of a flow that answered nothing leaves the next unnamed prompt on the first step', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const first = r.flow.select({ message: 'Q', options: OPTIONS, escape: 'back' });
+    // The frame is on screen and its settle has passed: a lone Esc is then a step back (an earlier one is a cancel).
+    r.settle();
+    r.back();
+    expect(await first).toBe(NATIVE_PROMPT_BACK);
+    void r.flow.select({ message: 'Q2', options: OPTIONS });
+    expect(r.step()).toBe(0);
+  });
+
+  it('F01: with the rail moved on (`linear`), a step back returns to the step of the prompt answered before, not to the first', async () => {
+    const r = rig({ progress: 'linear' });
+    r.flow.begin();
+    const one = r.flow.select({ message: 'Q1', options: OPTIONS });
+    r.answer();
+    await one;
+    const two = r.flow.select({ message: 'Q2', options: OPTIONS });
+    expect(r.step()).toBe(1);
+    r.answer();
+    await two;
+    const three = r.flow.select({ message: 'Q3', options: OPTIONS, escape: 'back' });
+    expect(r.step()).toBe(2);
+    r.settle();
+    r.back();
+    expect(await three).toBe(NATIVE_PROMPT_BACK);
+    void r.flow.select({ message: 'Q4', options: OPTIONS });
+    expect(r.step(), 'the step of Q2, the prompt answered before').toBe(1);
+  });
+
+  it('F06/F18: `unframed` outside a begun flow takes nothing away and puts nothing back: the channel is told nothing', async () => {
+    const channel = createNativePromptChannel({ now: () => 1000 });
+    const told: unknown[] = [];
+    const flow = framedFlow(
+      {
+        ...channel.flow,
+        popup: (descriptor) => {
+          told.push(descriptor);
+          channel.flow.popup?.(descriptor);
+        },
+      },
+      { title: '/x', origin: 'home', stepNames: ['A', 'B'], progress: 'manual' },
+    );
+    expect(await flow.unframed(() => Promise.resolve(7))).toBe(7);
+    expect(told).toEqual([]);
+  });
+
+  it('F06/F18: `unframed` inside a begun flow takes the frame away once and puts the same frame back once', async () => {
+    const channel = createNativePromptChannel({ now: () => 1000 });
+    const told: unknown[] = [];
+    const flow = framedFlow(
+      {
+        ...channel.flow,
+        popup: (descriptor) => {
+          told.push(descriptor);
+          channel.flow.popup?.(descriptor);
+        },
+      },
+      { title: '/x', origin: 'home', stepNames: ['A', 'B'], progress: 'manual' },
+    );
+    flow.begin();
+    const drawn = told.length;
+    expect(drawn).toBeGreaterThan(0);
+    await flow.unframed(() => Promise.resolve());
+    const during = told.slice(drawn);
+    expect(during).toHaveLength(2);
+    expect(during[0]).toBeUndefined();
+    expect(during[1]).toEqual(told[drawn - 1]);
+    await flow.end();
   });
 });

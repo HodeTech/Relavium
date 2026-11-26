@@ -75,6 +75,18 @@ const DOWN_KEYCHAIN: KeychainStore = {
     throw new KeychainUnavailableError('the keychain is unavailable');
   },
 };
+/** A keychain that answers a read and refuses the write: the key checks out, and is then not saved (the failed Done step). */
+const WRITE_FAILS_KEYCHAIN: KeychainStore = {
+  ...EMPTY_KEYCHAIN,
+  set: () => {
+    throw new KeychainUnavailableError('the keychain is unavailable');
+  },
+};
+const KEYCHAINS: Readonly<Record<'empty' | 'unavailable' | 'write-fails', KeychainStore>> = {
+  empty: EMPTY_KEYCHAIN,
+  unavailable: DOWN_KEYCHAIN,
+  'write-fails': WRITE_FAILS_KEYCHAIN,
+};
 const REFUSED: ProviderKeyValidation = {
   ok: false,
   reason: 'auth',
@@ -88,7 +100,7 @@ interface ProviderScript {
   /** `explicit` is `/providers`; `automatic` is the first-run setup. */
   readonly mode: 'explicit' | 'automatic';
   readonly env?: Readonly<Record<string, string>>;
-  readonly keychain?: 'empty' | 'unavailable';
+  readonly keychain?: 'empty' | 'unavailable' | 'write-fails';
   readonly check?: ProviderKeyValidation;
   /** Every provider's adapter pinned to {@link LONG_ORIGIN} (a stored custom endpoint). */
   readonly customEndpoint?: boolean;
@@ -105,7 +117,7 @@ function openProviders(m: HomeMount, script: ProviderScript): NativePromptChanne
     rmSync(home, { recursive: true, force: true });
   });
   const policy = createStandardEnvKeyPolicy();
-  const keychain = script.keychain === 'unavailable' ? DOWN_KEYCHAIN : EMPTY_KEYCHAIN;
+  const keychain = KEYCHAINS[script.keychain ?? 'empty'];
   const base = createProviderResolver({ ...script.env }, keychain, { standardEnvPolicy: policy });
   const resolver: ProviderResolver =
     script.customEndpoint === true
@@ -299,6 +311,26 @@ export const PROVIDER_FLOW_SURFACES: readonly HomeSurface[] = [
     open: async (m) => {
       recordBaseline(m);
       const channel = await toKeyStep(m, { mode: 'automatic' });
+      if (channel === undefined) return;
+      await submitKey(m, channel);
+      await m.until(() => channel.ui.getSnapshot().final !== undefined && shownOn(channel));
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.provider-done-failed',
+    title:
+      'The setup popup’s failed Done step (the key checked out and was not saved: the keychain refused the write)',
+    exitKey: 'Esc',
+    landmark: 'The key was not saved',
+    legendRow: 'Enter / Esc close',
+    belowFloor: BELOW,
+    popup: liveProviderPopupBox,
+    setup: NATIVE,
+    notes: NOTES,
+    open: async (m) => {
+      recordBaseline(m);
+      const channel = await toKeyStep(m, { mode: 'automatic', keychain: 'write-fails' });
       if (channel === undefined) return;
       await submitKey(m, channel);
       await m.until(() => channel.ui.getSnapshot().final !== undefined && shownOn(channel));

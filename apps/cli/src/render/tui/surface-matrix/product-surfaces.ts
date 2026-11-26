@@ -129,6 +129,10 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.native-failed-check-card', 'the provider setup’s card for a key the provider refused'),
   row('home.provider-done', 'the provider setup popup’s Done step'),
   row(
+    'home.provider-done-failed',
+    'the provider setup popup’s failed Done step (the key checked out and was not saved)',
+  ),
+  row(
     'home.settings-models',
     'the /models popup on the bare Home: the catalog, the default marked',
   ),
@@ -141,6 +145,17 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.import-card', 'the /import path field and its card'),
   row('home.export-card', 'the Defined tab’s export card'),
   row('home.init-card', 'the /init card'),
+  row('home.init-done', 'the /init popup’s Done step (what was created)'),
+  row('home.init-done-failed', 'the /init popup’s failed Done step (the write was refused)'),
+  row('home.init-refused', 'the /init popup’s refusal step (a folder that cannot be a project)'),
+  row('home.import-path', 'the /import popup’s first step: the path field'),
+  row('home.import-done', 'the /import popup’s Done step (what was imported)'),
+  row('home.import-done-failed', 'the /import popup’s failed Done step (the write was refused)'),
+  row('home.pricing-rates', 'the /pricing popup’s rates: the first price field'),
+  row('home.pricing-done', 'the /pricing popup’s Done step (what was recorded)'),
+  row('home.pricing-done-failed', 'the /pricing popup’s failed Done step (the write was refused)'),
+  row('home.export-done', 'the Defined tab’s export popup’s Done step'),
+  row('home.export-done-failed', 'the Defined tab’s export popup’s failed Done step'),
   row('home.resume-picker', 'the /resume popup: its session picker'),
   row(
     'home.resume-restore',

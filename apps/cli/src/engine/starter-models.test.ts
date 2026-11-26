@@ -68,6 +68,17 @@ describe('the one starter-model table', () => {
     },
   );
 
+  it('the four starter ids are pinned here as literals: changing a table entry is a deliberate edit of this test too (the one place the values are written out)', () => {
+    expect(
+      Object.fromEntries(KNOWN_PROVIDER_IDS.map((id) => [id, KNOWN_PROVIDERS[id].starterModel])),
+    ).toEqual({
+      anthropic: 'claude-haiku-5-5',
+      openai: 'gpt-5.4-mini',
+      gemini: 'gemini-2.5-flash',
+      deepseek: 'deepseek-v4-flash',
+    });
+  });
+
   it("Anthropic's starter is Haiku 5.5 (the maintainer's ruling), and the zero-config chat binds the table's entry", () => {
     expect(KNOWN_PROVIDERS.anthropic.starterModel).toBe('claude-haiku-5-5');
     expect(DEFAULT_CHAT_MODEL).toBe(KNOWN_PROVIDERS.anthropic.starterModel);
