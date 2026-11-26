@@ -688,18 +688,22 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       model: string,
       provider: Parameters<ProviderResolver['keyFor']>[0],
       assertAdmitting: () => void = assertHomeAdmitting,
+      // The setup run's view of its own writes: a config the run created a moment before draws no rewrite notice (W7 item 5).
+      runWrite: (prepared: PreparedConfigWrite) => PreparedConfigWrite = (prepared) => prepared,
     ): Promise<OnboardingDefaultResult> => {
       for (;;) {
         try {
           const saved = await publishPreference(
-            prepareGlobalPreferences(
-              {
-                defaultModel: model,
-                defaultProvider: provider,
-              },
-              homeDir,
-              deps.global.configPath === undefined ? undefined : globalConfigPath,
-              configReadObserver,
+            runWrite(
+              prepareGlobalPreferences(
+                {
+                  defaultModel: model,
+                  defaultProvider: provider,
+                },
+                homeDir,
+                deps.global.configPath === undefined ? undefined : globalConfigPath,
+                configReadObserver,
+              ),
             ),
             assertAdmitting,
           );

@@ -42,7 +42,11 @@ const VARIANTS: readonly Variant[] = [
 
 type FlowName = 'init' | 'import' | 'pricing' | 'export';
 
-/** What each flow's frames say: its title, the rail, the chord's legend row, the Done step's sentence, and where its chord is. */
+/**
+ * What each flow's frames say: its title, the rail, the chord's legend row as its first frame draws it (its `Ctrl+Y` waits, `(wait)`, while the
+ * lockout from the card's opening holds it; at 80 columns that longer part drops `[Ctrl+N]`, which `Esc` also gives), the Done step's sentence,
+ * and where its chord is.
+ */
 const JOURNEY: Readonly<
   Record<
     FlowName,
@@ -59,28 +63,28 @@ const JOURNEY: Readonly<
     title: '/init',
     names: ['Check', 'Confirm', 'Done'],
     chordStep: 2,
-    legend: '[Ctrl+Y] Create them · [Ctrl+N] Create nothing · Esc denies',
+    legend: '[Ctrl+Y] Create them (wait) · [Ctrl+N] Create nothing · Esc denies',
     done: 'Created the project directories',
   },
   import: {
     title: '/import',
     names: ['Path', 'Review', 'Done'],
     chordStep: 2,
-    legend: '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    legend: '[Ctrl+Y] Write the file (wait) · Esc denies',
     done: "Imported workflow 'nightly-report'",
   },
   pricing: {
     title: '/pricing',
     names: ['Action', 'Model', 'Rates', 'Confirm', 'Done'],
     chordStep: 4,
-    legend: '[Ctrl+Y] Record the price · [Ctrl+N] Write nothing · Esc denies',
+    legend: '[Ctrl+Y] Record the price (wait) · Esc denies',
     done: 'Recorded · gpt-5',
   },
   export: {
     title: 'Export',
     names: ['Review', 'Done'],
     chordStep: 1,
-    legend: '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    legend: '[Ctrl+Y] Write the file (wait) · Esc denies',
     done: "Exported workflow 'nightly'",
   },
 };

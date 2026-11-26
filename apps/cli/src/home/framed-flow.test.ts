@@ -738,6 +738,68 @@ describe('what `Enter` says on a step’s text or masked field (`enterVerb`)', (
   });
 });
 
+describe('W7: what a step’s `Esc` does (`escapeVerb`), the steps a flow skipped (`skipped`), and a wait that steps back', () => {
+  it('`escapeVerb` is carried on the descriptor of THAT step’s prompts only, and a frame that says another is republished', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const first = r.flow
+      .at(0, { escapeVerb: 'skip for now' })
+      .select({ message: 'Which?', options: OPTIONS, escape: 'back' });
+    expect(r.snapshot().popup?.escapeVerb).toBe('skip for now');
+    r.answer();
+    await first;
+    const next = r.flow.at(1).select({ message: 'Then?', options: OPTIONS, escape: 'back' });
+    expect(r.snapshot().popup?.escapeVerb).toBeUndefined();
+    r.flow.cancel();
+    await next;
+  });
+
+  it('the Done step carries the steps the flow skipped, and no other frame does; none skipped is no field', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    const done = r.flow.done({ message: 'Using it', skipped: [1] });
+    expect(r.snapshot().popup?.stepIndex).toBe(2);
+    expect(r.snapshot().popup?.skipped).toEqual([1]);
+    r.answer();
+    await done;
+    const again = rig({ progress: 'manual' });
+    again.flow.begin();
+    expect(Object.keys(again.snapshot().popup ?? {})).not.toContain('skipped');
+    const plain = again.flow.done({ message: 'Connected' });
+    expect(Object.keys(again.snapshot().popup ?? {})).not.toContain('skipped');
+    again.answer();
+    await plain;
+  });
+
+  it('a Done step whose only new word is what it skipped is a new frame (a wait already on the last step does not hide it)', async () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    r.flow.at(2).busy('Saving');
+    expect(r.step()).toBe(2);
+    expect(r.snapshot().popup?.skipped).toBeUndefined();
+    const done = r.flow.done({ message: 'Remembered', skipped: [1] });
+    expect(r.snapshot().popup?.skipped).toEqual([1]);
+    r.answer();
+    await done;
+  });
+
+  it('a step’s wait passes its step back to the channel (`Esc back`), drawn on that step', () => {
+    const r = rig({ progress: 'manual' });
+    r.flow.begin();
+    let taken = 0;
+    r.flow.at(1).busy('Checking', {
+      onBack: () => {
+        taken += 1;
+      },
+    });
+    expect(r.snapshot().escape).toBe('back');
+    expect(r.step()).toBe(1);
+    r.settle();
+    r.back();
+    expect(taken).toBe(1);
+  });
+});
+
 describe('where it is never used', () => {
   it('the stand-alone chat’s pre-chat mount (which draws no popup slot) does not frame its flows', () => {
     const source = readFileSync(

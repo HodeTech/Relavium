@@ -97,9 +97,13 @@ async function typeKeys(m: HomeMount, line: string): Promise<void> {
 }
 
 /** The legend row of each step of the bare Home's `/models`: its second step sets the default (there is no live chat, so no `Apply to`). */
-const HOME_MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string>> = {
+const HOME_MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string | readonly string[]>> = {
   list: '↑/↓ select · Enter next · Esc close',
-  form: '←/→ effort · Enter set default · [Ctrl+C] close · Esc back',
+  // A guarded form (the provider changes): its `Enter` waits (`(wait)`, dim) for the lockout after the `Enter` that reached it.
+  form: [
+    '←/→ effort · Enter set default (wait) · [Ctrl+C] close · Esc back',
+    '←/→ effort · Enter set default · [Ctrl+C] close · Esc back',
+  ],
 };
 
 /** The bare Home's `/models` popup on one step: the landing behind it, `/models` typed and routed, the Home's catalog and default. */

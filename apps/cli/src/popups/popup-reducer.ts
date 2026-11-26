@@ -867,12 +867,14 @@ function floorInnerWidth(frame: PopupFrame): number {
  * the popup's work). `↑/↓ scroll` is named only for a report that does not fit its page, a confirmation line names its answer only when it
  * does fit, every line of it whole, and a form names its `Enter` only when it is wholly on its page: `pageRows`, the rows the frame draws the
  * step's body in (`bodyPageRows`), and `innerWidth`, the columns of each of its rows (the slot passes its geometry's); absent ⇒ the page and the
- * row of a popup of the frame's kind at the floor.
+ * row of a popup of the frame's kind at the floor. `locked` is the host's lock (`PopupHost.lock`): while it holds, a confirmation line's answer
+ * and a guarded form's `Enter` wait (`[Ctrl+Y] send (wait)`, `Enter apply (wait)`: dim, ADR-0145 §3); no other key ever does.
  */
 export function popupLegend(
   frame: PopupFrame,
   pageRows?: number,
   innerWidth?: number,
+  locked = false,
 ): PopupLegend {
   const { spec, state } = currentStep(frame);
   // The end of a flow is a result: `Enter` and `Esc` both close it, and it names nothing else (a result that is still being read says so).
@@ -881,8 +883,8 @@ export function popupLegend(
   const back = backOf(frame.spec, frame.stepIndex) >= 0;
   const page = (): number => pageRows ?? floorPageRows(frame);
   const width = (): number => innerWidth ?? floorInnerWidth(frame);
-  if (spec.chord !== undefined) return chordLegend(spec, state, back, page, width);
-  const items = stepItems(spec, state, page, width);
+  if (spec.chord !== undefined) return chordLegend(spec, state, back, page, width, locked);
+  const items = stepItems(spec, state, page, width, locked);
   const keep = spec.legendKeep;
   const finish = (exit: LegendExit): PopupLegend =>
     keep === undefined ? { items, exit } : { items, exit, priority: legendPriority(items, keep) };
@@ -909,6 +911,16 @@ function closingVerb(spec: PopupStep, state: PopupStepState): string {
   return state.content.kind === 'loading' ? 'cancel' : (spec.exitVerb ?? 'close');
 }
 
+/** The mark of a key the host's lock holds now (`LegendKey.wait`: dim, `(wait)`), or nothing. */
+function waits(locked: boolean): { readonly wait?: true } {
+  return locked ? { wait: true } : {};
+}
+
+/** The mark of a step's `Enter` while the host's lock holds: only a guarded form's (`PopupForm.guarded`) waits, never another step's. */
+function enterWaits(locked: boolean, state: PopupStepState): { readonly wait?: true } {
+  return waits(locked && state.content.kind === 'form' && state.content.guarded === true);
+}
+
 /** The key each kind of line is answered by, as the legend names it. */
 const LINE_KEYS: Readonly<Record<LineAnswerKey, string>> = {
   'ctrl-y': POPUP_KEYS.chord,
@@ -927,6 +939,7 @@ function chordLegend(
   back: boolean,
   page: () => number,
   innerWidth: () => number,
+  locked: boolean,
 ): PopupLegend {
   const items: LegendItem[] = [];
   const answer = lineAnswerKeyOf(spec);
@@ -935,7 +948,7 @@ function chordLegend(
     answer !== undefined &&
     lineFitsPage(state.content, page(), innerWidth())
   )
-    items.push({ keys: LINE_KEYS[answer], verb: spec.chord.verb });
+    items.push({ keys: LINE_KEYS[answer], verb: spec.chord.verb, ...waits(locked) });
   const exit = back
     ? exitKey.step(POPUP_KEYS.leave, spec.exitVerb ?? 'back')
     : exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state));
@@ -962,6 +975,7 @@ function stepItems(
   state: PopupStepState,
   page: () => number,
   width: () => number,
+  locked: boolean,
 ): LegendItem[] {
   const items: LegendItem[] = [];
   if (state.content.kind === 'list' && visibleRows(state).length > 1)
@@ -973,7 +987,12 @@ function stepItems(
   const answers =
     !nothingToChoose(state.content) &&
     (state.content.kind !== 'form' || formFits(state.content, page(), width()));
-  if (spec.enter !== undefined && answers) items.push({ keys: POPUP_KEYS.enter, verb: spec.enter });
+  if (spec.enter !== undefined && answers)
+    items.push({
+      keys: POPUP_KEYS.enter,
+      verb: spec.enter,
+      ...enterWaits(locked, state),
+    });
   for (const control of spec.controls ?? [])
     items.push({
       keys: control.deleteKey === true ? [control.key, POPUP_KEYS.delete] : control.key,

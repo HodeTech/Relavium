@@ -135,6 +135,18 @@ describe('the opening admission of a flow', () => {
     clock += 1;
     expect(admission.admits('answer', clock)).toBe(true);
   });
+
+  it('W7: says whether a key arrived AFTER the flow’s first frame appeared (rule 3: not at the same moment), and forgets it per flow', () => {
+    const clock = 1000;
+    const admission = createOpeningAdmission({ now: () => clock });
+    expect(admission.appeared(clock + 50), 'no frame yet').toBe(false);
+    admission.shown();
+    expect(admission.appeared(clock), 'the same moment').toBe(false);
+    expect(admission.appeared(clock - 1), 'before it').toBe(false);
+    expect(admission.appeared(clock + 1)).toBe(true);
+    admission.begin();
+    expect(admission.appeared(clock + 1), 'a new flow has not appeared').toBe(false);
+  });
 });
 
 describe('the guarded option', () => {

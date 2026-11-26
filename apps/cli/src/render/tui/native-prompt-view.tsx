@@ -1,8 +1,15 @@
 import { Box, Transform, useApp, useStdout, type DOMElement } from 'ink';
 import { Text } from './text.js';
-import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
 import { withGlyphForm } from './glyphs.js';
-import { keyToken, legend } from './legend.js';
+import { keyHint, keyToken, legend } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
@@ -55,10 +62,31 @@ function pickerEmptyLegend(snapshot: NativePromptSnapshot): string {
   return legend([{ text: NATIVE_PICKER_EMPTY }, ...before], exit);
 }
 
-/** The one-line key legend under a prompt card: the channel's one legend (`nativeLegendParts`, shared with the popup frame), joined. */
-export function promptLegend(snapshot: NativePromptSnapshot, windowed: boolean): string {
-  const { items, exit } = nativeLegendParts(snapshot, windowed, 'card');
+/**
+ * The one-line key legend under a prompt card: the channel's one legend (`nativeLegendParts`, shared with the popup frame), joined. `locked`
+ * is the channel's lock (`NativePromptUi.lock`): a guarded option's `Enter` reads `Enter choose (wait)` while it holds.
+ */
+export function promptLegend(
+  snapshot: NativePromptSnapshot,
+  windowed: boolean,
+  locked = false,
+): string {
+  const { items, exit } = nativeLegendParts(snapshot, windowed, 'card', locked);
   return legend(items, exit);
+}
+
+/**
+ * A chord card's answer row as its text and whether it is drawn dim: `[Ctrl+Y] <allow>` and `[Ctrl+N] <deny>` (the row's key prefix), and,
+ * while the channel's lock holds the affirmative, `[Ctrl+Y] <allow> (wait)` built by the legend builder and dim as a whole (ADR-0145 §3). The
+ * label is the card's product constant (sanitised by the channel); nothing here reads a state from it.
+ */
+export function chordRowText(
+  option: { readonly value: string; readonly label: string },
+  locked: boolean,
+): { readonly text: string; readonly dim: boolean } {
+  if (locked && option.value === 'allow')
+    return { text: keyHint([{ keys: 'Ctrl+Y', verb: option.label, wait: true }]), dim: true };
+  return { text: `${CHORD_KEYS[option.value] ?? ''}${option.label}`, dim: false };
 }
 
 /**
@@ -150,6 +178,8 @@ export function NativePromptView({
   const ref = useRef<DOMElement | null>(null);
   const app = useApp();
   useResizeClearsFirst(acknowledgement);
+  // The lock is a display value, not a field of the snapshot: its change re-renders this card and is no new frame (ADR-0147 §2).
+  const locked = useSyncExternalStore(acknowledgement.lock.subscribe, acknowledgement.lock.read);
   const [overflow, setOverflow] = useState<{
     snapshot: NativePromptSnapshot;
     cols: number;
@@ -226,12 +256,14 @@ export function NativePromptView({
       {snapshot.kind === 'chord' && (
         <>
           <DetailRows details={snapshot.details} cols={size.cols} />
-          {snapshot.options.map((option) => (
-            <Text key={option.value} wrap="truncate-end">
-              {CHORD_KEYS[option.value] ?? ''}
-              {option.label}
-            </Text>
-          ))}
+          {snapshot.options.map((option) => {
+            const row = chordRowText(option, locked);
+            return (
+              <Text key={option.value} wrap="truncate-end" {...dimProps(color && row.dim)}>
+                {row.text}
+              </Text>
+            );
+          })}
         </>
       )}
       {snapshot.kind === 'select' &&
@@ -253,7 +285,7 @@ export function NativePromptView({
             ))}
       <FieldRow snapshot={snapshot} acknowledgement={acknowledgement} />
       {snapshot.error !== '' && <Text>{snapshot.error}</Text>}
-      <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined)}</Text>
+      <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined, locked)}</Text>
     </Box>
   );
 }

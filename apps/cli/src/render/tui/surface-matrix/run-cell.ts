@@ -38,6 +38,11 @@ export interface Observable {
   root?: () => DOMElement | undefined;
   /** The popup the host has open now, for a product popup's box. */
   popupFrame?: () => PopupFrame | undefined;
+  /**
+   * Whether the host's popup holds its answer locked now (`PopupHost.lock`): the slot draws that legend part as waiting (`(wait)`), so the
+   * expected box is drawn with the same lock. Absent ⇒ open.
+   */
+  popupLocked?: () => boolean;
 }
 
 const matches = (text: string, pattern: string | RegExp): boolean =>
@@ -70,7 +75,7 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
         message: 'the surface recorded no frame before it opened the popup',
       });
     else {
-      const box = entry.popup(variant, mount.popupFrame?.());
+      const box = entry.popup(variant, mount.popupFrame?.(), mount.popupLocked?.() === true);
       violations.push(...checkPopupBox(observation, before, box));
       // How the body looks behind the popup: every cell of it dim (alternate screen, colour on), none dimmed by us otherwise (ADR-0148 §4).
       const cellsBefore = baselineCellsOf(mount);

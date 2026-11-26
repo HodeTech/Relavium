@@ -4,13 +4,14 @@ import {
   type NativePromptFlow,
   type NativePromptOption,
 } from '../render/tui/native-prompt-channel.js';
-import { exitKey, inertLegendText, keyToken, legend } from '../render/tui/legend.js';
+import { inertLegendText, keyToken } from '../render/tui/legend.js';
 import { authorLine } from '../render/tui/run-card-model.js';
 import { foldLineSeparators } from '../popups/frame-model.js';
 import type { ProviderStore } from '@relavium/db';
 import type { ProviderId } from '@relavium/llm';
 
 import { runProviderCommand } from '../commands/provider.js';
+import type { PreparedConfigWrite } from '../config/write.js';
 import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
@@ -43,8 +44,9 @@ import type { SessionWorkOwner } from '../chat/session-work-owner.js';
  * variable (the key is **NEVER** written to disk), then choose the provider's starter model as the default.
  *
  * It runs on the host's native prompt channel ({@link runNativeSetup}). On the Home its steps are the steps of the `/providers` popup
- * (`native.stages`, ADR-0148 §1, ADR-0146 §6): `Provider · Key · Done`; `Esc` on the first step skips, `Esc` steps back from the key and from
- * the choices after a failed check, `Ctrl+C` leaves, and the result is a persistent Done step. In a stand-alone chat's pre-chat mount, which has
+ * (`native.stages`, ADR-0148 §1, ADR-0146 §6): `Provider · Key · Done`; `Esc` on the first step skips (its legend says `Esc skip for now`), `Esc`
+ * steps back from the key, from the key's check (which it aborts, O6) and from the choices after a failed check, `Ctrl+C` leaves, and the result
+ * is a persistent Done step. In a stand-alone chat's pre-chat mount, which has
  * no popup slot, they are the card they always were, and the result is the card's last note. (The `@clack/prompts` path it once had was the
  * Home's injected test seam only, and was deleted in MVP-11 unit 6.)
  *
@@ -95,6 +97,12 @@ export type SetupPrompts = Pick<NativePromptFlow, 'busy' | 'select' | 'password'
 export interface SetupStages {
   readonly provider: SetupPrompts;
   readonly key: SetupPrompts;
+  /**
+   * The key prompt itself where its `Esc` is not the key step's step back to the provider: on the automatic first run whose FIRST prompt it
+   * is (a custom endpoint refused the environment key, so the setup asks for a key at once), its step back is the skip and its legend says so
+   * (`Esc skip for now`). Absent ⇒ {@link key}. The check and the choices after a failed check are always {@link key}'s.
+   */
+  readonly keyPrompt?: SetupPrompts;
   readonly done: (done: FramedDone) => Promise<void>;
 }
 
@@ -142,24 +150,33 @@ export interface OnboardingDeps {
     modelId: string,
     provider: ProviderId,
     assertAdmitting?: () => void,
+    /**
+     * The setup run's own view of the write the host prepares (MVP-11 unit 6, W7 item 5): a global config this run created a moment before
+     * and that nobody changed since loses nothing a person wrote, so its rewrite notice is not drawn. The host passes its prepared write
+     * through it before it publishes; absent ⇒ as prepared.
+     */
+    runWrite?: (prepared: PreparedConfigWrite) => PreparedConfigWrite,
   ) => unknown;
   /**
    * LIVE-validate a just-entered key (2.5.G S8) — injected for tests (no network). Absent ⇒ the real bounded,
    * key-redacted {@link validateProviderKey} probe against the provider's `starterModel`. The setup uses the
    * result's `reason` to branch the retry UX (auth → re-enter; network → retry the check). A resolver with no
-   * adapter (a test stub) validates as `ok` so the flow never blocks on an un-probeable provider.
+   * adapter (a test stub) validates as `ok` so the flow never blocks on an un-probeable provider. `signal` aborts when the check is
+   * abandoned (the person stepped back out of it with `Esc`, or left the setup): the check should stop, and its answer is never read.
    */
-  readonly validate?: (id: ProviderId, key: string) => Promise<ProviderKeyValidation>;
+  readonly validate?: (
+    id: ProviderId,
+    key: string,
+    signal?: AbortSignal,
+  ) => Promise<ProviderKeyValidation>;
 }
 
 /**
  * The key prompt's validator: it rejects an empty or whitespace-only key. The masked field draws its own fixed sentence for a rejected value
- * (`A valid value is required.`), so these words are drawn by no surface; they are the validator's reason, kept as the legend golden records it.
+ * (`A valid value is required.`), so the reason is drawn by no surface and names no key.
  */
-export const requireKey = (value: string | undefined): string | undefined =>
-  (value ?? '').trim() === ''
-    ? legend([{ text: 'An API key is required' }], exitKey.close('Esc', 'skip setup'))
-    : undefined;
+const keyRequired = (value: string): string | undefined =>
+  value.trim() === '' ? 'An API key is required.' : undefined;
 
 /**
  * The native setup (see the module header), with what it did. A cancellation that is the flow's own (its signal's reason) is `cancelled`; any
@@ -220,8 +237,8 @@ function isKeychainDown(err: unknown): boolean {
 /** The real key check: the bounded, key-redacted probe against the provider's starter model (a stub resolver with no adapter passes). */
 function defaultValidate(
   deps: OnboardingDeps,
-): (id: ProviderId, key: string) => Promise<ProviderKeyValidation> {
-  return async (id, k) => {
+): (id: ProviderId, key: string, signal?: AbortSignal) => Promise<ProviderKeyValidation> {
+  return async (id, k, signal) => {
     const adapter = deps.resolver.resolveProvider(id);
     // A NON-PRODUCTION path only: the real `createProviderResolver` returns an adapter for every `ProviderId`, so
     // this `undefined` branch is reachable ONLY by a test stub (`resolveProvider: () => undefined`). There it
@@ -234,10 +251,24 @@ function defaultValidate(
       k,
       KNOWN_PROVIDERS[id].starterModel,
       undefined,
-      owner === undefined
-        ? undefined
-        : { signal: owner.signal, work: owner.work, assertAdmitting: owner.assertAdmitting },
+      checkLifecycle(owner, signal),
     );
+  };
+}
+
+/**
+ * The key check's lifecycle under the session's work owner: the request stops when the session's work does, and when the check is abandoned
+ * (`signal`: `Esc` stepped back out of it, or the setup was left). None without an owner (an ownerless embedding keeps its own contract).
+ */
+function checkLifecycle(
+  owner: SessionWorkOwner | undefined,
+  signal: AbortSignal | undefined,
+): Parameters<typeof validateProviderKey>[4] {
+  if (owner === undefined) return undefined;
+  return {
+    signal: signal === undefined ? owner.signal : AbortSignal.any([owner.signal, signal]),
+    work: owner.work,
+    assertAdmitting: owner.assertAdmitting,
   };
 }
 
@@ -436,18 +467,21 @@ async function keyStep(
   for (;;) {
     run.admit();
     run.native.flow.note(keyStepNote(words.host));
-    const raw = await prompts.password({
+    const raw = await (run.native.stages?.keyPrompt ?? prompts).password({
       message: `Paste your ${words.name} API key`,
-      validate: requireKey,
+      validate: keyRequired,
       escape: run.escape,
     });
     if (raw === NATIVE_PROMPT_BACK) return { kind: 'back' };
     if (typeof raw === 'symbol') return leaveSetup(run);
-    // Trim incidental paste whitespace before storing, as `provider set-key` does; `requireKey` rejected a whitespace-only value.
+    // Trim incidental paste whitespace before storing, as `provider set-key` does; `keyRequired` rejected a whitespace-only value.
     const checked = await checkKey(run, prompts, provider, raw.trim(), words);
     if (checked.kind !== 'again') return checked;
   }
 }
+
+/** What a check `Esc` stepped back out of came to (O6): the key step again, its field empty. */
+const STEPPED_BACK = Symbol('the key check was stepped back out of');
 
 /** The check of one key and the choices after it failed, until a key is kept, the person asks for the key step again, or leaves. */
 async function checkKey(
@@ -459,8 +493,8 @@ async function checkKey(
 ): Promise<KeyOutcome> {
   for (;;) {
     run.admit();
-    prompts.busy(keyCheckText(words.name, words.host));
-    const result = await runCheck(run, provider, key);
+    const result = await checkOnce(run, prompts, provider, key, words);
+    if (result === STEPPED_BACK) return { kind: 'again' };
     run.admit();
     if (result.ok) return { kind: 'key', key, verified: true };
     const choice = await prompts.select({
@@ -478,18 +512,47 @@ async function checkKey(
   }
 }
 
-/** One check of `key`: the injected or real validator, retained by the work owner when there is one, observed against the flow's signal. */
+/**
+ * One check of `key`, drawn as the key step's wait (G20: the request is disclosed with its host). In the popup the wait steps back (O6): `Esc`
+ * aborts THIS check through its own controller (the flow's signal is untouched, so `Ctrl+C` still leaves the setup), the check is told to stop,
+ * and the result is {@link STEPPED_BACK}: whatever the aborted check answers later is never read, so it stores nothing. On a card `Esc` leaves
+ * the setup, as it always did.
+ */
+async function checkOnce(
+  run: NativeRun,
+  prompts: SetupPrompts,
+  provider: ProviderId,
+  key: string,
+  words: { readonly name: string; readonly host: string },
+): Promise<ProviderKeyValidation | typeof STEPPED_BACK> {
+  const stop = new AbortController();
+  const back = run.native.stages === undefined ? undefined : { onBack: () => stop.abort() };
+  prompts.busy(keyCheckText(words.name, words.host), back);
+  try {
+    return await runCheck(run, provider, key, stop.signal);
+  } catch (cause) {
+    if (stop.signal.aborted && !run.native.signal.aborted) return STEPPED_BACK;
+    throw cause;
+  }
+}
+
+/**
+ * One check of `key`: the injected or real validator, retained by the work owner when there is one, observed against the flow's signal and
+ * `stop` (the check abandoned), either of which also aborts the check itself.
+ */
 function runCheck(
   run: NativeRun,
   provider: ProviderId,
   key: string,
+  stop: AbortSignal,
 ): Promise<ProviderKeyValidation> {
   const validate = run.deps.validate ?? defaultValidate(run.deps);
   const owner = run.deps.workOwner;
-  const operation = () => validate(provider, key);
+  const abandoned = AbortSignal.any([run.native.signal, stop]);
+  const operation = () => validate(provider, key, abandoned);
   return observeValidation(
     owner === undefined ? operation() : owner.work.retainWork(operation),
-    run.native.signal,
+    abandoned,
   );
 }
 

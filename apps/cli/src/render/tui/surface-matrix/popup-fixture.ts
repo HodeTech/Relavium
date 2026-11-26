@@ -95,6 +95,8 @@ export function popupBoxOf(
   frame: PopupFrame | undefined,
   variant: Variant,
   notice?: string,
+  /** The host's lock now (`PopupHost.lock`): the legend part the slot draws as waiting while it holds. */
+  locked = false,
 ): PopupBox {
   if (frame === undefined) throw new Error('no popup is open in this cell');
   const placement = variant.renderer === 'alt' ? 'overlay' : 'replace';
@@ -128,6 +130,7 @@ export function popupBoxOf(
           frame,
           bodyPageRows(state.content, state.filter !== undefined, geometry),
           geometry.innerWidth,
+          locked,
         ),
         notice,
       },
@@ -187,12 +190,20 @@ export const NATIVE_POPUP_LANDMARK: Readonly<Record<NativePopupKind, string>> = 
 };
 
 /** Each kind's legend row, written out here and not built by the legend builder (the builder is part of what is checked). */
-export const NATIVE_POPUP_LEGEND_ROW: Readonly<Record<NativePopupKind, string>> = {
+export const NATIVE_POPUP_LEGEND_ROW: Readonly<
+  Record<NativePopupKind, string | readonly string[]>
+> = {
   select: '↑/↓ select · Enter choose · Esc close',
   text: 'Enter continue · Esc close',
   password: 'Enter continue · Esc close',
   busy: 'Esc cancels it',
-  chord: '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+  // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim): at 80 columns the longer part drops `[Ctrl+N]` (Esc refuses too);
+  // once the lock has opened, the row is whole again.
+  chord: [
+    '[Ctrl+Y] Write the file (wait) · Esc denies',
+    '[Ctrl+Y] Write the file (wait) · [Ctrl+N] Write nothing · Esc denies',
+    '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+  ],
   // The picker's legend fitted to the popup's inner width (66 and 74 columns): its paging item goes first, the way back never.
   picker: '↑/↓ select · Enter resume · Tab all directories · Esc close',
   done: 'Enter / Esc close',

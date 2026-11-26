@@ -29,6 +29,7 @@ import {
   NATIVE_PROMPT_BACK,
   NATIVE_PROMPT_CANCEL,
   NATIVE_PROMPT_RESIZED,
+  STEP_BACK_HOLD_MS,
   type NativePopupDescriptor,
   type NativePromptOption,
   type NativePromptSnapshot,
@@ -1191,4 +1192,162 @@ describe('a held key never answers what it was not pressed for (F1, F2)', () => 
       expect(answered).toEqual([]);
     },
   );
+});
+
+describe('W7 (MVP-11 unit 6, round 1 second pass): a step back needs a key that arrived after the popup appeared (item 4)', () => {
+  const PICK_BACK = { message: 'Pick', options: PLAIN, escape: 'back' } as const;
+
+  it('a lone Esc that arrived before the flow’s first framed frame, on a prompt opened to step back, leaves the flow as a cancel, never a step back', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select(PICK_BACK);
+    r.key('', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+    expect(r.channel.ui.signal()?.aborted).toBe(true);
+  });
+
+  it('one forwarded by a host that could not show the frame (`\\x1b` with its key) is a cancel too', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select(PICK_BACK);
+    r.key('\x1b', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+  });
+
+  it('one at the very moment the frame appeared is a cancel (a key already on its way, rule 3); one a moment after it steps back', async () => {
+    const r = rig();
+    const answer = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.key('', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+
+    const later = rig();
+    const back = later.channel.flow.select(PICK_BACK);
+    later.show();
+    later.advance(1);
+    later.key('', ESC);
+    expect(await back).toBe(NATIVE_PROMPT_BACK);
+    expect(later.channel.ui.signal()?.aborted).toBe(false);
+  });
+
+  it('a card (no descriptor: no popup opening) steps back at once, as it always did', async () => {
+    const r = rig({ framed: false });
+    const answer = r.channel.flow.select(PICK_BACK);
+    r.key('', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_BACK);
+  });
+});
+
+describe('W7 (item 2, O6): a wait that steps back', () => {
+  const PICK_BACK = { message: 'Key', options: PLAIN, escape: 'back' } as const;
+
+  /** A framed flow whose first frame has appeared, waiting with a step back; how many times it was taken. */
+  function waiting() {
+    const r = rig();
+    let taken = 0;
+    r.channel.flow.busy('Checking your key', {
+      onBack: () => {
+        taken += 1;
+      },
+    });
+    r.show();
+    r.advance(1);
+    return { r, taken: (): number => taken };
+  }
+
+  it('says `back` on its snapshot; a lone Esc takes the step back once and leaves the flow open; another Esc on the same wait does nothing', () => {
+    const { r, taken } = waiting();
+    expect(r.snapshot().kind).toBe('busy');
+    expect(r.snapshot().escape).toBe('back');
+    r.key('', ESC);
+    expect(taken()).toBe(1);
+    expect(r.channel.ui.signal()?.aborted).toBe(false);
+    r.advance(10);
+    r.key('', ESC);
+    expect(taken()).toBe(1);
+    expect(r.channel.ui.signal()?.aborted).toBe(false);
+    // Past the hold too: the wait's step back was taken, and it is taken once.
+    r.advance(STEP_BACK_HOLD_MS + 10);
+    r.key('', ESC);
+    expect(taken()).toBe(1);
+    expect(r.channel.ui.signal()?.aborted).toBe(false);
+  });
+
+  it('`Ctrl+C` on it leaves the flow, and takes no step back', () => {
+    const { r, taken } = waiting();
+    r.key('c', CTRL);
+    expect(r.channel.ui.signal()?.aborted).toBe(true);
+    expect(taken()).toBe(0);
+  });
+
+  it('a wait with none cancels on Esc, as it always did; a later wait or prompt drops a step back that was not taken', async () => {
+    const plain = rig();
+    plain.channel.flow.busy('Loading');
+    expect(plain.snapshot().escape).toBe('cancel');
+    plain.show();
+    plain.advance(1);
+    plain.key('', ESC);
+    expect(plain.channel.ui.signal()?.aborted).toBe(true);
+
+    const { r, taken } = waiting();
+    r.channel.flow.busy('Saving');
+    expect(r.snapshot().escape).toBe('cancel');
+    const { r: other, taken: otherTaken } = waiting();
+    const answer = other.channel.flow.select({ message: 'Pick', options: PLAIN });
+    other.show();
+    other.advance(1);
+    other.key('', ESC);
+    expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
+    expect(taken()).toBe(0);
+    expect(otherTaken()).toBe(0);
+  });
+
+  it('the hold: an Esc on the prompt the step back opened is refused for the hold and restarts it; one after it steps back; the hold goes with that prompt', async () => {
+    const { r } = waiting();
+    r.key('', ESC); // the step back out of the wait, at t0
+    const key = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.advance(STEP_BACK_HOLD_MS - 1);
+    r.key('', ESC); // still the same hold: refused, and the hold restarts here
+    expect(await settled(key)).toBe(PENDING);
+    r.advance(STEP_BACK_HOLD_MS - 1);
+    r.key('', ESC);
+    expect(await settled(key)).toBe(PENDING);
+    r.advance(STEP_BACK_HOLD_MS);
+    r.key('', ESC);
+    expect(await key).toBe(NATIVE_PROMPT_BACK);
+    // Resolved: the hold went with it, and the next step back is taken at once.
+    const next = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.advance(1);
+    r.key('', ESC);
+    expect(await next).toBe(NATIVE_PROMPT_BACK);
+  });
+
+  it('the hold goes when the prompt it guards is answered, even inside it: the next prompt steps back at once', async () => {
+    const { r } = waiting();
+    r.key('', ESC); // the step back out of the wait
+    const key = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS);
+    r.key('', ENTER); // answered well inside the hold
+    expect(await key).toBe('a');
+    const next = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.advance(1);
+    r.key('', ESC);
+    expect(await next).toBe(NATIVE_PROMPT_BACK);
+  });
+
+  it('`Ctrl+C` is never held: it leaves the prompt the step back opened at once', async () => {
+    const { r } = waiting();
+    r.key('', ESC);
+    const key = r.channel.flow.select(PICK_BACK);
+    r.show();
+    r.advance(1);
+    r.key('c', CTRL);
+    expect(await key).toBe(NATIVE_PROMPT_CANCEL);
+  });
+
+  it('STEP_BACK_HOLD_MS is the approval lockout: a key held at any repeat rate never gets past it', () => {
+    expect(STEP_BACK_HOLD_MS).toBe(APPROVAL_LOCKOUT_MS);
+  });
 });

@@ -115,8 +115,8 @@ export function modelsSettingsPortFor(): SettingsPort {
 }
 
 /** The box of the `/models` popup the host has open in this cell. */
-export const modelsPopupBox = (variant: Variant, live?: PopupFrame): PopupBox =>
-  popupBoxOf(live, variant);
+export const modelsPopupBox = (variant: Variant, live?: PopupFrame, locked = false): PopupBox =>
+  popupBoxOf(live, variant, undefined, locked);
 
 /**
  * Put the `/models` popup of `state` on a mount of any host: `/models` typed and routed by the host; for the form, the opening guard's settle

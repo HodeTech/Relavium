@@ -8,7 +8,6 @@ import { RESUME_ANOTHER_DIRECTORY, RESUME_RESTORING } from '../../../../home/ses
 import { STARTING_CHAT_LINE } from '../../home-app.js';
 import { PROVIDER_KEYS_AT_THE_HOME } from '../../home-controller.js';
 import { STDIN_PROMPT_NOTE } from '../../../../commands/agent-run.js';
-import { requireKey } from '../../../../onboarding/wizard.js';
 import { DUMP_PROMPT, dumpToScrollback } from '../../../scrollback.js';
 import { cardStates, SIZE_100, SIZE_80, withCard } from './prompts.js';
 
@@ -61,12 +60,6 @@ const runLaunchBusy: Recorder = () => {
     cases.map(([state, snapshot]) => [state, launchBusy(snapshot) ?? NO_SENTENCE]),
   );
 };
-
-/** The validator message of the wizard's key prompt: a local function of the wizard, only reachable through a clack prompt (source literal). */
-const onboardingKeyRequired: Recorder = () => ({
-  // The key is the one the golden was recorded under, so the diff reads before and after on one entry.
-  'validate message (source literal)': requireKey('') ?? NO_SENTENCE,
-});
 
 /** The acknowledgement line under the suspended transcript: the constant, and the whole block `dumpToScrollback` writes around it. */
 const scrollbackDumpPrompt: Recorder = () => {
@@ -157,12 +150,6 @@ export const HOME_HOST_PRODUCERS: readonly Producer[] = [
       'launchBusy: what /run says while a run already starts or executes (names the strip’s row and Enter), by host snapshot.',
   },
   {
-    id: 'onboarding-key-required',
-    file: 'onboarding/wizard.ts',
-    describe:
-      'The wizard key prompt’s validator message (names Esc to skip setup); clack path only, a source literal.',
-  },
-  {
     id: 'scrollback-dump-prompt',
     file: 'render/scrollback.ts',
     describe:
@@ -196,7 +183,6 @@ export const HOME_HOST_PRODUCERS: readonly Producer[] = [
 
 export const HOME_HOST_RECORDERS = {
   'run-launch-busy': runLaunchBusy,
-  'onboarding-key-required': onboardingKeyRequired,
   'scrollback-dump-prompt': scrollbackDumpPrompt,
   'drive-home-sentences': driveHomeSentences,
   'home-controller-sentences': homeControllerSentences,

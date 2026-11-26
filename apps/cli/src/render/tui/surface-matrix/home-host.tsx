@@ -132,6 +132,8 @@ export interface HomeMount extends InkMount {
   skip: (ms: number) => void;
   /** The popup on top of the Home's popup host, as it is now (the frame a popup surface's box is computed from). */
   popupFrame: () => PopupFrame | undefined;
+  /** Whether that popup holds its answer locked now (`PopupHost.lock`: the slot draws the part as waiting, and so does the box). */
+  popupLocked: () => boolean;
 }
 
 /** Bytes of keys the Home's one input owner forwards, by name (what a terminal sends). */
@@ -323,6 +325,7 @@ export function mountHome(
       skipped += ms;
     },
     popupFrame: () => popups.getSnapshot().frame,
+    popupLocked: () => popups.lock.read(),
     cardPainted: () => {
       const screen = controller.getSnapshot().screen;
       return screen?.kind === 'gate-card' && cardVisible?.(screen.card.getSnapshot()) === true;

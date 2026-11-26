@@ -160,7 +160,33 @@ describe('standalone native provider setup lifecycle', () => {
     },
   );
 
-  it('publishes named-source consent and starter default only after a visible rewrite notice, quarantining Enter suffix', async () => {
+  it('publishes named-source consent and starter default; the starter default rewrites only the config the setup just created, so no rewrite notice is drawn or left as the chat’s line (W7 item 5), quarantining Enter suffix', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    let notices = 0;
+    f.stdout.onFrame = (frame) => {
+      if (frame.includes('Saving preferences')) notices += 1;
+    };
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f);
+    f.stdin.push('\rtrailing-secret');
+    expect(await running).toBe(0);
+    const loaded = loadResolvedConfig({
+      cwd: root,
+      home: root,
+      configPath: f.loaded.globalConfigPath,
+    });
+    expect(loaded.globalConfig?.preferences?.standard_env_key_consent).toEqual({
+      openai: 'OPENAI_API_KEY',
+    });
+    expect(loaded.config.chat.defaultProvider).toBe('openai');
+    expect(notices, 'no rewrite notice for a config the setup created').toBe(0);
+    expect(f.err()).not.toContain('Saving preferences rewrites');
+    expect(f.text() + f.err()).not.toContain('trailing-secret');
+  });
+
+  it('publishes named-source consent and starter default onto a config that existed only after a visible rewrite notice, quarantining Enter suffix', async () => {
+    writeFileSync(join(root, 'selected.toml'), '# hand-made\n[preferences]\ntheme = "dark"\n');
     const f = fixture({ OPENAI_API_KEY: credential });
     let noticeBeforeDefault = false;
     f.stdout.onFrame = (frame) => {

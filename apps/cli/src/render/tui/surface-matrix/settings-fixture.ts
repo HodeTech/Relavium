@@ -38,12 +38,16 @@ export const SETTINGS_LANDMARKS = {
 export type SettingsState = keyof typeof SETTINGS_LANDMARKS;
 
 /** The legend row of each settings surface, whole on one row of every cell. */
-export const SETTINGS_LEGEND_ROW: Readonly<Record<SettingsState, string>> = {
+export const SETTINGS_LEGEND_ROW: Readonly<Record<SettingsState, string | readonly string[]>> = {
   effort: '↑/↓ select · Enter apply · Esc close',
   form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
   effect: '↑/↓ select · Enter apply · Esc close',
   mode: '↑/↓ select · Enter next · Esc close',
-  'mode-apply': '↑/↓ apply to · Enter apply · [Ctrl+C] close · Esc back',
+  // A guarded form: its `Enter` waits (`(wait)`, dim) for the lockout after the `Enter` that reached it, then reads as it always did.
+  'mode-apply': [
+    '↑/↓ apply to · Enter apply (wait) · [Ctrl+C] close · Esc back',
+    '↑/↓ apply to · Enter apply · [Ctrl+C] close · Esc back',
+  ],
 };
 
 /** A settings port for one cell: `/effort` over the bound model's real tiers, the tier in force `medium`, and an apply that records. */
@@ -157,8 +161,8 @@ export function testEffectPopup(origin: PopupOrigin): PopupSpec {
 }
 
 /** The box of the settings popup the host has open in this cell. */
-export const settingsPopupBox = (variant: Variant, live?: PopupFrame): PopupBox =>
-  popupBoxOf(live, variant);
+export const settingsPopupBox = (variant: Variant, live?: PopupFrame, locked = false): PopupBox =>
+  popupBoxOf(live, variant, undefined, locked);
 
 /**
  * Put the settings popup of `state` on a mount of any chat host: `/effort` typed and routed by the host; the two test popups opened on the

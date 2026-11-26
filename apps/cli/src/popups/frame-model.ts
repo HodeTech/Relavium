@@ -953,9 +953,28 @@ function noticeRow(notice: string, exit: LegendExit, geometry: PopupBoxGeometry)
 }
 
 /**
+ * How long a legend item is kept when the row does not fit (higher is kept longer): the keys that leave to the last (they are how out); a key
+ * that waits (`LegendKey.wait`: its guard holds it, `(wait)`) next, before every other key, so the row still says which key answers and that it
+ * is not taken yet (the maintainer's ruling of 2026-11-26: the longer part drops a key that matters less, such as a chord's `[Ctrl+N]`, which
+ * `Esc` also gives); then `priority` (default: from the end).
+ */
+function keptFor(
+  item: LegendItem,
+  index: number,
+  count: number,
+  priority: readonly number[] | undefined,
+): number {
+  if ('keys' in item && (item.keys === 'Ctrl+C' || item.keys === 'Esc'))
+    return Number.MAX_SAFE_INTEGER;
+  if ('keys' in item && item.wait === true) return Number.MAX_SAFE_INTEGER - 1;
+  return priority?.[index] ?? count - index;
+}
+
+/**
  * The items a legend keeps in a row of `innerWidth` columns (the ONE fit of a popup's legend row): a text item made inert, the keys that leave
- * kept to the last (they are how out), and the others dropped from the lowest `priority` (default: from the end) first. What the legend row
- * draws, and what a native chord step asks to know whether its answer is on the row (`native-popup-body.ts`).
+ * kept to the last (they are how out), a key that waits next, and the others dropped from the lowest `priority` (default: from the end) first
+ * ({@link keptFor}). What the legend row draws, and what a native chord step asks to know whether its answer is on the row
+ * (`native-popup-body.ts`).
  */
 export function fittedLegendItems(
   parts: PopupFrameParts['legend'],
@@ -964,15 +983,11 @@ export function fittedLegendItems(
   const items = parts.items.map((item) =>
     'text' in item ? { text: inertLegendText(sanitizeInline(item.text)) } : item,
   );
-  const leaves = (item: LegendItem): boolean =>
-    'keys' in item && (item.keys === 'Ctrl+C' || item.keys === 'Esc');
   return fitLegend(
     [],
     items.map((item, index) => ({
       item,
-      priority: leaves(item)
-        ? Number.MAX_SAFE_INTEGER
-        : (parts.priority?.[index] ?? items.length - index),
+      priority: keptFor(item, index, items.length, parts.priority),
     })),
     parts.exit,
     innerWidth,

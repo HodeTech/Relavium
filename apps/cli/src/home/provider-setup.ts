@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import type { ProviderId } from '@relavium/llm';
 import type { GlobalConfig } from '@relavium/shared';
 
@@ -35,11 +37,7 @@ import {
   setupSkippedNotice,
   type SetupSurface,
 } from '../onboarding/setup-notes.js';
-import {
-  NATIVE_PROMPT_BACK,
-  type NativePromptEscape,
-  type NativePromptFlow,
-} from '../render/tui/native-prompt-channel.js';
+import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 import { framedFlow, type FramedDone, type FramedFlow } from './framed-flow.js';
 import {
   CANCELLED,
@@ -49,6 +47,7 @@ import {
   type Observation,
   type ProviderSetupOutcome,
   type SetupRun,
+  type StepExit,
 } from './provider-setup-steps.js';
 
 export { consentMessage, type ProviderSetupOutcome } from './provider-setup-steps.js';
@@ -94,8 +93,16 @@ export const PROVIDERS_POPUP_TITLE = '/providers';
 export const FIRST_RUN_POPUP_TITLE = 'Connect a provider';
 /** What the key prompt's legend says `Enter` does (O9): it checks the key with the provider. A product constant. */
 export const KEY_STEP_ENTER_VERB = 'check';
+/**
+ * What `Esc` says on the automatic first run's step that has nothing before it, whose step back IS the skip (ADR-0146 §6, MVP-11 §4.12: the
+ * first card's footer reads `Esc skip for now`). A product constant. A remembered skip says the rest in its one notification
+ * ({@link setupSkippedNotice}: `/providers connects a provider anytime`).
+ */
+export const FIRST_STEP_ESCAPE_VERB = 'skip for now';
 /** The popup's rail (ADR-0146 §6: `Provider · Key · Done`, `step 2 of 3`). */
 export const PROVIDER_STEP_NAMES: readonly string[] = ['Provider', 'Key', 'Done'];
+/** The rail's `Key` step ({@link PROVIDER_STEP_NAMES}). */
+const KEY_STEP = 1;
 
 /** Sample only when setup opens or a user requests a retry; never poll during rendering. */
 export function sampleProviderSetup(resolver: ProviderResolver): readonly Observation[] {
@@ -105,18 +112,76 @@ export function sampleProviderSetup(resolver: ProviderResolver): readonly Observ
   }));
 }
 
-/** The popup's steps for the key setup (the `Provider` step's prompts, the `Key` step's, the Done step), or none on a card. */
+/**
+ * The popup's steps for the key setup (the `Provider` step's prompts, the `Key` step's, the Done step), or none on a card. `exit` is how the
+ * step the setup opens on is left: on the automatic first run it is the skip, and the prompt that has nothing before it says so (`Which
+ * provider?`, or the key itself when `keyFirst`: a custom endpoint refused the environment key, so the setup asks for a key at once).
+ */
 function setupStages(
   framed: FramedFlow | undefined,
-  provider: SetupPrompts,
+  exit: StepExit,
+  keyFirst: boolean,
 ): { readonly stages?: SetupStages } {
   if (framed === undefined) return {};
+  const skip = exit === 'skip' ? { escapeVerb: FIRST_STEP_ESCAPE_VERB } : {};
+  // The key prompt's `Enter` sends the key to the provider (once, to check it): the legend says so (ADR-0145 §3: the verb states the effect).
+  const key = { exitLabel: 'close', enterVerb: KEY_STEP_ENTER_VERB };
   return {
     stages: {
-      provider,
-      // The key prompt's `Enter` sends the key to the provider (once, to check it): the legend says so (ADR-0145 §3: the verb states the effect).
-      key: framed.at(1, { exitLabel: 'close', enterVerb: KEY_STEP_ENTER_VERB }),
+      provider: framed.at(0, skip),
+      key: framed.at(KEY_STEP, key),
+      ...(keyFirst && exit === 'skip'
+        ? { keyPrompt: framed.at(KEY_STEP, { ...key, ...skip }) }
+        : {}),
       done: (done: FramedDone) => framed.done(done),
+    },
+  };
+}
+
+/**
+ * How the automatic run's first step is left: on the first run's popup its step back is the skip; a card leaves (`Esc` there always did).
+ */
+function firstStepExit(framed: boolean, firstRun: boolean): StepExit {
+  if (!framed) return 'cancel';
+  return firstRun ? 'skip' : 'back';
+}
+
+/**
+ * The run's own view of its global config writes (MVP-11 unit 6, W7 item 5). A config this run CREATED (absent when its write was prepared) and
+ * that is still byte for byte what the run left in it holds nothing a person wrote, so a later write of the same run (the starter default after
+ * a granted consent) removes no comment and no order of theirs: it is published with no rewrite notice. A config that existed before the run
+ * keeps the notice on every write, as does one another writer changed since; one changed after such a write was prepared is refused before it
+ * is renamed over (a config fault, as a target that changed always is), never rewritten unannounced. `target` is the file the writes go to.
+ */
+function createRunWrites(target: string): {
+  readonly view: (prepared: PreparedConfigWrite) => PreparedConfigWrite;
+} {
+  /** What the run left in a config it created; `undefined` while it created none. */
+  let created: string | undefined;
+  const read = (): string | undefined => {
+    try {
+      return readFileSync(target, 'utf8');
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    view: (prepared) => {
+      const expected = created;
+      const ours = expected !== undefined && read() === expected;
+      if (prepared.rewriteNeeded && !ours) return prepared;
+      return {
+        rewriteNeeded: false,
+        publish: (assertAdmitting) => {
+          const result = prepared.publish(() => {
+            assertAdmitting?.();
+            if (ours && read() !== expected)
+              throw new ConfigError(target, 'changed before writing; prepare the write again.');
+          });
+          created = read();
+          return result;
+        },
+      };
     },
   };
 }
@@ -211,14 +276,24 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     }
   }
 
-  /** The global config writes of the consent and keychain steps, against the host's target. */
-  const writes = (assertAdmitting: () => void): SetupRun['writes'] => ({
+  /** The file the setup's config writes go to. */
+  const target = targetPath ?? globalConfigPath(deps.home);
+
+  /**
+   * The global config writes of one run, against the host's target, each passed through the run's own view of its writes (`view`: a write
+   * onto the config the run created a moment before draws no rewrite notice).
+   */
+  const writes = (
+    assertAdmitting: () => void,
+    view: (prepared: PreparedConfigWrite) => PreparedConfigWrite,
+  ): SetupRun['writes'] => ({
     consent: (id) =>
       prepareStandardEnvKeyConsent(id, deps.home, targetPath, deps.configReadObserver),
     keychainAcknowledged: () =>
       prepareKeychainUnavailableAcknowledged(true, deps.home, targetPath, deps.configReadObserver),
-    publish: (prepared) => deps.publishPreference(prepared, assertAdmitting),
-    writeDefaultModel: deps.wizard.writeDefaultModel,
+    publish: (prepared) => deps.publishPreference(view(prepared), assertAdmitting),
+    writeDefaultModel: (model, provider, admit) =>
+      deps.wizard.writeDefaultModel(model, provider, admit, view),
   });
 
   async function run(
@@ -238,12 +313,18 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     const flow: NativePromptFlow = framed ?? deps.flow;
     /** The prompts of the `Provider` step: the list, the consent, the keychain step, a recovery, an action. */
     const entry: SetupPrompts = framed?.at(0) ?? deps.flow;
+    /** The same step's prompts where `Esc` is the first run's skip: the legend says `Esc skip for now`. */
+    const skipEntry: SetupPrompts =
+      framed?.at(0, { escapeVerb: FIRST_STEP_ESCAPE_VERB }) ?? deps.flow;
     /**
      * What `Esc` does on a prompt of the popup's first step other than the explicit list, and on the prompts reached from that list: it steps
-     * back, so the channel tells it from `Ctrl+C`, which leaves. Reached from the list it returns there; on the automatic first run, where
-     * there is nothing before it, the step back is the SKIP (S3: `Ctrl+C` there leaves with nothing remembered). A card has no step back.
+     * back, so the channel tells it from `Ctrl+C`, which leaves. Reached from the list it returns there (`fromList`); on the automatic first
+     * run, where there is nothing before it, the step back is the SKIP (`first`; S3: `Ctrl+C` there leaves with nothing remembered). A card has
+     * no step back.
      */
-    const fromList: NativePromptEscape = framed === undefined ? 'cancel' : 'back';
+    const fromList: StepExit = framed === undefined ? 'cancel' : 'back';
+    const first = firstStepExit(framed !== undefined, firstRun);
+    const runWrites = createRunWrites(target);
     const signal = flow.begin();
     if (intro !== undefined) flow.note(intro);
     const assertAdmitting = (): void => {
@@ -254,8 +335,8 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     let personSkipped = false;
     /**
      * The one line the host shows after an automatic first run that ended with no key and no word of its own (ADR-0146 §6): a skip says
-     * whether it was remembered ({@link rememberSkip}); a run that was left (`Ctrl+C`, a `Not now`, the keychain step's `Not now`) says it opens
-     * again next launch, because nothing was written. Only the first run that opened BY ITSELF speaks: closing a `/providers` the person
+     * whether it was remembered ({@link rememberSkip}); a run that was left (`Ctrl+C`, an `Esc` that arrived before the popup appeared, a `Not
+     * now`, the keychain step's `Not now`) says it opens again next launch, because nothing was written. Only the first run that opened BY ITSELF speaks: closing a `/providers` the person
      * opened (or the one the doctor handed off to) says nothing (O13, the residue rule).
      */
     const closing = (outcome: ProviderSetupOutcome): ProviderSetupOutcome => {
@@ -277,19 +358,26 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     const keychainDown = (): boolean =>
       observations.some(({ availability }) => availability.keychainHealth === 'unavailable');
 
-    /** The key step (the native setup) for `id`, or the provider list when none is given. */
-    async function manual(id?: ProviderId): Promise<ProviderSetupOutcome | Back> {
+    /**
+     * The key step (the native setup) for `id`, or the provider list when none is given. `exit` is how its first prompt is left: back to the
+     * step that opened it (the default), or, on the automatic first run where it is the first step, the skip.
+     */
+    async function manual(
+      id?: ProviderId,
+      exit: StepExit = fromList,
+    ): Promise<ProviderSetupOutcome | Back> {
       assertAdmitting();
       const down = keychainDown()
         ? (id ??
           observations.find(({ availability }) => availability.keychainHealth === 'unavailable')
             ?.id)
         : undefined;
-      if (down !== undefined) return unavailable(steps, down, fromList);
+      if (down !== undefined) return unavailable(steps, down, exit);
       const capture = capturingCommitted(flow);
       const result = await runNativeSetup(
         {
           ...deps.wizard,
+          writeDefaultModel: steps.writes.writeDefaultModel,
           resolver: deps.resolver,
           ...(id === undefined ? {} : { initialProvider: id }),
         },
@@ -300,7 +388,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           endpointContext: deps.endpointContext,
           selectStarterDefault: firstUsable,
           surface,
-          ...setupStages(framed, entry),
+          ...setupStages(framed, exit, id !== undefined),
         },
       );
       if (result.kind === 'skipped' && firstRun) personSkipped = true;
@@ -317,14 +405,16 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       signal,
       flow,
       prompts: entry,
+      skipPrompts: skipEntry,
       admit: assertAdmitting,
       policy: deps.policy,
-      writes: writes(assertAdmitting),
+      writes: writes(assertAdmitting, runWrites.view),
       finish: async (outcome, done, interrupted) => {
         if (framed === undefined) return outcome;
         if (signal.aborted)
           return { status: outcome.status, changed: outcome.changed, notice: interrupted };
-        await framed.done(done);
+        // No key was entered on this road (a source granted, a keychain remembered): the rail does not tick the `Key` step.
+        await framed.done({ ...done, skipped: [KEY_STEP] });
         return { status: outcome.status, changed: outcome.changed };
       },
       manual,
@@ -369,7 +459,10 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       observations[0];
 
     /** A keychain that is down: the automatic offer of a person who already acknowledged it only says how to retry; any other asks. */
-    const settleKeychainDown = async (id: ProviderId): Promise<ProviderSetupOutcome | Back> => {
+    const settleKeychainDown = async (
+      id: ProviderId,
+      exit: StepExit,
+    ): Promise<ProviderSetupOutcome | Back> => {
       if (mode === 'automatic' && reminder.acknowledged)
         return {
           status: 'deferred',
@@ -379,7 +472,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
               ? 'Keychain is unavailable. Restart this chat to retry setup.'
               : 'Keychain is unavailable. Open /providers to retry.',
         };
-      return await unavailable(steps, id, fromList);
+      return await unavailable(steps, id, exit);
     };
 
     /** A key that already works: say so, and offer to replace it. */
@@ -396,28 +489,28 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           ...(keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
           { value: 'cancel', label: 'Done' },
         ],
-        escape: fromList,
+        escape: fromList === 'cancel' ? 'cancel' : 'back',
       });
       if (answer === NATIVE_PROMPT_BACK) return NATIVE_PROMPT_BACK;
       return answer === 'manual' && !signal.aborted ? await manual(id) : CANCELLED;
     };
 
-    /** What the setup does for one chosen row, by what its key is. */
-    const settle = async ({
-      id,
-      availability,
-    }: Observation): Promise<ProviderSetupOutcome | Back> => {
+    /** What the setup does for one chosen row, by what its key is; `exit` is how the step it opens is left. */
+    const settle = async (
+      { id, availability }: Observation,
+      exit: StepExit,
+    ): Promise<ProviderSetupOutcome | Back> => {
       if (availability.status === 'present-standard-not-allowed')
-        return await consent(steps, id, availability.source.name, fromList);
+        return await consent(steps, id, availability.source.name, exit);
       if (availability.status === 'ineligible-custom-endpoint') {
         flow.note(
           `${availability.source.name} cannot be used with the configured custom endpoint. ${scrubSetupText(deps.endpointContext(id))}`,
         );
-        return await manual(id);
+        return await manual(id, exit);
       }
-      if (availability.status === 'unavailable') return await settleKeychainDown(id);
+      if (availability.status === 'unavailable') return await settleKeychainDown(id, exit);
       if (availability.status === 'usable') return await settleUsable(id, availability);
-      return await manual(mode === 'automatic' ? undefined : id);
+      return await manual(mode === 'automatic' ? undefined : id, exit);
     };
 
     /** The explicit list: a row's step, and back to the list when that step steps back. */
@@ -425,7 +518,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       for (;;) {
         const chosen = await pickFromList();
         if (chosen === undefined) return CANCELLED;
-        const outcome = await settle(chosen);
+        const outcome = await settle(chosen, fromList);
         if (outcome !== NATIVE_PROMPT_BACK) return outcome;
       }
     };
@@ -441,7 +534,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       if (mode === 'explicit') return await fromTheList();
       const chosen = firstNeedingAttention();
       if (chosen === undefined) return CANCELLED;
-      const outcome = await settle(chosen);
+      const outcome = await settle(chosen, first);
       if (outcome !== NATIVE_PROMPT_BACK) return outcome;
       // A step back from the first step, where there is nothing before it (the consent, the keychain step, or a custom endpoint's key asked
       // first): the setup is left, as a skip.

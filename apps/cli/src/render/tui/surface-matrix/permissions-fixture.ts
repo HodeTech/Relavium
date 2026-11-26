@@ -25,9 +25,12 @@ export const PERMISSIONS_LANDMARKS = {
 export type PermissionsState = keyof typeof PERMISSIONS_LANDMARKS;
 
 /** The legend row of each permissions surface, whole on one row of every cell. */
-export const PERMISSIONS_LEGEND_ROW: Readonly<Record<PermissionsState, string>> = {
+export const PERMISSIONS_LEGEND_ROW: Readonly<
+  Record<PermissionsState, string | readonly string[]>
+> = {
   list: '↑/↓ select · [d] / Del withdraw (then Enter) · Esc close',
-  armed: 'Enter withdraw · Esc keep',
+  // The withdrawal's line while its lockout holds its `Enter` (`(wait)`, dim), and once it has opened.
+  armed: ['Enter withdraw (wait) · Esc keep', 'Enter withdraw · Esc keep'],
   empty: 'Esc close',
 };
 

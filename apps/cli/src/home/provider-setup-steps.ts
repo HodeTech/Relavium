@@ -53,6 +53,23 @@ export interface Observation {
 /** A step back from a step that has one before it: the caller asks its own prompt again. */
 export type Back = typeof NATIVE_PROMPT_BACK;
 
+/**
+ * How `Esc` leaves a step of the setup: `skip` on the automatic first run's step that has nothing before it (its step back IS the skip, and its
+ * legend says `Esc skip for now`: ADR-0146 §6), `back` on a step reached from another (it returns there), `cancel` on a card (`Esc` leaves the
+ * setup, as it always did).
+ */
+export type StepExit = 'skip' | 'back' | 'cancel';
+
+/** The channel's `escape` of a step left by `exit`: the skip is a step back the caller reads as the skip. */
+function escapeOf(exit: StepExit): NativePromptEscape {
+  return exit === 'cancel' ? 'cancel' : 'back';
+}
+
+/** The prompts of a step left by `exit`: the first run's skip says so on its legend. */
+function promptsOf(run: SetupRun, exit: StepExit): SetupPrompts {
+  return exit === 'skip' ? run.skipPrompts : run.prompts;
+}
+
 /** The person left the setup (or it was stopped) with nothing granted. */
 export const CANCELLED: ProviderSetupOutcome = { status: 'cancelled', changed: false };
 
@@ -77,6 +94,11 @@ export interface SetupRun {
   readonly flow: Pick<NativePromptFlow, 'note'>;
   /** The prompts of the popup's `Provider` step (the card's own flow on a card). */
   readonly prompts: SetupPrompts;
+  /**
+   * The same step's prompts where its `Esc` is the skip of the automatic first run ({@link StepExit} `skip`): their legend says `Esc skip for
+   * now` (ADR-0146 §6). The card's own flow on a card, where they are never asked for.
+   */
+  readonly skipPrompts: SetupPrompts;
   /** The host's admission and the flow's signal: throws once the host stopped admitting or the flow was cancelled. */
   readonly admit: () => void;
   readonly policy: StandardEnvKeyPolicy;
@@ -87,14 +109,17 @@ export interface SetupRun {
     readonly publish: (prepared: PreparedConfigWrite) => Promise<ConfigWriteResult>;
     readonly writeDefaultModel: OnboardingDeps['writeDefaultModel'];
   };
-  /** The popup's Done step, or (when the flow was already cancelled) the line the host shows instead; a card keeps its notice. */
+  /**
+   * The popup's Done step of a run that ends with NO key entered (a source granted, a keychain remembered): its rail draws the `Key` step as
+   * not done. When the flow was already cancelled, the line the host shows instead; a card keeps its notice.
+   */
   readonly finish: (
     outcome: ProviderSetupOutcome,
     done: FramedDone,
     interrupted: string,
   ) => Promise<ProviderSetupOutcome>;
-  /** The key step (the native setup), for one provider or the list. */
-  readonly manual: (id?: ProviderId) => Promise<ProviderSetupOutcome | Back>;
+  /** The key step (the native setup), for one provider or the list; `exit` is how the step it opens is left (default: back to this one). */
+  readonly manual: (id?: ProviderId, exit?: StepExit) => Promise<ProviderSetupOutcome | Back>;
   /** Whether the keychain was found unavailable in the latest sample. */
   readonly keychainDown: () => boolean;
   /** Sample every provider's key again (`Retry keychain`), and keep the sample for the run. */
@@ -133,10 +158,10 @@ export async function consent(
   run: SetupRun,
   id: ProviderId,
   source: string,
-  escape: NativePromptEscape,
+  exit: StepExit,
 ): Promise<ProviderSetupOutcome | Back> {
   for (;;) {
-    const answer = await run.prompts.select({
+    const answer = await promptsOf(run, exit).select({
       message: consentText(run, id, source),
       initialValue: 'defer',
       options: [
@@ -145,7 +170,7 @@ export async function consent(
         ...(run.keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
         { value: 'defer', label: 'Not now' },
       ],
-      escape,
+      escape: escapeOf(exit),
     });
     if (answer === 'manual' && !run.signal.aborted) {
       const keyed = await run.manual(id);
@@ -395,17 +420,17 @@ async function grantOutcome(
 export async function unavailable(
   run: SetupRun,
   id: ProviderId,
-  escape: NativePromptEscape,
+  exit: StepExit,
 ): Promise<ProviderSetupOutcome | Back> {
   for (;;) {
-    const answer = await run.prompts.select({
+    const answer = await promptsOf(run, exit).select({
       message:
         'The OS keychain is unavailable, so a key cannot be stored. ' +
         `To use one anyway, set ${providerKeyEnvVar(id)} in the environment before starting Relavium.`,
       options: keychainOptions(run.reminder.acknowledged),
-      escape,
+      escape: escapeOf(exit),
     });
-    const next = await afterKeychainAnswer(run, id, answer, escape);
+    const next = await afterKeychainAnswer(run, id, answer, exit);
     if (next !== undefined) return next;
   }
 }
@@ -432,11 +457,11 @@ async function afterKeychainAnswer(
   run: SetupRun,
   id: ProviderId,
   answer: string | symbol,
-  escape: NativePromptEscape,
+  exit: StepExit,
 ): Promise<ProviderSetupOutcome | Back | undefined> {
   if (answer === NATIVE_PROMPT_BACK) return NATIVE_PROMPT_BACK;
   if (typeof answer !== 'string' || run.signal.aborted || answer === 'cancel') return CANCELLED;
-  if (answer === 'retry') return await retryKeychain(run, id, escape);
+  if (answer === 'retry') return await retryKeychain(run, id, exit);
   if (answer !== 'ack' || run.reminder.acknowledged) return CANCELLED;
   return await rememberKeychain(run);
 }
@@ -445,7 +470,7 @@ async function afterKeychainAnswer(
 async function retryKeychain(
   run: SetupRun,
   id: ProviderId,
-  escape: NativePromptEscape,
+  exit: StepExit,
 ): Promise<ProviderSetupOutcome | Back | undefined> {
   run.admit();
   const observations = run.resample();
@@ -459,8 +484,10 @@ async function retryKeychain(
     outcome: ProviderSetupOutcome | Back,
   ): ProviderSetupOutcome | Back | undefined =>
     outcome === NATIVE_PROMPT_BACK && run.mode === 'automatic' ? undefined : outcome;
+  // What follows is reached from the keychain step, so its `Esc` returns there: never the skip, even on the first run.
+  const onward: StepExit = exit === 'cancel' ? 'cancel' : 'back';
   if (pending?.availability.status === 'present-standard-not-allowed')
-    return stepBack(await consent(run, pending.id, pending.availability.source.name, escape));
+    return stepBack(await consent(run, pending.id, pending.availability.source.name, onward));
   if (!run.keychainDown()) return stepBack(await run.manual(id));
   run.flow.note('The keychain is still unavailable.');
   return undefined;

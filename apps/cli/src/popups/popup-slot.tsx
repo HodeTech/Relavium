@@ -61,6 +61,7 @@ import {
   nativePopupLayout,
   nativePopupLegend,
   nativePopupNoticeKeys,
+  nativeRailDone,
   nextPin,
   pinnedBodyRows,
   pinnedTop,
@@ -219,6 +220,8 @@ function HostPopup(
   const { host, acknowledgement, snapshot, size, color } = props;
   // The loading clock is a display value, not a field of the snapshot: a tick re-renders this view and changes no identity (ADR-0147 §2).
   const elapsed = useSyncExternalStore(host.clock.subscribe, host.clock.read);
+  // So is the lock of a guarded form's `Enter` or a line's answer (`(wait)` on its legend part): one re-render at the unlock instant.
+  const locked = useSyncExternalStore(host.lock.subscribe, host.lock.read);
   const node = useRef<DOMElement | null>(null);
   const frame = snapshot.frame;
   const geometry: PopupGeometry | undefined =
@@ -287,7 +290,7 @@ function HostPopup(
     // The legend is judged on the page this frame draws (a report that fits names no scroll; a line cut short or with a row cut, and a form
     // that is not whole, name no answer).
     legend: withGlyphForm(!color, () =>
-      popupLegend(frame, pageRef.current.rows, geometry.innerWidth),
+      popupLegend(frame, pageRef.current.rows, geometry.innerWidth, locked),
     ),
     // The host's live notification, in the legend row while the popup covers the hint row.
     notice: snapshot.notice,
@@ -384,6 +387,8 @@ export function nativePopupFrameLines(
   geometry: PopupBoxGeometry,
   layout: NativeBodyLayout,
   color: boolean,
+  /** The channel's lock (`NativePromptUi.lock`): the affirmative's legend part waits (dim, `(wait)`) while it holds. */
+  locked = false,
 ): readonly SheetLine[] {
   const descriptor = snapshot.popup;
   const count = descriptor?.stepCount ?? 1;
@@ -393,7 +398,11 @@ export function nativePopupFrameLines(
     // The rail's nodes carry the step names the flow gave (a node with none is drawn bare); the top edge says `step 2 of 3` either way.
     steps: Array.from({ length: count }, (_, index) => descriptor?.stepNames?.[index] ?? ''),
     stepIndex: descriptor?.stepIndex ?? 0,
-    legend: withGlyphForm(!color, () => nativePopupLegend(snapshot, layout.page !== undefined)),
+    // A step the flow passed without doing it is drawn as not done (`○`), never `✓` (the setup's `Key` step after a granted environment key).
+    done: nativeRailDone(snapshot),
+    legend: withGlyphForm(!color, () =>
+      nativePopupLegend(snapshot, layout.page !== undefined, locked),
+    ),
   };
   return withGlyphForm(!color, () => popupFrameLines(parts, { lines: layout.lines }, geometry));
 }
@@ -471,6 +480,8 @@ function NativePopup(
   }>,
 ): ReactElement | null {
   const { snapshot, acknowledgement, size, color, placement } = props;
+  // The lock is a display value, not a field of the snapshot: its change re-renders this frame and is no new frame (ADR-0147 §2).
+  const locked = useSyncExternalStore(acknowledgement.lock.subscribe, acknowledgement.lock.read);
   const node = useRef<DOMElement | null>(null);
   const descriptor = snapshot.popup;
   // What this flow's popup has shown so far (its tallest step and its first row), for as long as the popup stays mounted: the flow's own end
@@ -514,7 +525,7 @@ function NativePopup(
         legend={withGlyphForm(!color, () => nativePopupNoticeKeys(snapshot))}
       />
     );
-  const lines = nativePopupFrameLines(snapshot, geometry, layout, color);
+  const lines = nativePopupFrameLines(snapshot, geometry, layout, color, locked);
   return (
     <NativeFrameView
       lines={lines}

@@ -24,6 +24,7 @@ import {
   nativeLegendParts,
   nativePopupLegend,
   nativePopupNoticeKeys,
+  nativeRailDone,
   nativeWindowPage,
   nextPin,
   withLiveBullets,
@@ -689,6 +690,76 @@ describe('what `Enter` says on a text or a masked field (`enterVerb`, a product 
   it('a verb that carries a forged legend token is drawn as given: nothing at run time can tell product text from data, so only the TYPE keeps it a constant', () => {
     // Documented, not prevented: `enterVerb` is a product constant by contract (see `NativePopupDescriptor.enterVerb`).
     expect(legendText(field('text', 'check · [Ctrl+Y] allow'))).toContain('check · [Ctrl+Y] allow');
+  });
+});
+
+describe('W7: what `Esc` says where it steps back (`escapeVerb`, a product constant) and the rail’s skipped steps', () => {
+  const stepping = (
+    escapeVerb?: string,
+    escape: 'back' | 'cancel' = 'back',
+  ): NativePromptSnapshot => ({
+    ...BASE,
+    escape,
+    popup: { ...BASE.popup!, ...(escapeVerb === undefined ? {} : { escapeVerb }) },
+  });
+
+  it('the first run’s first step reads `Esc skip for now · [Ctrl+C] close`; with none it reads `Esc back`; an empty verb is none', () => {
+    expect(legendText(stepping('skip for now'))).toBe(
+      '↑/↓ select · Enter choose · Esc skip for now · [Ctrl+C] close',
+    );
+    expect(legendText(stepping())).toBe('↑/↓ select · Enter choose · Esc back · [Ctrl+C] close');
+    expect(legendText(stepping(''))).toBe('↑/↓ select · Enter choose · Esc back · [Ctrl+C] close');
+  });
+
+  it('names only the `Esc` that steps back: where `Esc` closes the popup the way back keeps the descriptor’s exit label', () => {
+    expect(legendText(stepping('skip for now', 'cancel'))).toBe(
+      '↑/↓ select · Enter choose · Esc close',
+    );
+  });
+
+  it('a text or a masked field and a wait name it the same way; the card never has it', () => {
+    const field: NativePromptSnapshot = { ...stepping('skip for now'), kind: 'password' };
+    expect(legendText(field)).toBe('Enter continue · Esc skip for now · [Ctrl+C] close');
+    const { popup, ...card } = field;
+    void popup;
+    const parts = nativeLegendParts(card, false, 'card');
+    expect(legend(parts.items, parts.exit)).toContain('Esc back');
+  });
+
+  it('the rail’s `done` marks: a skipped step is not done; none skipped (or none in the list) is no marks at all', () => {
+    expect(nativeRailDone(BASE)).toBeUndefined();
+    expect(nativeRailDone({ ...BASE, popup: { ...BASE.popup!, skipped: [] } })).toBeUndefined();
+    expect(
+      nativeRailDone({ ...BASE, popup: { ...BASE.popup!, stepIndex: 2, skipped: [1] } }),
+    ).toEqual([true, false, true]);
+    const { popup, ...card } = BASE;
+    void popup;
+    expect(nativeRailDone(card)).toBeUndefined();
+  });
+
+  it('the drawn rail of a Done step that skipped the key step, at 80×24, colour and plain', () => {
+    const done: NativePromptSnapshot = {
+      ...BASE,
+      message: 'Using OPENAI_API_KEY · OpenAI',
+      options: [{ value: 'done', label: 'Close' }],
+      escape: 'back',
+      final: 'ok',
+      popup: { ...BASE.popup!, stepIndex: 2, skipped: [1] },
+    };
+    const rail = (color: boolean): string | undefined => {
+      const { geometry, layout } = nativePopupGeometry(
+        done,
+        'overlay',
+        { cols: 80, rows: 24 },
+        color,
+      );
+      if (layout === undefined || !geometry.fits) throw new Error('no frame');
+      return nativePopupFrameLines(done, geometry, layout, color)
+        .map((line) => line.text.trim())
+        .find((row) => row.includes('Provider'));
+    };
+    expect(rail(true)).toBe('✓ Provider ╌╌ ○ Key ╌╌ ◉ Done');
+    expect(rail(false)).toBe('ok Provider .. o Key .. @ Done');
   });
 });
 

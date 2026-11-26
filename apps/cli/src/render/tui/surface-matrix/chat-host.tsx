@@ -92,6 +92,8 @@ export interface ChatMount extends InkMount {
   skip: (ms: number) => void;
   /** The popup on top of the host's popup host, as it is now. */
   popupFrame: () => PopupFrame | undefined;
+  /** Whether that popup holds its answer locked now (`PopupHost.lock`: the slot draws the part as waiting, and so does the box). */
+  popupLocked: () => boolean;
 }
 
 const boundOf = (variant: Variant) =>
@@ -174,6 +176,7 @@ export function mountStandaloneChat(
       skipped += ms;
     },
     popupFrame: () => popups.getSnapshot().frame,
+    popupLocked: () => popups.lock.read(),
   };
 }
 

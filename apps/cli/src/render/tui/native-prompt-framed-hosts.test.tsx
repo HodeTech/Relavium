@@ -101,7 +101,9 @@ describe('a chord step drawn in the popup frame', () => {
         const text = m.frame().join('\n');
         expect(text).toContain('step 2 of 3');
         expect(text).toMatch(/Path .* Confirm .* Done/u);
-        expect(text).toContain('[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies');
+        // Its answers on the legend row: `Ctrl+Y` waits (dim, `(wait)`) while the lockout from the card's opening holds it, and the longer part
+        // drops `[Ctrl+N]` at 80 columns (`Esc` refuses as well).
+        expect(text).toContain('[Ctrl+Y] Write the file (wait) · Esc denies');
         expect(text).toContain('The file you named is not changed.');
         // The card's own rows are not drawn: the popup frame is.
         expect(text).not.toContain('│ from');

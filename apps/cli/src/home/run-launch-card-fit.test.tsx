@@ -132,7 +132,9 @@ describe('the longest confirmation at 80x24, in the /run popup', () => {
       const text = m.text();
       expect(text).toContain('/run');
       expect(text).toContain('step 3 of 3');
-      expect(text).toContain('[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies');
+      // Drawn while the lockout from the step's opening holds `Ctrl+Y` (`(wait)`): at 80 columns that longer part drops `[Ctrl+N]`; the
+      // refusal is still named (`[Ctrl+C] denies`), and `Ctrl+N` is never delayed (below).
+      expect(text).toContain('[Ctrl+Y] Start it (wait) · Esc back · [Ctrl+C] denies');
       expect(text).toContain('does not limit');
       expect(text).not.toMatch(/too long for a popup|too small for this popup/u);
 

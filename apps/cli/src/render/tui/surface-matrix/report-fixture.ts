@@ -132,8 +132,8 @@ export function reportsPortFor(surface: ReportSurface, state: ReportState): Repo
 }
 
 /** The box of the report popup the host has open in this cell. */
-export const reportPopupBox = (variant: Variant, live?: PopupFrame): PopupBox =>
-  popupBoxOf(live, variant);
+export const reportPopupBox = (variant: Variant, live?: PopupFrame, locked = false): PopupBox =>
+  popupBoxOf(live, variant, undefined, locked);
 
 /**
  * Put the report popup of `state` on a mount of any chat host: the command typed and routed by the host, the popup's clock skipped past its settle

@@ -56,6 +56,13 @@ export function pinnedNativePopupBox(
     left: geometry.left,
     width: geometry.width,
     height: geometry.height,
-    rows: nativePopupFrameLines(snapshot, geometry, layout, variant.color).map((line) => line.text),
+    // With the channel's lock as it is now, as the slot draws it (a waiting part reads `(wait)`).
+    rows: nativePopupFrameLines(
+      snapshot,
+      geometry,
+      layout,
+      variant.color,
+      channel.ui.lock.read(),
+    ).map((line) => line.text),
   };
 }

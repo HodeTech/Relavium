@@ -341,7 +341,9 @@ function fieldLayout(
 
 /** Whether a chord step's legend row keeps its affirmative answer (`[Ctrl+Y]`) at `width`: a step whose answer is not named is never answered. */
 function chordAnswerNamed(snapshot: NativePromptSnapshot, width: number): boolean {
-  return fittedLegendItems(nativePopupLegend(snapshot), width).some(
+  // Judged on the row as it is drawn while the card's `Ctrl+Y` waits (`(wait)`), the longer of its two: a step whose answer that row would
+  // drop is on its page in neither state, so the lock opening never turns a notice into a frame (which would be a new frame to read).
+  return fittedLegendItems(nativePopupLegend(snapshot, false, true), width).some(
     (item) => 'keys' in item && item.keys === CHORD_ALLOW_KEY,
   );
 }
@@ -561,16 +563,28 @@ function enterVerbOf(snapshot: NativePromptSnapshot): string {
   return verb === undefined || verb === '' ? 'continue' : verb;
 }
 
+/** The mark of a key its guard holds now ({@link LegendKey.wait}: dim, `(wait)`), or nothing. */
+function waiting(locked: boolean): { readonly wait?: true } {
+  return locked ? { wait: true } : {};
+}
+
+/** Whether the select's highlighted option is the guarded one: the only option whose `Enter` the lock holds (every other answers at once). */
+function onGuardedRow(snapshot: NativePromptSnapshot): boolean {
+  return snapshot.options[snapshot.selected]?.guarded === true;
+}
+
 /**
  * The ONE legend of a prompt of the channel, as parts, for both of its surfaces: the card (`native-prompt-view.tsx` joins them into its one
  * line) and the popup frame (which fits them to its row and names the way back in the descriptor's words). They differ in one place only: a
  * chord CARD draws its answers as rows of its own, so its legend is the way back alone, where the popup names the answers on the legend row.
- * `windowed` names `PgUp/PgDn page` for a select drawn in a window.
+ * `windowed` names `PgUp/PgDn page` for a select drawn in a window. `locked` is the channel's lock (`NativePromptUi.lock`): while it holds, the
+ * affirmative's part waits (`[Ctrl+Y] <allow> (wait)`, and `Enter choose (wait)` while the guarded option is highlighted).
  */
 export function nativeLegendParts(
   snapshot: NativePromptSnapshot,
   windowed: boolean,
   surface: 'card' | 'popup',
+  locked = false,
 ): { readonly items: readonly LegendItem[]; readonly exit: LegendExit } {
   const back = snapshot.escape === 'back';
   switch (snapshot.kind) {
@@ -581,7 +595,7 @@ export function nativeLegendParts(
         items: [
           { keys: '↑/↓', verb: 'select' },
           ...paging,
-          { keys: 'Enter', verb: 'choose' },
+          { keys: 'Enter', verb: 'choose', ...waiting(locked && onGuardedRow(snapshot)) },
           ...before,
         ],
         exit,
@@ -600,7 +614,7 @@ export function nativeLegendParts(
         snapshot.options.find((option) => option.value === value)?.label ?? value;
       return {
         items: [
-          { keys: CHORD_ALLOW_KEY, verb: label('allow'), role: 'ok' },
+          { keys: CHORD_ALLOW_KEY, verb: label('allow'), role: 'ok', ...waiting(locked) },
           { keys: 'Ctrl+N', verb: label('deny'), role: 'danger' },
           ...before,
         ],
@@ -633,13 +647,39 @@ function legendPriority(items: readonly LegendItem[]): readonly number[] | undef
 }
 
 /**
+ * The `Esc` of a prompt that steps back, in its step's own word where the flow gave one (`skip for now` on the first run's first step, whose
+ * step back is the skip: `NativePopupDescriptor.escapeVerb`, a product constant), else the `back` the channel names it by.
+ */
+function withEscapeVerb(
+  items: readonly LegendItem[],
+  snapshot: NativePromptSnapshot,
+): readonly LegendItem[] {
+  const verb = snapshot.popup?.escapeVerb;
+  if (verb === undefined || verb === '') return items;
+  return items.map((item) => ('keys' in item && item.keys === 'Esc' ? { ...item, verb } : item));
+}
+
+/**
+ * The rail's `done` marks of a framed prompt (`PopupFrameParts.done`, parallel to its steps): `false` for a step the flow passed without doing
+ * it (`NativePopupDescriptor.skipped`), so the rail draws it as not done; `undefined` when the flow skipped none (every step before is done).
+ */
+export function nativeRailDone(snapshot: NativePromptSnapshot): readonly boolean[] | undefined {
+  const descriptor = snapshot.popup;
+  const skipped = descriptor?.skipped;
+  if (descriptor === undefined || skipped === undefined || skipped.length === 0) return undefined;
+  return Array.from({ length: descriptor.stepCount }, (_, index) => !skipped.includes(index));
+}
+
+/**
  * The legend of a framed prompt: what its keys do, and the way back the channel's `escape` gives it, in the descriptor's words where it
  * closes. A flow's persistent last step says `Enter / Esc close` and nothing else; a select drawn in a window names `PgUp/PgDn page`, which
- * is the first thing a short row drops.
+ * is the first thing a short row drops. `locked`: the channel's lock (see {@link nativeLegendParts}); the row keeps a waiting part before every
+ * other key but the ways out (`fittedLegendItems`).
  */
 export function nativePopupLegend(
   snapshot: NativePromptSnapshot,
   windowed = false,
+  locked = false,
 ): {
   readonly items: readonly LegendItem[];
   readonly exit: LegendExit;
@@ -647,7 +687,9 @@ export function nativePopupLegend(
 } {
   if (snapshot.kind === 'select' && snapshot.final !== undefined)
     return { items: [], exit: exitKey.close(['Enter', 'Esc'], 'close') };
-  const { items, exit } = nativeLegendParts(snapshot, windowed, 'popup');
+  const parts = nativeLegendParts(snapshot, windowed, 'popup', locked);
+  const { exit } = parts;
+  const items = withEscapeVerb(parts.items, snapshot);
   const label = snapshot.popup?.exitLabel ?? '';
   const named = exit.class === 'close' && label !== '' ? exitKey.close(exit.keys, label) : exit;
   const priority = legendPriority(items);

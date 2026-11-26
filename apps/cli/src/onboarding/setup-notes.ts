@@ -76,9 +76,10 @@ export function setupSkippedNotice(surface: SetupSurface | undefined): string {
 export const SETUP_SKIP_NOT_SAVED = 'Setup skipped · not saved, it opens again next launch';
 
 /**
- * What the Home says when its automatic first run was LEFT without a skip being remembered (`Ctrl+C`, `Not now` on the environment-key consent
- * or the keychain step, a cancelled key check): nothing was stored and nothing written, so the popup opens by itself again at the next launch
- * (MVP-11 unit 6, C-F5). On a stand-alone chat's card it is the card's one skip line ({@link setupSkippedNotice}), which says the same there.
+ * What the Home says when its automatic first run was LEFT without a skip being remembered (`Ctrl+C`, at any step or during the key check; an
+ * `Esc` already on its way when the popup appeared, which is never the skip; `Not now` on the environment-key consent or the keychain step):
+ * nothing was stored and nothing written, so the popup opens by itself again at the next launch (MVP-11 unit 6, C-F5). On a stand-alone chat's
+ * card it is the card's one skip line ({@link setupSkippedNotice}), which says the same there.
  */
 export function setupClosedNotice(surface: SetupSurface | undefined): string {
   return surface === 'standalone-chat'

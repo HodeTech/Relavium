@@ -364,9 +364,15 @@ function chatReportSurface(state: ReportState, title: string): ChatSurfaceDefini
 }
 
 /** The legend row of each `/models` step, whole on one row of every cell. */
-const MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string>> = {
+const MODELS_LEGEND_ROW: Readonly<Record<ModelsState, string | readonly string[]>> = {
   list: '↑/↓ select · Enter next · Esc close',
-  form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
+  // A guarded form (the provider changes): its `Enter` waits (`(wait)`, dim) for the lockout after the `Enter` that reached it; at 80 columns
+  // the longer part drops `↑/↓ scope` (the form keeps `Enter` first, `legendKeep`); once the lock has opened, the row is whole again.
+  form: [
+    '←/→ effort · Enter apply (wait) · [Ctrl+C] close · Esc back',
+    '←/→ effort · ↑/↓ scope · Enter apply (wait) · [Ctrl+C] close · Esc back',
+    '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
+  ],
 };
 
 /**

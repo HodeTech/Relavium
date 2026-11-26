@@ -28,7 +28,7 @@ export const NATIVE_PROMPT_IDENTITY_EXCLUDED: Readonly<
 /**
  * Whether two snapshots are the same card as far as the measured-frame proof goes: every field but the ones of
  * {@link NATIVE_PROMPT_IDENTITY_EXCLUDED}, the popup descriptor field by field (its title, origin, steps and their names, exit label,
- * the verb of `Enter`, and depth). The lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
+ * the verbs of `Enter` and `Esc`, the steps it skipped, and depth). The lists and the picker's state are compared by reference: the channel publishes a new one exactly when it changes.
  */
 export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSnapshot): boolean {
   return (
@@ -48,9 +48,12 @@ export function sameNativePromptFrame(a: NativePromptSnapshot, b: NativePromptSn
 }
 
 /** Two lists of step names, name by name (the setter builds a new list each time, so a reference would always differ). */
-function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+function sameList<T extends string | number>(
+  a: readonly T[] | undefined,
+  b: readonly T[] | undefined,
+): boolean {
   if (a === undefined || b === undefined) return a === b;
-  return a.length === b.length && a.every((name, index) => name === b[index]);
+  return a.length === b.length && a.every((entry, index) => entry === b[index]);
 }
 
 function samePopupDescriptor(
@@ -63,9 +66,11 @@ function samePopupDescriptor(
     a.origin === b.origin &&
     a.stepIndex === b.stepIndex &&
     a.stepCount === b.stepCount &&
-    sameNames(a.stepNames, b.stepNames) &&
+    sameList(a.stepNames, b.stepNames) &&
     a.exitLabel === b.exitLabel &&
     a.enterVerb === b.enterVerb &&
+    a.escapeVerb === b.escapeVerb &&
+    sameList(a.skipped, b.skipped) &&
     a.depth === b.depth
   );
 }
@@ -226,6 +231,12 @@ export function createNativePromptAcknowledgement(
       framedPage = page;
     },
     current: () => ui.getSnapshot(),
+    /**
+     * Whether the open prompt's affirmative is locked now (`NativePromptUi.lock`): what the card and the popup slot draw its legend part by
+     * (dim, `(wait)`). A display value, not part of the frame: a change to it re-renders the same snapshot, which this acknowledgement does
+     * not take for a new frame (`commit` tells `shown` only for a new snapshot, epoch, node or size).
+     */
+    lock: ui.lock,
     inputVisible: (input?: string, key?: ChatKey): boolean =>
       (editsPicker(input, key) && pickerEditorVisible()) || inputCardVisible(),
     pasteVisible: (): boolean => pickerEditorVisible() || inputCardVisible(),

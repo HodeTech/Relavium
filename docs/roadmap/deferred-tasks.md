@@ -1571,6 +1571,11 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   prompt above the 272k threshold on the four `gpt-5.6` variants (the only shipped models with both a cache-write rate
   and a tier). Resolve by extending `CatalogPriceTier` + the upstream schema **if models.dev starts publishing it**, or
   by asking upstream to.
+  **2026-11-26 (MVP-11 unit 6 round-1 security sitting): the trigger has fired.** models.dev now publishes a tier `cache_write`
+  for 24 rows, among them `claude-haiku-5-5` (the new zero-config chat default: $0.625 per Mtok above 100k against the flat
+  $0.125), and `toPriceTiers` (`catalog/models-dev-schema.ts`) still drops it. Exposure today is none: no adapter sends
+  `cache_control`, so no request writes the cache. The first adapter that does (or a provider that bills writes on its own)
+  must carry `cacheWritePerMtokMicrocents` on `CatalogPriceTier` and use it in `ratesFor`; regenerate the snapshot then.
   *(medium · packages/llm/src/cost-tracker.ts + catalog/models-dev-schema.ts; found by the 2.6.Q Step-6 Sonnet review)*
 
 - [ ] **Auto-open a PR for additive catalog drift.** ADR-0071 §9 wants new models to "merge automatically" while a

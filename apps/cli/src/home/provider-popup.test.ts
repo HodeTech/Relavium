@@ -22,7 +22,12 @@ import type { Key } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ConfigError } from '../config/errors.js';
-import { globalConfigPath } from '../config/write.js';
+import {
+  globalConfigPath,
+  prepareGlobalPreferences,
+  type ConfigWriteResult,
+  type PreparedConfigWrite,
+} from '../config/write.js';
 import {
   createProviderResolver,
   KNOWN_PROVIDERS,
@@ -48,7 +53,9 @@ import {
 import { foldLineSeparators } from '../popups/frame-model.js';
 import { nativePopupLegend } from '../popups/native-popup-body.js';
 import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
+import { nativePopupFrameLines, nativePopupGeometry } from '../popups/popup-slot.js';
 import { scrubPopupText } from '../popups/popup-text.js';
+import { legend } from '../render/tui/legend.js';
 import {
   createNativePromptChannel,
   NATIVE_PROMPT_RESIZED,
@@ -65,6 +72,7 @@ import {
   consentMessage,
   createProviderSetupCoordinator,
   FIRST_RUN_POPUP_TITLE,
+  FIRST_STEP_ESCAPE_VERB,
   KEY_STEP_ENTER_VERB,
   PROVIDER_STEP_NAMES,
   PROVIDERS_POPUP_TITLE,
@@ -124,7 +132,20 @@ function rig(
   options: {
     readonly env?: Record<string, string>;
     readonly config?: 'none' | 'hand-made' | 'symlink';
-    readonly validate?: (id: string, key: string) => Promise<ProviderKeyValidation>;
+    readonly validate?: (
+      id: string,
+      key: string,
+      signal?: AbortSignal,
+    ) => Promise<ProviderKeyValidation>;
+    /**
+     * The starter default is written as the hosts write it (prepared, passed through the run's view of its own writes, published through
+     * `publishPreference`), instead of the fake that writes nothing.
+     */
+    readonly hostStarter?: boolean;
+    /** Called as publication `index` (from 0) reaches the host, before it publishes: another writer may change the file there. */
+    readonly beforePublish?: (index: number, path: string) => void;
+    /** With `hostStarter`: called before the host prepares the starter default (another writer may change the file there). */
+    readonly beforeStarter?: (path: string) => void;
     readonly keychainDown?: boolean;
     /** A keychain of the test's own (one that recovers, say); default an in-memory one, down when `keychainDown`. */
     readonly keychain?: KeychainStore & { readonly stored: Map<string, string> };
@@ -167,6 +188,18 @@ function rig(
   const db = createClient(':memory:');
   runMigrations(db.db);
   const written: Array<readonly [string, string]> = [];
+  /** Whether each publication reached the host needing the rewrite notice (what the host draws it by), in order. */
+  const rewrites: boolean[] = [];
+  const publishPreference = (
+    prepared: PreparedConfigWrite,
+    admit: () => void,
+  ): Promise<ConfigWriteResult> => {
+    if (options.published !== undefined) options.published.count += 1;
+    rewrites.push(prepared.rewriteNeeded);
+    options.beforePublish?.(rewrites.length - 1, path);
+    const result = prepared.publish(admit);
+    return Promise.resolve(options.unconfirmed === true ? { durability: 'unconfirmed' } : result);
+  };
   const coordinator = createProviderSetupCoordinator({
     flow: channel.flow,
     resolver,
@@ -180,20 +213,27 @@ function rig(
     home,
     assertAdmitting: () => options.admit?.(),
     endpointContext: (id) => providerEndpointContext(resolver, id),
-    publishPreference: (prepared, admit) => {
-      if (options.published !== undefined) options.published.count += 1;
-      const result = prepared.publish(admit);
-      return Promise.resolve(options.unconfirmed === true ? { durability: 'unconfirmed' } : result);
-    },
+    publishPreference,
     popup: true,
     rememberSkip: true,
     wizard: {
       store: createProviderStore(db.db, { uuid: () => 'provider-id', now: () => 1 }),
       keychain,
       io: captureIo().io,
-      writeDefaultModel: (model, provider) => {
+      writeDefaultModel: async (model, provider, admit, runWrite) => {
         written.push([model, provider]);
-        return options.writeDefault?.() ?? { kind: 'saved', durability: 'confirmed' };
+        if (options.hostStarter !== true)
+          return options.writeDefault?.() ?? { kind: 'saved', durability: 'confirmed' };
+        options.beforeStarter?.(path);
+        const prepared = prepareGlobalPreferences(
+          { defaultModel: model, defaultProvider: provider },
+          home,
+        );
+        const saved = await publishPreference(
+          runWrite === undefined ? prepared : runWrite(prepared),
+          admit ?? (() => {}),
+        );
+        return { kind: 'saved', durability: saved.durability };
       },
       validate: options.validate ?? (() => Promise.resolve(OK)),
     },
@@ -210,6 +250,7 @@ function rig(
     path,
     home,
     written,
+    rewrites,
     published,
     snapshot,
     flush,
@@ -219,6 +260,15 @@ function rig(
     /** The frame on screen now was measured and flushed (the live host's acknowledgement). */
     show: (): void => channel.ui.shown(channel.ui.getSnapshot()),
     key: (key: Key, input = ''): boolean => channel.ui.input(input, key),
+    /**
+     * A deliberate `Esc` on the open prompt: its frame shown, the key a moment after it (an `Esc` that arrived before the popup's first frame
+     * is a close, never a step back: ADR-0146 §6, W7 item 4).
+     */
+    esc: (): void => {
+      channel.ui.shown(channel.ui.getSnapshot());
+      clock += 1;
+      channel.ui.input('', ESC);
+    },
     async until(predicate: (s: NativePromptSnapshot) => boolean): Promise<void> {
       for (let turn = 0; turn < 400; turn += 1) {
         if (predicate(channel.ui.getSnapshot())) return;
@@ -274,6 +324,8 @@ describe('the frame of the setup popup', () => {
       stepCount: 3,
       stepNames: PROVIDER_STEP_NAMES,
       exitLabel: 'close',
+      // W7 item 1: the first step's `Esc` is the skip, and its legend says so.
+      escapeVerb: FIRST_STEP_ESCAPE_VERB,
       depth: 1,
     });
     expect(FIRST_RUN_POPUP_TITLE).toBe('Connect a provider');
@@ -346,6 +398,56 @@ describe('a card host is never framed', () => {
     expect(published.every((snapshot) => snapshot.popup === undefined)).toBe(true);
     expect(outcome.notice).toBe(setupSkippedNotice('standalone-chat'));
     expect(existsSync(globalConfigPath(home)), 'a card host remembers no skip').toBe(false);
+    db.sqlite.close();
+  });
+
+  it('W7: on a card the key check’s wait does not step back: `Esc` there leaves the setup, as it always did, and the check is aborted', async () => {
+    const channel = createNativePromptChannel({ now: () => 10_000 });
+    channel.ui.bindVisibility((expected) => channel.ui.getSnapshot() === expected);
+    const home = mkdtempSync(join(tmpdir(), 'relavium-provider-card-check-'));
+    roots.push(home);
+    const policy = createStandardEnvKeyPolicy();
+    const keychain = memoryKeychain();
+    const resolver = createProviderResolver({}, keychain, { standardEnvPolicy: policy });
+    const db = createClient(':memory:');
+    runMigrations(db.db);
+    let checkSignal: AbortSignal | undefined;
+    const running = createProviderSetupCoordinator({
+      flow: channel.flow,
+      resolver,
+      policy,
+      globalConfig: undefined,
+      globalConfigPath: globalConfigPath(home),
+      home,
+      assertAdmitting: () => {},
+      endpointContext: (id) => providerEndpointContext(resolver, id),
+      publishPreference: (prepared, admit) => Promise.resolve(prepared.publish(admit)),
+      credentialSurface: 'standalone-chat',
+      wizard: {
+        store: createProviderStore(db.db, { uuid: () => 'card', now: () => 1 }),
+        keychain,
+        io: captureIo().io,
+        writeDefaultModel: () => ({ kind: 'saved', durability: 'confirmed' }),
+        validate: (_id, _key, signal) => {
+          checkSignal = signal;
+          return new Promise<ProviderKeyValidation>(() => {});
+        },
+      },
+    }).run('automatic');
+    const turn = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
+    for (let at = 0; at < 50 && channel.ui.getSnapshot().kind !== 'select'; at += 1) await turn();
+    channel.ui.input('\r', ENTER);
+    for (let at = 0; at < 50 && channel.ui.getSnapshot().kind !== 'password'; at += 1) await turn();
+    channel.ui.paste(SECRET);
+    channel.ui.input('\r', ENTER);
+    for (let at = 0; at < 50 && checkSignal === undefined; at += 1) await turn();
+    expect(channel.ui.getSnapshot().kind).toBe('busy');
+    expect(channel.ui.getSnapshot().escape, 'a card’s wait has no step back').toBe('cancel');
+    channel.ui.input('', ESC);
+    const outcome = await running;
+    expect(outcome.status).toBe('cancelled');
+    expect(checkSignal?.aborted).toBe(true);
+    expect(keychain.stored.size).toBe(0);
     db.sqlite.close();
   });
 });
@@ -526,7 +628,7 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     const r = rig();
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
-    r.key(ESC);
+    r.esc();
     const outcome = await running;
     expect(outcome).toMatchObject({ status: 'cancelled', notice: setupSkippedNotice('home') });
     expect(readFileSync(r.path, 'utf8')).toBe('[preferences]\nfirst_run_setup_skipped = true\n');
@@ -541,7 +643,7 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     const r = rig({ config: 'hand-made', published });
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
-    r.key(ESC);
+    r.esc();
     const outcome = await running;
     expect(outcome.notice).toBe(SETUP_SKIP_NOT_SAVED);
     expect(SETUP_SKIP_NOT_SAVED.length, 'a notification fits 54 columns').toBeLessThanOrEqual(54);
@@ -559,7 +661,7 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
     const r = rig({ config: 'symlink' });
     const running = r.coordinator.run('automatic');
     await r.until((s) => s.message === 'Which provider?');
-    r.key(ESC);
+    r.esc();
     expect((await running).notice).toBe(SETUP_SKIP_NOT_SAVED);
     expect(readFileSync(join(r.home, 'real.toml'), 'utf8')).toBe(baseline);
     r.close();
@@ -608,7 +710,7 @@ describe('a skip of the first run is remembered (ADR-0146 §6, ruled 2026-11-24)
         expect(r.snapshot().escape, 'opened to step back: the channel tells Esc from Ctrl+C').toBe(
           'back',
         );
-        if (how === 'esc') r.key(ESC);
+        if (how === 'esc') r.esc();
         else r.key({ ...NONE, ctrl: true }, 'c');
         const outcome = await running;
         if (how === 'esc') {
@@ -1196,5 +1298,456 @@ describe('hostile text a provider, an endpoint or a variable wrote', () => {
     expect(
       keyDestinationHost(resolver('Configured custom endpoint (origin unavailable).'), 'openai'),
     ).toBe(UNKNOWN_KEY_HOST);
+  });
+});
+
+describe('MVP-11 unit 6, round 1 second pass (W7): the first run’s ways out, its rail and its writes', () => {
+  /** The legend row of a framed prompt, as text (the rows of these steps fit 80 columns whole). */
+  const legendOf = (snapshot: NativePromptSnapshot): string => {
+    const { items, exit } = nativePopupLegend(snapshot);
+    return legend(items, exit);
+  };
+  const SKIP_LEGEND = '↑/↓ select · Enter choose · Esc skip for now · [Ctrl+C] close';
+  const BACK_LEGEND = '↑/↓ select · Enter choose · Esc back · [Ctrl+C] close';
+
+  /** The rail row of the frame the overlay draws at 80×24, in colour or in the plain glyphs. */
+  const railRow = (snapshot: NativePromptSnapshot, color: boolean): string => {
+    const { geometry, layout } = nativePopupGeometry(
+      snapshot,
+      'overlay',
+      { cols: 80, rows: 24 },
+      color,
+    );
+    if (!geometry.fits || layout === undefined || !layout.fits)
+      throw new Error('the frame does not fit 80x24');
+    const rows = nativePopupFrameLines(snapshot, geometry, layout, color).map((line) =>
+      line.text.trim(),
+    );
+    expect(rows.some((row) => row.includes('step 3 of 3'))).toBe(true);
+    const rail = rows.find((row) => row.includes('Provider') && row.includes('Done'));
+    if (rail === undefined) throw new Error('no rail row');
+    return rail;
+  };
+
+  /** A resolver whose provider sample is the test's own (`availability`), every other port the real one's. */
+  const sampled =
+    (availability: NonNullable<ProviderResolver['availability']>) =>
+    (resolver: ProviderResolver): ProviderResolver => ({ ...resolver, availability });
+
+  describe('item 1: the first step’s `Esc` is the skip, and its legend says so', () => {
+    it('`Which provider?` of the first run reads `Esc skip for now · [Ctrl+C] close`; the key step it leads to says `Esc back`; a step back finds the skip again', async () => {
+      const r = rig();
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.message === 'Which provider?');
+      expect(FIRST_STEP_ESCAPE_VERB).toBe('skip for now');
+      expect(r.snapshot().popup?.escapeVerb).toBe(FIRST_STEP_ESCAPE_VERB);
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      await r.choose('openai');
+      await r.until((s) => s.kind === 'password');
+      expect(r.snapshot().popup?.escapeVerb).toBeUndefined();
+      expect(legendOf(r.snapshot())).toBe('Enter check · Esc back · [Ctrl+C] close');
+      r.esc();
+      await r.until((s) => s.message === 'Which provider?');
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    });
+
+    it('the environment-key consent of the first run says the skip; the key step it leads to says `Esc back` and returns to it, which says the skip again', async () => {
+      const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-7701' } });
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === 'use'));
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      await r.choose('manual');
+      await r.until((s) => s.kind === 'password');
+      expect(legendOf(r.snapshot())).toBe('Enter check · Esc back · [Ctrl+C] close');
+      r.esc();
+      await r.until((s) => s.kind === 'select' && s.options.some((o) => o.value === 'use'));
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    });
+
+    it('the keychain step of the first run says the skip', async () => {
+      const r = rig({ keychainDown: true });
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.options.some((o) => o.value === 'retry'));
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    });
+
+    it('where `Esc` returns to another step it says `back`: a consent reached from the explicit list (whose own `Esc` closes), and the consent `Retry keychain` led to on the first run, whose `Esc` returns to the keychain step', async () => {
+      const explicit = rig({ env: { OPENAI_API_KEY: 'synthetic-env-7702' } });
+      const listed = explicit.coordinator.run('explicit');
+      await explicit.until((s) => s.message === 'Which provider?');
+      expect(legendOf(explicit.snapshot())).toBe('↑/↓ select · Enter choose · Esc close');
+      await explicit.choose('openai');
+      await explicit.until((s) => s.options.some((o) => o.value === 'use'));
+      expect(legendOf(explicit.snapshot())).toBe(BACK_LEGEND);
+      explicit.channel.flow.cancel();
+      await listed;
+      explicit.close();
+
+      let recovered = false;
+      const r = rig({
+        resolver: sampled((id) => {
+          if (!recovered) return { status: 'unavailable', keychainHealth: 'unavailable' };
+          return id === 'openai'
+            ? {
+                status: 'present-standard-not-allowed',
+                source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+                keychainHealth: 'available',
+              }
+            : { status: 'missing', keychainHealth: 'available' };
+        }),
+      });
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.options.some((o) => o.value === 'retry'));
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      recovered = true;
+      await r.choose('retry');
+      await r.until((s) => s.options.some((o) => o.value === 'use'));
+      expect(legendOf(r.snapshot()), 'its Esc returns to the keychain step').toBe(BACK_LEGEND);
+      r.esc();
+      await r.until((s) => s.options.some((o) => o.value === 'retry'));
+      expect(legendOf(r.snapshot())).toBe(SKIP_LEGEND);
+      expect(existsSync(r.path), 'a step back skips nothing').toBe(false);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    });
+
+    it('a key asked for first (a custom endpoint refuses the environment key) says the skip and its `Esc` IS the skip; the choices after a failed check say `Esc back` and return to it', async () => {
+      const r = rig({
+        validate: () => Promise.resolve(NETWORK),
+        resolver: sampled((id) =>
+          id === 'openai'
+            ? {
+                status: 'ineligible-custom-endpoint',
+                source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+                keychainHealth: 'available',
+              }
+            : { status: 'missing', keychainHealth: 'available' },
+        ),
+      });
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.kind === 'password');
+      expect(legendOf(r.snapshot())).toBe('Enter check · Esc skip for now · [Ctrl+C] close');
+      await r.paste(SECRET);
+      r.key(ENTER, '\r');
+      await r.until((s) => s.options.some((o) => o.value === 'recheck'));
+      expect(legendOf(r.snapshot())).toBe(BACK_LEGEND);
+      r.esc();
+      await r.until((s) => s.kind === 'password');
+      expect(legendOf(r.snapshot())).toBe('Enter check · Esc skip for now · [Ctrl+C] close');
+      r.esc();
+      expect((await running).notice).toBe(setupSkippedNotice('home'));
+      expect(readFileSync(r.path, 'utf8')).toContain('first_run_setup_skipped = true');
+      r.close();
+    });
+
+    it('the words are a product constant drawn through the channel’s sanitiser, never data', () => {
+      const channel = createNativePromptChannel({ now: () => 0 });
+      channel.flow.begin();
+      channel.flow.popup?.({
+        title: '/providers',
+        origin: 'home',
+        stepIndex: 0,
+        stepCount: 3,
+        exitLabel: 'close',
+        escapeVerb: 'skip\u001b[31m for‮ now',
+        depth: 1,
+      });
+      expect(channel.ui.getSnapshot().popup?.escapeVerb).toBe('skip for now');
+      channel.ui.dispose();
+    });
+  });
+
+  describe('item 4: an `Esc` that arrived before the popup’s first frame is a close, never the skip', () => {
+    it('before the first frame: nothing is written, and the one line says it opens again next launch', async () => {
+      const r = rig();
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.message === 'Which provider?');
+      expect(r.snapshot().escape).toBe('back');
+      r.key(ESC); // no frame was acknowledged: the key was on its way before the popup appeared
+      const outcome = await running;
+      expect(outcome.notice).toBe(setupClosedNotice('home'));
+      expect(existsSync(r.path), 'no remembered skip').toBe(false);
+      r.close();
+    });
+
+    it('at the very moment the frame appeared it is a close too (a key already on its way); a moment after it, it is the skip', async () => {
+      const r = rig();
+      const running = r.coordinator.run('automatic');
+      await r.until((s) => s.message === 'Which provider?');
+      r.show();
+      r.key(ESC);
+      expect((await running).notice).toBe(setupClosedNotice('home'));
+      expect(existsSync(r.path)).toBe(false);
+      r.close();
+
+      const later = rig();
+      const skipped = later.coordinator.run('automatic');
+      await later.until((s) => s.message === 'Which provider?');
+      later.esc();
+      expect((await skipped).notice).toBe(setupSkippedNotice('home'));
+      expect(readFileSync(later.path, 'utf8')).toContain('first_run_setup_skipped = true');
+      later.close();
+    });
+  });
+
+  describe('item 2 (O6): `Esc` during the key check goes back to the key step', () => {
+    /** A check that answers only when the test says, and records the signal it was given. */
+    function slowChecks() {
+      const calls: {
+        signal: AbortSignal | undefined;
+        answer: (v: ProviderKeyValidation) => void;
+      }[] = [];
+      return {
+        calls,
+        validate: (_id: string, _key: string, signal?: AbortSignal) =>
+          new Promise<ProviderKeyValidation>((answer) => {
+            calls.push({ signal, answer });
+          }),
+      };
+    }
+
+    it('the field is empty, the check is aborted, its late success stores nothing, and the next key is checked once', async () => {
+      const checks = slowChecks();
+      const r = rig({ validate: checks.validate });
+      const running = r.coordinator.run('automatic');
+      await r.choose('openai');
+      await r.paste(SECRET);
+      r.key(ENTER, '\r');
+      await r.until((s) => s.kind === 'busy' && s.message.startsWith('Checking your OpenAI key'));
+      expect(r.snapshot().escape, 'the wait steps back').toBe('back');
+      expect(legendOf(r.snapshot())).toBe('Esc back · [Ctrl+C] cancels it');
+      r.esc();
+      await r.until((s) => s.kind === 'password');
+      expect(r.snapshot().display, 'the key step again, empty').toBe('');
+      expect(r.snapshot().popup?.stepIndex).toBe(1);
+      expect(checks.calls).toHaveLength(1);
+      expect(checks.calls[0]?.signal?.aborted, 'the check was aborted').toBe(true);
+      expect(r.channel.ui.signal()?.aborted, 'the flow was not').toBe(false);
+      checks.calls[0]?.answer(OK); // the aborted check answers late
+      await r.flush();
+      expect(r.snapshot().kind).toBe('password');
+      expect(r.keychain.stored.size, 'a late success stores nothing').toBe(0);
+      expect(r.written).toEqual([]);
+      await r.paste(SECRET);
+      r.key(ENTER, '\r');
+      await r.until((s) => s.kind === 'busy' && s.message.startsWith('Checking'));
+      expect(checks.calls).toHaveLength(2);
+      checks.calls[1]?.answer(OK);
+      await r.until((s) => s.final === 'ok');
+      expect(checks.calls).toHaveLength(2);
+      expect(r.keychain.stored.get(keychainAccount('openai'))).toBe(SECRET);
+      await r.closeDone('esc');
+      expect((await running).status).toBe('ready');
+      r.close();
+    });
+
+    it('`Ctrl+C` during the check leaves the setup: the check is aborted, nothing is stored or written', async () => {
+      const checks = slowChecks();
+      const r = rig({ validate: checks.validate });
+      const running = r.coordinator.run('automatic');
+      await r.choose('openai');
+      await r.paste(SECRET);
+      r.key(ENTER, '\r');
+      await r.until((s) => s.kind === 'busy' && s.message.startsWith('Checking'));
+      r.key({ ...NONE, ctrl: true }, 'c');
+      const outcome = await running;
+      expect(outcome.notice).toBe(setupClosedNotice('home'));
+      expect(checks.calls[0]?.signal?.aborted).toBe(true);
+      checks.calls[0]?.answer(OK);
+      await r.flush();
+      expect(r.keychain.stored.size).toBe(0);
+      expect(r.written).toEqual([]);
+      expect(existsSync(r.path)).toBe(false);
+      r.close();
+    });
+
+    const HELD_RATES = [30, 100, 300] as const;
+    /** How long the `Esc` is held down: well past the step-back lockout, which every refused repeat restarts. */
+    const HELD_MS = 6000;
+    it.each(
+      HELD_RATES.flatMap((rate) =>
+        (['plain', 'kitty'] as const).map((kind) => [rate, kind] as const),
+      ),
+    )(
+      'a held `Esc` (a repeat every %i ms, %s) walks back ONE step: the key step stays open and nothing is skipped; one patient `Esc` after it steps back to the list',
+      async (rate, kind) => {
+        const checks = slowChecks();
+        const r = rig({ validate: checks.validate });
+        const running = r.coordinator.run('automatic');
+        await r.choose('openai');
+        await r.paste(SECRET);
+        r.key(ENTER, '\r');
+        await r.until((s) => s.kind === 'busy' && s.message.startsWith('Checking'));
+        r.esc(); // pressed, and held from here
+        await r.until((s) => s.kind === 'password');
+        for (let at = 0; at <= HELD_MS; at += rate) {
+          r.advance(rate);
+          r.show();
+          r.key(kind === 'kitty' ? { ...ESC, eventType: 'repeat' } : ESC);
+          await r.flush();
+        }
+        expect(r.snapshot().kind, 'still on the key step').toBe('password');
+        expect(existsSync(r.path), 'nothing skipped').toBe(false);
+        expect(checks.calls).toHaveLength(1);
+        r.advance(APPROVAL_LOCKOUT_MS + 100);
+        r.key(ESC);
+        await r.until((s) => s.message === 'Which provider?');
+        r.channel.flow.cancel();
+        await running;
+        r.close();
+      },
+    );
+  });
+
+  describe('item 3: the rail does not tick a step that never happened', () => {
+    it('a granted environment key ends on `✓ Provider ╌╌ ○ Key ╌╌ ◉ Done` (plain `ok Provider .. o Key .. @ Done`), still `step 3 of 3`', async () => {
+      const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-7703' } });
+      const running = r.coordinator.run('automatic');
+      await r.choose('use');
+      await r.until((s) => s.final === 'ok');
+      expect(r.snapshot().popup?.skipped).toEqual([1]);
+      expect(railRow(r.snapshot(), true)).toBe('✓ Provider ╌╌ ○ Key ╌╌ ◉ Done');
+      expect(railRow(r.snapshot(), false)).toBe('ok Provider .. o Key .. @ Done');
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+
+    it('`Remember this and continue without a key` ends on the same rail', async () => {
+      const r = rig({ keychainDown: true });
+      const running = r.coordinator.run('automatic');
+      await r.choose('ack');
+      await r.until((s) => s.final === 'ok');
+      expect(railRow(r.snapshot(), true)).toBe('✓ Provider ╌╌ ○ Key ╌╌ ◉ Done');
+      expect(railRow(r.snapshot(), false)).toBe('ok Provider .. o Key .. @ Done');
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+
+    it('a key that was entered ticks the key step, checked or saved without a check (`Save it anyway`)', async () => {
+      for (const check of [OK, NETWORK]) {
+        const r = rig({ validate: () => Promise.resolve(check) });
+        const running = r.coordinator.run('automatic');
+        await r.choose('openai');
+        await r.paste(SECRET);
+        r.key(ENTER, '\r');
+        if (!check.ok) await r.choose('continue');
+        await r.until((s) => s.final === 'ok');
+        expect(r.snapshot().popup?.skipped).toBeUndefined();
+        expect(railRow(r.snapshot(), true)).toBe('✓ Provider ╌╌ ✓ Key ╌╌ ◉ Done');
+        expect(railRow(r.snapshot(), false)).toBe('ok Provider .. ok Key .. @ Done');
+        await r.closeDone('esc');
+        await running;
+        r.close();
+      }
+    });
+  });
+
+  describe('item 5: a write onto the file this run created is no rewrite', () => {
+    it('with no config, the starter default written after a granted consent draws no rewrite notice: the run created the file and nobody changed it', async () => {
+      const r = rig({ env: { OPENAI_API_KEY: 'synthetic-env-7704' }, hostStarter: true });
+      const running = r.coordinator.run('automatic');
+      await r.choose('use');
+      await r.until((s) => s.final === 'ok');
+      expect(r.rewrites, 'the consent created it; the starter rewrote only it').toEqual([
+        false,
+        false,
+      ]);
+      const text = readFileSync(r.path, 'utf8');
+      expect(text).toContain('OPENAI_API_KEY');
+      expect(text).toContain('default_model');
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+
+    it('a config that existed before the run keeps the notice on every write', async () => {
+      const r = rig({
+        env: { OPENAI_API_KEY: 'synthetic-env-7705' },
+        hostStarter: true,
+        config: 'hand-made',
+      });
+      const running = r.coordinator.run('automatic');
+      await r.choose('use');
+      await r.until((s) => s.final === 'ok');
+      expect(r.rewrites).toEqual([true, true]);
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+
+    it('a config the run created and another writer changed before its next write was prepared keeps the notice', async () => {
+      const r = rig({
+        env: { OPENAI_API_KEY: 'synthetic-env-7706' },
+        hostStarter: true,
+        beforeStarter: (path) => {
+          writeFileSync(path, `# a person's note\n${readFileSync(path, 'utf8')}`);
+        },
+      });
+      const running = r.coordinator.run('automatic');
+      await r.choose('use');
+      await r.until((s) => s.final === 'ok');
+      expect(r.rewrites).toEqual([false, true]);
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+
+    it('one changed after the starter was prepared without the notice is not rewritten: the write is refused, the person’s change stays, and the Done step says the default was not saved', async () => {
+      const r = rig({
+        env: { OPENAI_API_KEY: 'synthetic-env-7707' },
+        hostStarter: true,
+        beforePublish: (index, path) => {
+          if (index === 1) writeFileSync(path, `# a person's note\n${readFileSync(path, 'utf8')}`);
+        },
+      });
+      const running = r.coordinator.run('automatic');
+      await r.choose('use');
+      await r.until((s) => s.final === 'ok');
+      expect(r.rewrites).toEqual([false, false]);
+      const text = readFileSync(r.path, 'utf8');
+      expect(text).toContain("# a person's note");
+      expect(text).not.toContain('default_model');
+      expect(r.snapshot().details).toContain(
+        'The starter default could not be saved; select a model with /models.',
+      );
+      await r.closeDone('esc');
+      await running;
+      r.close();
+    });
+  });
+
+  describe('item 6: the key prompt’s validator (the legend-shaped `requireKey` is gone)', () => {
+    it('a key that is only white space is refused on the field, with the field’s own sentence, and nothing is checked', async () => {
+      let checks = 0;
+      const r = rig({
+        validate: () => {
+          checks += 1;
+          return Promise.resolve(OK);
+        },
+      });
+      const running = r.coordinator.run('automatic');
+      await r.choose('openai');
+      await r.paste('   ');
+      r.key(ENTER, '\r');
+      await r.flush();
+      expect(r.snapshot().kind).toBe('password');
+      expect(r.snapshot().error).toBe('A valid value is required.');
+      expect(checks).toBe(0);
+      r.channel.flow.cancel();
+      await running;
+      r.close();
+    });
   });
 });

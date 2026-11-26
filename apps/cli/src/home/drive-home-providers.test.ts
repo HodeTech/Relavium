@@ -104,11 +104,17 @@ afterEach(() => {
   for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function setup(holdNotice = false, custom = false, projectModel?: string, manualKeys = false) {
+function setup(
+  holdNotice = false,
+  custom = false,
+  projectModel?: string,
+  manualKeys = false,
+  config: 'hand-made' | 'none' = 'hand-made',
+) {
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-home-provider-'));
   paths.push(cwd);
   const path = join(cwd, 'global.toml');
-  writeFileSync(path, baseline);
+  if (config === 'hand-made') writeFileSync(path, baseline);
   if (projectModel !== undefined) {
     mkdirSync(join(cwd, '.relavium'));
     writeFileSync(
@@ -512,6 +518,23 @@ describe('driveHome native provider setup', () => {
     expect(p.controller.getSnapshot().keyless).toBe(true);
     await f.end(p);
   });
+  it('W7 item 5: with no config, the starter default the Home writes after a granted consent paints no rewrite notice (the setup created the file a moment before)', async () => {
+    const f = setup(false, false, undefined, false, 'none');
+    const p = await f.ready();
+    f.announce(p);
+    await vi.waitFor(() =>
+      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    );
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    await choose(p.nativePrompt, 'use');
+    await closeDone(p.nativePrompt);
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    const text = readFileSync(f.path, 'utf8');
+    expect(text).toContain('OPENAI_API_KEY');
+    expect(text).toContain(KNOWN_PROVIDERS.openai.starterModel);
+    expect(f.frames.join(' ')).not.toContain('rewrites the global config');
+    await f.end(p);
+  }, 15_000);
   it('cancellation during the painted notice prevents late publication', async () => {
     const f = setup(true);
     const p = await f.ready();

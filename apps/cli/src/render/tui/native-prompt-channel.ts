@@ -1,9 +1,11 @@
 import type { Key } from 'ink';
+import type { Schedule } from '../../popups/notifications.js';
 import { sanitizeInline } from '../sanitize.js';
 import {
   chordOf,
   createChordGuard,
   createChordHistory,
+  createLockDisplay,
   reduceChordKey,
   type ChordAnswer,
   type ChordHistory,
@@ -19,7 +21,7 @@ import {
   nativeOpeningKey,
   navigates,
 } from './native-prompt-guards.js';
-import type { ApprovalGuard } from './tool-review-model.js';
+import { APPROVAL_LOCKOUT_MS, type ApprovalGuard } from './tool-review-model.js';
 import {
   createNativePicker,
   type NativePickerController,
@@ -109,11 +111,36 @@ export interface NativePopupDescriptor {
    * no runtime path that checks the origin of a string.
    */
   readonly enterVerb?: string;
+  /**
+   * What `Esc` says on the legend of this step's prompts where it steps back (`escape: 'back'`) and stepping back is more than going to the step
+   * before (`skip for now` on the first step of the automatic first run, whose step back IS the skip: ADR-0146 §6); default `back`. A PRODUCT
+   * constant, as {@link enterVerb} is: drawn as given (sanitised, not scrubbed), never a word a person, a project or a provider wrote.
+   */
+  readonly escapeVerb?: string;
+  /**
+   * The steps before this one the flow passed WITHOUT doing them (the `Key` step of a setup that granted an environment key or remembered a
+   * keychain that is down): the rail draws each as a step not done (`○`), never `✓`; `step N of M` is unchanged. Indices into the rail, each in
+   * `[0, stepCount)`; absent ⇒ every step before this one was done.
+   */
+  readonly skipped?: readonly number[];
   /** The popup stack's depth this flow is at (one: the channel holds one flow; the reducer driver owns stacking, ADR-0148 §5). */
   readonly depth: 1 | 2;
 }
 /** The tone of a flow's persistent last step: what it did (`ok`), or that what it set out to write failed (`failed`). */
 export type NativeFinalTone = 'ok' | 'failed';
+/**
+ * A wait that STEPS BACK on `Esc` (the key step's check, O6): the snapshot's `escape` is `back`, so its legend says `Esc back` and `Ctrl+C`
+ * still leaves the flow. A lone `Esc` calls `onBack` once (the flow aborts the work it waits for with its OWN controller and asks its previous
+ * prompt again; the flow's signal is not touched) and is then dropped while the wait lasts. That `Esc` starts a hold over the prompt the step
+ * back opens: for {@link STEP_BACK_HOLD_MS} a lone `Esc` that would step back from it is refused and restarts the hold, so an `Esc` held down at
+ * any repeat rate steps back ONE step, never on to the step before that (where the first run's step back is the skip, which writes). The hold
+ * goes when that prompt is resolved; `Ctrl+C` is never held.
+ */
+export interface NativeBusyOptions {
+  readonly onBack?: () => void;
+}
+/** How long after a step back out of a wait a further step back is refused (the approval lockout: a held key's repeats never get past it). */
+export const STEP_BACK_HOLD_MS = APPROVAL_LOCKOUT_MS;
 export interface NativePromptSnapshot {
   readonly active: boolean;
   readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy' | 'picker' | 'chord';
@@ -185,6 +212,18 @@ export interface NativePromptUi {
    * survives a resize, framed or not. Every other prompt is left as it is.
    */
   readonly resized: () => void;
+  /**
+   * Whether the open prompt's affirmative is LOCKED by its guard's 2 s lockout now: a chord card's `Ctrl+Y`, a guarded option's `Enter`
+   * (the maintainer's ruling of 2026-11-26 on ADR-0145 §3: its legend part is drawn dim with `(wait)`). Asked of the guard that decides
+   * (`lockedUntil`), on its clock, never a second copy of the rule. A DISPLAY value read by the views, not a snapshot field: as the popup host's
+   * loading clock (ADR-0147 §2), a change to it is no new frame, so it restarts no dwell, no opening settle and no acknowledgement, and an
+   * answer at the unlock instant is judged exactly as it would have been without it. It changes when the prompt opens, settles or goes, and
+   * once more at the unlock instant (one timer, moved by a refused press that restarted the lockout); never periodically.
+   */
+  readonly lock: {
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly read: () => boolean;
+  };
   readonly dispose: () => void;
 }
 export interface NativePromptFlow {
@@ -199,7 +238,10 @@ export interface NativePromptFlow {
   readonly note: (message: string, title?: string) => void;
   /** Preserve a completed publication fact even if cancellation arrived after it. */
   readonly committedNote?: (message: string, title?: string) => void;
-  readonly busy: (message: string) => void;
+  /**
+   * A wait, with no prompt open. `Esc` there cancels the flow, as `Ctrl+C` does, unless the wait can step back ({@link NativeBusyOptions}).
+   */
+  readonly busy: (message: string, options?: NativeBusyOptions) => void;
   readonly pick: (options: NativePickerOptions) => Promise<string | symbol>;
   readonly select: (options: {
     message: string;
@@ -282,7 +324,21 @@ export interface NativePromptChannelOptions {
    * isolates another one. Production passes none.
    */
   readonly settleMs?: number;
+  /**
+   * The one-shot timer that ends a lock ({@link NativePromptUi.lock}) at its unlock instant, read on the injected clock (production: an
+   * unref'd timeout, so a card left open never keeps the process alive). A test with a manual clock passes its own.
+   */
+  readonly schedule?: Schedule;
 }
+
+/** The production timer of a lock: unref'd, cancellable. */
+const unrefTimeout: Schedule = (callback, ms) => {
+  const handle = setTimeout(callback, ms);
+  handle.unref();
+  return () => {
+    clearTimeout(handle);
+  };
+};
 
 /** The snapshot drawn as a card again: every field but the popup descriptor. */
 function withoutPopup(snapshot: NativePromptSnapshot): NativePromptSnapshot {
@@ -298,18 +354,43 @@ function withoutFinal(snapshot: NativePromptSnapshot): NativePromptSnapshot {
   return rest;
 }
 
+/**
+ * A LONE `Esc`: the key that steps back at a prompt opened with `escape: 'back'`. `Ctrl+C` (which a host forwards as `'\x1b'` with its real
+ * key), a meta chord and an `Esc` coalesced with other bytes are not: they leave the flow.
+ */
+function loneEscape(input: string, key: Key): boolean {
+  return (
+    key.escape === true &&
+    key.ctrl !== true &&
+    key.meta !== true &&
+    (input === '' || input === '\x1b')
+  );
+}
+
 /** Whether the snapshot is a select one of whose options is guarded ({@link NativePromptOption.guarded}). */
 function guardedSelect(snapshot: NativePromptSnapshot): boolean {
   return snapshot.kind === 'select' && snapshot.options.some((option) => option.guarded === true);
 }
 
+/** The steps a descriptor says were skipped, as the snapshot keeps them: whole steps of the rail, in order, each once; none ⇒ absent. */
+function skippedSteps(
+  skipped: readonly number[] | undefined,
+  stepCount: number,
+): { readonly skipped?: readonly number[] } {
+  const steps = [...new Set(skipped ?? [])]
+    .filter((step) => Number.isInteger(step) && step >= 0 && step < stepCount)
+    .sort((a, b) => a - b);
+  return steps.length === 0 ? {} : { skipped: steps };
+}
+
 /** The step's descriptor as the snapshot keeps it: every text sanitized, the numbers whole, the names copied. */
 function sanitizedDescriptor(descriptor: NativePopupDescriptor): NativePopupDescriptor {
+  const stepCount = Math.max(1, Math.trunc(descriptor.stepCount));
   return {
     title: sanitizeInline(descriptor.title),
     origin: descriptor.origin,
     stepIndex: Math.max(0, Math.trunc(descriptor.stepIndex)),
-    stepCount: Math.max(1, Math.trunc(descriptor.stepCount)),
+    stepCount,
     ...(descriptor.stepNames === undefined
       ? {}
       : { stepNames: descriptor.stepNames.map((name) => sanitizeInline(name)) }),
@@ -317,6 +398,10 @@ function sanitizedDescriptor(descriptor: NativePopupDescriptor): NativePopupDesc
     ...(descriptor.enterVerb === undefined
       ? {}
       : { enterVerb: sanitizeInline(descriptor.enterVerb) }),
+    ...(descriptor.escapeVerb === undefined
+      ? {}
+      : { escapeVerb: sanitizeInline(descriptor.escapeVerb) }),
+    ...skippedSteps(descriptor.skipped, stepCount),
     depth: descriptor.depth,
   };
 }
@@ -355,13 +440,33 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
    * shows on the frame that follows it (a later prompt keeps it; a later chord card clears it, as it clears any note).
    */
   let heldNote: string | undefined;
+  /** The step back of the open wait ({@link NativeBusyOptions.onBack}) until it is taken or the wait goes. */
+  let busyBack: (() => void) | undefined;
+  /** Until when a lone `Esc` that would step back is refused: the hold that a step back out of a wait starts ({@link STEP_BACK_HOLD_MS}). */
+  let backHeldUntil = Number.NEGATIVE_INFINITY;
   let picker: NativePickerController | undefined;
   const pickerDrains = new Set<Promise<void>>();
   let visibility: ((snapshot: NativePromptSnapshot) => boolean) | undefined;
   let pageRows: (() => number | undefined) | undefined;
   const listeners = new Set<() => void>();
+  /**
+   * The lock of the open prompt's affirmative ({@link NativePromptUi.lock}): asked of the guard that decides it (a chord card's `Ctrl+Y`, a
+   * guarded select's `Enter`), `-Infinity` for any other prompt. Read again on every publication (a prompt opened, settled or went) and after
+   * every key (a refused press inside the lockout moved its end).
+   */
+  const lock = createLockDisplay({
+    now,
+    schedule: options?.schedule ?? unrefTimeout,
+    until: () => {
+      if (!snapshot.active) return Number.NEGATIVE_INFINITY;
+      if (snapshot.kind === 'chord') return chordCard.lockedUntil();
+      return guardedSelect(snapshot) ? guarded.lockedUntil() : Number.NEGATIVE_INFINITY;
+    },
+  });
   const publish = (next: NativePromptSnapshot): void => {
     snapshot = next;
+    // The lock first, so a view that renders on this publication reads the lock of the prompt it draws.
+    lock.sync();
     for (const listener of listeners) listener();
   };
   const clear = (): void => {
@@ -383,6 +488,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     const callback = settle;
     settle = undefined;
     clear();
+    // The hold of a step back out of a wait guards the prompt that step back opened, and goes when that prompt is resolved.
+    backHeldUntil = Number.NEGATIVE_INFINITY;
     const held = heldNote;
     heldNote = undefined;
     publish({
@@ -420,14 +527,30 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
    * leaves the flow, as it always did. The hosts forward a refused `Ctrl+C` as `'\x1b'` with its real key, so the key is what
    * tells the two apart, never the text.
    */
-  const dismiss = (input: string, key: Key): void => {
-    const lone =
-      key.escape === true &&
-      key.ctrl !== true &&
-      key.meta !== true &&
-      (input === '' || input === '\x1b');
-    if (snapshot.escape === 'back' && settle !== undefined && lone) finish(NATIVE_PROMPT_BACK);
-    else cancel();
+  const dismiss = (input: string, key: Key, at: number): void => {
+    // A step back can be an answer that writes (the first run's skip, ADR-0146 §6), and an answer of a popup needs a key that arrived after
+    // it appeared (the opening guard's rule 3). The opening guard admits every key that leaves (a popup never traps the person), so an `Esc`
+    // already on its way when the popup appeared leaves the flow here instead, as a cancel, writing nothing.
+    const early = snapshot.popup !== undefined && !opening.appeared(at);
+    if (snapshot.escape !== 'back' || !loneEscape(input, key) || early) {
+      cancel();
+      return;
+    }
+    if (at < backHeldUntil) {
+      // The `Esc` that stepped back out of a wait, still held down: it steps back no further, and its repeat restarts the hold.
+      backHeldUntil = at + STEP_BACK_HOLD_MS;
+      return;
+    }
+    if (settle !== undefined) finish(NATIVE_PROMPT_BACK);
+    else stepBackOutOfWait(at);
+  };
+  /** A lone `Esc` on a wait that steps back ({@link NativeBusyOptions}): its step back, once; a later one while it lasts is dropped. */
+  const stepBackOutOfWait = (at: number): void => {
+    const back = busyBack;
+    busyBack = undefined;
+    if (back === undefined) return;
+    backHeldUntil = at + STEP_BACK_HOLD_MS;
+    back();
   };
   const prompt = (
     kind: 'select' | 'text' | 'password' | 'chord',
@@ -517,12 +640,12 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
    * The bytes before a boundary are an edit; an escape or an ETX AT the boundary leaves the prompt. `true` when it left, which is the
    * whole key's answer. A return or a newline at the boundary leaves the rest to the submit rules of the caller.
    */
-  const takeBoundary = (input: string, key: Key, boundary: number): boolean => {
+  const takeBoundary = (input: string, key: Key, boundary: number, at: number): boolean => {
     const before = input.slice(0, boundary);
     if (before) append(before);
     const marker = input[boundary];
     if (marker !== '\x1b' && marker !== '\x03') return false;
-    dismiss(input, key);
+    dismiss(input, key, at);
     return true;
   };
   /** A lone Ctrl+Y or Ctrl+N answers a chord card; anything else is a key the card has no use for, which is typing as far as the guard goes. */
@@ -647,9 +770,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   /** Route one key the prompt's host delivered; `stamp` is the guard's evidence from just before it. */
   const route = (input: string, key: Key, stamp: ChordStamp): boolean => {
     const boundary = firstBoundary(input);
-    if (boundary >= 0 && takeBoundary(input, key, boundary)) return true;
+    if (boundary >= 0 && takeBoundary(input, key, boundary, stamp.now)) return true;
     if (cancelsPrompt(input, key)) {
-      dismiss(input, key);
+      dismiss(input, key, stamp.now);
       return true;
     }
     if (snapshot.kind === 'busy' || !settle) {
@@ -711,9 +834,14 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       // prompt this key settles starts the lockout that holds a repeating key off the card that follows it.
       const stamp = chord.stamp();
       const open = settle !== undefined;
-      if (!admitOpening(input, key, stamp)) return true;
+      if (!admitOpening(input, key, stamp)) {
+        // A refused press inside the lockout moved its end: the lock's one timer moves with it.
+        lock.sync();
+        return true;
+      }
       const handled = route(input, key, stamp);
       if (open && settle === undefined) chord.resolved(stamp);
+      lock.sync();
       return handled;
     },
     paste: (text) => {
@@ -735,6 +863,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (onGuardedOption() && mayAnswer) guarded.refuse(stamp);
       if (onChordCard() && (key === undefined || chordOf(input ?? '', key) === 'allow'))
         chordCard.decide(stamp, 'allow', false);
+      lock.sync();
     },
     resized: () => {
       if (snapshot.kind !== 'password' || settle === undefined) return;
@@ -749,9 +878,12 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       disposed = true;
       clear();
       heldNote = undefined;
+      // Nothing is open any more: the publication below reads the lock open (its views are told once), then its timer and listeners go.
       publish(initial);
       listeners.clear();
+      lock.dispose();
     },
+    lock: { subscribe: lock.subscribe, read: lock.read },
   };
   const flow: NativePromptFlow & NativeChordPort = {
     begin: () => {
@@ -793,18 +925,19 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (snapshot.kind === 'chord') heldNote = text;
       else publish({ ...snapshot, note: text });
     },
-    busy: (message) => {
-      if (snapshot.active && !abort?.signal.aborted)
-        publish({
-          ...withoutFinal(snapshot),
-          kind: 'busy',
-          message: sanitizeInline(message),
-          options: [],
-          display: '',
-          error: '',
-          escape: 'cancel',
-          details: NO_DETAILS,
-        });
+    busy: (message, busyOptions) => {
+      if (!snapshot.active || abort?.signal.aborted === true) return;
+      busyBack = busyOptions?.onBack;
+      publish({
+        ...withoutFinal(snapshot),
+        kind: 'busy',
+        message: sanitizeInline(message),
+        options: [],
+        display: '',
+        error: '',
+        escape: busyBack === undefined ? 'cancel' : 'back',
+        details: NO_DETAILS,
+      });
     },
     pick: (options) => {
       if (!snapshot.active || abort?.signal.aborted || disposed || abort === undefined)

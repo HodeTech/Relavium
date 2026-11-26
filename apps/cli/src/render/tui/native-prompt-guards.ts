@@ -118,6 +118,12 @@ export interface OpeningAdmission {
   readonly shown: () => void;
   /** Whether a key of `kind` that arrived at `arrivedAt` may act (see `OpeningGuard.admits`). */
   readonly admits: (kind: OpeningKey, arrivedAt: number) => boolean;
+  /**
+   * Whether a key that arrived at `arrivedAt` came AFTER the flow's first framed frame appeared (rule 3: one that arrived at the very moment it
+   * appeared was already on its way). A key that leaves is admitted either way; this says whether it may also be an answer (a step back that
+   * writes, ADR-0146 §6).
+   */
+  readonly appeared: (arrivedAt: number) => boolean;
 }
 
 export function createOpeningAdmission(options: {
@@ -133,6 +139,10 @@ export function createOpeningAdmission(options: {
     },
     shown: () => guard.shown(),
     admits: (kind, arrivedAt) => guard.admits(kind, arrivedAt),
+    appeared: (arrivedAt) => {
+      const at = guard.shownAt();
+      return at !== undefined && arrivedAt > at;
+    },
   };
 }
 
@@ -142,6 +152,16 @@ export function createOpeningAdmission(options: {
  */
 function openedAsAnswer(stamp: ChordStamp, openedAt: number): ChordStamp {
   return { ...stamp, lastResolvedAt: Math.max(stamp.lastResolvedAt, openedAt) };
+}
+
+/**
+ * Until when `guard`'s lockout refuses the affirmative of a prompt opened at `openedAt`, its opening counted as an answer just before the next
+ * key as {@link openedAsAnswer} counts it for `decide` (the later of the two ends: the lockout is monotone in its origin); `-Infinity` for no
+ * prompt that carries it. What the channel draws the affirmative as locked by (`(wait)`, ADR-0145 §3).
+ */
+function lockedFromOpening(guard: ChordGuard, openedAt: number): number {
+  if (openedAt === Number.NEGATIVE_INFINITY) return Number.NEGATIVE_INFINITY;
+  return Math.max(guard.lockedUntil(), guard.lockedUntil({ lastResolvedAt: openedAt }));
 }
 
 /** The `Ctrl+Y` of a chord card (see the module header). */
@@ -158,6 +178,11 @@ export interface ChordCardGuard {
     answer: ChordAnswer,
     painted: boolean,
   ) => ChordAnswer | undefined;
+  /**
+   * Until when the open card's `Ctrl+Y` is refused by its lockout (from the card's opening or the last resolution, whichever is later, a refused
+   * press inside it having moved it on): the rule `decide` applies, read without a key. `-Infinity` when no chord card is open.
+   */
+  readonly lockedUntil: () => number;
 }
 
 export function createChordCardGuard(options: {
@@ -172,6 +197,7 @@ export function createChordCardGuard(options: {
     },
     decide: (stamp, answer, painted) =>
       options.chord.decide(openedAsAnswer(stamp, openedAt), answer, painted),
+    lockedUntil: () => lockedFromOpening(options.chord, openedAt),
   };
 }
 
@@ -185,6 +211,8 @@ export interface GuardedSelect {
   readonly decide: (stamp: ChordStamp, painted: boolean) => boolean;
   /** An `Enter` that would have answered it and was refused before it reached it: inside the lockout it restarts it, as any refusal does. */
   readonly refuse: (stamp: ChordStamp) => void;
+  /** Until when an `Enter` on the guarded option is refused by its lockout (the rule `decide` applies); `-Infinity` when no such select is open. */
+  readonly lockedUntil: () => number;
 }
 
 export function createGuardedSelect(options: {
@@ -209,5 +237,6 @@ export function createGuardedSelect(options: {
     refuse: (stamp) => {
       confirm.decide(fromOpening(stamp), 'allow', false);
     },
+    lockedUntil: () => lockedFromOpening(confirm, openedAt),
   };
 }

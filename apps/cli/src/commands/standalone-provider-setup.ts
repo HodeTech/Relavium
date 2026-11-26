@@ -135,7 +135,7 @@ export async function runStandaloneProviderSetup(deps: {
           keychain: deps.keychain,
           io,
           workOwner: owner,
-          writeDefaultModel: async (model, provider, admit) => {
+          writeDefaultModel: async (model, provider, admit, runWrite = (prepared) => prepared) => {
             const assertAdmitting = (): void => {
               owner.assertAdmitting();
               setupSignal?.throwIfAborted();
@@ -144,15 +144,14 @@ export async function runStandaloneProviderSetup(deps: {
             for (;;) {
               try {
                 assertAdmitting();
-                const saved = await publish(
-                  prepareGlobalPreferences(
-                    { defaultModel: model, defaultProvider: provider },
-                    deps.loaded.homeDir,
-                    deps.global.configPath === undefined ? undefined : deps.loaded.globalConfigPath,
-                    deps.configReadObserver,
-                  ),
-                  assertAdmitting,
+                const prepared = prepareGlobalPreferences(
+                  { defaultModel: model, defaultProvider: provider },
+                  deps.loaded.homeDir,
+                  deps.global.configPath === undefined ? undefined : deps.loaded.globalConfigPath,
+                  deps.configReadObserver,
                 );
+                // The setup run's view of its own writes: a config it created a moment before draws no rewrite notice (W7 item 5).
+                const saved = await publish(runWrite(prepared), assertAdmitting);
                 defaultNotice =
                   saved.durability === 'unconfirmed'
                     ? 'Default saved, but persistence after a crash is unconfirmed.'

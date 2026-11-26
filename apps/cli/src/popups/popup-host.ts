@@ -118,6 +118,7 @@ import { sanitizeInline } from '../render/sanitize.js';
 import {
   createChordGuard,
   createChordHistory,
+  createLockDisplay,
   type ChordGuard,
   type ChordHistory,
   type ChordStamp,
@@ -342,6 +343,18 @@ export interface PopupHost {
   readonly clock: {
     readonly subscribe: (listener: () => void) => () => void;
     readonly read: () => string | undefined;
+  };
+  /**
+   * Whether the top popup's answer is LOCKED by the approval lockout now: a guarded form's `Enter` (`formQuiet`'s lockout: from the answer
+   * before it, an `Enter` refused inside it restarting it) or a confirmation line's answer key (from the evidence it was armed against). Its
+   * legend part is drawn dim with `(wait)` while it holds (the maintainer's ruling of 2026-11-26 on ADR-0145 §3). Asked of the guard that
+   * decides (`ChordGuard.lockedUntil`), on the host's clock. Not a snapshot field, as {@link clock}: a change to it is no new frame, so it
+   * restarts no settle, dwell or window; it changes when a step or popup comes or goes, and once more at the unlock instant (one timer on the
+   * host's `schedule`, moved by a refused `Enter` that restarted the lockout); never periodically.
+   */
+  readonly lock: {
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly read: () => boolean;
   };
   readonly dispose: () => void;
 }
@@ -679,6 +692,26 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
     if (stamp.now - stamp.lastResolvedAt < APPROVAL_LOCKOUT_MS) chord.resolved(stamp);
   };
 
+  /**
+   * The lock of the top popup's answer ({@link PopupHost.lock}), asked of the guard that decides it: a guarded form's `Enter` (the host's
+   * guard over its history: `formQuiet`'s lockout, the approval's 2 s), a confirmation line's answer key (the line's own guard, on the evidence
+   * it was armed against: what `chordRefusal` hands it). Read again on every publication and after every key (an `Enter` refused inside the
+   * lockout moved its end).
+   */
+  const lock = createLockDisplay({
+    now,
+    schedule,
+    until: () => {
+      const record = top();
+      if (record === undefined || disposed) return Number.NEGATIVE_INFINITY;
+      if (onGuardedForm(record.frame)) return chord.lockedUntil();
+      const arming = record.chord;
+      return arming === undefined
+        ? Number.NEGATIVE_INFINITY
+        : arming.guard.lockedUntil({ lastResolvedAt: arming.lastResolvedAt });
+    },
+  });
+
   /** The state of the step a frame is on (what the form says is this and its content), or `undefined` for no frame. */
   const formStateOf = (frame: PopupFrame | undefined): PopupStepState | undefined =>
     frame === undefined ? undefined : currentStep(frame).state;
@@ -712,6 +745,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       snapshot = next;
     }
     syncClock();
+    // The lock before the frame's listeners, so a view that renders on this publication reads the lock of the step it draws.
+    lock.sync();
     for (const listener of listeners) listener();
   };
 
@@ -1165,6 +1200,8 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       // the opening guard): a key held at a slow rate, one repeat of which lands in the moment before a new frame is acknowledged, must not
       // let the lockout run out under it. An admitted one restarts it in `applyForm`.
       else if (action.kind === 'enter' && onGuardedForm(record.frame)) restartLockout(stamp);
+      // A refused `Enter` inside the lockout moved its end: the lock's one timer moves with it (its part stays dim).
+      lock.sync();
       return true;
     },
     paste: (text) => {
@@ -1275,6 +1312,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       },
       read: () => clockText,
     },
+    lock: { subscribe: lock.subscribe, read: lock.read },
     dispose: () => {
       if (disposed) return;
       // First: a command's close hook that opens a popup during the teardown is refused (`closed`), never pushed into a host that is going.
@@ -1285,6 +1323,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       channel?.popupHold(undefined);
       listeners.clear();
       clockListeners.clear();
+      lock.dispose();
     },
   };
   return host;

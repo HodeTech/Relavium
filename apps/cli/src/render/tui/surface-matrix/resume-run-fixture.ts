@@ -235,7 +235,13 @@ export const RESUME_RUN_SURFACES: readonly HomeSurface[] = [
     title: 'The /run popup’s confirmation (its chord step, with what the run can do)',
     exitKey: 'Esc',
     landmark: 'Run Release notes?',
-    legendRow: '[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies',
+    // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim): at 80 columns the longer part drops `[Ctrl+N]` (Esc refuses too);
+    // once the lock has opened, the row is whole again.
+    legendRow: [
+      '[Ctrl+Y] Start it (wait) · Esc back · [Ctrl+C] denies',
+      '[Ctrl+Y] Start it (wait) · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies',
+      '[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies',
+    ],
     belowFloor: /too small for this popup/iu,
     popup: liveBox,
     setup: NATIVE,

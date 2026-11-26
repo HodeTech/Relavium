@@ -150,7 +150,11 @@ export const PROJECT_FLOW_SURFACES: readonly HomeSurface[] = [
     title: 'The /init popup: what will be created, and the Ctrl+Y that creates it',
     exitKey: 'Esc',
     landmark: 'Create these project directories?',
-    legendRow: '[Ctrl+Y] Create them · [Ctrl+N] Create nothing · Esc denies',
+    // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim); once the lock has opened, the row reads as it always did.
+    legendRow: [
+      '[Ctrl+Y] Create them (wait) · [Ctrl+N] Create nothing · Esc denies',
+      '[Ctrl+Y] Create them · [Ctrl+N] Create nothing · Esc denies',
+    ],
     belowFloor: /too small for this popup/iu,
     popup: liveNativePopupBox,
     setup: NATIVE,
@@ -166,7 +170,13 @@ export const PROJECT_FLOW_SURFACES: readonly HomeSurface[] = [
     title: 'The /import popup’s review (what would be written, a chord step)',
     exitKey: 'Esc',
     landmark: "Import workflow 'nightly-report'",
-    legendRow: '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim): at 80 columns the longer part drops `[Ctrl+N]` (Esc refuses too);
+    // once the lock has opened, the row is whole again.
+    legendRow: [
+      '[Ctrl+Y] Write the file (wait) · Esc denies',
+      '[Ctrl+Y] Write the file (wait) · [Ctrl+N] Write nothing · Esc denies',
+      '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    ],
     belowFloor: /too small for this popup/iu,
     popup: liveNativePopupBox,
     setup: NATIVE,
@@ -182,7 +192,13 @@ export const PROJECT_FLOW_SURFACES: readonly HomeSurface[] = [
     title: 'The Defined tab’s export popup (where a workflow would be written, a chord step)',
     exitKey: 'Esc',
     landmark: "Write workflow 'nightly-report'",
-    legendRow: '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim): at 80 columns the longer part drops `[Ctrl+N]` (Esc refuses too);
+    // once the lock has opened, the row is whole again.
+    legendRow: [
+      '[Ctrl+Y] Write the file (wait) · Esc denies',
+      '[Ctrl+Y] Write the file (wait) · [Ctrl+N] Write nothing · Esc denies',
+      '[Ctrl+Y] Write the file · [Ctrl+N] Write nothing · Esc denies',
+    ],
     belowFloor: /too small for this popup/iu,
     popup: liveNativePopupBox,
     setup: NATIVE,

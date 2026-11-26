@@ -1,7 +1,8 @@
 /**
  * The native prompt's snapshot identity ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §2): the measured-frame proof compares today's fields (`note` and `picker` included, and `final`, the mark of a flow's persistent last step)
- * PLUS the popup descriptor's (`title`, `origin`, `stepIndex`, `stepCount`, the rail's `stepNames`, `exitLabel`, `enterVerb`, the stack depth). Every key of
+ * PLUS the popup descriptor's (`title`, `origin`, `stepIndex`, `stepCount`, the rail's `stepNames`, `exitLabel`, `enterVerb`, `escapeVerb`, the rail's
+ * `skipped` steps, the stack depth). Every key of
  * the snapshot is enumerated against the comparison and the explicit exclusion list, so a field added to the snapshot without a decision fails
  * here; and the descriptor reaches the snapshot through the flow's one setter, sanitised. The descriptor has no placement: the renderer's
  * placement decides where a popup is drawn, and a field nobody reads is no proof.
@@ -47,6 +48,8 @@ const FULL: Required<NativePromptSnapshot> = {
     stepNames: ['Provider', 'Key', 'Done'],
     exitLabel: 'close',
     enterVerb: 'check',
+    escapeVerb: 'skip for now',
+    skipped: [1],
     depth: 1,
   },
   final: 'ok',
@@ -61,6 +64,8 @@ const DESCRIPTOR: Required<NativePopupDescriptor> = {
   stepNames: ['Provider', 'Key', 'Done'],
   exitLabel: 'close',
   enterVerb: 'check',
+  escapeVerb: 'skip for now',
+  skipped: [1],
   depth: 1,
 };
 
@@ -97,6 +102,8 @@ function changedDescriptor(key: keyof NativePopupDescriptor): NativePromptSnapsh
     stepNames: ['Provider', 'Key', 'Finish'],
     exitLabel: 'back',
     enterVerb: 'send',
+    escapeVerb: 'back',
+    skipped: [0],
     depth: 2,
   };
   return { ...FULL, popup: { ...DESCRIPTOR, [key]: variants[key] } };
@@ -213,6 +220,39 @@ describe('the flow’s one setter plumbs the descriptor into the snapshot', () =
     expect(channel.ui.getSnapshot().popup?.enterVerb).toBe('check');
     expect(sameNativePromptFrame(without, channel.ui.getSnapshot())).toBe(false);
     channel.ui.dispose();
+  });
+
+  it('W7: `escapeVerb` (a product constant) is sanitised like `enterVerb`, kept absent when none is given, and is identity', () => {
+    const channel = createNativePromptChannel({ now: () => 0 });
+    channel.flow.begin();
+    const { escapeVerb, ...plain } = DESCRIPTOR;
+    void escapeVerb;
+    channel.flow.popup?.(plain);
+    const without = channel.ui.getSnapshot();
+    expect(Object.keys(without.popup ?? {})).not.toContain('escapeVerb');
+    channel.flow.popup?.({ ...DESCRIPTOR, escapeVerb: 'skip\u001b[31m for now\u0007' });
+    expect(channel.ui.getSnapshot().popup?.escapeVerb).toBe('skip for now');
+    expect(sameNativePromptFrame(without, channel.ui.getSnapshot())).toBe(false);
+    channel.ui.dispose();
+  });
+
+  it('W7: `skipped` keeps whole steps of the rail, in order, each once; none in range is no field; the list is identity step by step', () => {
+    const channel = createNativePromptChannel({ now: () => 0 });
+    channel.flow.begin();
+    channel.flow.popup?.({ ...DESCRIPTOR, skipped: [2, 1, 1, 1.5, -1, 3, Number.NaN] });
+    expect(channel.ui.getSnapshot().popup?.skipped).toEqual([1, 2]);
+    channel.flow.popup?.({ ...DESCRIPTOR, skipped: [7] });
+    expect(Object.keys(channel.ui.getSnapshot().popup ?? {})).not.toContain('skipped');
+    channel.ui.dispose();
+    const skipping = (skipped: readonly number[] | undefined): NativePromptSnapshot => {
+      const { skipped: dropped, ...rest } = DESCRIPTOR;
+      void dropped;
+      return { ...FULL, popup: skipped === undefined ? rest : { ...rest, skipped } };
+    };
+    expect(sameNativePromptFrame(skipping([1]), skipping([1]))).toBe(true);
+    expect(sameNativePromptFrame(skipping([1]), skipping([0]))).toBe(false);
+    expect(sameNativePromptFrame(skipping([1]), skipping([1, 2]))).toBe(false);
+    expect(sameNativePromptFrame(skipping([1]), skipping(undefined))).toBe(false);
   });
 
   it('clamps a step below the first and a count below one (a frame is never drawn on step -3 of 0)', () => {

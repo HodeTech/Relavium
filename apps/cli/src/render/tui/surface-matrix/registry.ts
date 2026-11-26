@@ -80,9 +80,12 @@ export interface SurfaceBase {
    * | `chat.report-*`, `standalone-chat.report-*` | the same short exchange (the `/agent`, `/cost`, `/workflows` and `/help` popups, in each state) |
    *
    * A product popup's rows come from `live`, the frame its host has open now, through the same geometry and frame model (`popupBoxOf`): the
-   * check is then that the terminal shows exactly that frame, in its box, over an unchanged body.
+   * check is then that the terminal shows exactly that frame, in its box, over an unchanged body. `locked` is the host's lock now
+   * (`PopupHost.lock`): the slot draws a waiting legend part (`(wait)`) while it holds, and so does the expected box.
    */
-  readonly popup?: ((variant: Variant, live?: PopupFrame) => PopupBox) | undefined;
+  readonly popup?:
+    | ((variant: Variant, live?: PopupFrame, locked?: boolean) => PopupBox)
+    | undefined;
 }
 
 export const knownFailuresOf = (entry: SurfaceBase): readonly KnownFailure[] => {

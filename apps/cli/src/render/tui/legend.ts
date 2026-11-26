@@ -35,7 +35,18 @@ export interface LegendKey {
   readonly keys: string | readonly string[];
   readonly verb: string;
   readonly role?: LegendRole;
+  /**
+   * The key is LOCKED by its input guard's 2 s lockout right now (the maintainer's ruling of 2026-11-26 on ADR-0145 §3): the whole item, its
+   * key too, is drawn dim, and its verb is followed by {@link LEGEND_WAIT} in the same text (`[Ctrl+Y] Create them (wait)`), so the state reads
+   * without colour. Static: no countdown, no tick; the surface draws the item again without it once, at the moment the lock opens. Set by a
+   * surface from its guard ONLY: nothing reads it back from a text, so a label that says `(wait)` is an ordinary label. A fit counts its
+   * columns (the text is longer), and a popup's legend row keeps it before every other key but the ways out (`fittedLegendItems`).
+   */
+  readonly wait?: true;
 }
+
+/** What a locked key's verb is followed by ({@link LegendKey.wait}): one fixed word, never a time. */
+export const LEGEND_WAIT = '(wait)';
 
 /** Words between the keys, drawn dim: a status (`Starting chat…`), a reason, a position (`Notice 1–17 of 60`) or live text (a query echo). */
 export interface LegendText {
@@ -221,6 +232,20 @@ export interface LegendRender {
   readonly spans: readonly SheetSpan[];
 }
 
+/**
+ * A key item's two parts as drawn: its keys (in its role, or dim while it waits) and its verb (dim; a waiting key's verb ends in
+ * {@link LEGEND_WAIT}). The verb part starts with the space between the two.
+ */
+function keyParts(item: LegendKey): {
+  readonly label: string;
+  readonly role: SheetRole;
+  readonly verb: string;
+} {
+  if (item.wait === true)
+    return { label: keyLabel(item.keys), role: 'dim', verb: ` ${item.verb} ${LEGEND_WAIT}` };
+  return { label: keyLabel(item.keys), role: item.role ?? 'strong', verb: ` ${item.verb}` };
+}
+
 function render(entries: readonly LegendItem[]): LegendRender {
   const spans: SheetSpan[] = [];
   let text = '';
@@ -230,16 +255,12 @@ function render(entries: readonly LegendItem[]): LegendRender {
       text += LEGEND_SEPARATOR;
     }
     if (isKey(item)) {
-      const label = keyLabel(item.keys);
-      spans.push({
-        from: text.length,
-        to: text.length + label.length,
-        role: item.role ?? 'strong',
-      });
+      const { label, role, verb } = keyParts(item);
+      spans.push({ from: text.length, to: text.length + label.length, role });
       text += label;
       // the space between the keys and the verb, then the verb
-      spans.push({ from: text.length, to: text.length + 1 + item.verb.length, role: 'dim' });
-      text += ` ${item.verb}`;
+      spans.push({ from: text.length, to: text.length + verb.length, role: 'dim' });
+      text += verb;
     } else {
       spans.push({ from: text.length, to: text.length + item.text.length, role: 'dim' });
       text += item.text;

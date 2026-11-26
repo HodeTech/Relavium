@@ -53,8 +53,8 @@ export function doctorPortFor(surface: DoctorSurface, fixture: DoctorFixture): D
 }
 
 /** The box of the doctor popup the host has open in this cell. */
-export const doctorPopupBox = (variant: Variant, live?: PopupFrame): PopupBox =>
-  popupBoxOf(live, variant);
+export const doctorPopupBox = (variant: Variant, live?: PopupFrame, locked = false): PopupBox =>
+  popupBoxOf(live, variant, undefined, locked);
 
 /** The words each state of the popup draws and no other surface does. */
 export const DOCTOR_LANDMARKS = {

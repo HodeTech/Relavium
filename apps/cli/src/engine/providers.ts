@@ -106,7 +106,8 @@ export function providerEndpointOrigin(
  * Whether `resolver` can resolve a key for `id` — a boolean, never the key. Prefers the resolver's own
  * {@link ProviderResolver.hasKey} (the fault-preserving path production always provides); falls back to a
  * `keyFor` try/probe only when a (test) stub omits it. Centralizes the "does this provider have a key" question
- * so the picker key-gate + `isProviderKeyless` share one source (2.5.G key-awareness).
+ * so the model catalogue's key-gate, the key sample of a provider's availability and the chat hosts' missing-key notices share one source
+ * (2.5.G key-awareness).
  */
 export function providerHasKey(
   resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>,

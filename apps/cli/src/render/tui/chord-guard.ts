@@ -127,6 +127,86 @@ export interface ChordGuard {
     painted: boolean,
     strict?: boolean,
   ) => ChordAnswer | undefined;
+  /**
+   * Until when, on this guard's clock, an affirmative chord judged on `evidence` (default: the history as the next key's stamp would carry it)
+   * is refused by the LOCKOUT, the layer {@link decide} restarts with every refused press inside it: `lockoutMs` after `evidence.lastResolvedAt`,
+   * or `-Infinity` when the guard has no lockout. The lockout rule read without a key, for a surface that draws its affirmative as locked while
+   * it holds (`(wait)` in its legend, ADR-0145 §3): never a second copy of the rule. The other layers (the dwell, the quiet gap, the typing
+   * window) are not in it: they are shorter and follow from the person's own keys.
+   */
+  readonly lockedUntil: (evidence?: Pick<ChordStamp, 'lastResolvedAt'>) => number;
+}
+
+/**
+ * What a surface DRAWS of a lockout: whether its affirmative is locked now, so its legend part reads dim with `(wait)` (the maintainer's ruling
+ * of 2026-11-26 on ADR-0145 §3), and the ONE timer that says when it opens. `until` asks the guard that decides
+ * ({@link ChordGuard.lockedUntil}); nothing here answers anything. A display value, never a frame's field: a view reads it beside its snapshot
+ * (as the popup host's loading clock), so it changes no identity and restarts no guard.
+ */
+export interface LockDisplay {
+  /**
+   * Read the lock again (a prompt or a step opened, settled or went; a refused press inside the lockout moved its end): listeners hear only a
+   * change, and one timer is kept at the unlock instant while it holds (moved when its end moved, none otherwise). Never periodic.
+   */
+  readonly sync: () => void;
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly read: () => boolean;
+  /** The surface is gone: the timer is cleared, nobody is told again, and a later `sync` does nothing. */
+  readonly dispose: () => void;
+}
+
+export function createLockDisplay(options: {
+  /** The guard's clock. */
+  readonly now: () => number;
+  /** A one-shot timer (`setTimeout`-shaped) returning its cancel; production passes an unref'd one. */
+  readonly schedule: (callback: () => void, ms: number) => () => void;
+  /** Until when the affirmative is locked, on that clock: the deciding guard's `lockedUntil`, `-Infinity` when nothing is held. */
+  readonly until: () => number;
+}): LockDisplay {
+  const listeners = new Set<() => void>();
+  let locked = false;
+  let disposed = false;
+  let unlockAt = Number.NEGATIVE_INFINITY;
+  let cancel: (() => void) | undefined;
+  const stopTimer = (): void => {
+    cancel?.();
+    cancel = undefined;
+  };
+  const sync = (): void => {
+    if (disposed) return;
+    const until = options.until();
+    const next = options.now() < until;
+    if (!next || until !== unlockAt) stopTimer();
+    if (next && cancel === undefined) {
+      unlockAt = until;
+      cancel = options.schedule(
+        () => {
+          cancel = undefined;
+          sync();
+        },
+        // Never before the instant (a timer cannot fire early on the guard's clock and leave the part dim with no timer left).
+        Math.max(1, Math.ceil(until - options.now())),
+      );
+    }
+    if (next === locked) return;
+    locked = next;
+    for (const listener of listeners) listener();
+  };
+  return {
+    sync,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    read: () => locked,
+    dispose: () => {
+      disposed = true;
+      stopTimer();
+      listeners.clear();
+    },
+  };
 }
 
 export function createChordGuard(options: {
@@ -183,5 +263,9 @@ export function createChordGuard(options: {
         history.lastResolvedAt = stamp.now;
       return undefined;
     },
+    lockedUntil: (evidence = { lastResolvedAt: history.lastResolvedAt }) =>
+      numbers.lockoutMs > 0
+        ? evidence.lastResolvedAt + numbers.lockoutMs
+        : Number.NEGATIVE_INFINITY,
   };
 }
