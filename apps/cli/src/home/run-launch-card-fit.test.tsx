@@ -10,6 +10,7 @@
 import { parseWorkflow } from '@relavium/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { popupInnerWidth } from '../popups/geometry.js';
 import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
 import { mountHome, type HomeMount } from '../render/tui/surface-matrix/home-host.js';
 import { createRunLaunch, LAUNCH_CANCELLED, type LaunchCatalog } from './run-launch.js';
@@ -139,6 +140,74 @@ describe('the longest confirmation at 80x24, in the /run popup', () => {
       expect(text).not.toMatch(/too long for a popup|too small for this popup/u);
 
       // `Ctrl+N` is never delayed: it reaches the step and leaves it, and nothing starts.
+      m.key('\u000e');
+      expect(await opened).toBe(LAUNCH_CANCELLED);
+      expect(start).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('the longest confirmation at 80x24 with the longest `File:` row above its passage (round 2 sitting #2, F3)', () => {
+  const TAIL = '/.relavium/workflows/worst-case-confirmation-with-a-long-id.yaml';
+  const BODY = `${'/a-long-directory-name'.repeat(10)}${TAIL}`;
+  /**
+   * The widest row the catalog writes: `File: ` and the path cut at its front to one row of the popup at the floor (`run-launch.ts`
+   * `PLACE_LIMIT`: the inner width, 66, less the lead). A two-row path did not leave this card answerable in the alternate screen.
+   */
+  const PLACE = `File: …${BODY.slice(BODY.length - 59)}`;
+
+  it.each(['alt', 'inline'] as const)(
+    '%s: is still painted whole and visible, the file row drawn with its end, and every answer named',
+    async (renderer) => {
+      expect(PLACE.length).toBe(popupInnerWidth(80, 'standard'));
+      const m = mountHome(
+        { renderer, color: false, size: { cols: 80, rows: 24 } },
+        { nativePrompt: true },
+      );
+      mounts.push(m);
+      const channel = m.channel;
+      if (channel === undefined) throw new Error('no channel');
+      const definition = parseWorkflow(WORST_CASE, { source: 'worst-case' });
+      const start = vi.fn();
+      const catalog: LaunchCatalog = {
+        list: () => [
+          {
+            path: 'worst.yaml',
+            slug: definition.workflow.id,
+            valid: true,
+            tags: [],
+            name: definition.workflow.name,
+          },
+        ],
+        load: () => ({
+          definition,
+          sourceDigest: 'd'.repeat(64),
+          fsScope: { tier: 'full', fromRepository: true },
+          place: PLACE,
+        }),
+      };
+      const launch = createRunLaunch({ flow: channel.flow, host: { start }, catalog });
+      const opened = launch.open(definition.workflow.id);
+      for (let index = 1; index <= INPUTS; index += 1) {
+        await m.until(
+          () =>
+            channel.ui
+              .getSnapshot()
+              .message.includes(`Input ${String(index)} of ${String(INPUTS)}`) && shownNow(m),
+        );
+        if (index === 1) await pause(PAST_THE_OPENING_MS);
+        m.key(`value-${String(index)}-padding-padding\r`);
+      }
+      await m.until(() => channel.ui.getSnapshot().kind === 'chord' && shownNow(m));
+      const card = channel.ui.getSnapshot();
+      expect(card.details[0]).toBe(PLACE);
+      expect(card.details).toHaveLength(2);
+      expect(shownNow(m), 'the step was measured and flushed at 80x24').toBe(true);
+      const text = m.text();
+      expect(text).toContain('worst-case-confirmation-with-a-long-id.yaml');
+      expect(text).toContain('[Ctrl+Y] Start it (wait) · Esc back · [Ctrl+C] denies');
+      expect(text).toContain('does not limit');
+      expect(text).not.toMatch(/too long for a popup|too small for this popup/u);
       m.key('\u000e');
       expect(await opened).toBe(LAUNCH_CANCELLED);
       expect(start).not.toHaveBeenCalled();

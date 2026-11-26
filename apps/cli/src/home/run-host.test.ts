@@ -52,6 +52,7 @@ import type { CliIo } from '../process/io.js';
 import { captureIo } from '../test-support.js';
 import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import {
+  PROJECT_DIRECTORY_CHANGED,
   RunHost,
   type HostedLaunch,
   type HostedLegEnd,
@@ -517,6 +518,90 @@ describe('a run belongs to the workspace it was started in', () => {
       expect(host.f.registry.activeOwners).toBe(0);
     }
     expect(runStatus(parked.runId), 'still parked').toBe('paused');
+  });
+
+  /**
+   * The Home opened through a link (`--cwd <base>/link`, the link at project A), and the link repointed at project B while it is open (round 2
+   * sitting #2, F3: the security sitting's `swap.mjs`). The legs work in the cwd as it was spelled, so without the check a start would run B's
+   * workflow in B and an answer would load B's configuration for A's run.
+   */
+  function swappableHome(): {
+    readonly link: string;
+    readonly a: string;
+    readonly b: string;
+    readonly point: (at: string) => void;
+  } {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-run-host-swap-')));
+    scratch.push(base);
+    const a = join(base, 'A');
+    const b = join(base, 'B');
+    mkdirSync(a);
+    mkdirSync(b);
+    const link = join(base, 'link');
+    symlinkSync(a, link, 'junction');
+    writeFileSync(join(a, 'w.relavium.yaml'), GATED);
+    writeFileSync(join(b, 'w.relavium.yaml'), HAPPY.replace('id: host-happy', 'id: host-b'));
+    return {
+      link,
+      a,
+      b,
+      point: (at) => {
+        rmSync(link);
+        symlinkSync(at, link, 'junction');
+      },
+    };
+  }
+
+  it('refuses a start once the working directory resolves elsewhere, builds nothing and records no run, and starts again once it is back', async () => {
+    const swap = swappableHome();
+    const r = rig({ projectRoot: swap.a }, swap.link);
+    swap.point(swap.b);
+    const refusedStart = await r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } });
+    expect(refusedStart).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(r.registered, 'no owner was registered').toHaveLength(0);
+    expect(runCount(), 'no run of B was created').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+
+    swap.point(swap.a);
+    const parked = await started(
+      r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } }),
+    );
+    expect(parked.handedOff, 'A`s gated workflow, started in A').toBe(true);
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(swap.a);
+  });
+
+  it('refuses to answer a gate, or continue a run, once the working directory resolves elsewhere: the run stays parked', async () => {
+    const swap = swappableHome();
+    const r = rig({ projectRoot: swap.a }, swap.link);
+    const parked = await started(
+      r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } }),
+    );
+    expect(runStatus(parked.runId)).toBe('paused');
+    swap.point(swap.b);
+    for (const request of [
+      { runId: parked.runId, kind: 'human' as const, decision: approvalDecision() },
+      { runId: parked.runId, kind: 'media' as const },
+    ]) {
+      expect(await r.host.resume(request)).toEqual({
+        kind: 'refused',
+        reason: 'directory_changed',
+        message: PROJECT_DIRECTORY_CHANGED,
+      });
+    }
+    expect(r.builds, 'only the start built an engine').toHaveBeenCalledTimes(1);
+    expect(r.registered, 'only the start registered an owner').toHaveLength(1);
+    expect(runStatus(parked.runId), 'still parked').toBe('paused');
+
+    swap.point(swap.a);
+    const answered = await started(
+      r.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
+    );
+    expect(answered.terminal.disposition).toBe('completed');
   });
 
   it('leaves a run that does not exist to the resume core, which names it', async () => {

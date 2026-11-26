@@ -64,6 +64,14 @@ describe('a person’s own `r` types', () => {
     }
   });
 
+  it('`rr` typed in a burst at the start is a chain: the first is taken back, the second dropped, and the key after them types (the cost, in a text and a masked field alike: the machine never reads the field)', () => {
+    const rule = createHeldOpener(R);
+    expect(rule.observe('r', {}, OPENED_AT + 600)).toBe('type');
+    expect(rule.observe('r', {}, OPENED_AT + 680)).toBe('retract');
+    expect(rule.observe('x', {}, OPENED_AT + 800)).toBe('type');
+    expect(rule.character(), 'the other key ended the rule').toBeUndefined();
+  });
+
   it('two `r`s at least 150 ms apart are two letters', () => {
     const rule = createHeldOpener(R);
     expect(rule.observe('r', {}, OPENED_AT + 400)).toBe('type');

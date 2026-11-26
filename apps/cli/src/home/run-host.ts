@@ -129,6 +129,8 @@ export type HostedRefusal =
   | 'closing'
   /** The run belongs to another directory, or was recorded with none ([ADR-0139] §7). */
   | 'other_project'
+  /** The working directory no longer resolves to the directory the Home was opened in (a link in its spelling was repointed). */
+  | 'directory_changed'
   /** The leg was stopped before it started. */
   | 'stopped'
   /** This host has no invocation to register a leg's owner with. */
@@ -327,6 +329,13 @@ export const HOSTED_START_STOPPED = 'The run was stopped before it started.';
  * nobody made (`was not approved`), and the run is exactly as it was: the gate is still pending, or the jobs are still parked.
  */
 export const HOSTED_RESUME_CANCELLED = 'Cancelled. The run is as it was.';
+
+/**
+ * What a start, an answer or a continue says when the Home's working directory no longer resolves to the directory the Home was opened in
+ * (round 2 sitting #2, F3): a link in its spelling was repointed, so the leg would read another project's workflow and configuration. Fixed
+ * text: it names neither directory.
+ */
+export const PROJECT_DIRECTORY_CHANGED = 'The project directory changed. Reopen the Home.';
 
 function refused(reason: HostedRefusal, message: string): HostedLaunch {
   return { kind: 'refused', reason, message };
@@ -542,7 +551,7 @@ export class RunHost {
    */
   start(request: HostedStartRequest): Promise<HostedLaunch> {
     if (this.#launching?.kind === 'start') return this.#launching.promise;
-    const turnedAway = this.#admission();
+    const turnedAway = this.#admission() ?? this.#directoryChanged();
     if (turnedAway !== undefined) return turnedAway;
     return this.#launch('start', (context) => this.#acquireStart(request, context), request.signal);
   }
@@ -557,6 +566,8 @@ export class RunHost {
     if (turnedAway !== undefined) return turnedAway;
     const otherProject = this.#otherProjectRefusal(request.runId);
     if (otherProject !== undefined) return Promise.resolve(otherProject);
+    const moved = this.#directoryChanged();
+    if (moved !== undefined) return moved;
     return this.#launch(
       'resume',
       (context) => this.#acquireResume(request, context),
@@ -690,6 +701,17 @@ export class RunHost {
       );
     }
     return undefined;
+  }
+
+  /**
+   * The refusal for a request made after the working directory stopped resolving to the directory this host answers (round 2 sitting #2,
+   * F3): the legs work in {@link #cwd} as it was spelled, so with a link in that spelling repointed a start would read another project's
+   * workflow and record its run there, and an answer would load another project's configuration. Asked of the live spelling just before
+   * a leg is registered, as a chat re-validates its pins before each use; `undefined` while it still resolves here.
+   */
+  #directoryChanged(): Promise<HostedLaunch> | undefined {
+    if (projectRootOf(this.#cwd) === this.#projectRoot) return undefined;
+    return Promise.resolve(refused('directory_changed', PROJECT_DIRECTORY_CHANGED));
   }
 
   /** The refusal for a run recorded for another directory (or for none), before any work. */

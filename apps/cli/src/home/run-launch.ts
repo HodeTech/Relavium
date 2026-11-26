@@ -1,4 +1,5 @@
-import { basename } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 
 import {
   BUILTIN_TOOLS,
@@ -13,11 +14,13 @@ import { faultForTranscript } from '../config/config-error-text.js';
 import { ConfigError } from '../config/errors.js';
 import { loadResolvedConfig, type LoadedConfig } from '../config/load.js';
 import { shortRunId } from '../history/run-detail-model.js';
-import { POPUP_NOTICE_MAX_COLUMNS } from '../popups/geometry.js';
+import { POPUP_FLOOR, POPUP_NOTICE_MAX_COLUMNS, popupInnerWidth } from '../popups/geometry.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
+import { displayRoots } from '../render/display-roots.js';
 import { flowLine } from '../render/tui/flow-text.js';
 import { keyToken } from '../render/tui/legend.js';
+import { placeForDisplay } from '../render/tui/place-label.js';
 import {
   NATIVE_PROMPT_BACK,
   type NativeChordPort,
@@ -444,6 +447,12 @@ export interface LoadedWorkflow {
    * default, so the start is bound to `sandboxed`: the scope the confirmation implied.
    */
   readonly fsScope?: LaunchFsScope | undefined;
+  /**
+   * Where the same pick read the file, as the confirmation names it (`File: …`, round 2 sitting #2 F3): its real path, every link followed,
+   * from `~` (whole outside the home), scrubbed and cut at its front. The project directory is in it, so a confirmation built from a file
+   * another directory holds (a link in the Home's path repointed) shows that directory. A catalog that reports none (a stub) names none.
+   */
+  readonly place?: string | undefined;
 }
 
 /** The project's workflow files and their parsed definitions, behind a port so the flow is testable without a project. */
@@ -489,6 +498,7 @@ export function createProjectCatalog(options: {
           definition,
           sourceDigest: workflowSourceDigest(source.yaml),
           fsScope: readFsScope(cwd, homeDir, options.configPath),
+          place: workflowPlace(resolve(cwd, source.path), homeDir),
         };
       } catch (cause) {
         if (cause instanceof WorkflowParseError)
@@ -515,6 +525,29 @@ function readFsScope(cwd: string, homeDir: string, configPath: string | undefine
       throw new CliError('invalid_invocation', `Not started. ${shown.message}`, { cause: shown });
     throw cause;
   }
+}
+
+/** What the confirmation's `File:` row starts with. */
+const PLACE_LEAD = 'File: ';
+/**
+ * How many columns that row gives the path: ONE row of the popup at the floor (80 columns: its inner width, 66, less the lead), so the longest
+ * confirmation still fits 80×24 and is answerable. Its END is kept, the part that names the project and the file.
+ */
+const PLACE_LIMIT = popupInnerWidth(POPUP_FLOOR.columns, 'standard') - PLACE_LEAD.length;
+
+/**
+ * The confirmation's `File:` row for a workflow file read at `path` ({@link LoadedWorkflow.place}): the real path (a file that went between
+ * the read and this call keeps the path it was read by, which the start reads again), as a person reads a path outside the project: from `~`,
+ * or whole. Through the Home's full scrub (`flowLine`) and cut at its front.
+ */
+function workflowPlace(path: string, homeDir: string): string {
+  let real = path;
+  try {
+    real = realpathSync.native(path);
+  } catch {
+    // kept as read
+  }
+  return `${PLACE_LEAD}${placeForDisplay(real, displayRoots(undefined, homeDir), PLACE_LIMIT, flowLine)}`;
 }
 
 const LABEL_LIMIT = 60;
@@ -1143,6 +1176,8 @@ function runSession(options: {
   let chosenSlug: string | undefined;
   let state: LaunchState = { kind: 'idle', turn: 0 };
   let loaded: WorkflowDefinition | undefined;
+  /** Where that same read found the file (`File: …`), for the confirmation's first row; none from a catalog that reports none. */
+  let loadedPlace: string | undefined;
   let finish: (notice: string) => void = () => undefined;
   const done = new Promise<string>((resolve) => {
     finish = resolve;
@@ -1257,6 +1292,7 @@ function runSession(options: {
         launchChanged(choice.slug, fresh.definition.workflow.id),
       );
     loaded = fresh.definition;
+    loadedPlace = fresh.place;
     // The digest of that very read goes into the form, and so to the start: the id above is a name, this is the content. The label the
     // confirmation prints is rebuilt from the same read: the list's label may be from a file that has changed since (a new `name:`
     // with the id kept), and the question would then name one workflow over the graph another file digested.
@@ -1331,7 +1367,11 @@ function runSession(options: {
       // `Ctrl+Y` alone starts (ADR-0148 §3), past the chord card's guards: an `Enter` typed ahead, or held, answers nothing.
       answer = await flow.at(STEP.confirm).chord({
         message: confirmationQuestion(effect.form, hold.names()),
-        details: authority === undefined ? [] : [authority],
+        // The file the confirmation was built from, by its real path (its project directory in it), then what the run can do.
+        details: [
+          ...(loadedPlace === undefined ? [] : [loadedPlace]),
+          ...(authority === undefined ? [] : [authority]),
+        ],
         allow: RUN_CONFIRM_ALLOW,
         deny: RUN_CONFIRM_DENY,
         escape: FIELD_PROMPT_ESCAPE,

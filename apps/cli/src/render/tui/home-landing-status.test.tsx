@@ -207,7 +207,9 @@ describe('the status facts are read at construction and at the events, and publi
     for (const outcome of ['resolves', 'rejects'] as const) {
       const facts = reader();
       const openModeSettings = vi.fn(() =>
-        outcome === 'resolves' ? Promise.resolve() : Promise.reject(new Error('the card failed')),
+        outcome === 'resolves'
+          ? Promise.resolve(undefined)
+          : Promise.reject(new Error('the card failed')),
       );
       const { c } = home({ statusFacts: { read: facts.read }, openModeSettings });
       type(c, '/mode');

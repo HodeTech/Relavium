@@ -3,6 +3,7 @@ import { label, type Producer, type Recorder } from '../golden.js';
 import type { PaletteSurface } from '../../../../commands/repl-commands.js';
 import { INITIAL_REVERSE_SEARCH, reverseSearchExtendQuery } from '../../input-history.js';
 import { MentionView } from '../../mention-view.js';
+import { DockedMention, LandingMention } from '../../mention-home.js';
 import { ChatView } from '../../chat-ink.js';
 import { createChatStore } from '../../chat-store.js';
 import { buildPaletteEntries, filterPaletteEntries } from '../../palette-entries.js';
@@ -27,6 +28,12 @@ export const INPUT_PRODUCERS: readonly Producer[] = [
     id: 'mention-view',
     file: 'render/tui/mention-view.tsx',
     describe: 'the `@` completion’s hint under its candidates, loading, listing and empty',
+  },
+  {
+    id: 'home-mention',
+    file: 'render/tui/mention-home.tsx',
+    describe:
+      'the `@` file picker on the Home’s two prompts (ADR-0061 on the Home): its hint row under the list on the landing, and under the docked prompt on the work page',
   },
 ];
 
@@ -129,8 +136,47 @@ const mention: Recorder = () => {
   };
 };
 
+/** The `@` picker on the Home's two pages: the hint row that says its keys, on the landing and on the work page. */
+const homeMention: Recorder = () => {
+  const state = {
+    dir: '',
+    filter: '',
+    selected: 0,
+    loading: false,
+    candidates: [
+      { name: 'src', type: 'directory' as const, path: 'src' },
+      { name: 'a.md', type: 'file' as const, path: 'a.md' },
+    ],
+  };
+  const editor = { text: '', cursor: 0 };
+  return {
+    ...legendStates('page=landing', (color) => (
+      <LandingMention
+        mention={state}
+        editor={editor}
+        editorRows={3}
+        listRows={8}
+        fillRows={0}
+        cols={80}
+        color={color}
+      />
+    )),
+    ...legendStates('page=work', (color) => (
+      <DockedMention
+        mention={state}
+        editor={editor}
+        editorRows={3}
+        listRows={8}
+        cols={80}
+        color={color}
+      />
+    )),
+  };
+};
+
 export const INPUT_RECORDERS = {
   'palette-view': palette,
   'reverse-search-view': reverseSearch,
   'mention-view': mention,
+  'home-mention': homeMention,
 } as const satisfies Readonly<Record<string, Recorder>>;

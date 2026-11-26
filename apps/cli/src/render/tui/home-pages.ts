@@ -352,6 +352,34 @@ export const EXIT_AGAIN = exitKey.leave('exit (again)', 'Ctrl+C');
 /** `Esc` on the work page goes back up to the landing: one step back, nothing changes (the draft stays). */
 const BACK_TO_START = exitKey.step('Esc', 'start page');
 
+/**
+ * The hint row of either page while the `@` file picker is open over its prompt (ADR-0061 on the Home; ADR-0145 §3): the arrows select, `Enter`
+ * chooses (a directory opens, a file is added to the draft), `Esc` closes the picker and the `@` comes back into the draft. It takes the hint's
+ * place for as long as the picker is open: no other key of the page answers then.
+ */
+export const MENTION_HINT = legend(
+  [
+    { keys: '↑/↓', verb: 'select' },
+    { keys: 'Enter', verb: 'choose' },
+  ],
+  exitKey.close(),
+);
+
+/** The fewest rows the picker's list keeps on either page: a marker, the highlighted row and the other marker. */
+export const MENTION_MIN_ROWS = 3;
+/** The rows of the picker's block besides its list: the rule (or, on page 2, the blank row above it), its `@ dir/` header and the hint row. */
+export const MENTION_CHROME_ROWS = 3;
+
+/**
+ * The rows the picker's list may take in a terminal of `rows` (the palette's precedent: the picker's block, the prompt row with it, is at most
+ * half the terminal): never more than the chat's window of eight, never fewer than {@link MENTION_MIN_ROWS}. 8 at 80×24 and at 100×30.
+ */
+export function mentionListRows(rows: number, windowRows: number): number {
+  if (!Number.isFinite(rows)) return MENTION_MIN_ROWS;
+  const half = Math.floor(rows / 2) - MENTION_CHROME_ROWS - 1;
+  return Math.max(MENTION_MIN_ROWS, Math.min(windowRows, half));
+}
+
 /** The palette's own key, written first wherever the prompt is empty. */
 const SLASH_COMMANDS: LegendKey = { keys: '/', verb: 'commands' };
 /** The way to start a chat that is always there on a landing with nothing to continue. */

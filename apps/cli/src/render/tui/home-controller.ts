@@ -668,7 +668,19 @@ export interface HomeControllerDeps {
    *  repository's allowlist, read again every time the Permissions tab is entered. Absent ⇒ the Home has no tab to open (a test may omit
    *  it); a live chat's `/permissions` is a popup over its own port (`HomeChatSession.settings`). */
   readonly permissions?: PermissionsPort;
-  readonly openModeSettings?: () => Promise<void>;
+  /**
+   * The `@`-mention reader of the Home's own two prompts (ADR-0061; the maintainer's question of 2026-11-26): the landing and the work page's
+   * docked prompt have no session, so this reader is built from the Home's own filesystem policy and the tier the next chat runs at, through
+   * the SAME factory a chat's reader comes from (`home/mention-reader.ts`): the jail, the confidentiality floor, the symbolic-link and the
+   * binary and size guards are the chat's. Absent ⇒ `@` on the Home is a literal character, as before.
+   */
+  readonly mentionReader?: MentionReader;
+  /**
+   * `/mode` at the landing (ADR-0148 §1, §3, §6): the startup-default writer's flow drawn as the `/mode` popup (its choice, its `Ctrl+Y`
+   * confirmation, its Done step). It resolves with the ONE notification the Home shows (a declined confirmation), or `undefined` when the popup
+   * said what happened or was closed before it asked. Absent ⇒ `/mode` says the startup settings are unavailable.
+   */
+  readonly openModeSettings?: () => Promise<string | undefined>;
   /**
    * `/init` at the landing (ADR-0148 §1, §6): the popup that shows what it would create, asks with `Ctrl+Y` and ends in its Done step. It
    * resolves with the ONE notification the Home shows (a cancel, a folder that is already a project), or `undefined` when the popup said what
@@ -997,6 +1009,22 @@ interface HomeWord {
   /** Open what the word is for. It never throws for a missing dependency that {@link unavailable} names. */
   readonly open: () => void;
 }
+
+/**
+ * Who an `@`-mention completion is for (ADR-0061): the chat in front, or the Home's own prompts. One completion serves both, so the picker,
+ * the read and the queued attachment are one implementation and only these three things differ.
+ */
+interface MentionOwner {
+  /** The reader over the owner's jail (the session's, or the Home's own, built by the same factory). */
+  readonly reader: MentionReader;
+  /** Whether a listing or a read that resolves now may still land: the owner is the one in front, and the Home is not leaving. */
+  readonly current: () => boolean;
+  /** Where a word about the pick goes (a limit reached, a large file, a refused read): a chat's transcript note, or the Home's channel. */
+  readonly note: (text: string) => void;
+}
+
+/** What `Esc` says when it drops the attachments pending on the Home's draft (the chat's own words for it). */
+export const ATTACHMENTS_CLEARED = 'cleared pending attachments';
 
 /** The longest a chat build's failure is drawn: it wraps across rows, and no config text or error body may fill the screen. */
 const FAILURE_NOTICE_MAX = 300;
@@ -2642,19 +2670,28 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
+    // The key that opened this launch (`noteOpeningKey`) is the flow's to take when it begins. Whatever settles WITHOUT beginning one (no
+    // port, an open the Home refused, a launch refused before anything was asked) must not leave it on the shared history: the next flow
+    // would take a fast `rr` typed at its start for that key held down (round 2 sitting #2, F5).
+    const forgetOpener = (): void => {
+      chordHistory.openedBy = undefined;
+    };
     const launch = deps.launchRun;
     if (launch === undefined) {
+      forgetOpener();
       noteOnRunTab('Running a workflow is unavailable in this session.');
       return;
     }
+    const opening = !state.nativeActionBusy;
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const said = await launch(slug, path);
+      const said = await launch(slug, path).finally(forgetOpener);
       if (exiting) return;
       set({ ...parkedPatch() });
       if (launchStartedRun(before) && openRunView('tab-host')) deps.announce?.(said);
       else if (said !== '') noteOnRunTab(said);
     }, 'Run workflow');
+    if (!opening || !state.nativeActionBusy) forgetOpener();
   };
 
   /**
@@ -2985,10 +3022,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         open: () => {
           const settings = deps.openModeSettings;
           if (settings === undefined) return;
-          // The popup's "New chats" saves the startup default the status line names: read again when it is over, however it ended.
+          // The popup saves the startup default the status line names: read again when it is over, however it ended. What it says is its
+          // Done step or ONE notification (a declined confirmation), never the Home's notice (ADR-0148 §6).
           openNativeAction(async () => {
             try {
-              await settings();
+              announceFlowResult(await settings());
             } finally {
               refreshStatus();
             }
@@ -3212,7 +3250,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       openProviderSetup();
       return;
     }
+    dropLandingAttachments();
     openProviderSetup({ patch: { input: emptyEditor() }, announce: KEY_SHAPED_DRAFT_NOTICE });
+  };
+
+  /**
+   * The attachments pending on the Home's draft go with it (ADR-0061): a draft that is cleared, refused or replaced by a command takes them
+   * along, and a `@` read still on its way is dropped (the epoch moves), so nothing pending ever rides into a chat the draft did not start.
+   */
+  const dropLandingAttachments = (): void => {
+    submitEpoch += 1;
+    if (state.attachments.length > 0) set({ attachments: [] });
+  };
+
+  /**
+   * The Home's own prompt keys a draft answers first (ADR-0061, the chat's rules on the Home's two prompts): an `@` at a word boundary opens
+   * the file picker over the Home's reader, and `Esc` on the landing with attachments pending drops them (the chat's "clear" affordance), with
+   * one notification. Whether the key was taken.
+   */
+  const handleLandingDraftKey = (input: string, key: HomeKey & ChatKey): boolean => {
+    if (key.escape === true && state.attachments.length > 0) {
+      dropLandingAttachments();
+      deps.announce?.(ATTACHMENTS_CLEARED);
+      return true;
+    }
+    const owner = landingMentions();
+    if (owner === undefined || !mentionKeyOpens(input, key)) return false;
+    openMention(owner, { notice: undefined, stripFocus: undefined });
+    return true;
   };
 
   const submit = (): void => {
@@ -3225,6 +3290,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else deps.announce?.(EMPTY_PROMPT_ENTER_NOTICE); // nothing to open: say how to start, never nothing (ADR-0146 §1)
       return;
     }
+    // A command line is no message: the draft it replaced takes its pending attachments along.
+    if (trimmed.startsWith('/')) dropLandingAttachments();
     if (managementCommand(trimmed)) return;
     if (state.keyless) {
       connectProviderKeepingDraft();
@@ -3236,9 +3303,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // is built: sent, it would show as the pending message, reach the model and enter the session transcript (`history.db`, unencrypted and
     // not deletable from). Nothing is built, sent or recorded; the editor is cleared and a fixed sentence says where keys go.
     if (looksLikeProviderKey(draft)) {
+      dropLandingAttachments();
       set({ input: emptyEditor(), notice: KEY_SHAPED_SEND_NOTICE });
       return;
     }
+    startChatWith(trimmed, draft);
+  };
+
+  /**
+   * Build the chat the landing's message starts, and send the message as its FIRST turn through the chat's own path: the attachments pending
+   * on the draft are expanded into their UNTRUSTED frames by the chat's submit rule ({@link outboundOf}: only a file whose `@path` marker is
+   * still in the line), and the pending message and the transcript show the compact form. The draft and its attachments are taken now; a build
+   * that fails gives both back when the prompt is still empty.
+   */
+  const startChatWith = (trimmed: string, draft: string): void => {
+    const taken = state.attachments;
+    const { message, display } = outboundOf(trimmed);
+    submitEpoch += 1; // the draft is consumed: a `@` read still on its way must not splice its marker into the empty prompt
     // The message that starts the chat is recallable via Up in it (the input history is in memory only).
     history = recordHistory(history, trimmed);
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
@@ -3246,18 +3327,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({
       input: emptyEditor(),
       notice: undefined,
-      pendingMessage: trimmed,
+      pendingMessage: display,
       mode: 'loading',
       palette: undefined,
       search: undefined,
       mention: undefined,
+      attachments: [],
       historyEntries: history.entries,
     });
     awaitBuild(
       deps.startChat(),
       (built) => {
         set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
-        activateSession(built, () => sendChatLine(built, trimmed, trimmed));
+        activateSession(built, () => sendChatLine(built, message, display));
       },
       (err) => {
         // The message comes back to the prompt and the failure is shown WHOLE, in the notice area that wraps and pages: the one-row line it
@@ -3265,7 +3347,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         const restorable = state.input.text === '';
         set({
           notice: `Couldn’t start the chat: ${failureLine(err)}`,
-          ...(restorable ? { input: editorFromText(draft) } : {}),
+          ...(restorable ? { input: editorFromText(draft), attachments: taken } : {}),
           pendingMessage: '',
           mode: 'home', // route a build failure back to Home
         });
@@ -3290,6 +3372,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tabMemory = freshTabMemory();
     tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no agent detail
     disarmInterrupt();
+    // The Home's pending `@` attachments are its draft's: they never ride into a chat the draft did not start (a read on its way is dropped).
+    submitEpoch += 1;
     set({
       screen: undefined,
       ...parkedPatch(),
@@ -3297,6 +3381,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       pendingMessage: '', // there is no typed message to echo while it builds
       mode: 'loading',
       palette: undefined,
+      mention: undefined,
+      attachments: [],
     });
     awaitBuild(
       deps.startChat(agent),
@@ -3607,43 +3693,39 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
-  // The in-Home chat's `@`-mention completion (2.5.D step 4, ADR-0061) — mirrors ChatApp. ASYNC: opening/descending
-  // a dir fires an fs `list()` whose result lands ONLY if the submode is still open on the SAME dir (a stale resolve
-  // is dropped). The reader is per-session (`active`); `state.mention` is the live value the guards read.
-  const loadMentions = (active: HomeChatSession, dir: string): void => {
-    const reader = active.mentionReader;
-    if (reader === undefined) return;
-    // Apply a resolve ONLY if the SAME session's submode is still open on the SAME dir — a resolve from a
-    // since-closed / since-descended submode, or (after a /exit → new chat) a DIFFERENT session, is dropped
-    // (mirrors acceptMention's session-identity guard).
+  // The `@`-mention completion (2.5.D step 4, ADR-0061) of the chat in front AND of the Home's own two prompts (the landing and the work
+  // page's docked prompt: the maintainer's question of 2026-11-26), one implementation over a {@link MentionOwner}: the reader, whether a
+  // resolve may still land, and where a word about the pick goes. ASYNC: opening/descending a dir fires an fs `list()` whose result lands
+  // ONLY if the submode is still open on the SAME dir for the SAME owner (a stale resolve is dropped); `state.mention` is the live value the
+  // guards read.
+  const loadMentions = (owner: MentionOwner, dir: string): void => {
+    // Apply a resolve ONLY if the SAME owner's submode is still open on the SAME dir — a resolve from a since-closed / since-descended
+    // submode, or (after a /exit → new chat, or a chat that started from the landing) another owner, is dropped (mirrors acceptMention).
     const applyIfCurrent = (candidates: readonly MentionCandidate[]): void => {
       const open = state.mention;
-      if (open === undefined || !isCurrentChat(active)) return;
+      if (open === undefined || !owner.current()) return;
       // A matching directory is insufficient after permanent stop or a chat swap.
       if (open.dir !== dir) return;
       set({ mention: { ...open, candidates, loading: false } });
     };
-    void reader.list(dir).then(
+    void owner.reader.list(dir).then(
       (candidates) => applyIfCurrent(candidates),
       () => applyIfCurrent([]),
     );
   };
-  const openMention = (active: HomeChatSession): void => {
-    set({ mention: { dir: '', filter: '', candidates: [], selected: 0, loading: true } });
-    loadMentions(active, '');
+  const openMention = (owner: MentionOwner, patch: Partial<HomeControllerState> = {}): void => {
+    set({ ...patch, mention: { dir: '', filter: '', candidates: [], selected: 0, loading: true } });
+    loadMentions(owner, '');
   };
-  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then inject its content
-  // into the buffer as UNTRUSTED, user-position context. Drop a resolve if the chat ended mid-read (a returned Home
-  // must not gain injected text). A read rejection surfaces a STATIC, secret-free note (never the raw error/path).
-  const acceptMention = (active: HomeChatSession, path: string): void => {
-    const reader = active.mentionReader;
-    if (reader === undefined) return;
+  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then queue it for the draft as UNTRUSTED,
+  // user-position context. Drop a resolve if the owner is no longer in front (a returned Home, a chat that started, must not gain injected
+  // text) or the draft was submitted or dropped since. A read rejection surfaces a STATIC, secret-free word (never the raw error/path).
+  const acceptMention = (owner: MentionOwner, path: string): void => {
     const epoch = submitEpoch; // capture: a submit since accept ⇒ the buffer moved on (drop the inject)
-    // Stale if the chat swapped/ended (session/mode) OR the compose buffer was submitted since accept.
-    const stale = (): boolean => !isCurrentChat(active) || submitEpoch !== epoch;
-    void reader.read(path).then(
+    const stale = (): boolean => !owner.current() || submitEpoch !== epoch;
+    void owner.reader.read(path).then(
       ({ content, sizeBytes }) => {
-        if (stale()) return; // the chat ended or the buffer was submitted mid-read — drop it
+        if (stale()) return; // the owner left or the buffer was submitted mid-read — drop it
         history = resetHistoryNav(history); // a real edit ends history navigation
         // Insert the compact `@path` marker (the inline reference) + queue the file as a pending attachment (its
         // bytes are expanded into the UNTRUSTED frame at SUBMIT, only if the marker is still present). The shared
@@ -3656,18 +3738,39 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         });
         set({ input: insertAtCursor(state.input, `${mentionMarker(path)} `), attachments: list });
         if (dropped > 0) {
-          active.store.note(
+          owner.note(
             `pending attachment limit (${MAX_PENDING_ATTACHMENTS}) reached — oldest dropped`,
           );
         }
         const warn = fileAttachmentWarning(path, content, sizeBytes);
-        if (warn !== undefined) active.store.note(warn);
+        if (warn !== undefined) owner.note(warn);
       },
       () => {
         if (stale()) return;
-        active.store.note('@ mention could not read that file (refused, binary, or too large)');
+        owner.note('@ mention could not read that file (refused, binary, or too large)');
       },
     );
+  };
+  /** The chat in front as a mention owner: its session's reader, its own currency, its transcript's note. `undefined` without a reader. */
+  const chatMentions = (active: HomeChatSession): MentionOwner | undefined => {
+    const reader = active.mentionReader;
+    return reader === undefined
+      ? undefined
+      : { reader, current: () => isCurrentChat(active), note: (text) => active.store.note(text) };
+  };
+  /**
+   * The Home's own prompts as a mention owner: the Home's reader (no session), current while the bare Home is in front (a chat that started
+   * or a Home that is leaving drops a resolve), and its words one notification on the Home's channel (never its notice, never a transcript).
+   */
+  const landingMentions = (): MentionOwner | undefined => {
+    const reader = deps.mentionReader;
+    return reader === undefined
+      ? undefined
+      : {
+          reader,
+          current: () => !exiting && state.session === undefined && state.mode === 'home',
+          note: (text) => deps.announce?.(text),
+        };
   };
 
   // The in-Home chat's `!`-shell escape (2.5.D step 5, ADR-0061) — mirrors ChatApp. Render the classified outcome:
@@ -3738,10 +3841,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   // The open `@`-mention completion owns every key (2.5.D step 4) — parity with ChatApp. Returns whether the key
-  // was consumed (the overlay was open); mutually exclusive with the palette/search.
-  const routeMentionKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
+  // was consumed (the overlay was open); mutually exclusive with the palette/search. The chat's and the Home's alike (`owner`); an owner that
+  // is gone (its reader withdrawn) closes the completion, and the key is spent.
+  const routeMentionKey = (
+    owner: MentionOwner | undefined,
+    input: string,
+    key: ChatKey,
+  ): boolean => {
     const open = state.mention;
     if (open === undefined) return false;
+    if (owner === undefined) {
+      set({ mention: undefined });
+      return true;
+    }
     const step = foldMentionKey(input, key, open);
     if (step.kind === 'close') {
       // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
@@ -3753,10 +3865,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
     } else if (step.kind === 'descend') {
       set({ mention: { dir: step.dir, filter: '', candidates: [], selected: 0, loading: true } });
-      loadMentions(active, step.dir);
+      loadMentions(owner, step.dir);
     } else if (step.kind === 'accept') {
       set({ mention: undefined });
-      acceptMention(active, step.path);
+      acceptMention(owner, step.path);
     } else {
       set({ mention: step.state });
     }
@@ -3799,19 +3911,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return true;
     }
     // A mid-word `@` (an email/handle) or an absent reader falls through as a literal (parity with ChatApp).
-    if (
-      !running &&
-      input === '@' &&
-      key.ctrl !== true &&
-      key.meta !== true &&
-      active.mentionReader !== undefined &&
-      mentionOpensAt(state.input.text, state.input.cursor)
-    ) {
-      openMention(active);
+    const owner = chatMentions(active);
+    if (!running && owner !== undefined && mentionKeyOpens(input, key)) {
+      openMention(owner);
       return true;
     }
     return false;
   };
+
+  /** Whether `key` is an `@` that opens the completion where the cursor is: at a word boundary only (a mid-word `@`, an email, is a literal). */
+  const mentionKeyOpens = (input: string, key: ChatKey): boolean =>
+    input === '@' &&
+    key.ctrl !== true &&
+    key.meta !== true &&
+    mentionOpensAt(state.input.text, state.input.cursor);
 
   // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
   const applyMoveAction = (action: Extract<ChatKeyAction, { kind: 'move' }>): void => {
@@ -3919,15 +4032,31 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
-    const { message, display, consumed } = buildOutbound(line, state.attachments);
+    const { message, display, remaining } = outboundOf(line);
     if (message.trim().length === 0) {
       set({ input: emptyEditor() }); // nothing to send (empty prose + no consumable attachment)
       return;
     }
     history = recordHistory(history, line); // history recalls the PROSE the user typed, not the framed message
-    const remaining = state.attachments.filter((a) => !consumed.includes(a));
     set({ input: emptyEditor(), historyEntries: history.entries, attachments: remaining });
     sendChatLine(active, message, display);
+  };
+
+  /**
+   * What a submitted line sends with the attachments pending on the draft (ADR-0061): the ONE path of the chat's submit and of the landing's
+   * first message ({@link startChatWith}). Each file whose `@path` marker is still in the line, and every carried command, is expanded into
+   * its UNTRUSTED, nonce-fenced user-position frame after the prose (`buildOutbound`); the compact form is what the transcript and the pending
+   * message show; `remaining` are the attachments the line did not take.
+   */
+  const outboundOf = (
+    line: string,
+  ): {
+    readonly message: string;
+    readonly display: string;
+    readonly remaining: readonly PendingAttachment[];
+  } => {
+    const { message, display, consumed } = buildOutbound(line, state.attachments);
+    return { message, display, remaining: state.attachments.filter((a) => !consumed.includes(a)) };
   };
 
   // --- The one interrupt keymap (ADR-0115 §1) -------------------------------------------------------------------------
@@ -4120,7 +4249,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
     const running =
       active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
-    if (routeMentionKey(active, input, key)) return;
+    if (routeMentionKey(chatMentions(active), input, key)) return;
     if (routeSearchKey(input, key)) return;
     const approvalPending = active.store.getSnapshot().approval !== undefined;
     if (tryOpenOverlay(active, input, key, running, approvalPending)) return;
@@ -4271,6 +4400,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ ...openPaletteState(undefined), notice: undefined }); // running another command clears a stale notice
       return;
     }
+    if (handleLandingDraftKey(input, key)) return;
     switch (action.kind) {
       case 'submit':
         submit();
@@ -4304,6 +4434,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       handlePaletteKey(input, key);
       return true;
     }
+    // The Home's own `@`-completion (its prompts have no session) owns every key while it is open; a chat's is routed by the chat's handler.
+    if (state.mention !== undefined && state.session === undefined)
+      return routeMentionKey(landingMentions(), input, key);
     return false;
   };
 
@@ -4461,11 +4594,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // new state with the same rows, and no read. It is armed and cancelled by `syncWordsTick`, which `set` runs after every change, so it
   // exists only while a word is on screen and the strip's own pause facts (not the landing: a chat, a screen, a card, a popup, a palette, a
   // terminal under the floor) do not hold; and it is cancelled with the Home's other timers when the Home ends.
-  function wordsTickWanted(): boolean {
+  //
+  // A POPUP pauses it without ending it (round 2: F4). The popup host's open state is no state of this controller, so the popup's close calls
+  // no `set` here: a chain ended under a popup would never be armed again until a key. So the timer stays armed while a popup alone covers the
+  // landing (`wordsTickArmed`), and a tick under it repaints nothing (`wordsTickWanted`) and arms the next: the first tick after the close
+  // repaints the words with no key pressed.
+  function wordsTickArmed(): boolean {
     return (
       wordsTickReady &&
       !exiting &&
-      !stripPollPaused() &&
+      !stripRefreshPaused({ mode: state.mode, ...overlayFlags(), popup: false, terminal }) &&
       showsRelativeWords({
         page: state.homePage,
         snapshot: state.snapshot,
@@ -4473,20 +4611,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       })
     );
   }
+  function wordsTickWanted(): boolean {
+    return wordsTickArmed() && !stripPollPaused();
+  }
   function syncWordsTick(): void {
-    const wanted = wordsTickWanted();
-    if (wanted && cancelWordsTick === undefined)
+    const armed = wordsTickArmed();
+    if (armed && cancelWordsTick === undefined)
       cancelWordsTick = schedule(onWordsTick, RELATIVE_WORDS_REPAINT_MS);
-    else if (!wanted && cancelWordsTick !== undefined) {
+    else if (!armed && cancelWordsTick !== undefined) {
       cancelWordsTick();
       cancelWordsTick = undefined;
     }
   }
   function onWordsTick(): void {
     cancelWordsTick = undefined;
-    // `set` arms the next tick while a relative word is still on screen; a tick that finds none repaints nothing and ends the chain. A timer
-    // callback has no input handler around it to route a listener's failure, so it is routed here, as the strip's tick routes its own.
-    if (!wordsTickWanted()) return;
+    // `set` arms the next tick while a relative word is still on screen; a tick that finds none repaints nothing and ends the chain, and a tick
+    // under a popup repaints nothing and arms the next (see above). A timer callback has no input handler around it to route a listener's
+    // failure, so it is routed here, as the strip's tick routes its own.
+    if (!wordsTickWanted()) {
+      syncWordsTick();
+      return;
+    }
     try {
       set({});
     } catch (error) {

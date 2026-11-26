@@ -65,13 +65,17 @@ export function compactExpiryLabel(
  * were told apart by their ids alone): `waiting 2h`, `waiting 5m`, `waiting 3d`, and `waiting <1m` inside the first minute. `since` is the
  * moment the run's record last changed, which for a run that waits is when it parked (`RunGates.parkedSince`, `home/run-gates.ts`).
  * No words for a time that does not parse or one more than a minute ahead of the clock (a clock behind the log: the row claims nothing).
+ * From a year on it is one closed word, `waiting 1y+` (round 2 sitting #2: a hand-edited `updated_at` of 1970 read `waiting 20783d`), so
+ * the field is never wider than `waiting 364d`.
  */
 export function waitingLabel(since: string | undefined, nowMs: number): string | undefined {
   if (since === undefined) return undefined;
   const age = formatAgeOfIso(since, nowMs);
   if (age === 'just now') return 'waiting <1m';
-  const waited = /^(\d+[mhd]) ago$/u.exec(age)?.[1];
-  return waited === undefined ? undefined : `waiting ${waited}`;
+  const waited = /^(\d+)([mhd]) ago$/u.exec(age);
+  if (waited === null) return undefined;
+  const [, count = '', unit = ''] = waited;
+  return unit === 'd' && Number(count) >= 365 ? 'waiting 1y+' : `waiting ${count}${unit}`;
 }
 
 const SEP = '  ·  ';

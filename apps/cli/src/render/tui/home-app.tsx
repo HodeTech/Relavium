@@ -1267,6 +1267,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             color={color}
             paletteOpen={landingPromptHidden(flags)}
             {...(state.palette === undefined ? {} : { palette: state.palette })}
+            mention={state.session === undefined ? state.mention : undefined}
             showBanner={props.showBanner}
             alternateScreen={props.alternateScreen === true}
             status={state.status}

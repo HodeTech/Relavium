@@ -552,12 +552,23 @@ describe('every word a project wrote is scrubbed before it reaches the channel',
         code === 0x2029
       );
     });
-  /** What the field takes of a text: it refuses a control character, so the person types the rest. */
+  /**
+   * What the field takes of a text: it refuses a C0 or C1 control, DEL and a bidirectional control (round 2 sitting #2, F6: what the field
+   * could not show as it is), so the person types the rest.
+   */
   const typeable = (text: string): string =>
     Array.from(text)
       .filter((character) => {
         const code = character.codePointAt(0) ?? 0;
-        return code >= 0x20 && !(code >= 0x7f && code <= 0x9f);
+        return (
+          code >= 0x20 &&
+          !(code >= 0x7f && code <= 0x9f) &&
+          !(code >= 0x202a && code <= 0x202e) &&
+          !(code >= 0x2066 && code <= 0x2069) &&
+          code !== 0x200e &&
+          code !== 0x200f &&
+          code !== 0x061c
+        );
       })
       .join('');
   /** Every text of a snapshot the popup draws: note, message, details, the options' labels and hints, the error. */

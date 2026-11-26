@@ -623,10 +623,12 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     snapshot.kind === 'password' ? '•'.repeat(Math.min(secret.length, 32)) : sanitizeInline(secret);
   /**
    * The one character a held opener key typed before its second repeat showed it was held (`held-opener.ts`) taken back, when it is the whole of
-   * an open text field. A field with anything else in it, or none, is left as it is.
+   * an open text or masked field (a masked one then shows no bullet: its bullets are only what the person typed). A field with anything else in
+   * it, or none, is left as it is.
    */
   const takeBackOpenerCharacter = (character: string | undefined): void => {
-    if (character === undefined || snapshot.kind !== 'text' || settle === undefined) return;
+    if (character === undefined || settle === undefined) return;
+    if (snapshot.kind !== 'text' && snapshot.kind !== 'password') return;
     if (invalid || secret !== character) return;
     secret = '';
     publish({ ...snapshot, display: shownText(), error: '' });
@@ -657,12 +659,10 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       publish({ ...snapshot, error: refused('Input is too long') });
       return;
     }
-    if (
-      Array.from(text).some((character) => {
-        const code = character.charCodeAt(0);
-        return code < 32 || code === 127;
-      })
-    ) {
+    // A character the field could not show as it is is refused, and so is the whole text it came in: a C0 control, DEL, a C1 control or a
+    // bidirectional control, exactly what the display floor (`sanitizeInline`) strips or folds. A value is then shown, here and on the
+    // confirmation, as the very string that is started (round 2 sitting #2, F6: `a<CSI>2Jb<NEL>c<RLO>d` was shown `a2Jbcd`).
+    if (sanitizeInline(text) !== text) {
       invalid = true;
       publish({ ...snapshot, error: refused('Input contains unsupported control characters') });
       return;

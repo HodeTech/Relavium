@@ -10,8 +10,15 @@ import {
 } from './fs-policy.js';
 import { isSensitiveReadPath } from './fs.js';
 
-/** Refuse a secret-store workspace before canonical persistence can erase its lexical floor. */
-export function assertChatWorkspaceAdmission(workspace: string, policy?: FsPathPolicy): void {
+/**
+ * Refuse a secret-store workspace before canonical persistence can erase its lexical floor. `surface` is who refuses, as the sentence names
+ * it: a chat (the default), or a workflow run (`relavium run`, which records its directory's canonical root the same way).
+ */
+export function assertChatWorkspaceAdmission(
+  workspace: string,
+  policy?: FsPathPolicy,
+  surface: 'Chat' | 'A workflow run' = 'Chat',
+): void {
   const paths = [
     resolve(workspace),
     ...(policy === undefined ? [] : fsPolicyFloorPaths(policy, fsPolicyWorkspace(policy))),
@@ -19,7 +26,7 @@ export function assertChatWorkspaceAdmission(workspace: string, policy?: FsPathP
   if (paths.some(isSensitiveReadPath)) {
     throw new CliError(
       'invalid_invocation',
-      'Chat cannot use a credential or secret-store directory as its workspace. Choose another workspace.',
+      `${surface} cannot use a credential or secret-store directory as its workspace. Choose another workspace.`,
     );
   }
 }

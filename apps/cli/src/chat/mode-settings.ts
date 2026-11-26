@@ -247,7 +247,7 @@ export function runStartupDefaultSave(
 /**
  * What saving the global startup default from the `/mode` popup's "New chats" came to, as {@link runStartupDefaultSave} said it, read back
  * as a result so that the popup can say it on the host's channel in a few words (the residue rule, ADR-0148 §6: nothing of a setting goes into
- * the transcript). The flow's own full sentence stays where the flow runs without a popup (the bare Home's `/mode`), byte for byte.
+ * the transcript). The bare Home's `/mode` popup (`popups/mode-home.ts`) reads the same result for its Done step, with the flow's own sentence.
  *
  * - `saved`: the config was published. `durability` is the writer's (`unknown` when the flow failed after publishing and did not say it);
  *   `overriddenBy` names the project or workspace setting that selects another mode where this chat started (new chats here keep that one);

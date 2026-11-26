@@ -11,7 +11,9 @@ import {
   type ModelsState,
 } from './models-fixture.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
-import { openModeFlow } from './home-flows.js';
+import { MODE_HOME_SURFACES } from './mode-home-fixture.js';
+import { MENTION_HINT } from '../home-pages.js';
+import type { MentionReader } from '../mention.js';
 import { FLOW_STEP_SURFACES } from './flow-steps-fixture.js';
 import { PROJECT_FLOW_SURFACES } from './project-flows-fixture.js';
 import { PROVIDER_FLOW_SURFACES } from './providers-flow-fixture.js';
@@ -87,6 +89,19 @@ function openCard(
 }
 
 const NATIVE: HomeSetup = { nativePrompt: true };
+
+/** The Home's own `@` reader in a cell: three names, read from no disk (the picker lists names only; nothing is chosen). */
+const HOME_MENTION_READER: MentionReader = {
+  list: () =>
+    Promise.resolve([
+      { name: 'src', type: 'directory' as const, path: 'src' },
+      { name: 'app.ts', type: 'file' as const, path: 'app.ts' },
+      { name: 'README.md', type: 'file' as const, path: 'README.md' },
+    ]),
+  read: () => Promise.reject(new Error('the matrix chooses no file')),
+};
+/** The picker's hint row on either page (`home-pages.ts`). */
+const HOME_MENTION_LEGEND_ROW = MENTION_HINT;
 
 /**
  * Type a command into the landing key by key, as the controller reads them (a paste is refused below the floor; a key is not), then Enter: the
@@ -427,6 +442,39 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       await m.until(() => m.controller.getSnapshot().palette !== undefined);
     },
   },
+  // The `@` file picker on the Home's own two prompts (ADR-0061 on the Home): under the landing's prompt row, and above the docked prompt.
+  {
+    host: 'home',
+    id: 'home.mention',
+    title: 'The @ file picker on the landing: under the prompt row, which does not move',
+    exitKey: 'Esc',
+    landmark: 'README.md',
+    legendRow: HOME_MENTION_LEGEND_ROW,
+    selectedRow: 'src/',
+    setup: { deps: { mentionReader: HOME_MENTION_READER } },
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key('@');
+      await m.until(() => m.text().includes('README.md'));
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.work-mention',
+    title: 'The @ file picker on the work page: above the docked prompt',
+    exitKey: 'Esc',
+    landmark: 'README.md',
+    legendRow: HOME_MENTION_LEGEND_ROW,
+    selectedRow: 'src/',
+    setup: () => ({ snapshot: POPULATED_SNAPSHOT, deps: { mentionReader: HOME_MENTION_READER } }),
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(() => m.controller.getSnapshot().stripFocus !== undefined);
+      m.key('@'); // a key that types on a row moves to the docked prompt, where `@` opens the picker
+      await m.until(() => m.text().includes('README.md'));
+    },
+  },
   {
     host: 'home',
     id: 'home.loading',
@@ -694,18 +742,8 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     'form',
     'The /models popup’s second step on the bare Home: the effort of the default of new chats',
   ),
-  {
-    host: 'home',
-    id: 'home.mode-flow',
-    title: 'The /mode flow (the startup default), a native card',
-    exitKey: 'Esc',
-    landmark: /startup/u,
-    setup: NATIVE,
-    open: async (m) => {
-      openModeFlow(m);
-      await m.until(() => /startup/u.test(m.text()));
-    },
-  },
+  // The bare Home's `/mode`, as the popup it is (ADR-0148 §1, §3, §6): the choice, the Ctrl+Y confirmation and the Done step.
+  ...MODE_HOME_SURFACES,
   // `/init`, `/import`, the Defined tab's export and `/pricing`, as the popups they are (MVP-11 unit 6, 6.3).
   ...PROJECT_FLOW_SURFACES,
   // The steps of those flows no other cell draws: the Done steps in both tones, `/init`'s refusal, `/import`'s path field and `/pricing`'s rates.

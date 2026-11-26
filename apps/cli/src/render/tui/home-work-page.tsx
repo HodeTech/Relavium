@@ -21,6 +21,8 @@ import {
   type LandingStatus,
 } from './home-landing.js';
 import { frameRows, homeMargin, homeRailWidth, thinRule } from './home-layout.js';
+import { DockedMention, dockedMentionRows } from './mention-home.js';
+import type { MentionState } from './mention.js';
 import {
   DOCKED_CHROME_ROWS,
   DOCKED_PLACEHOLDER,
@@ -384,7 +386,13 @@ export type BottomBlock =
       readonly palette: OpenPalette;
       readonly maxRows: number;
     }
-  | { readonly kind: 'guard'; readonly rows: number; readonly phase: ExitGuardPhase };
+  | { readonly kind: 'guard'; readonly rows: number; readonly phase: ExitGuardPhase }
+  | {
+      readonly kind: 'mention';
+      readonly rows: number;
+      readonly mention: MentionState;
+      readonly listRows: number;
+    };
 
 /** The rows an open palette's block takes with its prompt row, its rule and its legend row (never more than its budget). */
 function paletteBlockRows(palette: OpenPalette, maxRows: number, color: boolean): number {
@@ -404,12 +412,14 @@ function paletteBlockRows(palette: OpenPalette, maxRows: number, color: boolean)
   return lines + 3;
 }
 
-/** Which block the bottom of the page holds: the exit guard first, then the palette, else the docked prompt. */
+/** Which block the bottom of the page holds: the exit guard first, then the palette, then the `@` picker, else the docked prompt. */
 export function workBottomBlock(input: {
   readonly exitGuard: ExitGuardPhase | undefined;
   readonly hostedRun: RunHostSnapshot | undefined;
   readonly palette: OpenPalette | undefined;
   readonly paletteMaxRows: number;
+  /** The `@` picker open over the docked prompt, and its list's window (`mentionListRows`); absent ⇒ none. */
+  readonly mention?: { readonly state: MentionState; readonly listRows: number } | undefined;
   readonly editor: EditorState;
   readonly cols: number;
   /** The terminal's rows: the docked prompt is drawn as a window of at most {@link workEditorRows} of them (OB71). */
@@ -434,6 +444,17 @@ export function workBottomBlock(input: {
       palette: input.palette,
       maxRows: input.paletteMaxRows,
       rows: paletteBlockRows(input.palette, input.paletteMaxRows, input.color),
+    };
+  if (input.mention !== undefined)
+    return {
+      kind: 'mention',
+      mention: input.mention.state,
+      listRows: input.mention.listRows,
+      rows: dockedMentionRows(
+        input.mention.state,
+        input.mention.listRows,
+        homePromptRows(input.editor, homeContentColumns(input.cols), workEditorRows(input.rows)),
+      ),
     };
   return {
     kind: 'docked',
@@ -503,6 +524,17 @@ function BottomOf(props: Readonly<HomeWorkPageProps>): ReactElement {
         palette={bottom.palette}
         maxRows={bottom.maxRows}
         ruleColumns={homeRailWidth(props.cols)}
+        color={color}
+      />
+    );
+  if (bottom.kind === 'mention')
+    return (
+      <DockedMention
+        mention={bottom.mention}
+        listRows={bottom.listRows}
+        editor={props.editor}
+        editorRows={workEditorRows(props.rows)}
+        cols={props.cols}
         color={color}
       />
     );

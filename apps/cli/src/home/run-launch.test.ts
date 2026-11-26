@@ -9,9 +9,17 @@
  * module's two nets (a config load with no home, `os.homedir()`) throw, so no path here reaches the real `~/.relavium`.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { createClient, runMigrations, type DbClient } from '@relavium/db';
 import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
@@ -28,7 +36,9 @@ import {
   createNativePromptChannel,
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
+import { popupInnerWidth } from '../popups/geometry.js';
 import { nativePopupGeometry } from '../popups/popup-slot.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { captureIo } from '../test-support.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { FS_SCOPE_CHANGED } from '../run-core/prepare-run.js';
@@ -1630,13 +1640,64 @@ describe('what the host says is what the person reads', () => {
   });
 });
 
+/** The rows of a confirmation card that are the host's passage (what the run can do): every row but the `File:` row above it. */
+function hostPassage(snapshot: NativePromptSnapshot): readonly string[] {
+  return snapshot.details.filter((row) => !row.startsWith('File: '));
+}
+
+describe('the confirmation names the file it was built from, by its real path (round 2 sitting #2, F3)', () => {
+  it('through every link: a link in the project path repointed at another project names that project, from `~`', () => {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-run-launch-place-')));
+    scratch.push(base);
+    const home = join(base, 'home');
+    const work = join(home, 'work');
+    for (const project of ['A', 'B']) {
+      mkdirSync(join(work, project, '.relavium', 'workflows'), { recursive: true });
+      writeFileSync(join(work, project, '.relavium', 'workflows', 'w.relavium.yaml'), NO_INPUTS);
+    }
+    const link = join(work, 'link');
+    symlinkSync(join(work, 'A'), link, 'junction');
+    const catalog = createProjectCatalog({
+      cwd: link,
+      projectConfigDir: () => join(link, '.relavium'),
+      homeDir: home,
+    });
+    const file = join('.relavium', 'workflows', 'w.relavium.yaml');
+    const shown = (project: string): string =>
+      `File: ${['~', 'work', project, '.relavium', 'workflows', 'w.relavium.yaml'].join(sep)}`;
+    expect(catalog.load(file).place).toBe(shown('A'));
+    rmSync(link);
+    symlinkSync(join(work, 'B'), link, 'junction');
+    expect(catalog.load(file).place, 'the same spelling, the other project').toBe(shown('B'));
+  });
+
+  it('is the card’s first row, above the host’s passage, and a long path keeps its end', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    keys(r).enter();
+    const card = await shows(r, 'chord', 'Run no-inputs');
+    const row = card.details[0] ?? '';
+    expect(row.startsWith('File: ')).toBe(true);
+    expect(row.endsWith(join('.relavium', 'workflows', 'none.relavium.yaml'))).toBe(true);
+    expect(
+      displayWidth(row),
+      'cut at its front to one row of the popup at the floor',
+    ).toBeLessThanOrEqual(popupInnerWidth(80, 'standard'));
+    expect(row.startsWith('File: …'), 'the temporary root is long: its front was cut').toBe(true);
+    keys(r).ctrlN();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
+});
+
 describe('the confirmation says what the run can do (P1-7)', () => {
   /** Pick the one workflow and answer its number field; the confirmation card is up. */
   async function confirmationOf(r: Rig): Promise<NativePromptSnapshot> {
     return toConfirmation(r);
   }
   /** The host's passage: the chord card's facts (it was a note above a Yes/No question before the confirmation became the popup's chord). */
-  const facts = (snapshot: NativePromptSnapshot): string => snapshot.details.join(' ');
+  const facts = (snapshot: NativePromptSnapshot): string => hostPassage(snapshot).join(' ');
   const rows = (text: string): number => Math.ceil(text.length / 80);
 
   it("names the file scope first when the repository sets it, then what the definition grants, in the host's own passage under the question", async () => {
@@ -1655,7 +1716,11 @@ describe('the confirmation says what the run can do (P1-7)', () => {
       rows(facts(card)) + rows(card.message),
       'the whole card stays far inside 24 rows at 80 columns',
     ).toBeLessThanOrEqual(8);
-    expect(card.details, 'one passage, the host`s, never joined to the question').toHaveLength(1);
+    expect(hostPassage(card), 'one passage, the host`s, never joined to the question').toHaveLength(
+      1,
+    );
+    expect(card.details, 'the file row, then the host`s passage').toHaveLength(2);
+    expect(card.details[0]).toMatch(/^File: .*authority\.relavium\.yaml$/u);
     keys(r).ctrlN();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
@@ -1694,7 +1759,8 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.details, 'no host passage at all').toEqual([]);
+    expect(hostPassage(card), 'no host passage at all').toEqual([]);
+    expect(card.details, 'only the file row').toHaveLength(1);
     expect(card.message, 'the question is exactly what it always was').toBe(
       'Run host-read-only with n=3?',
     );

@@ -13,7 +13,7 @@ import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js
 
 /** The most candidate rows shown at once — a directory with hundreds of entries scrolls a window around the
  *  selection rather than flooding the terminal (the palette renders all; a directory listing can be far larger). */
-const MENTION_WINDOW = 8;
+export const MENTION_WINDOW = 8;
 
 /** The hint under the candidates (ADR-0145 §3): `Esc` closes the completion and the `@` comes back into the draft; nothing else changes. */
 const MENTION_LEGEND = legend(
@@ -36,24 +36,50 @@ const MENTION_LEGEND = legend(
 export interface MentionViewProps {
   readonly state: MentionState;
   readonly color: boolean;
+  /** The rows of the candidate window ({@link MENTION_WINDOW} when absent): the Home fits it to the room its page leaves. */
+  readonly windowRows?: number | undefined;
+  /**
+   * How a stored name (a candidate, the browsed directory) is drawn: the chat's inline sanitiser when absent; the Home passes its full row
+   * scrub (`homeMentionText`), as it does for every stored name it draws beside its keys.
+   */
+  readonly text?: ((stored: string) => string) | undefined;
+  /** Whether the view draws its own legend row and the blank row above it (the chat's); the Home draws the legend on its hint row. Default `true`. */
+  readonly framed?: boolean | undefined;
 }
 
-/** The window of candidate indices to render around `selected` (a `[start, end)` slice) of {@link MENTION_WINDOW} rows, keeping the selection
- *  visible, with the `▲`/`▼ N more` markers for what it hides (they take the window's first and last row, so its height does not change).
- *  Pure so the scroll math is unit-checkable. */
-export function mentionWindow(count: number, selected: number): MarkedWindow {
-  return markedWindow(count, selected, MENTION_WINDOW);
+/** The window of candidate indices to render around `selected` (a `[start, end)` slice) of `size` rows ({@link MENTION_WINDOW} by default), keeping
+ *  the selection visible, with the `▲`/`▼ N more` markers for what it hides (they take the window's first and last row, so its height does not
+ *  change). Pure so the scroll math is unit-checkable. */
+export function mentionWindow(
+  count: number,
+  selected: number,
+  size: number = MENTION_WINDOW,
+): MarkedWindow {
+  return markedWindow(count, selected, size);
+}
+
+/** The rows the candidate list takes for `state` in a window of `size`: one for the loading and the empty line, else the window's. */
+export function mentionListLines(state: MentionState, size: number = MENTION_WINDOW): number {
+  if (state.loading) return 1;
+  const count = visibleMentions(state).length;
+  return count === 0 ? 1 : Math.min(count, Math.max(1, size));
 }
 
 export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const { state, color } = props;
+  const text = props.text ?? sanitizeInline;
+  const framed = props.framed !== false;
   const visible = visibleMentions(state);
   // Clamp the highlighted index for display — an async listing can land after the filter narrowed the set, leaving
   // `selected` momentarily past the end until the next keystroke re-clamps it (foldMentionKey clamps on move).
   const selected =
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
-  const where = state.dir.length === 0 ? './' : `${sanitizeInline(state.dir)}/`;
-  const span = mentionWindow(visible.length, selected);
+  const where = state.dir.length === 0 ? './' : `${text(state.dir)}/`;
+  const span = mentionWindow(
+    visible.length,
+    selected,
+    Math.max(1, props.windowRows ?? MENTION_WINDOW),
+  );
   const { start, end } = span;
   const { above, below } = withGlyphForm(!color, () => windowMarkers(span));
   const windowed = visible.slice(start, end);
@@ -88,22 +114,24 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       return (
         <Text key={candidate.path} {...selectedTone(isSelected, color)} wrap="truncate-end">
           <SelectableText selected={isSelected}>
-            {`${selectionMarker(isSelected, color)} ${sanitizeInline(candidate.name)}${slash}`}
+            {`${selectionMarker(isSelected, color)} ${text(candidate.name)}${slash}`}
           </SelectableText>
         </Text>
       );
     });
   };
   return (
-    <Box flexDirection="column" flexShrink={0} marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={framed ? 1 : 0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {`@ ${where}`}
         <Emph kinds="bold">{sanitizeInline(state.filter)}</Emph>
       </Text>
       {renderBody()}
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {MENTION_LEGEND}
-      </Text>
+      {framed && (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          {MENTION_LEGEND}
+        </Text>
+      )}
     </Box>
   );
 }

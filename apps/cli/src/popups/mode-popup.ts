@@ -126,7 +126,7 @@ export function modeSpec(origin: PopupOrigin, current: ChatMode): PopupSpec {
  * What "New chats" says on the host's channel once the startup-default writer's flow has ended (ADR-0148 §6: a setting writes nothing into the
  * transcript; the flow's card, its confirmation and its rewrite disclosure, is not residue and stays): one fact in a few words, the one that
  * matters most first. Every form is at most 54 columns (`fitNotice`); the mode and the overriding layer are the product's own closed words. The
- * bare Home's `/mode`, which runs the flow without a popup, still says the flow's whole sentence.
+ * bare Home's `/mode` popup (`mode-home.ts`) leads its Done step with it, the flow's whole sentence under it when that says more.
  */
 export function startupDefaultAnnouncement(
   mode: ChatMode,

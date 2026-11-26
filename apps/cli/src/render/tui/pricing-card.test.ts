@@ -950,10 +950,15 @@ describe('a model the list does not show', () => {
     // (U+FEFF is not here: `trim()` drops it from the typed text, so what is recorded is the id without it, which the card shows.)
     for (const code of [0x200b, 0x2060, 0x200e, 0x00ad, 0xe0041]) {
       r.type(`gpt-5${String.fromCodePoint(code)}`);
-      await vi.waitFor(() => expect(r.snap().error).toBe(PRICING_MODEL_ID_FAULTS.invisible), {
-        timeout: WAIT_MS,
-        interval: 5,
-      });
+      // A bidirectional mark (U+200E) is refused by the field itself before the id's own check reads it (round 2 sitting #2, F6: a native
+      // field refuses what it could not show as it is); the other invisible characters are the id check's to refuse.
+      await vi.waitFor(
+        () =>
+          code === 0x200e
+            ? expect(r.snap().error).toMatch(/^Input contains unsupported control characters · /u)
+            : expect(r.snap().error).toBe(PRICING_MODEL_ID_FAULTS.invisible),
+        { timeout: WAIT_MS, interval: 5 },
+      );
       expect(r.snap().kind, 'the prompt stays open').toBe('text');
       // Clear the line (the host's backspace removes one code point).
       for (let i = 0; i < 6; i += 1) r.ui.input('', { ...none, backspace: true });

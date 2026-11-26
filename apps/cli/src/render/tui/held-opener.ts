@@ -1,8 +1,9 @@
 /**
  * The key that OPENED a native flow, still held down ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §3; MVP-11 unit 7, round 2: security F2). `r` on a History run's detail (and on a Defined row) opens the launch form, and a person who keeps
- * the key down while it opens sends the form its auto-repeats: the first text field would be typed `rrrrrrr…`. Nothing started (the start is the
- * form's own `Ctrl+Y`, past its guards), but the field was the person's to fill, not the key's.
+ * the key down while it opens sends the form its auto-repeats: the first field would be typed `rrrrrrr…` (a masked one with as many bullets, which
+ * nobody can read back). Nothing started (the start is the form's own `Ctrl+Y`, past its guards), but the field was the person's to fill, not the
+ * key's.
  *
  * **The rule.** Only the key that opened the flow (a plain character, recorded by the surface that took it, see {@link OpenerKey}) is judged, and
  * only while the flow's first keys arrive:
@@ -20,9 +21,11 @@
  * **What it costs, said plainly.** A deliberate single `r` typed after a pause still types (a candidate that no second `r` follows within 150 ms
  * stays), and so do two `r`s a person types more than 150 ms apart. The one thing lost is a field that begins with the opener's own character
  * twice in under 150 ms, within two seconds of the form opening (`rr…` typed in a burst). The candidate is typed for as long as it takes the second
- * repeat to arrive (33 to 100 ms at the rates a keyboard has), so a held key's field shows one character for that moment before it is emptied.
+ * repeat to arrive (33 to 100 ms at the rates a keyboard has), so a held key's field shows one character (a masked field one bullet) for that
+ * moment before it is emptied. The rule and its cost are the same for a text field and a masked one: the machine never reads which it is.
  *
- * Pure: the clock is the caller's (`at`), the field is the caller's (the channel takes the candidate back). No import: it is a data module
+ * Pure: the clock is the caller's (`at`), the field is the caller's (the channel takes the candidate back, from a text or a masked field alike,
+ * and republishes what the field shows). No import: it is a data module
  * ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §10).
  */
 

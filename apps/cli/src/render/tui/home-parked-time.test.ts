@@ -59,6 +59,16 @@ describe('waitingLabel: how long a run has waited', () => {
     // a clock a few seconds behind the log is still "just parked", never a negative wait
     expect(waitingLabel(iso(30_000), NOW)).toBe('waiting <1m');
   });
+
+  it('says days up to a year, and from a year on one closed word: a hand-edited 1970 `updated_at` is `waiting 1y+`, never `waiting 20783d` (round 2 sitting #2)', () => {
+    expect(waitingLabel(iso(-364 * DAY), NOW)).toBe('waiting 364d');
+    expect(waitingLabel(iso(-(365 * DAY - 1)), NOW)).toBe('waiting 364d');
+    expect(waitingLabel(iso(-365 * DAY), NOW)).toBe('waiting 1y+');
+    expect(waitingLabel('1970-01-01T00:00:00.000Z', NOW)).toBe('waiting 1y+');
+    expect(waitingLabel('0001-01-01T00:00:00.000Z', NOW)).toBe('waiting 1y+');
+    // the widest the words can be: a row's budget for this field is fixed
+    expect(displayWidth('waiting 364d')).toBe(12);
+  });
 });
 
 describe('compactExpiryLabel: the same deadline in fewer columns', () => {

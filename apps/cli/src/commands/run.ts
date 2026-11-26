@@ -13,6 +13,7 @@ import type { BuildEngineOptions } from '../engine/build-engine.js';
 import { type StdioConsentGate } from '../engine/mcp-servers.js';
 import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
@@ -137,6 +138,10 @@ async function runOwned(
       '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
     );
   }
+  // A credential or secret-store workspace is refused before anything is read or created, as chat refuses it (round 2 sitting #2, F1): the
+  // run records its directory's CANONICAL root, and a resume from another directory jails its tools to that spelling, which an alias of the
+  // store (`--cwd <link to ~/.ssh>`) does not carry, so the floor the typed spelling had would be gone after the first gate.
+  assertChatWorkspaceAdmission(deps.global.cwd, undefined, 'A workflow run');
   // Syntax faults do not need even configuration or workflow reads.
   const rawInputs = parseInputArgs(args.input);
   const mayPrompt = args.secretInputsStdin !== true;

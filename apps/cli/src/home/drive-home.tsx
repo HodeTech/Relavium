@@ -67,6 +67,8 @@ import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { displayRoots } from '../render/display-roots.js';
+import { displayPath } from '../render/notation.js';
+import { flowText } from '../render/tui/flow-text.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { noticeSurfaceOf } from '../render/surface.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -77,7 +79,7 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
-import { runModeSettings, saveStartupDefaultForPopup } from '../chat/mode-settings.js';
+import { saveStartupDefaultForPopup } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { faultForTranscript } from '../config/config-error-text.js';
@@ -94,7 +96,7 @@ import {
 } from '../config/invocation-default.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { assembleToolEnv } from '../engine/tool-host/assemble.js';
+import { clampChatTier } from '../engine/tool-host/assemble.js';
 import {
   createProviderResolver,
   providerEndpointContext,
@@ -136,7 +138,7 @@ import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/session-view-model.js';
-import { createMentionReader } from '../render/tui/mention.js';
+import { lazyMentionReader, scopedMentionReader } from './mention-reader.js';
 import {
   createHomeController,
   homeOverlayFlags,
@@ -1145,15 +1147,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         if (opts.open) {
           built.session.start();
         }
-        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
-        const mentionFs = assembleToolEnv({
-          profile: 'chat-read-only',
+        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier, from the one factory the
+        // Home's own prompts use too (`mention-reader.ts`).
+        const mentionReader = scopedMentionReader({
           operatorHomeDir: homeDir,
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
-          ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
-        }).host.fs;
-        const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
+          fsPolicy: built.fsPolicy,
+        });
         // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`.
         const runShellCommand = (
           command: string,
@@ -2224,16 +2225,34 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         homeStore,
         models,
         statusFacts,
-        openModeSettings: () =>
-          runModeSettings({
+        // `@` on the Home's own two prompts (ADR-0061; the maintainer's question of 2026-11-26): the chat's picker over a reader the SAME factory
+        // builds, at the tier and in the directory the next chat runs at (`[chat].fs_scope`, clamped as a chat's is, under this invocation's
+        // policy), built on first use. The jail, the floor and the guards are a chat's; nothing is read until a row is chosen.
+        mentionReader: lazyMentionReader(() =>
+          scopedMentionReader({
+            operatorHomeDir: homeDir,
+            fsScopeTier: clampChatTier(config.chat.fsScope ?? 'sandboxed'),
+            workspaceDir: here,
+            fsPolicy,
+          }),
+        ),
+        // The bare Home's `/mode` (ADR-0148 §1, §3, §6): the startup-default writer's own flow, drawn as the `/mode` popup (its rail, the chord
+        // confirmation, the Done step that names the file). Loaded when first asked for, as the popups are. What it resolves with is the ONE
+        // notification the controller says (a declined confirmation); nothing of it goes into the Home's notice.
+        openModeSettings: async () => {
+          const { runHomeModeSettings } = await import('../popups/mode-home.js');
+          return runHomeModeSettings({
             runtime: startingModes,
             cwd: deps.global.cwd,
             interactive: true,
             flow: promptFlow,
-            notice: (text) => controller?.setProviderState(keyless, text),
+            target: flowText(
+              displayPath(startingModes.configPath, displayRoots(deps.global.cwd, homeDir)),
+            ),
             assertAdmitting: assertHomeAdmitting,
             publish: publishPreference,
-          }),
+          });
+        },
         initializeProject: () => {
           if (flushVisible === undefined)
             throw new CliError(

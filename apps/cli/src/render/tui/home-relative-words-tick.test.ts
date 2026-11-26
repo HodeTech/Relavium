@@ -114,6 +114,8 @@ interface RigOptions {
   readonly parked?: readonly ParkedRunRow[];
   /** `onError` is called and returns (a fault ends the Home) instead of rethrowing the fault into the test. */
   readonly faultsEndTheHome?: boolean;
+  /** The popup host's open state as the controller reads it (`popupOpen`): no state of the controller, so its close repaints nothing there. */
+  readonly popup?: { open: boolean };
 }
 
 function rig(options: RigOptions) {
@@ -144,6 +146,7 @@ function rig(options: RigOptions) {
     now: () => now,
     onExit,
     onError,
+    popupOpen: () => options.popup?.open === true,
   };
   const controller = createHomeController(deps);
   const advance = (ms: number): void => {
@@ -271,6 +274,35 @@ describe('the timer is cancelled when the idle landing or the work page is not w
     expect(r.wordsTimers()).toBe(0);
     r.controller.setTerminalSize(100, 30);
     expect(r.wordsTimers()).toBe(1);
+  });
+});
+
+describe('a popup pauses the repaint and does not end it (MVP-11 unit 7, round 2: F4)', () => {
+  it('a tick under a popup repaints nothing; once the popup has closed a tick still follows, with no key pressed', () => {
+    const popup = { open: false };
+    const r = rig({ snapshot: withFailed, popup });
+    expect(r.wordsTimers()).toBe(1);
+    popup.open = true; // a popup opened over the landing (the popup host's own state: the controller is not told)
+    const paints = r.paints();
+    r.advance(RELATIVE_WORDS_REPAINT_MS * 2);
+    expect(r.paints(), 'no repaint for the clock behind a popup').toBe(paints);
+    expect(r.wordsTimers(), 'the chain is kept while only a popup is in front').toBe(1);
+    popup.open = false; // it closed; nothing in the controller changed
+    r.advance(RELATIVE_WORDS_REPAINT_MS);
+    expect(r.paints(), 'the words are worded again from the clock without a key').toBe(paints + 1);
+    expect(r.wordsTimers()).toBe(1);
+  });
+
+  it('a state change while the popup is open keeps the chain too (the popup alone never cancels it)', () => {
+    const popup = { open: false };
+    const r = rig({ snapshot: withFailed, popup });
+    popup.open = true;
+    r.controller.setProviderState(false, 'a notice the host set under the popup');
+    expect(r.wordsTimers()).toBe(1);
+    popup.open = false;
+    const paints = r.paints();
+    r.advance(RELATIVE_WORDS_REPAINT_MS);
+    expect(r.paints()).toBe(paints + 1);
   });
 });
 

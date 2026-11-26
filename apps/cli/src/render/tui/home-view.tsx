@@ -21,6 +21,9 @@ import {
 import { attentionOrder, urgentHeadOf, type ParkedRunRow } from './home-attention.js';
 import { keyHint, legend } from './legend.js';
 import { HomeLanding, LandingPalette, type LandingStatus } from './home-landing.js';
+import { LandingMention, landingMentionRows } from './mention-home.js';
+import { MENTION_WINDOW } from './mention-view.js';
+import type { MentionState } from './mention.js';
 import {
   frameRows,
   LANDING_FOOT_ROWS,
@@ -33,6 +36,8 @@ import {
   EXIT_AGAIN,
   EXIT_TWICE,
   landingHint,
+  MENTION_CHROME_ROWS,
+  mentionListRows,
   workCounts,
   workHint,
   type HintRow,
@@ -91,6 +96,11 @@ interface HomeViewProps {
    * (it runs up, as a chat's does). Absent ⇒ no palette is drawn here (`paletteOpen` alone only suppresses the prompt).
    */
   readonly palette?: OpenPalette;
+  /**
+   * The Home's open `@` file picker (ADR-0061 on the Home's own prompts), drawn as the palette is: under the landing's prompt row, which does not
+   * move, and above the work page's docked prompt. Absent ⇒ none is open.
+   */
+  readonly mention?: MentionState | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` and `true` ⇒ the landing's block; `false` ⇒ its one-line title (`showsLandingBlock`). */
   readonly showBanner?: boolean | undefined;
   /** The alternate screen draws the landing's top gap and slides between the pages; inline draws no gap and swaps them. Absent ⇒ inline. */
@@ -199,6 +209,25 @@ function paletteExtra(palette: OpenPalette | undefined, rows: number): number {
     paletteGapCount(entries.map((entry) => entry.groupStart)),
   );
   return Math.max(0, budget - 1 - LANDING_FOOT_ROWS);
+}
+
+/**
+ * The picker's list window on the landing and the blank rows that keep its hint on the frame's last row in the alternate screen: what the frame
+ * leaves under the prompt row (`room`), less the rule, the header and the hint, at most the size {@link mentionListRows} gives it (half the
+ * terminal, as the palette's), never under one. Nothing above the prompt row gives way for it: a long draft leaves the list fewer rows.
+ */
+function landingMentionFit(
+  mention: MentionState,
+  rows: number,
+  room: number,
+  alternateScreen: boolean,
+): { readonly listRows: number; readonly fillRows: number } {
+  const listRows = Math.max(
+    1,
+    Math.min(mentionListRows(rows, MENTION_WINDOW), room - MENTION_CHROME_ROWS),
+  );
+  const fillRows = alternateScreen ? Math.max(0, room - landingMentionRows(mention, listRows)) : 0;
+  return { listRows, fillRows };
 }
 
 /**
@@ -361,14 +390,19 @@ function landingPage(
   const { cols, rows, color, exitGuard } = view;
   // The palette opened on the page in front: the landing draws it only when it is that page (on the work page it runs up over the docked prompt).
   const palette = input.page === 'start' ? view.palette : undefined;
+  // The `@` picker opened on the page in front: the landing draws it under its prompt row (on the work page it runs up over the docked prompt).
+  const mention = input.page === 'start' && palette === undefined ? view.mention : undefined;
   const editor = input.page === 'start' ? view.editor : withoutCursor(view.editor);
   const runRow = hostedRunLabel(view.hostedRun);
-  const promptShown = view.paletteOpen !== true && exitGuard === undefined;
+  const promptShown = view.paletteOpen !== true && exitGuard === undefined && mention === undefined;
   // The run's row is part of the prompt block (under the status line): the exit-guard card takes its place with the block's. The palette's
-  // block takes its place too, but the head must not move when the palette opens, so the row is counted as at rest.
-  const runRows = runRow !== undefined && (promptShown || palette !== undefined) ? 1 : 0;
+  // and the picker's blocks take its place too, but the head must not move when one opens, so the row is counted as at rest.
+  const runRows =
+    runRow !== undefined && (promptShown || palette !== undefined || mention !== undefined) ? 1 : 0;
   // What the prompt row holds: the draft, or the query typed on it while the palette is open.
   const promptEditor = palette === undefined ? editor : paletteQueryEditor(palette.state.query);
+  // The `@` picker reserves nothing above the prompt row: the head and the top gap stay as they are at rest (the prompt row does not move), and
+  // the picker's list takes what the frame leaves under the prompt row (`landingMentionFit`).
   const geometry = landingGeometry(input, palette, promptEditor, runRows);
   const paletteRows =
     palette === undefined ? 0 : landingPaletteRows(palette, rows, geometry.rowsAbove);
@@ -391,6 +425,23 @@ function landingPage(
       >
         {exitGuard !== undefined && (
           <ExitGuardCard phase={exitGuard} hostedRun={view.hostedRun} color={color} />
+        )}
+        {mention !== undefined && exitGuard === undefined && (
+          <LandingMention
+            mention={mention}
+            editor={editor}
+            editorRows={geometry.editorRows}
+            cols={cols}
+            color={color}
+            {...landingMentionFit(
+              mention,
+              rows,
+              frameRows(rows) -
+                geometry.rowsAbove -
+                homePromptRows(editor, homeContentColumns(cols), geometry.editorRows),
+              view.alternateScreen === true,
+            )}
+          />
         )}
         {palette !== undefined && (
           <LandingPalette
@@ -432,6 +483,7 @@ function workPage(input: PageInput, frame: RefObject<DOMElement | null> | undefi
   const { view } = input;
   const { cols, rows, color, exitGuard } = view;
   const palette = input.page === 'work' ? view.palette : undefined;
+  const mention = input.page === 'work' && palette === undefined ? view.mention : undefined;
   const parked = view.parkedRuns ?? NO_PARKED;
   const focus = input.page === 'work' ? view.stripFocus : undefined;
   const cue = rowCueOf(focus, view, parked);
@@ -442,6 +494,10 @@ function workPage(input: PageInput, frame: RefObject<DOMElement | null> | undefi
     hostedRun: view.hostedRun,
     palette,
     paletteMaxRows: palette === undefined ? 0 : chatPaletteRows(rows, palette.list),
+    mention:
+      mention === undefined
+        ? undefined
+        : { state: mention, listRows: mentionListRows(rows, MENTION_WINDOW) },
     editor,
     cols,
     rows,

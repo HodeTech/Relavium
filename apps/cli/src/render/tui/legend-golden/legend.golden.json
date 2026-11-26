@@ -23,6 +23,12 @@
     "list=none colour=off [1]": "↑/↓ select · Enter open/insert · Esc close",
     "list=none colour=on [1]": "⟦dim: ↑/↓ select · Enter open/insert · Esc close⟧"
   },
+  "home-mention": {
+    "page=landing colour=off [1]": "↑/↓ select · Enter choose · Esc close",
+    "page=landing colour=on [1]": "⟦dim: ↑/↓ select · Enter choose · Esc close⟧",
+    "page=work colour=off [1]": "↑/↓ select · Enter choose · Esc close",
+    "page=work colour=on [1]": "⟦dim: ↑/↓ select · Enter choose · Esc close⟧"
+  },
   "chat-view-hints": {
     "idle, empty draft colour=off [1]": "[/] commands · [Ctrl+C] end (twice)",
     "idle, empty draft colour=on [1]": "⟦dim: [/] commands · [Ctrl+C] end (twice)⟧",

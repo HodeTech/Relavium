@@ -7,7 +7,8 @@
  * What is proved: a held `r` leaves the field empty once its second repeat has shown it is held, at every cell of the grid (the one character
  * its first repeat typed is taken back); a deliberate `r` typed after a pause still types, with or without letters after it; a terminal that reports
  * the repeat and a read that coalesced several are dropped at once; the key held in a Home whose controller recorded nothing (a flow no key
- * opened) types as it always did; and nothing starts.
+ * opened) types as it always did; and nothing starts. A masked first field (round 2 sitting #2, F2) gets the same rule: its bullets are only
+ * what the person typed, and the secret the start is handed (read through its port, as the run core reads it) holds no stray character.
  */
 import { parseWorkflow } from '@relavium/core';
 import type { Key } from 'ink';
@@ -71,6 +72,19 @@ workflow:
     - { from: start, to: out }
 `;
 
+/** One masked input: the form's first prompt is a secret field, which shows bullets and keeps its buffer in the channel alone. */
+const SECRET_FIELD = `schema_version: '1.0'
+workflow:
+  id: nightly
+  inputs:
+    - { name: token, type: secret, required: true }
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
 const EMPTY: HomeSnapshot = {
   attention: { failedRuns: [] },
   recentSessions: [],
@@ -113,6 +127,8 @@ async function mount(
     readonly recordOpener?: boolean;
     /** The workflow has no input: the form opens on its confirmation card, not a text field. */
     readonly card?: boolean;
+    /** The workflow's one input is a secret: the form's first prompt is a masked field. */
+    readonly secret?: boolean;
     /** A launch that opens no flow (a refusal found before anything was asked): the key's record is then still on the history. */
     readonly launch?: (slug?: string, path?: string) => Promise<string>;
   } = {},
@@ -122,13 +138,20 @@ async function mount(
   const channel = createNativePromptChannel({ now: () => clock, history: chordHistory });
   let visible: NativePromptSnapshot | undefined;
   channel.ui.bindVisibility((snapshot) => snapshot === visible);
+  /** The masked values the start was handed, read through its port while it prepares, as the run core reads them. */
+  let startedSecrets: Readonly<Record<string, string>> | undefined;
   const host = {
-    start: vi.fn((request: HostedStartRequest) => (void request, Promise.resolve(STARTED))),
+    start: vi.fn(async (request: HostedStartRequest) => {
+      startedSecrets = (await request.secrets?.(['token'])) ?? {};
+      return STARTED;
+    }),
   };
   const launch = createRunLaunch({
     flow: channel.flow,
     host,
-    catalog: catalogOf(options.card === true ? NO_INPUTS : ONE_FIELD),
+    catalog: catalogOf(
+      options.card === true ? NO_INPUTS : options.secret === true ? SECRET_FIELD : ONE_FIELD,
+    ),
   });
   const open = vi.fn((slug?: string, path?: string) => {
     if (options.launch !== undefined) return options.launch(slug, path);
@@ -180,7 +203,7 @@ async function mount(
     pressR: async (): Promise<void> => {
       clock = PRESSED_AT;
       controller.handleKey('r', {});
-      const first = options.card === true ? 'chord' : 'text';
+      const first = options.card === true ? 'chord' : options.secret === true ? 'password' : 'text';
       for (let turn = 0; turn < 50 && channel.ui.getSnapshot().kind !== first; turn += 1)
         await new Promise<void>((resolve) => setImmediate(resolve));
       expect(channel.ui.getSnapshot().kind, 'the form’s first prompt is up').toBe(first);
@@ -189,6 +212,25 @@ async function mount(
     key: (time: number, input: string, key: Key = none): void => {
       clock = time;
       channel.ui.input(input, key);
+    },
+    /**
+     * `Enter` on the open field at `time`, the confirmation card shown, and a patient `Ctrl+Y` well past its guards: the masked values the start
+     * was handed (the secret port the run core reads). What the channel kept in its buffer, read where the run reads it, never off a display.
+     */
+    startWith: async (time: number): Promise<Readonly<Record<string, string>>> => {
+      clock = time;
+      channel.ui.input('', { ...none, return: true });
+      for (let turn = 0; turn < 50 && channel.ui.getSnapshot().kind !== 'chord'; turn += 1)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(channel.ui.getSnapshot().kind, 'the confirmation card is up').toBe('chord');
+      clock = time + FRAME_AFTER_MS;
+      visible = channel.ui.getSnapshot();
+      channel.ui.shown(visible);
+      clock = time + 4_000;
+      channel.ui.input('y', CTRL);
+      await vi.waitFor(() => expect(startedSecrets).toBeDefined());
+      expect(host.start).toHaveBeenCalledTimes(1);
+      return startedSecrets ?? {};
     },
   };
   return rig;
@@ -228,6 +270,67 @@ describe('a `r` held down on the detail types nothing into the form’s first fi
       });
     }
   }
+});
+
+describe('a `r` held down on the detail types nothing into a masked first field either (round 2 sitting #2, F2)', () => {
+  for (const initial of INITIAL_DELAYS_MS) {
+    for (const interval of REPEAT_INTERVALS_MS) {
+      it(`first repeat after ${String(initial)} ms, then every ${String(interval)} ms: no bullet is left once the key is known to be held, and the secret started is only what was typed after it`, async () => {
+        const m = await mount({ secret: true });
+        await m.pressR();
+        let shown = false;
+        let peak = 0;
+        let last = PRESSED_AT;
+        for (let at = PRESSED_AT + initial; at <= PRESSED_AT + initial + HOLD_MS; at += interval) {
+          if (!shown && at >= PRESSED_AT + FRAME_AFTER_MS) {
+            m.at(PRESSED_AT + FRAME_AFTER_MS);
+            m.show();
+            shown = true;
+          }
+          m.key(at, 'r');
+          last = at;
+          peak = Math.max(peak, m.display().length);
+        }
+        expect(peak, 'at most the one bullet the first repeat typed, ever').toBeLessThanOrEqual(1);
+        expect(m.display(), 'taken back: the field shows no bullet').toBe('');
+        expect(m.snapshot().kind, 'still the masked field').toBe('password');
+        expect(m.host.start).not.toHaveBeenCalled();
+        m.key(last + 400, 'r');
+        expect(m.display(), 'a deliberate key after the hold is one bullet').toBe('•');
+        m.key(last + 700, 'x');
+        expect(m.display()).toBe('••');
+        expect(await m.startWith(last + 1_000), 'the buffer holds no stray character').toEqual({
+          token: 'rx',
+        });
+      });
+    }
+  }
+
+  it('one `r` typed 700 ms after the form opened is the first character of the secret', async () => {
+    const m = await mount({ secret: true });
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 700, 'r');
+    expect(m.display()).toBe('•');
+    m.key(PRESSED_AT + 920, 'e');
+    m.key(PRESSED_AT + 1_140, 'l');
+    expect(m.display()).toBe('•••');
+    expect(await m.startWith(PRESSED_AT + 1_500)).toEqual({ token: 'rel' });
+  });
+
+  it('`rr` typed in a burst at the start costs both, as in a text field: the one bullet left is the `x` typed after them', async () => {
+    const m = await mount({ secret: true });
+    await m.pressR();
+    m.at(PRESSED_AT + FRAME_AFTER_MS);
+    m.show();
+    m.key(PRESSED_AT + 600, 'r');
+    m.key(PRESSED_AT + 680, 'r');
+    expect(m.display(), 'the burst is a chain: nothing of it is left').toBe('');
+    m.key(PRESSED_AT + 800, 'x');
+    expect(m.display(), 'exactly one bullet, and it is the x').toBe('•');
+    expect(await m.startWith(PRESSED_AT + 1_200)).toEqual({ token: 'x' });
+  });
 });
 
 describe('a deliberate `r` still types', () => {
@@ -374,6 +477,34 @@ describe('the key that opened the form is left on the Home’s key history, and 
     refused.controller.handleKey('r', {});
     expect(refused.chordHistory.openedBy).toEqual({ input: 'r', at: PRESSED_AT });
   });
+});
+
+describe('a launch refused before any flow began leaves no key record for the next flow (round 2 sitting #2, F5)', () => {
+  it.each([500, 1_500])(
+    'a text flow begun %i ms after a refused `r` keeps `rrx` typed in a burst, whole',
+    async (later) => {
+      const m = await mount({ launch: () => Promise.resolve('A run is already executing.') });
+      m.at(PRESSED_AT);
+      m.controller.handleKey('r', {});
+      await vi.waitFor(() => expect(m.open).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(m.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect
+        .soft(m.chordHistory.openedBy, 'the refused launch took its key record with it')
+        .toBe(undefined);
+      // Another flow begins on the same channel (a `/init` name, a pricing id: any text field no key opened), and the person types fast.
+      const begin = PRESSED_AT + later;
+      m.at(begin);
+      m.channel.flow.begin();
+      const answer = m.channel.flow.text({ message: 'Name' });
+      m.key(begin + 100, 'r');
+      m.key(begin + 180, 'r');
+      m.key(begin + 260, 'x');
+      expect(m.display(), 'no stale opener: the burst is the person’s').toBe('rrx');
+      m.key(begin + 400, '', { ...none, return: true });
+      expect(await answer).toBe('rrx');
+      await m.channel.flow.end();
+    },
+  );
 });
 
 describe('the chain a held `r` makes is still typing for the confirmation card’s guards', () => {

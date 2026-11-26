@@ -395,7 +395,7 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
 // matrix's own backdrop property checks every cell of it (`checkBackdropDim`, run in every alternate-screen colour cell). So does each framed
 // native prompt of the matrix (`.native-popup-*`: a field, a wait or a chord step has no selected row for the check below to find).
 const FRAMED_FLOW_SURFACE =
-  /^home\.(provider-|native-|init-|import-|export-|pricing-|resume-|run-launch)/u;
+  /^home\.(provider-|native-|init-|import-|export-|pricing-|resume-|run-launch|mode-(flow|confirm|done))/u;
 const POPUP_SURFACES = ALL_SURFACES.filter(
   (surface) =>
     surface.popup !== undefined &&
