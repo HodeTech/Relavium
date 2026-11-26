@@ -68,7 +68,7 @@ function itemsOf(
   failed: readonly HomeRunRow[] = [],
   broken: readonly HomeUnreadableRun[] = [],
 ): readonly AttentionItem[] {
-  return attentionOrder(parked, { attention: { failedRuns: failed }, unreadableRuns: broken }, NOW);
+  return attentionOrder(parked, { failedRuns: failed, unreadableRuns: broken }, NOW);
 }
 const many = (count: number, make: (n: number) => ParkedRunRow): ParkedRunRow[] =>
   Array.from({ length: count }, (_, n) => make(n));

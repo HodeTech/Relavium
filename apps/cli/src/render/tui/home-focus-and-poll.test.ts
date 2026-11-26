@@ -22,7 +22,7 @@ import { createHomeController, STRIP_REFRESH_MS, type HomeController } from './h
 
 const RUN = 'run-0001';
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

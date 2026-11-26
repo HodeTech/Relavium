@@ -40,7 +40,7 @@ describe.each([true, false])('native Home geometry alternate=%s', (alternate) =>
         startChat: () => Promise.resolve(session),
         homeStore: {
           read: () => ({
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],
@@ -161,7 +161,7 @@ describe.each([true, false])('bare Home model rewrite visibility alternate=%s', 
         },
         homeStore: {
           read: () => ({
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],

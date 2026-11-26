@@ -12,7 +12,6 @@ import {
   focusFor,
   isFocused,
   resolveFocus,
-  stepFocus,
   stripRows,
   type StripFocus,
   type StripRow,
@@ -70,37 +69,6 @@ describe('resolveFocus: the focus as it is on the rows now', () => {
   });
 });
 
-describe('stepFocus', () => {
-  const rows = [run('a'), run('b'), session('s')];
-
-  it('goes down from the prompt onto the first row, and from row to row; the last row stays', () => {
-    const first = stepFocus(rows, undefined, 1);
-    expect(first).toEqual(focus('run', 'a'));
-    const second = stepFocus(rows, first, 1);
-    expect(second).toEqual(focus('run', 'b'));
-    const last = stepFocus(rows, second, 1);
-    expect(last).toEqual(focus('session', 's'));
-    expect(stepFocus(rows, last, 1), 'nothing below the last row').toEqual(last);
-  });
-
-  it('goes up row by row, and from the first row back to the prompt; up from the prompt stays there', () => {
-    expect(stepFocus(rows, focus('session', 's'), -1)).toEqual(focus('run', 'b'));
-    expect(stepFocus(rows, focus('run', 'a'), -1)).toBeUndefined();
-    expect(stepFocus(rows, undefined, -1)).toBeUndefined();
-  });
-
-  it('steps from where the focus stands now when its row moved, and starts again from the prompt when its row is gone', () => {
-    expect(stepFocus([run('new'), ...rows], focus('run', 'a'), 1)).toEqual(focus('run', 'b'));
-    expect(stepFocus([run('x'), run('y')], focus('run', 'gone'), 1)).toEqual(focus('run', 'x'));
-    expect(stepFocus([run('x'), run('y')], focus('run', 'gone'), -1)).toBeUndefined();
-  });
-
-  it('has nowhere to go over no rows', () => {
-    expect(stepFocus([], undefined, 1)).toBeUndefined();
-    expect(stepFocus([], focus('run', 'a'), -1)).toBeUndefined();
-  });
-});
-
 describe('focusAt and isFocused', () => {
   it('names a row by its identity alone; there is none past the rows', () => {
     expect(focusAt([run('a'), session('s')], 1)).toEqual(focus('session', 's'));
@@ -134,7 +102,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
   });
   const parked = (runId: string): ParkedRunRow => ({ runId, kind: 'approval', gates: 1 });
   const snapshot = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
@@ -148,7 +116,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1'), parked('p2')],
       snapshot({
-        attention: { failedRuns: [runRow('f1', 'failed')] },
+        failedRuns: [runRow('f1', 'failed')],
         recentSessions: [sessionRow('s1'), sessionRow('s2')],
         recentRuns: [runRow('r1', 'completed'), runRow('r2', 'running')],
       }),
@@ -171,7 +139,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1')],
       snapshot({
-        attention: { failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
+        failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')],
         recentRuns: [runRow('p1', 'paused'), runRow('r1', 'completed')],
         unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
@@ -188,7 +156,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1')],
       snapshot({
-        attention: { failedRuns: [runRow('f1', 'failed')] },
+        failedRuns: [runRow('f1', 'failed')],
         unreadableRuns: [
           { runId: 'u1', reason: 'newer-version' },
           { runId: 'u2', reason: 'could-not-read' },

@@ -5,7 +5,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { createHomeController } from './home-controller.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

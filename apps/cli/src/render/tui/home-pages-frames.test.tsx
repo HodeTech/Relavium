@@ -55,7 +55,7 @@ const sessionRow = (n: number): HomeSessionRow => ({
 /** The study's H3 state: a gate to answer (a parked run) and a failed run under Attention, two sessions, two runs. */
 const PARKED: readonly ParkedRunRow[] = [{ runId: 'run-gate', kind: 'approval', gates: 1 }];
 const BUSY: HomeSnapshot = {
-  attention: { failedRuns: [runRow('run-failed', 'failed')] },
+  failedRuns: [runRow('run-failed', 'failed')],
   recentSessions: [sessionRow(1), sessionRow(2)],
   recentRuns: [runRow('run-a', 'completed'), runRow('run-b', 'completed')],
   recentAgents: [],
@@ -64,7 +64,7 @@ const BUSY: HomeSnapshot = {
   isEmpty: false,
 };
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

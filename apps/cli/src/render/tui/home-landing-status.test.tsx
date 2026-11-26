@@ -29,7 +29,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

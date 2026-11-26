@@ -252,7 +252,7 @@ describe('reducePageKey: every key in every state', () => {
 // ---- The indicator ----------------------------------------------------------------------------------------------------------
 
 const snapshotOf = (over: Partial<HomeSnapshot> = {}): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -286,7 +286,7 @@ describe('the indicator says the true totals of this directory (MVP-11 unit 7)',
     // Two failed rows, five unreadable runs, two sessions and two runs are LOADED; the store counted 40 under Attention (32 parked runs
     // among them), 12 sessions and 9 runs. The indicator says the store's numbers.
     const snapshot = snapshotOf({
-      attention: { failedRuns: [run('f1'), run('f2')] },
+      failedRuns: [run('f1'), run('f2')],
       unreadableRuns: ['u1', 'u2', 'u3', 'u4', 'u5'].map((runId) => ({
         runId,
         reason: 'corrupt-row' as const,

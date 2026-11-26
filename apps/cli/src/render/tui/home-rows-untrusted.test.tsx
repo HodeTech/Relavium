@@ -71,9 +71,7 @@ function homeWith(value: string) {
   const snapshot: HomeSnapshot = {
     // (The gate rows of runs not parked here are gone with the Home's scope, MVP-11 unit 7: every parked run of this directory is the
     // parked row below, and the unreadable run carries the stored workflow name it can be named by.)
-    attention: {
-      failedRuns: [runRow(`f-${value}`, value, 'failed')],
-    },
+    failedRuns: [runRow(`f-${value}`, value, 'failed')],
     recentSessions: [sessionRow(value, 1)],
     // The second run has no workflow name: its row names it by its id.
     recentRuns: [

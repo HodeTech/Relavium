@@ -17,7 +17,7 @@ function mount(): HomeController {
     startChat: () => new Promise(() => {}),
     homeStore: {
       read: () => ({
-        attention: { failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],

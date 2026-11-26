@@ -2,7 +2,7 @@ import { Box } from 'ink';
 import { Text } from './text.js';
 import type { ReactElement, ReactNode } from 'react';
 
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { Emph } from './emphasis-view.js';
 import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';

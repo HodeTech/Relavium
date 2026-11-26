@@ -55,7 +55,7 @@ const only = (items: readonly AttentionItem[]): AttentionItem => {
 const parkedItem = (row: ParkedRunRow, nowMs?: number): AttentionItem =>
   only(attentionOrder([row], snapshotOf({}), nowMs));
 const failedItem = (run: HomeRunRow): AttentionItem =>
-  only(attentionOrder([], snapshotOf({ attention: { failedRuns: [run] } }), NOW));
+  only(attentionOrder([], snapshotOf({ failedRuns: [run] }), NOW));
 const unreadableItem = (run: HomeUnreadableRun): AttentionItem =>
   only(attentionOrder([], snapshotOf({ unreadableRuns: [run] }), NOW));
 

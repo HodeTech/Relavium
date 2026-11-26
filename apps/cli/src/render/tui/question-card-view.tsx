@@ -15,7 +15,7 @@ import {
   reviewTerminalFits,
   TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { EmphText } from './emphasis-view.js';
 import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';

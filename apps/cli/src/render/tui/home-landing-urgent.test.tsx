@@ -58,7 +58,7 @@ const failed: HomeRunRow = {
   totalCostMicrocents: 0,
 };
 const snapshot: HomeSnapshot = {
-  attention: { failedRuns: [failed] },
+  failedRuns: [failed],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

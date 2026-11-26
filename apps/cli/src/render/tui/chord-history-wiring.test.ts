@@ -56,7 +56,7 @@ const CHANNEL_CTRL: Key = {
 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

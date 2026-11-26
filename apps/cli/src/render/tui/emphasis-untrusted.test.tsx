@@ -103,20 +103,18 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
       <HomeView
         page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
-          attention: {
-            failedRuns: [
-              {
-                runId: 'run-1',
-                workflowSlug: HOSTILE,
-                status: 'failed',
-                createdAt: '2026-11-24T00:00:00.000Z',
-                startedAt: undefined,
-                completedAt: undefined,
-                totalCostMicrocents: 0,
-                unpricedCalls: 0,
-              },
-            ],
-          },
+          failedRuns: [
+            {
+              runId: 'run-1',
+              workflowSlug: HOSTILE,
+              status: 'failed',
+              createdAt: '2026-11-24T00:00:00.000Z',
+              startedAt: undefined,
+              completedAt: undefined,
+              totalCostMicrocents: 0,
+              unpricedCalls: 0,
+            },
+          ],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

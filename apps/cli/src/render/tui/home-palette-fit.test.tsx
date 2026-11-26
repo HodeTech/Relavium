@@ -41,7 +41,7 @@ const session = (n: number) =>
     totalCostMicrocents: 0,
   }) as const;
 const snapshotWith = (sessions: number): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: Array.from({ length: sessions }, (_, index) => session(index)),
   recentRuns: [],
   recentAgents: [],

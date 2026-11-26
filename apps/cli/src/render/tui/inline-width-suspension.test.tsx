@@ -129,7 +129,7 @@ describe.each([false, true])('inline transcript suspension (color %s)', (color) 
         }),
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

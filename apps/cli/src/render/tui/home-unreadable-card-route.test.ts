@@ -33,17 +33,15 @@ const snapshotOf = (
   unreadableRuns: readonly HomeUnreadableRun[],
   failed: readonly string[] = [],
 ): HomeSnapshot => ({
-  attention: {
-    failedRuns: failed.map((runId) => ({
-      runId,
-      workflowSlug: 'wf',
-      status: 'failed',
-      createdAt: '2026-11-23T00:00:00.000Z',
-      startedAt: undefined,
-      completedAt: undefined,
-      totalCostMicrocents: 0,
-    })),
-  },
+  failedRuns: failed.map((runId) => ({
+    runId,
+    workflowSlug: 'wf',
+    status: 'failed',
+    createdAt: '2026-11-23T00:00:00.000Z',
+    startedAt: undefined,
+    completedAt: undefined,
+    totalCostMicrocents: 0,
+  })),
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

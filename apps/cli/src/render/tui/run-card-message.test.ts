@@ -136,7 +136,8 @@ describe('a message that does not fit', () => {
     );
     // The message takes exactly what the rest of the card leaves of the terminal, so the card fills the 23 rows and no more.
     expect(projection.rows).toHaveLength(MOST_ROWS_AT_24);
-    expect(authorRows(projection)).toHaveLength(7);
+    // Eight rows: the expired gate's facts no longer spend one on the stored timestamp (`Overdue since …`), so the message has it.
+    expect(authorRows(projection)).toHaveLength(8);
     expect(texts(projection)).toContain(CONTINUES);
     for (const row of projection.rows) expect(displayWidth(row.text)).toBeLessThanOrEqual(78);
     expect(projection.rows.at(-1)?.text).toContain('Esc leaves it pending');

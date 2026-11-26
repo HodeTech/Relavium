@@ -1,7 +1,7 @@
 import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';

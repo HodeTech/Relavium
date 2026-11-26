@@ -2454,8 +2454,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // The landing's block switch (Step 5g): absent or `true` draws the block on page 1, `false` the one-line wordmark (`showsLandingBlock`).
         showBanner: config.showBanner,
-        // What a session's directory on the strip is shortened against (ADR-0145 §8).
-        paths: displayRoots(deps.global.cwd, homeDir),
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
         // (`--no-mouse` / `[preferences].mouse`); when it is off, no port is passed and nothing is ever captured.
         ...(mouseActive

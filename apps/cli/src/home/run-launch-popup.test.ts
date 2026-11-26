@@ -553,8 +553,9 @@ describe('every word a project wrote is scrubbed before it reaches the channel',
       );
     });
   /**
-   * What the field takes of a text: it refuses a C0 or C1 control, DEL and a bidirectional control (round 2 sitting #2, F6: what the field
-   * could not show as it is), so the person types the rest.
+   * What the field takes of a text: it refuses a C0 or C1 control, DEL, a bidirectional control (round 2 sitting #2, F6: what the field could
+   * not show as it is) and the zero-width and invisible characters the confirmation removes (the zero-width space, the word joiner, the
+   * byte-order mark, the soft hyphen, the line and paragraph separators), so the person types the rest.
    */
   const typeable = (text: string): string =>
     Array.from(text)
@@ -567,7 +568,13 @@ describe('every word a project wrote is scrubbed before it reaches the channel',
           !(code >= 0x2066 && code <= 0x2069) &&
           code !== 0x200e &&
           code !== 0x200f &&
-          code !== 0x061c
+          code !== 0x061c &&
+          code !== 0x200b &&
+          code !== 0x2060 &&
+          code !== 0xfeff &&
+          code !== 0xad &&
+          code !== 0x2028 &&
+          code !== 0x2029
         );
       })
       .join('');

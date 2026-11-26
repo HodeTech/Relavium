@@ -40,6 +40,7 @@ import {
   attentionLead,
   classOfRanges,
   compactExpiryLabel,
+  deadlinePassed,
   expiryLabel,
   fitRow,
   MARKER_LOOKALIKE_RANGES,
@@ -199,7 +200,7 @@ function newestFirst<T extends { readonly runId: string; readonly at: number }>(
  */
 export function attentionOrder(
   parked: readonly ParkedRunRow[],
-  snapshot: Pick<HomeSnapshot, 'attention' | 'unreadableRuns'>,
+  snapshot: Pick<HomeSnapshot, 'failedRuns' | 'unreadableRuns'>,
   nowMs?: number,
 ): readonly AttentionItem[] {
   const broken = new Set(snapshot.unreadableRuns.map((run) => run.runId));
@@ -223,11 +224,11 @@ export function attentionOrder(
         kind: 'parked',
         row,
         deadlineMs,
-        overdue: nowMs !== undefined && deadlineMs <= nowMs,
+        overdue: nowMs !== undefined && deadlinePassed(row.expiresAt, nowMs),
       });
   }
   due.sort((a, b) => a.deadlineMs - b.deadlineMs || byRunId(a, b));
-  const failed = snapshot.attention.failedRuns
+  const failed = snapshot.failedRuns
     .filter((run) => !broken.has(run.runId) && first(run.runId))
     .map((run) => ({ runId: run.runId, at: instantOf(run.createdAt), run }))
     .sort(newestFirst)
@@ -263,7 +264,7 @@ export function attentionOrder(
  * a run with several has open, `waiting for media`, or `parked, no gate` (nothing a card can show or a continue can answer). What `Enter`
  * does on it is the work page's hint row's to say, for the focused row only (`home-pages.ts`), not the row's.
  */
-export function parkedKindWords(row: Pick<ParkedRunRow, 'kind' | 'gates'>): string {
+function parkedKindWords(row: Pick<ParkedRunRow, 'kind' | 'gates'>): string {
   switch (row.kind) {
     case 'approval':
     case 'input':
@@ -279,9 +280,9 @@ export function parkedKindWords(row: Pick<ParkedRunRow, 'kind' | 'gates'>): stri
   }
 }
 
-/** Whether the run's earliest deadline has passed at `nowMs`: the row says `expired`, and the view draws it in red, as the strip's own gate rows are. */
+/** Whether the run's earliest deadline has passed at `nowMs`: the row says `expired`, and the view draws it in red ({@link deadlinePassed}: the one rule). */
 export function parkedRunOverdue(row: ParkedRunRow, nowMs: number): boolean {
-  return expiryLabel(row.expiresAt, nowMs) === 'expired';
+  return deadlinePassed(row.expiresAt, nowMs);
 }
 
 /**
@@ -541,7 +542,7 @@ export function showsRelativeWords(input: {
   readonly page: 'start' | 'work';
   readonly snapshot: Pick<
     HomeSnapshot,
-    'attention' | 'recentSessions' | 'recentRuns' | 'recentAgents' | 'unreadableRuns'
+    'failedRuns' | 'recentSessions' | 'recentRuns' | 'recentAgents' | 'unreadableRuns'
   >;
   readonly parked: readonly ParkedRunRow[];
 }): boolean {
@@ -549,7 +550,7 @@ export function showsRelativeWords(input: {
   if (input.page === 'work')
     return (
       parked.length +
-        snapshot.attention.failedRuns.length +
+        snapshot.failedRuns.length +
         snapshot.recentSessions.length +
         snapshot.recentRuns.length +
         snapshot.recentAgents.length >
@@ -592,7 +593,12 @@ function pausedWords(kind: ParkedRunKind | undefined): string {
       return 'is waiting for media jobs. Leave this chat to continue it';
     case 'none':
       return 'paused. Leave this chat to see it';
-    default:
+    case 'approval':
+    case 'input':
+    case 'review':
+    case 'budget':
+    case 'several':
+    case undefined:
       return 'is waiting at a gate. Leave this chat to answer it';
   }
 }

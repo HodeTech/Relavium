@@ -36,7 +36,7 @@ import { SESSIONS_RESUME_UNAVAILABLE, type SessionsPort } from './tab-host-sessi
 const WAIT_MS = 5000;
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

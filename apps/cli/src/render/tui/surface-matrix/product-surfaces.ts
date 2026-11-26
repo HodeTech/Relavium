@@ -85,7 +85,7 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.empty-keyed', 'the empty Home with a provider key'),
   row(
     'home.empty-title',
-    'the empty Home with `show_banner = false`: the one-line title instead of the block',
+    'page 1 of the Home with `show_banner = false` (shown empty; it applies to every state): the one-line title instead of the block',
   ),
   row(
     'home.populated-parked-run',

@@ -1,7 +1,7 @@
 import type { ToolHost } from '@relavium/core';
 
 import type { ProviderResolver } from '../engine/providers.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import { glyphOf, markWithWord, type StatusGlyphRole } from '../render/tui/glyphs.js';
 
 /**

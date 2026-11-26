@@ -361,13 +361,16 @@ describe('a body that has no inverse cell by design (backdropHasNoInverse)', () 
       expect(problemsOf(entry, await runCell(entry, alt))).toEqual([]);
     });
 
-    it('without the declaration the same cell fails on the inverse demand alone, so the declaration is the one thing that lets it pass', async () => {
-      const undeclared = { ...entry, backdropHasNoInverse: undefined };
-      const problems = problemsOf(undeclared, await runCell(undeclared, alt));
-      expect(problems).toHaveLength(1);
-      expect(problems[0]).toContain('backdrop-dim:');
-      expect(problems[0]).toContain('no inverse cell');
-    });
+    it.each([undefined, '', '   '])(
+      'without the declaration (%j) the same cell fails on the inverse demand alone, so the declaration is the one thing that lets it pass',
+      async (declared) => {
+        const undeclared = { ...entry, backdropHasNoInverse: declared };
+        const problems = problemsOf(undeclared, await runCell(undeclared, alt));
+        expect(problems).toHaveLength(1);
+        expect(problems[0]).toContain('backdrop-dim:');
+        expect(problems[0]).toContain('no inverse cell');
+      },
+    );
 
     it('with its declaration a terminal that never received the dim codes is still named', async () => {
       const problems = problemsOf(entry, await runCell(entry, alt, { tamper: stripDim }));

@@ -57,7 +57,8 @@ export function wrappedRowCount(
   for (const logical of promptRows(text, cursor)) {
     const cell = logical.at === undefined ? '' : clean(logical.at) || ' ';
     const line = `${lead}${clean(logical.before)}${cell}${clean(logical.after)}`;
-    total += Math.max(1, wrapWords(line, width).length);
+    // `wrapWords` answers a row for every line at a width of at least one column (`['']` for an empty one), so a logical line is never zero rows.
+    total += wrapWords(line, width).length;
   }
   return total;
 }

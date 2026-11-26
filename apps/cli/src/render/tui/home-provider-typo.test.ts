@@ -10,7 +10,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  * `/providers` itself answers with a pointer only, it must point at the Home too and not tell the person to type a word that does nothing.
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

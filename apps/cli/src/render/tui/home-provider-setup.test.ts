@@ -15,7 +15,7 @@ import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const snapshot: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

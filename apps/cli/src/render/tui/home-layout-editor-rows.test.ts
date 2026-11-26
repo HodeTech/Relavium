@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { chatFrameRows } from './chat-layout.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { glyphOf } from './glyphs.js';
 import {
   frameRows,

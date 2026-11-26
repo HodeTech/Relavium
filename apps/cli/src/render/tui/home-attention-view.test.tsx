@@ -20,7 +20,7 @@ import type { ParkedRunRow } from './home-attention.js';
 import { HomeView } from './home-view.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

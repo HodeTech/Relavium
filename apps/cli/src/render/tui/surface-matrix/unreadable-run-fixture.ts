@@ -26,7 +26,7 @@ export const UNREADABLE_FIXTURE: HomeUnreadableRun = {
 /** The populated Home with the unreadable run as its one Attention row: the work page's first row, so one `↓` focuses it. */
 const SNAPSHOT: HomeSnapshot = {
   ...POPULATED_SNAPSHOT,
-  attention: { failedRuns: [] },
+  failedRuns: [],
   unreadableRuns: [UNREADABLE_FIXTURE],
   totals: { ...POPULATED_SNAPSHOT.totals, attention: 1 },
 };

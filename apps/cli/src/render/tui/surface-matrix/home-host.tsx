@@ -47,7 +47,7 @@ import type { Variant } from './variants.js';
  */
 
 export const EMPTY_SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

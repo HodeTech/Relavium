@@ -17,7 +17,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  * passed the whole suite. A new file (`chat/repl-info.test.ts` belongs to the permanent workload pin).
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

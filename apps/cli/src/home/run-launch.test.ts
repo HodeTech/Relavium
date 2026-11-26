@@ -1460,7 +1460,7 @@ describe('a masked value stays out of everything', () => {
       },
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

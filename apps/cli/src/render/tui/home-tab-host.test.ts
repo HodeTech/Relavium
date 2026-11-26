@@ -31,7 +31,7 @@ import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from './permissions-sheet.js'
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

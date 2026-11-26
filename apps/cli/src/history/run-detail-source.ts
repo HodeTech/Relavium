@@ -155,23 +155,21 @@ export interface ReadRunDetailInput {
   readonly snapshotJson?: string | undefined;
   /**
    * The directory the Home is in: what the run's recorded project is compared with ({@link RunDetailRead.directory}), exactly as the History
-   * list's `this project` scope compares it. Absent, the detail says nothing of where the run was started.
+   * list's `this project` scope compares it. Required, so that a caller cannot leave the comparison out by forgetting it (a detail that says
+   * nothing of where the run was started offers no `r`); a path that is not absolute still says nothing ({@link directoryOf}).
    */
-  readonly projectRoot?: string | undefined;
+  readonly projectRoot: string;
   /** Test seams: the size of a page and the most pages read. */
   readonly eventPage?: number;
   readonly maxPages?: number;
 }
 
 /**
- * Where a run was started, against the Home's directory: `undefined` when the Home's directory is not known to the read (absent, or not an
+ * Where a run was started, against the Home's directory: `undefined` when the Home's directory is not known to the read (not an
  * absolute path), `unrecorded` for a run whose stored root names no directory (none, empty or relative: `recordedProjectRoot`), `here` when
  * the two are the same absolute text (`isProjectRootHere`, the one match every reader of a run's root uses), else `elsewhere`.
  */
-function directoryOf(
-  recorded: string | undefined,
-  home: string | undefined,
-): RunDirectory | undefined {
+function directoryOf(recorded: string | undefined, home: string): RunDirectory | undefined {
   if (recordedProjectRoot(home) === undefined) return undefined;
   if (recordedProjectRoot(recorded) === undefined) return 'unrecorded';
   return isProjectRootHere(recorded, home) ? 'here' : 'elsewhere';
@@ -239,8 +237,8 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
 
 export interface RunDetailLoaderDeps {
   readonly reader: RunDetailReader;
-  /** The directory the Home is in ({@link ReadRunDetailInput.projectRoot}): the loader the Home builds is always given it. */
-  readonly projectRoot?: string | undefined;
+  /** The directory the Home is in ({@link ReadRunDetailInput.projectRoot}): required, as it is there. */
+  readonly projectRoot: string;
   /** The events the terminal outbox holds (`createFileTerminalOutbox(...).list`). Rejects when the file cannot be read. */
   readonly listHeld: () => Promise<readonly { readonly runId?: string | undefined }[]>;
   /**

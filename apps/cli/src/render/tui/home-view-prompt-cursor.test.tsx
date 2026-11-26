@@ -23,7 +23,7 @@ const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'gu');
 const INVERSE = `${ESC}[7m`;
 const NOW = Date.parse('2026-11-26T12:00:00.000Z');
 const WITH_A_SESSION: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [
     {
       sessionId: 'session-1',

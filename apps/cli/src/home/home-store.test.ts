@@ -120,7 +120,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
         reason: 'newer-version',
       },
     ]);
-    expect(snapshot.attention.failedRuns).toEqual([]);
+    expect(snapshot.failedRuns).toEqual([]);
     // It is one Attention item and no longer a run of the Runs section.
     expect(snapshot.totals).toEqual({ attention: 1, sessions: 0, runs: 1 });
     expect(snapshot.isEmpty).toBe(false);
@@ -131,7 +131,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     expect(snap.isEmpty).toBe(true);
     expect(snap.recentSessions).toEqual([]);
     expect(snap.recentRuns).toEqual([]);
-    expect(snap.attention.failedRuns).toEqual([]);
+    expect(snap.failedRuns).toEqual([]);
     expect(snap.recentAgents).toEqual([]);
     expect(snap.unreadableRuns).toEqual([]);
     expect(snap.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
@@ -151,7 +151,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     const snap = buildHomeSnapshot(deps);
 
     // Exact row (not objectContaining) so a dropped/mis-mapped createdAt or cost projection is caught.
-    expect(snap.attention.failedRuns).toEqual([
+    expect(snap.failedRuns).toEqual([
       {
         runId: 'run-failed',
         workflowSlug: 'nightly',
@@ -189,7 +189,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     await seed({ slug: 'a', runId: 'run-good', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot(deps);
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-good']); // NOT run-bad
   });
 
@@ -213,7 +213,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
 
     const snap = buildHomeSnapshot(deps);
     expect(snap.recentRuns).toEqual([]);
-    expect(snap.attention.failedRuns).toEqual([]);
+    expect(snap.failedRuns).toEqual([]);
     expect(snap.totals).toEqual({ attention: 3, sessions: 0, runs: 0 });
     expect(snap.isEmpty).toBe(false);
   });
@@ -252,7 +252,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']);
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
   });
 
   it('a failed run beyond the loaded limit never leaks into the Runs list, and the totals still count it', async () => {
@@ -262,7 +262,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     await seed({ slug: 'a', runId: 'ok-1', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-3', 'fail-2']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['fail-3', 'fail-2']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-1']);
     expect(snap.totals).toEqual({ attention: 3, sessions: 0, runs: 1 });
   });
@@ -280,7 +280,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     await seed({ slug: 'b', runId: 'ok-old', state: 'completed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-1']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['fail-1']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-new', 'ok-old']);
     expect(snap.totals).toEqual({ attention: 2, sessions: 0, runs: 2 });
   });
@@ -293,7 +293,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     await seed({ slug: 'a', runId: 'fail-1', state: 'failed', atMs: T0 + 1_000 });
 
     const snap = buildHomeSnapshot({ ...deps, limit: 2 });
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['fail-2', 'fail-1']);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['ok-3', 'ok-2']);
     expect(snap.totals.runs).toBe(3);
   });
@@ -329,7 +329,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
 
     const snap = buildHomeSnapshot(deps);
     expect(snap.recentRuns.map((r) => r.runId)).toEqual(['run-live']);
-    expect(snap.attention.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
+    expect(snap.failedRuns.map((r) => r.runId)).toEqual(['run-bad']);
   });
 
   it('derives recent agents from the recent sessions — most-recent-first and deduped', () => {
@@ -431,7 +431,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     damage('fail-bad', 'corrupt');
 
     const snapshot = buildHomeSnapshot(deps);
-    expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['fail-ok']);
+    expect(snapshot.failedRuns.map((run) => run.runId)).toEqual(['fail-ok']);
     expect(snapshot.unreadableRuns.map((run) => [run.runId, run.reason])).toEqual([
       ['fail-bad', 'corrupt-row'],
     ]);
@@ -472,7 +472,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       const snapshot = buildHomeSnapshot(deps);
       const listed = [
         ...snapshot.recentRuns.map((run) => run.runId),
-        ...snapshot.attention.failedRuns.map((run) => run.runId),
+        ...snapshot.failedRuns.map((run) => run.runId),
         ...snapshot.unreadableRuns.map((run) => run.runId),
       ];
       expect(listed).toEqual(['mine']);
@@ -581,7 +581,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
         },
       },
     });
-    expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['moving']);
+    expect(snapshot.failedRuns.map((run) => run.runId)).toEqual(['moving']);
     expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['steady']);
   });
 
@@ -598,7 +598,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       await seed({ slug: 'wf', runId: 'old-ok', state: 'completed', atMs: since - 2 * DAY });
 
       const snapshot = buildHomeSnapshot(deps);
-      expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['inside', 'edge']);
+      expect(snapshot.failedRuns.map((run) => run.runId)).toEqual(['inside', 'edge']);
       // Outside the window it is history: listed as the run it is, with its status word, not dropped.
       expect(snapshot.recentRuns.map((run) => [run.runId, run.status])).toEqual([
         ['outside', 'failed'],
@@ -611,7 +611,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
       await seed({ slug: 'wf', runId: 'f', state: 'failed', atMs: T0 });
       const now = vi.fn(() => T0 + ATTENTION_FAILED_WINDOW_MS + 1);
       const later = buildHomeSnapshot({ ...deps, now });
-      expect(later.attention.failedRuns).toEqual([]);
+      expect(later.failedRuns).toEqual([]);
       expect(later.recentRuns.map((run) => run.runId)).toEqual(['f']);
       expect(now).toHaveBeenCalledTimes(1);
     });
@@ -625,7 +625,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
         ...deps,
         now: () => T0 + ATTENTION_FAILED_WINDOW_MS + 0.75,
       });
-      expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['edge']);
+      expect(snapshot.failedRuns.map((run) => run.runId)).toEqual(['edge']);
       expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['before']);
       expect(snapshot.totals).toEqual({ attention: 1, sessions: 0, runs: 1 });
     });

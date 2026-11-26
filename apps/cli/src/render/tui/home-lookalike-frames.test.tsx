@@ -88,7 +88,7 @@ function pageWith(value: string): {
   readonly parked: readonly ParkedRunRow[];
 } {
   const snapshot: HomeSnapshot = {
-    attention: { failedRuns: [run('f1000000-0000-4000-8000-000000000000', value, 'failed')] },
+    failedRuns: [run('f1000000-0000-4000-8000-000000000000', value, 'failed')],
     recentSessions: [
       sessionRow('s1', value, 'chat'),
       sessionRow('s2', undefined, value),
@@ -242,7 +242,7 @@ const failedRow: HomeRunRow = {
   totalCostMicrocents: 0,
 };
 const landing: HomeSnapshot = {
-  attention: { failedRuns: [failedRow] },
+  failedRuns: [failedRow],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

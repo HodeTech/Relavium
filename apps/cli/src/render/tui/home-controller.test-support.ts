@@ -50,7 +50,7 @@ export const runRow = (runId: string): HomeRunRow => ({
 
 /** A snapshot of an otherwise empty directory, with `over` laid on it. */
 export const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

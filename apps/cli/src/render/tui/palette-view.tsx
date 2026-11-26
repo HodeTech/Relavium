@@ -2,7 +2,7 @@ import { Box } from 'ink';
 import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';

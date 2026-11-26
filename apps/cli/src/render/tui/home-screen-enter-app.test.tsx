@@ -45,7 +45,7 @@ const failedRun: HomeRunRow = {
   totalCostMicrocents: 0,
 };
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [failedRun] },
+  failedRuns: [failedRun],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -77,6 +77,7 @@ function mount() {
     }),
     loadDetail: createRunDetailLoader({
       reader,
+      projectRoot: '/work/project',
       listHeld: () => Promise.resolve([]),
       loadSnapshot,
     }),

@@ -21,9 +21,9 @@ vi.mock('../secrets/os-keychain.js', () => ({
 
 /**
  * What the real `driveHome` hands the Home it mounts names a directory as the rest of the CLI does ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
- * §8: project-relative or from `~`, never absolute unless it is outside both): a session's directory on the strip, and the directory a command
- * runs in on the card of the chat the Home hosts. The wires are the host's (`paths` of `RootApp`, `commandPaths` of the chat handler) and a
- * controller test that is handed fake props proves neither, so this drives the real host, mounts the props it built, and reads the screen.
+ * §8: project-relative or from `~`, never absolute unless it is outside both): the directory a command runs in on the card of the chat the
+ * Home hosts, and no directory at all on the work page's session rows. The wire is the host's (`commandPaths` of the chat handler) and a
+ * controller test that is handed fake props proves nothing of it, so this drives the real host, mounts the props it built, and reads the screen.
  */
 const REQUEST: ToolApprovalRequest = {
   toolId: 'run_command',
@@ -200,11 +200,6 @@ it('the card of the command a Home-hosted chat asks about names the directory fr
 
 it('the strip of the Home the host mounts lists this directory’s sessions only: the others are `/resume`’s, and no row names a directory (every row is this one’s)', async () => {
   await withHome(async (host) => {
-    expect(host.props.paths, 'the host hands RootApp the roots').toEqual({
-      cwd: host.cwd,
-      home: host.homeDir,
-      win32: process.platform === 'win32',
-    });
     await startChat(host);
     const session = host.props.controller.getSnapshot().session;
     if (session === undefined) throw new Error('Expected the chat the Home hosts.');

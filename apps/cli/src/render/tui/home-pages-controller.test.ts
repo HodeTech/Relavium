@@ -55,7 +55,7 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 });
 /** A failed run `f1`, the sessions `s1` and `s2`, a recent run `r1`: four rows, in the order the work page lists them. */
 const BUSY: HomeSnapshot = {
-  attention: { failedRuns: [runRow('f1', 'failed')] },
+  failedRuns: [runRow('f1', 'failed')],
   recentSessions: [sessionRow('s1'), sessionRow('s2')],
   recentRuns: [runRow('r1')],
   recentAgents: [],
@@ -64,7 +64,7 @@ const BUSY: HomeSnapshot = {
   isEmpty: false,
 };
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

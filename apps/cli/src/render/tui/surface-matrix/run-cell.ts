@@ -137,10 +137,10 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
   violations.push(
     ...checkOverlayLayer(mount.root?.(), entry.popup !== undefined && variant.renderer === 'alt'),
   );
+  // A declaration counts only with a reason: an empty or blank one is no declaration (`SurfaceBase.backdropHasNoInverse`).
+  const declaredNoInverse = (entry.backdropHasNoInverse ?? '').trim().length > 0;
   if (box !== undefined)
-    violations.push(
-      ...popupViolations(mount, observation, box, entry.backdropHasNoInverse !== undefined),
-    );
+    violations.push(...popupViolations(mount, observation, box, declaredNoInverse));
   violations.push(...shownViolations(entry, text, below));
   return { observation, violations };
 }

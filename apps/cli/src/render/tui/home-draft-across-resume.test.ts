@@ -21,7 +21,7 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 const SESSIONS: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [sessionRow('s1')],
   recentRuns: [],
   recentAgents: [],

@@ -52,7 +52,7 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
  */
 
 /** The three spaces between the next chat's defaults and the directory: the gap says the directory is not one of the defaults. */
-export const HOME_DIRECTORY_GAP = '   ';
+const HOME_DIRECTORY_GAP = '   ';
 
 /** The narrowest a model id is cut to; one that is already narrower is not cut. */
 export const MODEL_FLOOR = 12;
@@ -61,10 +61,10 @@ export const MODEL_FLOOR = 12;
 export const PROVIDER_FLOOR = 2;
 
 /** The narrowest a chat's model id is cut to when the line is below the floors and the provider is already gone (it is dropped under it). */
-export const MODEL_LAST_FLOOR = 4;
+const MODEL_LAST_FLOOR = 4;
 
 /** The narrowest a directory that was cut by characters is kept at (`…` and three characters); narrower, it is dropped. */
-export const DIRECTORY_FRAGMENT_MIN = 4;
+const DIRECTORY_FRAGMENT_MIN = 4;
 
 /** What the line can lose or shorten, in the names a caller can show in a `title` or a test can assert. */
 export type StatusPart = 'directory' | 'model' | 'provider' | 'turns' | 'context' | 'cost';

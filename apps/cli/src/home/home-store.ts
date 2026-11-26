@@ -51,7 +51,7 @@ export const DEFAULT_HOME_LIMIT = 8;
  * The most rows one Home list loads. A list of runs reads a page of twice its limit (room for the rows found unreadable on the way), and
  * a summary page holds at most {@link MAX_RUN_SUMMARY_PAGE} rows.
  */
-export const HOME_LIMIT_MAX = Math.floor(MAX_RUN_SUMMARY_PAGE / 2);
+export const HOME_LIMIT_MAX = MAX_RUN_SUMMARY_PAGE / 2;
 
 /**
  * How long a failed run stays under "Attention required": seven days from when it was CREATED (the maintainer's ruling, 2026-11-26).
@@ -132,7 +132,7 @@ export interface HomeUnreadableRun {
  *
  * - `attention` = every paused run + every failed run created inside {@link ATTENTION_FAILED_WINDOW_MS} + the runs of the Runs section
  *   whose log this snapshot found unreadable. Its rows are the controller's parked rows, {@link HomeSnapshot.unreadableRuns} and
- *   {@link HomeSnapshot.attention}'s failed runs.
+ *   {@link HomeSnapshot.failedRuns}.
  * - `runs` = every other run of this directory (not paused, not failed inside the window) less those found unreadable.
  * - `sessions` = this directory's live sessions.
  *
@@ -150,9 +150,7 @@ export interface HomeTotals {
 
 export interface HomeSnapshot {
   /** "Attention required": the failed runs of this directory created inside the window and readable, newest first. */
-  readonly attention: {
-    readonly failedRuns: readonly HomeRunRow[];
-  };
+  readonly failedRuns: readonly HomeRunRow[];
   /** This directory's sessions, most recently updated first. */
   readonly recentSessions: readonly HomeSessionRow[];
   /** This directory's Runs section, newest first: no paused run, no failed run inside the window, no unreadable run. */
@@ -379,8 +377,9 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     );
   }
   const since = Math.floor(clock) - ATTENTION_FAILED_WINDOW_MS;
-  // A page of twice the limit: the rows a section shows, and room for the unreadable runs found on the way.
-  const page = Math.min(MAX_RUN_SUMMARY_PAGE, limit * 2);
+  // A page of twice the limit: the rows a section shows, and room for the unreadable runs found on the way. `homeLimit` holds the limit at
+  // {@link HOME_LIMIT_MAX} (half a summary page), so twice it is never more than a page the reader accepts.
+  const page = limit * 2;
   const seen = new Set<string>();
 
   const pausedUnreadable = unreadablePaused(deps, limit, seen);
@@ -449,7 +448,7 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const failedRuns = failed.rows.map(runRow);
   const recentRuns = recent.rows.map(runRow);
   return {
-    attention: { failedRuns },
+    failedRuns,
     recentSessions,
     recentRuns,
     recentAgents: deriveRecentAgents(recentSessionRecords),

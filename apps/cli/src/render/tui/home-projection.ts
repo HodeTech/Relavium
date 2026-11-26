@@ -7,9 +7,10 @@ import type {
   HomeUnreadableRun,
 } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
-import { formatAgeOfIso, formatElapsed, formatTimeUntil, shortId } from '../notation.js';
+import { formatAgeOfIso, formatElapsed, shortId } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
 import { flowLine } from './flow-text.js';
+import { expiryLabel } from './home-deadline.js';
 import { formatCostShort } from './format.js';
 import { glyph, glyphOf } from './glyphs.js';
 import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
@@ -26,7 +27,9 @@ import { displayWidth } from './viewport.js';
  * Cost reuses the canonical {@link formatCostShort} (one home for the µ¢→USD math).
  */
 
-// The Home's terminal floor lives in a leaf (`home-floor.ts`), so the run cards can read it without importing this module; it is found here too.
+// The Home's terminal floor (`home-floor.ts`) and a deadline's words (`home-deadline.ts`) live in leaves, so the run cards can read them without
+// importing this module (it reaches the card through `flow-text.ts`); they are found here too.
+export { deadlinePassed, expiryLabel } from './home-deadline.js';
 export { HOME_MIN_COLS, HOME_MIN_ROWS, homeFitsTerminal, tooSmallMessage } from './home-floor.js';
 
 /** Whether the Home has nothing to show: no session, run or attention row, and no parked run of this project either. */
@@ -35,15 +38,6 @@ export function homeIsEmpty(
   parkedRuns: readonly unknown[] | undefined,
 ): boolean {
   return snapshot.isEmpty && (parkedRuns === undefined || parkedRuns.length === 0);
-}
-
-/** A gate's deadline as urgency text: "expired" once past (the Phase-1 in-process-timer caveat), else "expires …". */
-export function expiryLabel(expiresAt: string | undefined, nowMs: number): string | undefined {
-  if (expiresAt === undefined) return undefined;
-  const deadlineMs = Date.parse(expiresAt);
-  if (Number.isNaN(deadlineMs)) return undefined;
-  if (deadlineMs <= nowMs) return 'expired';
-  return `expires ${formatTimeUntil(deadlineMs - nowMs)}`;
 }
 
 /**
@@ -91,7 +85,7 @@ const SEP = '  ·  ';
 // screen a `…` is the Home's own cut and `...` is text a title or a name brought, and the two can never be mistaken for each other.
 
 /** The separator between a work-page row's fields. */
-export const ROW_SEP = ' · ';
+const ROW_SEP = ' · ';
 
 /**
  * What a field of a row is, for the order a narrow row gives its fields up in ({@link fitRow}): its `name` (cut at its tail), its `cost`, its

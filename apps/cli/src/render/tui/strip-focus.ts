@@ -106,23 +106,6 @@ export function resolveFocus(
 }
 
 /**
- * One `↑` (`-1`) or `↓` (`1`) from `focus`. From no focus (or a focus whose row is gone) `↓` lands on the first row and `↑` stays at the
- * prompt (there is nothing above it); `↑` from the first row returns to the prompt (no focus), and `↓` from the last row stays on it.
- */
-export function stepFocus(
-  rows: readonly StripRow[],
-  focus: StripFocus | undefined,
-  step: 1 | -1,
-): StripFocus | undefined {
-  if (rows.length === 0) return undefined;
-  const index = focusFor(rows, focus);
-  if (index === undefined) return step === 1 ? focusAt(rows, 0) : undefined;
-  const next = index + step;
-  if (next < 0) return undefined;
-  return focusAt(rows, Math.min(next, rows.length - 1));
-}
-
-/**
  * What the strip's rows reach, for the room a long notice must leave them (`home-notice.ts`): whether an Attention row that `↓` can focus
  * (a parked run, a failed run, a run whose log cannot be read) is listed, and whether a recent run is. A row of either kind is drawn
  * whenever it is focused, so the notice leaves the rows it costs at the least.

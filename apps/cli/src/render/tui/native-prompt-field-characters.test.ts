@@ -3,8 +3,10 @@
  * `/run` input, a gate's secret slot, the import path, a pricing rate, the provider key), and what the field and the confirmation show of it is
  * drawn through the display floor, which removes C0 and C1 controls, DEL and the bidirectional controls. A value holding one of those would be
  * shown as another string than the one used (`a<CSI>2Jb<NEL>c<RLO>d` was drawn `a2Jbcd`), so the field refuses it, as it always refused a C0
- * control and DEL: the same closed sentence, nothing of the refused text kept, `Backspace` to go on. Every other character, a joiner of an emoji
- * sequence included, is typed as before and shown as it is.
+ * control and DEL: the same closed sentence, nothing of the refused text kept, `Backspace` to go on. The same goes for the zero-width and invisible
+ * characters the `/run` confirmation (`flowLine`) removes or folds (the zero-width space, the word joiner, the byte-order mark, the soft hyphen,
+ * the line and paragraph separators), so the question shows exactly what is started. Every other character, a joiner of an emoji sequence
+ * and the non-joiner of a script that needs it included, is typed as before and shown as it is.
  *
  * No escape of a special character is written into this file: each is built from its code point.
  */
@@ -49,6 +51,14 @@ const C1 = Array.from({ length: 0x20 }, (_, index) => 0x80 + index);
 const BIDI = [
   0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f, 0x061c,
 ];
+
+/**
+ * The zero-width and invisible characters the `/run` confirmation (`flowLine`) removes or folds: the zero-width space, the word joiner, the
+ * byte-order mark, the soft hyphen and the line and paragraph separators. A value holding one is shown without it, so the field refuses it.
+ */
+const INVISIBLE = [0x200b, 0x2060, 0xfeff, 0xad, 0x2028, 0x2029];
+/** Invisible characters a text really uses: the joiner of an emoji sequence, and the non-joiner a script such as Persian needs. They stay typeable. */
+const INVISIBLE_KEPT = [0x200d, 0x200c];
 
 /** The security sitting's probe D: an 8-bit CSI, a NEL and a right-to-left override inside an ordinary word. */
 const PROBE_D = `a${ch(0x9b)}2Jb${ch(0x85)}c${ch(0x202e)}d`;
@@ -111,6 +121,50 @@ describe('a value the field could not show as it is, is refused whole', () => {
           f.ui.input('', enter);
           expect(await f.answer, 'the value never held the refused character').toBe('');
         }
+      }
+    },
+  );
+
+  it.each(
+    INVISIBLE.map((code) => [code.toString(16).toUpperCase().padStart(4, '0'), code] as const),
+  )(
+    'the invisible U+%s pasted, typed alone, and typed in a coalesced chunk is refused in a text and a masked field',
+    async (_, code) => {
+      for (const kind of ['text', 'password'] as const) {
+        for (const deliver of [
+          (f: ReturnType<typeof open>) => f.ui.paste(`a${ch(code)}b`),
+          (f: ReturnType<typeof open>) => f.ui.input(ch(code), none),
+          (f: ReturnType<typeof open>) => f.ui.input(`ab${ch(code)}cd`, none),
+        ]) {
+          const f = open(kind);
+          f.ui.input('x', none);
+          deliver(f);
+          expect(
+            f.ui.getSnapshot().error.startsWith(REFUSED),
+            `${kind} U+${code.toString(16)}`,
+          ).toBe(true);
+          expect(f.ui.getSnapshot().display, 'only the key typed before it').toBe(
+            kind === 'text' ? 'x' : '•',
+          );
+          f.ui.input('', backspace);
+          f.ui.input('', enter);
+          expect(await f.answer, 'the value never held the invisible character').toBe('');
+        }
+      }
+    },
+  );
+
+  it.each(
+    INVISIBLE_KEPT.map((code) => [code.toString(16).toUpperCase().padStart(4, '0'), code] as const),
+  )(
+    'the joiner U+%s (an emoji sequence, a script that needs it) is still typed in a text and a masked field',
+    async (_, code) => {
+      for (const kind of ['text', 'password'] as const) {
+        const f = open(kind);
+        f.ui.paste(`a${ch(code)}b`);
+        expect(f.ui.getSnapshot().error, kind).toBe('');
+        f.ui.input('', enter);
+        expect(await f.answer).toBe(`a${ch(code)}b`);
       }
     },
   );

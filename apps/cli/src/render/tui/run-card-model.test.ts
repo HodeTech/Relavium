@@ -308,7 +308,7 @@ describe('an overdue gate, answered in both orders', () => {
     gate(id, { expiresAt: OVERDUE_AT, timeoutAction: 'reject', ...over });
   const afterDeadline = Date.parse(OVERDUE_AT) + 5_000;
 
-  it('says it is overdue with its deadline and the timeout policy, and still answers', () => {
+  it('says it is expired in the deadline’s own words and the timeout policy, and still answers', () => {
     const { card, resume } = rig([overdue('late')]);
     const before = projectRunCard(state(card), {
       columns: 80,
@@ -320,10 +320,15 @@ describe('an overdue gate, answered in both orders', () => {
       projectRunCard(state(card), { columns: 80, rows: 24, nowMs })
         .rows.map((row) => row.text)
         .join('\n');
-    expect(text(Date.parse(OVERDUE_AT) - 1)).toContain(`expires ${OVERDUE_AT}`);
+    // The words are the work page's own (`expiryLabel`), before the deadline and after it, and the stored timestamp is never drawn.
+    const nearly = Date.parse(OVERDUE_AT) - 5 * 60_000;
+    expect(text(nearly)).toContain(' · expires in 5m');
+    expect(text(nearly)).toBe(text(nearly).replace(OVERDUE_AT, ''));
     const late = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: afterDeadline });
-    expect(late).toMatchObject({ state: 'overdue', overdue: true, glyph: '⚠', word: 'overdue' });
-    expect(text(afterDeadline)).toContain(`Overdue since ${OVERDUE_AT}.`);
+    expect(late).toMatchObject({ state: 'overdue', overdue: true, glyph: '⚠', word: 'expired' });
+    expect(text(afterDeadline)).toContain(' · expired');
+    expect(text(afterDeadline)).not.toContain('Overdue');
+    expect(text(afterDeadline)).toBe(text(afterDeadline).replace(OVERDUE_AT, ''));
     expect(text(afterDeadline)).toContain('On timeout: the run fails (run_timeout).');
     const approving = rig([overdue('late', { timeoutAction: 'approve' })]);
     expect(

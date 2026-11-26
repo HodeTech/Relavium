@@ -26,7 +26,7 @@ afterEach(cleanup);
 const SGR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'gu');
 const NOW = Date.parse('2026-11-26T12:00:00.000Z');
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

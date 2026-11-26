@@ -61,7 +61,7 @@ const session: HomeSessionRow = {
   totalCostMicrocents: 0,
 };
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [session],
   recentRuns: [],
   recentAgents: [],

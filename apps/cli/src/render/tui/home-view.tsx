@@ -57,7 +57,6 @@ import {
   paletteLines,
   paletteRowBudget,
 } from './palette-window.js';
-import type { DisplayPathRoots } from '../notation.js';
 import { colorProps, dimProps } from './projection.js';
 import { homeContentColumns, homePromptRows, layoutHomeNotice } from './home-notice.js';
 import { stripReach, stripRows, isFocused, type StripFocus } from './strip-focus.js';
@@ -114,11 +113,6 @@ interface HomeViewProps {
   readonly interruptArmed?: boolean | undefined;
   /** The run host's snapshot (ADR-0139 §3): the landing's run row shows the active run, and nothing when none is active. */
   readonly hostedRun?: RunHostSnapshot | undefined;
-  /**
-   * What a path is shortened against (ADR-0145 §8). The work page no longer draws a session's directory (MVP-11 unit 7: every session it
-   * lists is this directory's, one row each), so the view reads it nowhere now; the Home's host still hands it in with its other props.
-   */
-  readonly paths?: DisplayPathRoots | undefined;
   /** The exit-guard card (ADR-0139 §6): it takes the place of the prompt block of the page in front and holds the notice back. */
   readonly exitGuard?: ExitGuardPhase | undefined;
   /** The runs of THIS project that are parked ([ADR-0139] §3, §7): one Attention row each on the work page. */
@@ -314,7 +308,6 @@ function landingGeometry(
     rows,
     showBanner: view.showBanner,
     onLanding: true,
-    hasSessions: false,
     reservedRows: runRows + blockExtra,
     ...(view.noticePage === undefined ? {} : { page: view.noticePage }),
   });

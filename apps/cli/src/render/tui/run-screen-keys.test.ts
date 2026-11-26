@@ -27,7 +27,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

@@ -7,9 +7,11 @@ import { glyphOf } from './glyphs.js';
 import { colorProps } from './projection.js';
 
 /**
- * The one place a list row's "selected" look is decided: bold and inverse with colour on and off alike (ADR-0145 §5, `emphasis.ts`), and
- * the one selection marker. A view that draws a row of a list says `selected` and passes the words; the ternaries that turn it into a style
- * and a marker live here, so the views stay readable (and under the complexity bar) and no row can forget half of the rule.
+ * The one place a list row's "selected" look is decided: for a row that carries no tint, bold and inverse with colour on and off alike
+ * (ADR-0145 §5, `emphasis.ts`); for a row that carries a tint (the work page's Attention rows) the rule of {@link tintedSelectionEmphasis}
+ * (`›`, bold and the tint with colour on, and no inverse); and the one selection marker. A view that draws a row of a list says `selected`
+ * and passes the words; the ternaries that turn it into a style and a marker live here, so the views stay readable (and under the complexity
+ * bar) and no row can forget half of the rule.
  *
  * `selected` is a plain flag (`undefined` reads as `false`), so a row model with an optional `selected` field passes it straight.
  */

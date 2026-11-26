@@ -2,7 +2,7 @@ import { Box } from 'ink';
 import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { Emph } from './emphasis-view.js';
 import { reverseSearchMatchText, type ReverseSearchState } from './input-history.js';
 import { exitKey, legend } from './legend.js';

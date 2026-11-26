@@ -65,7 +65,7 @@ const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
 const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -933,7 +933,7 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
  */
 describe('RootApp — the Home landing and its title', () => {
   const BUSY: HomeSnapshot = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [
       {
         sessionId: 'sess-9',

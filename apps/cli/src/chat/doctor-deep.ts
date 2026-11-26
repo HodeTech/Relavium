@@ -10,7 +10,7 @@ import {
   validateProviderKey,
   type ProviderResolver,
 } from '../engine/providers.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import { okCheck, warnCheck, failCheck, type DoctorCheck } from './doctor.js';
 import type { SessionWorkOwner } from './session-work-owner.js';
 

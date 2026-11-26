@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { promptWindow, wrappedRowCount } from './prompt-window.js';
 
 const LEAD = 2;

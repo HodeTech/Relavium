@@ -1187,7 +1187,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     const snap = props.controller.getSnapshot().snapshot;
     expect(snap.isEmpty).toBe(true);
-    expect(snap.attention.failedRuns).toEqual([]);
+    expect(snap.failedRuns).toEqual([]);
     expect(snap.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
 
     props.controller.handleKey('c', CTRL_C);
@@ -1252,7 +1252,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(order).toEqual(['signals', 'exit-net', 'reconcile', 'mount']);
     // The first snapshot already shows the run as failed, in "attention" — never as a `running` row.
     const snap = props.controller.getSnapshot().snapshot;
-    expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);
+    expect(snap.failedRuns.map((run) => run.runId)).toEqual([runId]);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)

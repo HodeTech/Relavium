@@ -8,7 +8,7 @@ import { RootApp } from './home-app.js';
 import { MAX_HOME_NOTICE_CHARS, layoutHomeNotice } from './home-notice.js';
 
 const snapshot: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: Array.from({ length: 8 }, (_, n) => ({
     sessionId: `saved-${n}`,
     title: `Saved conversation ${n}`,

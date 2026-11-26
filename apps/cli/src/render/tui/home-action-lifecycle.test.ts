@@ -9,7 +9,7 @@ import {
 } from './home-controller.js';
 
 const snapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

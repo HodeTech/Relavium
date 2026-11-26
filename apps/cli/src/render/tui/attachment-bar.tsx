@@ -3,7 +3,7 @@ import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import { attachmentChip, type PendingAttachment } from './attachments.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import {
   exitKey,
   fitLegend,

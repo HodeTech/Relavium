@@ -10,7 +10,7 @@ import type { HomeRunRow, HomeSessionRow, HomeSnapshot } from '../../home/home-s
 import type { ParkedRunRow } from './home-attention.js';
 import { HomeView } from './home-view.js';
 import { layoutHomeNotice } from './home-notice.js';
-import { focusAt, stepFocus, stripReach, stripRows, type StripFocus } from './strip-focus.js';
+import { focusAt, stripReach, stripRows, type StripFocus } from './strip-focus.js';
 
 const runRow = (id: string, status: HomeRunRow['status']): HomeRunRow => ({
   runId: `run-${id}`,
@@ -73,7 +73,7 @@ function draw(
 }
 
 const SMALL: HomeSnapshot = {
-  attention: { failedRuns: [runRow('f1', 'failed')] },
+  failedRuns: [runRow('f1', 'failed')],
   recentSessions: [sessionRow(1)],
   recentRuns: [runRow('r1', 'completed')],
   recentAgents: [],
@@ -126,7 +126,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   it('a run whose log could not be read is a row the focus stands on (MVP-11 unit 7: `Enter` says why), drawn once, after the failed runs', () => {
     const snapshot: HomeSnapshot = {
       ...SMALL,
-      attention: { failedRuns: [runRow('u1', 'failed')] },
+      failedRuns: [runRow('u1', 'failed')],
       unreadableRuns: [{ runId: 'run-u1', workflowSlug: 'wf-u1', reason: 'corrupt-row' }],
     };
     const rows = stripRows([], snapshot);
@@ -149,9 +149,7 @@ describe('the focused row is always one of the rows drawn, at 80×24, with a ful
     gates: 1,
   }));
   const full: HomeSnapshot = {
-    attention: {
-      failedRuns: indexes(8).map((n) => runRow(`f${String(n)}`, 'failed')),
-    },
+    failedRuns: indexes(8).map((n) => runRow(`f${String(n)}`, 'failed')),
     recentSessions: indexes(8).map(sessionRow),
     recentRuns: indexes(8).map((n) => runRow(`r${String(n)}`, 'completed')),
     recentAgents: [],
@@ -202,7 +200,7 @@ describe('the focused row is drawn when a long notice takes most of the screen',
     gates: 1,
   }));
   const snapshot: HomeSnapshot = {
-    attention: { failedRuns: indexes(2).map((n) => runRow(`f${String(n)}`, 'failed')) },
+    failedRuns: indexes(2).map((n) => runRow(`f${String(n)}`, 'failed')),
     recentSessions: indexes(2).map(sessionRow),
     recentRuns: indexes(2).map((n) => runRow(`r${String(n)}`, 'completed')),
     recentAgents: [],
@@ -266,7 +264,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a failed run and a session',
       {
-        attention: { failedRuns: [runRow('f1', 'failed')] },
+        failedRuns: [runRow('f1', 'failed')],
         recentSessions: [sessionRow(1)],
         recentRuns: [],
         recentAgents: [],
@@ -279,7 +277,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a failed run alone',
       {
-        attention: { failedRuns: [runRow('f1', 'failed')] },
+        failedRuns: [runRow('f1', 'failed')],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
@@ -292,7 +290,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a recent run alone',
       {
-        attention: { failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [runRow('r1', 'completed')],
         recentAgents: [],
@@ -305,7 +303,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'a session and a recent run',
       {
-        attention: { failedRuns: [] },
+        failedRuns: [],
         recentSessions: [sessionRow(1)],
         recentRuns: [runRow('r1', 'completed')],
         recentAgents: [],
@@ -318,9 +316,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     [
       'two failed runs, two sessions and two recent runs',
       {
-        attention: {
-          failedRuns: [runRow('f1', 'failed'), runRow('f2', 'failed')],
-        },
+        failedRuns: [runRow('f1', 'failed'), runRow('f2', 'failed')],
         recentSessions: [sessionRow(1), sessionRow(2)],
         recentRuns: [runRow('r1', 'completed'), runRow('r2', 'completed')],
         recentAgents: [],
@@ -333,15 +329,13 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
   ];
 
   it.each(strips)(
-    'with %s, `↓` walks the whole strip and the focused row is drawn at each step, in 24 rows',
+    'with %s, every row of the strip is drawn when it is the focused one, in 24 rows',
     (_name, snapshot, parked) => {
       const rows = stripRows(parked, snapshot);
-      let focus: StripFocus | undefined;
       for (let step = 0; step < rows.length; step += 1) {
-        focus = stepFocus(rows, focus, 1);
-        const row = rows.find((candidate) => candidate.id === focus?.id);
-        expect(row, 'the walk stays on the list').toBeDefined();
-        if (row === undefined) return;
+        const focus = focusAt(rows, step);
+        const row = rows[step];
+        if (row === undefined) throw new Error('Expected a row of the strip.');
         const view = render(
           <HomeView
             page="work"
@@ -396,7 +390,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
 
   it('stripReach names what the strip lists that `↓` can focus', () => {
     const none: HomeSnapshot = {
-      attention: { failedRuns: [] },
+      failedRuns: [],
       recentSessions: [sessionRow(1)],
       recentRuns: [],
       recentAgents: [],
@@ -408,14 +402,13 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
     expect(
       stripReach([{ runId: 'run-p', kind: 'approval', gates: 1 }], none).hasAttentionRuns,
     ).toBe(true);
-    expect(
-      stripReach([], { ...none, attention: { failedRuns: [runRow('f', 'failed')] } })
-        .hasAttentionRuns,
-    ).toBe(true);
+    expect(stripReach([], { ...none, failedRuns: [runRow('f', 'failed')] }).hasAttentionRuns).toBe(
+      true,
+    );
     expect(
       stripReach([], {
         ...none,
-        attention: { failedRuns: [runRow('u', 'failed')] },
+        failedRuns: [runRow('u', 'failed')],
         unreadableRuns: [{ runId: 'run-u', reason: 'corrupt-row' }],
       }).hasAttentionRuns,
       'an unreadable run is a row `↓` can focus (MVP-11 unit 7)',

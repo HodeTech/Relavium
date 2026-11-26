@@ -24,7 +24,7 @@ import { wrapText, type DisplayLine } from './viewport.js';
  * arranges them in `ink` `Box`/`Text`.
  */
 
-export { sanitizeInline, stripTerminalControls };
+export { stripTerminalControls };
 
 /** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
  *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */

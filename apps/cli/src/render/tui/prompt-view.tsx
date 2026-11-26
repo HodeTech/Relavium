@@ -3,7 +3,7 @@ import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { promptRows, type PromptRow } from './prompt-cursor.js';
 import { promptWindow, type PromptWindowLine } from './prompt-window.js';
 import { emphasize } from './emphasis.js';

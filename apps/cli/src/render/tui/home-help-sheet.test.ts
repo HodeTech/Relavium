@@ -30,7 +30,7 @@ import { buildPaletteEntries, filterPaletteEntries } from './palette-entries.js'
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -64,19 +64,17 @@ const EXECUTING: RunHostSnapshot = {
 };
 const WITH_FAILED_RUN: HomeSnapshot = {
   ...EMPTY,
-  attention: {
-    failedRuns: [
-      {
-        runId: 'failed-run',
-        workflowSlug: 'nightly',
-        status: 'failed',
-        createdAt: '2026-11-10T00:00:00.000Z',
-        startedAt: undefined,
-        completedAt: undefined,
-        totalCostMicrocents: 0,
-      },
-    ],
-  },
+  failedRuns: [
+    {
+      runId: 'failed-run',
+      workflowSlug: 'nightly',
+      status: 'failed',
+      createdAt: '2026-11-10T00:00:00.000Z',
+      startedAt: undefined,
+      completedAt: undefined,
+      totalCostMicrocents: 0,
+    },
+  ],
   totals: { attention: 1, sessions: 0, runs: 0 },
   isEmpty: false,
 };

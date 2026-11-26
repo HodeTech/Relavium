@@ -59,7 +59,7 @@ const parked = (n: number): ParkedRunRow => ({
 /** Five Attention items (three parked runs, two failed), five sessions, five runs: the (5, 5, 5) the brief's table asks for. */
 const PARKED = [parked(1), parked(2), parked(3)];
 const FIVE: HomeSnapshot = {
-  attention: { failedRuns: [run('f1', 'failed', 60), run('f2', 'failed', 120)] },
+  failedRuns: [run('f1', 'failed', 60), run('f2', 'failed', 120)],
   recentSessions: [1, 2, 3, 4, 5].map(session),
   recentRuns: [1, 2, 3, 4, 5].map((n) => run(`r${String(n)}`, 'completed', n * 30)),
   recentAgents: [{ agentSlug: 'reviewer', lastUsedAt: ago(30) }],
@@ -252,7 +252,7 @@ describe('the marker counts the TRUE total and says where the rest are only wher
   it('the agents, which `↓` never reaches, say where they are when some are hidden', () => {
     const agents: HomeSnapshot = {
       ...FIVE,
-      attention: { failedRuns: [] },
+      failedRuns: [],
       recentSessions: [session(1)],
       recentRuns: [],
       recentAgents: ['a', 'b', 'c', 'd', 'e'].map((slug) => ({ agentSlug: slug, lastUsedAt: ago(5) })),
@@ -268,7 +268,7 @@ describe('the rows the rulings word (ruling 4)', () => {
   it('an unreadable run: `⚠ workflow · cannot be read · id`, its workflow only when the summary read named it', () => {
     const broken: HomeSnapshot = {
       ...FIVE,
-      attention: { failedRuns: [] },
+      failedRuns: [],
       unreadableRuns: [
         { runId: 'u1000000-0000-4000-8000-000000000000', workflowSlug: 'nightly', reason: 'corrupt-row' },
         { runId: 'u2000000-0000-4000-8000-000000000000', reason: 'newer-version' },
@@ -302,11 +302,9 @@ function worldOf(
   return {
     parked: Array.from({ length: parkedCount }, (_, index) => parked(index + 1)),
     snapshot: {
-      attention: {
-        failedRuns: Array.from({ length: a - parkedCount }, (_, index) =>
-          run(`f${String(index + 1)}`, 'failed', 60 + index),
-        ),
-      },
+      failedRuns: Array.from({ length: a - parkedCount }, (_, index) =>
+        run(`f${String(index + 1)}`, 'failed', 60 + index),
+      ),
       recentSessions: Array.from({ length: s }, (_, index) => session(index + 1)),
       recentRuns: Array.from({ length: r }, (_, index) =>
         run(`r${String(index + 1)}`, 'completed', 30 + index * 30),

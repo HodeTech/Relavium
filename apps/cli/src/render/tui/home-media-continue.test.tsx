@@ -47,7 +47,7 @@ async function eventually(predicate: () => boolean, what = 'the condition'): Pro
 }
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

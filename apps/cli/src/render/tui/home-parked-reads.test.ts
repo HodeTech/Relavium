@@ -17,7 +17,7 @@ import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 
 const RUN = 'run-0001';
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

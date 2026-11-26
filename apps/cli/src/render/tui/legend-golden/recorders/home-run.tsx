@@ -84,7 +84,7 @@ const snapshotOf = (over: {
   failed?: boolean | undefined;
   unreadable?: boolean | undefined;
 }): HomeSnapshot => ({
-  attention: { failedRuns: over.failed === true ? [runRow('f1', 'failed')] : [] },
+  failedRuns: over.failed === true ? [runRow('f1', 'failed')] : [],
   recentSessions: over.sessions === true ? [sessionRow(1)] : [],
   recentRuns: over.runs === true ? [runRow('1', 'completed')] : [],
   recentAgents: [],

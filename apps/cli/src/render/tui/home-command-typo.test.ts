@@ -24,7 +24,7 @@ describe('Home command typo guidance', () => {
       initializeProject,
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

@@ -54,7 +54,8 @@ import {
   type ApprovalPrompt,
   type ChatMode,
 } from '../../chat/chat-mode.js';
-import { formatSessionFooter, sanitizeInline, stripTerminalControls } from './chat-projection.js';
+import { formatSessionFooter } from './chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 import { withGlyphForm } from './glyphs.js';
 import {
   appendNotice,

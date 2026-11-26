@@ -363,7 +363,7 @@ describe('the cards, read from a chat store', () => {
 });
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

@@ -303,7 +303,7 @@ function sectionRows(
     attention: [
       ...parked.map((row) => row.runId),
       ...snapshot.unreadableRuns.map((run) => run.runId),
-      ...snapshot.attention.failedRuns.map((run) => run.runId),
+      ...snapshot.failedRuns.map((run) => run.runId),
     ],
     sessions: snapshot.recentSessions.length,
     runs: snapshot.recentRuns.length,
@@ -345,14 +345,14 @@ function expectPlacedOnce(
     label,
   ).toEqual([]);
   expect(
-    snapshot.attention.failedRuns.filter((run) => !sets.failedInWindow.has(run.runId)),
+    snapshot.failedRuns.filter((run) => !sets.failedInWindow.has(run.runId)),
     label,
   ).toEqual([]);
   // An unreadable run is an unreadable row only: never also a parked, failed or recent row.
   const unreadable = new Set(snapshot.unreadableRuns.map((run) => run.runId));
   const drawn = [
     ...parked.map((row) => row.runId),
-    ...snapshot.attention.failedRuns.map((run) => run.runId),
+    ...snapshot.failedRuns.map((run) => run.runId),
     ...snapshot.recentRuns.map((run) => run.runId),
   ];
   expect(
@@ -692,7 +692,7 @@ describe('the Home’s totals over a real history.db file', () => {
       expect(reasons.get('z-paused-bad')).toBe('corrupt-row');
       expect(reasons.get('z-newer')).toBe('newer-version');
       expect(allParked.map((run) => run.runId)).toContain('z-paused');
-      expect(snapshot.attention.failedRuns.map((run) => run.runId)).toContain('z-edge');
+      expect(snapshot.failedRuns.map((run) => run.runId)).toContain('z-edge');
       expect(snapshot.recentRuns.map((run) => run.runId)).toContain('z-old-failed');
       const everyId = [...rows.attention, ...snapshot.recentRuns.map((run) => run.runId)];
       for (const away of ['z-there', 'z-none']) expect(everyId).not.toContain(away);

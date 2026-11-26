@@ -44,7 +44,7 @@ const session = (n: number, title: string): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

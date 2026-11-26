@@ -675,7 +675,7 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
 // ---- Through a mounted RootApp ----------------------------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

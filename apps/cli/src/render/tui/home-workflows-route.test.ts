@@ -26,7 +26,7 @@ import type { DefinedPort } from './tab-host-workflows.js';
 const WAIT_MS = 5000;
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

@@ -64,6 +64,19 @@ export function nativeLeave(
 
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
 /**
+ * The zero-width and invisible characters the `/run` confirmation (`flowLine`) removes or folds when it shows a value: the zero-width space
+ * (U+200B), the word joiner (U+2060), the byte-order mark (U+FEFF), the soft hyphen (U+00AD) and the line and paragraph separators (U+2028,
+ * U+2029). A field refuses them, with the controls the display floor strips, so the question shows exactly what is started. The joiner
+ * U+200D (an emoji sequence) and the non-joiner U+200C (a script such as Persian needs it) are NOT here: they are typed as they are. Built from
+ * code points, never an escape in the source.
+ */
+const FIELD_INVISIBLES: readonly string[] = [0x200b, 0x2060, 0xfeff, 0xad, 0x2028, 0x2029].map(
+  (code) => String.fromCharCode(code),
+);
+/** Whether a field could not show `text` as it is: a control the display floor strips or folds, or one of the {@link FIELD_INVISIBLES}. */
+const fieldRefuses = (text: string): boolean =>
+  sanitizeInline(text) !== text || FIELD_INVISIBLES.some((mark) => text.includes(mark));
+/**
  * What a masked field says after a terminal resize cleared what was typed into it ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §4): a fixed product text in the prompt's error row, so the person pastes again. Nothing of the old buffer survives the resize.
  */
@@ -660,9 +673,10 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       return;
     }
     // A character the field could not show as it is is refused, and so is the whole text it came in: a C0 control, DEL, a C1 control or a
-    // bidirectional control, exactly what the display floor (`sanitizeInline`) strips or folds. A value is then shown, here and on the
-    // confirmation, as the very string that is started (round 2 sitting #2, F6: `a<CSI>2Jb<NEL>c<RLO>d` was shown `a2Jbcd`).
-    if (sanitizeInline(text) !== text) {
+    // bidirectional control, exactly what the display floor (`sanitizeInline`) strips or folds, and the zero-width and invisible characters
+    // the confirmation removes ({@link FIELD_INVISIBLES}). A value is then shown, here and on the confirmation, as the very string that is
+    // started (round 2 sitting #2, F6: `a<CSI>2Jb<NEL>c<RLO>d` was shown `a2Jbcd`).
+    if (fieldRefuses(text)) {
       invalid = true;
       publish({ ...snapshot, error: refused('Input contains unsupported control characters') });
       return;

@@ -3,7 +3,6 @@ import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
-import type { DisplayPathRoots } from '../notation.js';
 import { NativePromptView } from './native-prompt-view.js';
 import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
 import { popupRefusal } from '../../popups/popup-refusal.js';
@@ -57,7 +56,8 @@ import {
 import type { EditorState } from './chat-input.js';
 import { pressesOnly } from './chord-guard.js';
 import { isInterruptKey } from './interrupt-keymap.js';
-import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
+import { liveScrollGeometry, wrapTranscript } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import type { ChatStoreController } from './chat-store.js';
 import {
   homeOverlayFlags,
@@ -171,11 +171,6 @@ export interface RootAppProps {
   readonly reviewClipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView` (`showsLandingBlock`: absent or `true` draws page 1's block). */
   readonly showBanner?: boolean | undefined;
-  /**
-   * What a path on the landing is shortened against (ADR-0145 §8): the project directory and the operator's home. The host that mounts the
-   * Home builds it once (`displayRoots`); absent ⇒ a session's directory is drawn as it was stored.
-   */
-  readonly paths?: DisplayPathRoots | undefined;
   /**
    * Turn terminal mouse reporting on/off as the in-Home CHAT takes and gives up the screen (2.6.F Step 6g).
    *
@@ -909,28 +904,37 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     !noticePagingBlocked(homeOverlayFlags(current)) &&
     (key.pageUp || key.pageDown);
 
+  /**
+   * `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a coalesced
+   * `↓` + `Enter` cannot act on a row the person has not seen, so the key is swallowed until it is.
+   * (Only on the Home's pages: a screen in the slot has no list on screen to measure, and its own Enter must reach it. Not while the pages
+   * slide: the controller drops an `Enter` pressed then, and an answer chord, when it is pressed, since no frame has shown the page at rest.)
+   */
+  const enterOnUnseenRow = (current: HomeControllerState, key: Key): boolean =>
+    key.return &&
+    current.screen === undefined &&
+    current.slide === undefined &&
+    current.stripFocus !== undefined &&
+    !homeFrame.visible(current);
+
+  /**
+   * A key while the terminal is below 80×24: only the way out is delivered to the Home, and with the exit-guard card open its two chords too
+   * (the degrade shows the card); any other key is not delivered, but a card that is open counts it as typing, so a chord soon after it is
+   * refused.
+   */
+  const routeBelowFloor = (current: HomeControllerState, input: string, key: Key): void => {
+    if (deliveredBelowMinimum(input, key, current.exitGuard !== undefined))
+      controller.handleKey(input, key);
+    else if (current.screen?.kind === 'gate-card') current.screen.card.unseenInput();
+  };
+
   const routeHomeInput = (input: string, key: Key): boolean => {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
     const live = getSizeRef.current();
-    // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
-    // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
-    // (Only on the Home's pages: a screen in the slot has no list on screen to measure, and its own Enter must reach it. Not while the pages
-    // slide: the controller drops an `Enter` pressed then, and an answer chord, when it is pressed, since no frame has shown the page at rest.)
-    if (
-      key.return &&
-      current.screen === undefined &&
-      current.slide === undefined &&
-      current.stripFocus !== undefined &&
-      !homeFrame.visible(current)
-    )
-      return true;
+    if (enterOnUnseenRow(current, key)) return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
-      // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
-      if (deliveredBelowMinimum(input, key, current.exitGuard !== undefined))
-        controller.handleKey(input, key);
-      // Any other key is not delivered, but a card that is open counts it as typing: a chord soon after it is refused.
-      else if (current.screen?.kind === 'gate-card') current.screen.card.unseenInput();
+      routeBelowFloor(current, input, key);
       return true;
     }
     if (!pagesNotice(current, key)) return false;
@@ -1271,7 +1275,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             showBanner={props.showBanner}
             alternateScreen={props.alternateScreen === true}
             status={state.status}
-            paths={props.paths}
             keyless={state.keyless}
             parkedRuns={state.parkedRuns}
             stripFocus={state.stripFocus}

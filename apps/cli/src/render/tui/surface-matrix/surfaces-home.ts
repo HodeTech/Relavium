@@ -343,7 +343,8 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.empty-title',
-    title: 'The empty Home with `show_banner = false`: the one-line title instead of the block',
+    // `show_banner = false` applies to page 1 of the Home in every state (empty or populated); this surface shows it with nothing to continue
+    title: 'Page 1 of the Home with `show_banner = false`: the one-line title instead of the block',
     exitKey: 'Ctrl+C',
     landmark: 'R  E  L  A  V  I  U  M',
     setup: { props: { showBanner: false } },

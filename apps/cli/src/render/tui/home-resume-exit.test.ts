@@ -50,7 +50,7 @@ function rig(options: {
         : Promise.resolve(options.open),
     homeStore: {
       read: () => ({
-        attention: { failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],

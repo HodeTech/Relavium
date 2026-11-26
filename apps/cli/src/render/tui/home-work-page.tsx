@@ -4,7 +4,7 @@ import type { ReactElement, ReactNode, RefObject } from 'react';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import type { StatusColor } from './format.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import {

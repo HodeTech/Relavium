@@ -19,7 +19,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  */
 
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

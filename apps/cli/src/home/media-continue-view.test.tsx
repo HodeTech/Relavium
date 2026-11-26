@@ -49,7 +49,7 @@ describe('the question at 80×24', () => {
       },
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

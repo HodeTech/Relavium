@@ -77,10 +77,14 @@ describe('the detail says where the run was started, against the directory the H
     expect(read('run-empty').directory).toBe('unrecorded');
   });
 
-  it('says nothing when the read was not told the Home’s directory, so `r` is not offered on a guess', async () => {
+  it('says nothing when the Home’s directory is not an absolute path, so `r` is not offered on a guess', async () => {
     await seed('run-blind', 'wf', HOME_DIRECTORY);
-    const blind = ready(readRunDetail({ reader, runId: 'run-blind', terminalHeld: false }));
-    expect(blind.directory).toBeUndefined();
+    for (const unknown of ['', '.', 'work/home']) {
+      const blind = ready(
+        readRunDetail({ reader, runId: 'run-blind', terminalHeld: false, projectRoot: unknown }),
+      );
+      expect(blind.directory, JSON.stringify(unknown)).toBeUndefined();
+    }
   });
 
   it('never carries the stored path: the read holds the closed word only', async () => {

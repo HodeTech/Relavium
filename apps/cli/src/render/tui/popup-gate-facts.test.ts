@@ -65,7 +65,7 @@ describe('the stand-alone chat’s facts (chatPopupRefusal)', () => {
 
 describe('the Home’s facts (homePopupRefusal)', () => {
   const EMPTY: HomeSnapshot = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],

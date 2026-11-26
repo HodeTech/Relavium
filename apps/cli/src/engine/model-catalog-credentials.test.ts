@@ -210,7 +210,7 @@ describe('retained catalog credential changes', () => {
       startChat: () => Promise.reject(new Error('chat is not exercised')),
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

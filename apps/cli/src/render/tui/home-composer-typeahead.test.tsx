@@ -21,7 +21,7 @@ import type { Key } from 'ink';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

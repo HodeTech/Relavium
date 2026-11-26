@@ -20,7 +20,7 @@ const parked: readonly ParkedRunRow[] = Array.from({ length: PARKED_RUNS_MAX }, 
   workflow: `wf-${String(n)}`,
 }));
 const snapshotWith = (attention: number): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

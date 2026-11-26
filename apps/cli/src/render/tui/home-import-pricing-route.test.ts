@@ -24,7 +24,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 const WAIT_MS = 5000;
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

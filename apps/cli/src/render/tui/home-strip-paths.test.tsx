@@ -13,12 +13,11 @@ import type { Variant } from './surface-matrix/variants.js';
 /**
  * The work page's session rows are ONE row each (MVP-11 unit 7, the maintainer's ruling: "this directory's" Home, the rows simplified): every
  * session the Home lists was opened in the directory the Home was opened in, so the directory line that stood under each session (ADR-0145 §8's
- * shortened path) says nothing and is gone. What stays pinned: no directory is drawn at all, from the roots or without them, so a stored
+ * shortened path) says nothing and is gone. What stays pinned: no directory is drawn at all (the view is handed no roots to shorten one against), so a stored
  * directory's text (a control character, a bidirectional override, a `~` that would read as the home) never reaches the frame.
  */
 afterEach(cleanup);
 
-const ROOTS = { cwd: '/work/project', home: '/home/me' } as const;
 const ch = (code: number): string => String.fromCodePoint(code);
 
 const session = (n: number, workingDir: string) => ({
@@ -33,7 +32,7 @@ const session = (n: number, workingDir: string) => ({
 });
 
 const snapshotOf = (...dirs: readonly string[]): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: dirs.map((dir, index) => session(index, dir)),
   recentRuns: [],
   recentAgents: [],
@@ -55,12 +54,7 @@ function rowsOf(frame: string): string[] {
     .map((line) => line.trim());
 }
 
-function homeFrame(
-  snapshot: HomeSnapshot,
-  paths: typeof ROOTS | undefined,
-  cols = 100,
-  rows = 30,
-): string {
+function homeFrame(snapshot: HomeSnapshot, cols = 100, rows = 30): string {
   const view = render(
     <HomeView
       page="work"
@@ -70,7 +64,6 @@ function homeFrame(
       cols={cols}
       rows={rows}
       color
-      {...(paths === undefined ? {} : { paths })}
     />,
   );
   const frame = view.lastFrame() ?? '';
@@ -85,11 +78,8 @@ function sessionSection(rows: readonly string[]): readonly string[] {
 }
 
 describe('the work page’s session rows', () => {
-  it.each([
-    ['given the roots', ROOTS],
-    ['without the roots', undefined],
-  ] as const)('are one row each, with no directory line under them (%s)', (_name, paths) => {
-    const rows = rowsOf(homeFrame(snapshotOf(...DIRS), paths));
+  it('are one row each, with no directory line under them', () => {
+    const rows = rowsOf(homeFrame(snapshotOf(...DIRS)));
     expect(sessionSection(rows)).toEqual([
       'Conversation 0 · chat · 1h ago · $0.0000 usage unverified',
       'Conversation 1 · chat · 1h ago · $0.0000 usage unverified',
@@ -108,7 +98,7 @@ describe('the work page’s session rows', () => {
     ['a right-to-left override', ch(0x202e)],
     ['a left-to-right mark', ch(0x200e)],
   ])('never draw a stored directory, so %s in one never reaches the frame', (_name, junk) => {
-    const frame = homeFrame(snapshotOf(`/work/project/${junk}~/x`), ROOTS);
+    const frame = homeFrame(snapshotOf(`/work/project/${junk}~/x`));
     const rows = rowsOf(frame);
     expect(rows.join('\n')).not.toContain('~/x');
     expect(withoutStyles(frame)).not.toContain(junk);
@@ -117,28 +107,26 @@ describe('the work page’s session rows', () => {
   it('never draws a row wider than the terminal, at 80 and 100 columns, whatever the directory', () => {
     const long = `/opt/${'a-very-long-directory/'.repeat(10)}end/here`;
     for (const cols of [80, 100]) {
-      const frame = homeFrame(snapshotOf(long), ROOTS, cols, 24);
+      const frame = homeFrame(snapshotOf(long), cols, 24);
       for (const line of withoutStyles(frame).split('\n'))
         expect(displayWidth(line), line).toBeLessThanOrEqual(cols);
       expect(frame).not.toContain('end/here');
     }
   });
 
-  it('the Home the host mounts draws them the same, from the roots it gives RootApp or without them', async () => {
+  it('the Home the host mounts draws them the same: no directory', async () => {
     const variant: Variant = { renderer: 'alt', color: true, size: { cols: 100, rows: 30 } };
-    for (const props of [{ paths: ROOTS }, {}]) {
-      const home = mountHome(variant, { snapshot: snapshotOf(...DIRS), props });
-      try {
-        await home.settle();
-        home.key(KEYS.down); // down to the work page, where the session rows are
-        await home.settle();
-        const rows = rowsOf(home.text());
-        expect(rows.some((row) => row.includes('Conversation 0 · chat'))).toBe(true);
-        expect(rows.join('\n')).not.toContain('~/other');
-        expect(rows.join('\n')).not.toContain('/home/me/other');
-      } finally {
-        home.unmount();
-      }
+    const home = mountHome(variant, { snapshot: snapshotOf(...DIRS) });
+    try {
+      await home.settle();
+      home.key(KEYS.down); // down to the work page, where the session rows are
+      await home.settle();
+      const rows = rowsOf(home.text());
+      expect(rows.some((row) => row.includes('Conversation 0 · chat'))).toBe(true);
+      expect(rows.join('\n')).not.toContain('~/other');
+      expect(rows.join('\n')).not.toContain('/home/me/other');
+    } finally {
+      home.unmount();
     }
   });
 });

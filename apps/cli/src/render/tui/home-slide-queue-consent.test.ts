@@ -40,7 +40,7 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 });
 /** Two sessions: the work page's first row is a session `Enter` resumes. */
 const SESSIONS: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [sessionRow('s1'), sessionRow('s2')],
   recentRuns: [],
   recentAgents: [],

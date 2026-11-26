@@ -685,7 +685,7 @@ const PARKED_ENTER_VERB: Readonly<Record<ParkedRunKind, string>> = {
  * jobs asks to continue it; a run with nothing to answer says why; a failed or recent run opens its details; a session is resumed; a run whose
  * log cannot be read says why (a read-only card). The hint must not promise a gate where there is none.
  */
-export function rowEnterItem(cue: WorkRowCue): LegendKey {
+function rowEnterItem(cue: WorkRowCue): LegendKey {
   switch (cue.role) {
     case 'session':
       return { keys: 'Enter', verb: 'resume' };
@@ -757,7 +757,7 @@ export function workHint(
 // ---- The work page's rows ------------------------------------------------------------------------------------------------------
 
 /** The rows above the work page's list when the terminal has room: the way back (`↑ start page`) and a blank row. */
-export const WORK_HEAD_ROWS = 2;
+const WORK_HEAD_ROWS = 2;
 
 /** The terminal rows from which the blank row under the way back is drawn: below it whitespace gives way before words (`home-work-budget.ts`). */
 export const WORK_SPACIOUS_ROWS = 26;

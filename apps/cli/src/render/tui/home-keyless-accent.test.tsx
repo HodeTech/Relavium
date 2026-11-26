@@ -17,7 +17,7 @@ function rowOf(color: boolean, needle: string): string {
   const view = render(
     <HomeView
       snapshot={{
-        attention: { failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],

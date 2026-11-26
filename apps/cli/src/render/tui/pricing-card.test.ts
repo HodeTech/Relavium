@@ -947,14 +947,15 @@ describe('a model the list does not show', () => {
     r.choose(PRICING_OTHER_MODEL);
     await r.until('text', 'Model id');
     // Built from code points: a literal zero-width space would be invisible in this very file.
-    // (U+FEFF is not here: `trim()` drops it from the typed text, so what is recorded is the id without it, which the card shows.)
-    for (const code of [0x200b, 0x2060, 0x200e, 0x00ad, 0xe0041]) {
+    // The field itself refuses what it could not show as it is, before the id's own check reads it (round 2 sitting #2, F6: a bidirectional
+    // mark; round 2 cleanup: the zero-width space, the word joiner, the soft hyphen and the byte-order mark, which `trim()` would otherwise
+    // drop from the typed text); the other invisible characters (a tag character) are the id check's to refuse.
+    const refusedByTheField = [0x200b, 0x2060, 0x200e, 0x00ad, 0xfeff];
+    for (const code of [...refusedByTheField, 0xe0041]) {
       r.type(`gpt-5${String.fromCodePoint(code)}`);
-      // A bidirectional mark (U+200E) is refused by the field itself before the id's own check reads it (round 2 sitting #2, F6: a native
-      // field refuses what it could not show as it is); the other invisible characters are the id check's to refuse.
       await vi.waitFor(
         () =>
-          code === 0x200e
+          refusedByTheField.includes(code)
             ? expect(r.snap().error).toMatch(/^Input contains unsupported control characters · /u)
             : expect(r.snap().error).toBe(PRICING_MODEL_ID_FAULTS.invisible),
         { timeout: WAIT_MS, interval: 5 },

@@ -54,7 +54,7 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
 /** A snapshot with `over`'s rows, its totals counted from them (the parked rows are the controller's own read, counted by the test). */
 const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => {
   const rows = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
@@ -64,7 +64,7 @@ const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => {
   };
   return {
     totals: {
-      attention: rows.attention.failedRuns.length + rows.unreadableRuns.length,
+      attention: rows.failedRuns.length + rows.unreadableRuns.length,
       sessions: rows.recentSessions.length,
       runs: rows.recentRuns.length,
     },
@@ -79,7 +79,7 @@ const strip = (
   recent: readonly string[] = [],
 ): HomeSnapshot =>
   snapshotOf({
-    attention: { failedRuns: failed.map((id) => runRow(id, 'failed')) },
+    failedRuns: failed.map((id) => runRow(id, 'failed')),
     recentSessions: sessions.map(sessionRow),
     recentRuns: recent.map((id) => runRow(id)),
   });
@@ -667,7 +667,7 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
   it('skips a run whose log could not be read: it stays a display row', () => {
     const r = rig({
       snapshot: snapshotOf({
-        attention: { failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
+        failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')],
         unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
     });
@@ -713,7 +713,7 @@ describe('Enter does what the row says', () => {
     'on %s it opens its detail in History, and Esc goes back to the list and then to the landing',
     async (_name, snapshot) => {
       const r = rig({ snapshot });
-      const id = snapshot.attention.failedRuns[0]?.runId ?? snapshot.recentRuns[0]?.runId ?? '';
+      const id = snapshot.failedRuns[0]?.runId ?? snapshot.recentRuns[0]?.runId ?? '';
       press(r.controller, DOWN);
       expect(focusOf(r)?.id).toBe(id);
       press(r.controller, ENTER);

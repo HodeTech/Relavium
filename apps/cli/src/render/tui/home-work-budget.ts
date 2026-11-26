@@ -83,7 +83,7 @@ export interface WorkAllocation {
 type SectionName = 'attention' | 'sessions' | 'runs' | 'agents';
 
 /** The base caps, in rows of items (the maintainer's 4 / 3 / 3; the agents, lowest priority, 3). */
-export const WORK_ITEM_CAPS: Readonly<Record<SectionName, number>> = {
+const WORK_ITEM_CAPS: Readonly<Record<SectionName, number>> = {
   attention: 4,
   sessions: 3,
   runs: 3,
@@ -229,9 +229,7 @@ function targetRows(demand: SectionDemand, cap: number): number {
  * window a focus in the middle needs, the `▲`, two rows and the `▼`; fewer when the whole section is fewer.
  */
 function comfortRows(demand: SectionDemand): number {
-  const { loaded, total } = normalized(demand);
-  if (total === 0) return 0;
-  if (loaded === 0) return 1;
+  // `targetRows` is 0 for an empty section and 1 (the marker alone) for counted rows that were not loaded, so neither needs a case of its own.
   return Math.min(targetRows(demand, Number.POSITIVE_INFINITY), 4);
 }
 

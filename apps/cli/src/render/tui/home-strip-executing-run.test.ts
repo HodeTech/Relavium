@@ -36,7 +36,7 @@ const P2: ParkedRunRow = { runId: 'parked-2', kind: 'approval', gates: 2 };
 const P3: ParkedRunRow = { runId: 'parked-3', kind: 'budget', gates: 1 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

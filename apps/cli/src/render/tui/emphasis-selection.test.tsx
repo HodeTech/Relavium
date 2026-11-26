@@ -176,7 +176,7 @@ describe('the Home’s strip', () => {
       <HomeView
         page="work" // the strip rows are the work page's (MVP-11 unit 7)
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

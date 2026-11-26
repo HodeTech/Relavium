@@ -116,16 +116,29 @@ describe('at 80×24', () => {
     );
   });
 
-  it('says overdue with its deadline and the timeout policy', () => {
+  it('says `expired` in the deadline’s own words, as the work page’s row does, with the timeout policy and no timestamp', () => {
     const at = '2026-11-23T12:00:00.000Z';
     const { lastFrame } = view({
       snapshot: snapshot({ gates: [gate('a', { expiresAt: at, timeoutAction: 'approve' })] }),
       nowMs: Date.parse(at) + 1000,
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('! overdue  ·  run run-0001');
-    expect(frame).toContain(`Overdue since ${at}.`);
+    expect(linesOf(frame)[0]).toBe('! expired  ·  run run-0001');
+    expect(frame).toContain('node node-a · approval gate · expired');
+    expect(frame).not.toContain('Overdue');
+    expect(frame, 'the stored timestamp is never drawn').not.toContain(at);
     expect(frame).toContain('On timeout: the gate is approved.');
+  });
+
+  it('says `expires in …` before the deadline, as the work page’s row does, and never the stored timestamp', () => {
+    const at = '2026-11-23T12:00:00.000Z';
+    const { lastFrame } = view({
+      snapshot: snapshot({ gates: [gate('a', { expiresAt: at })] }),
+      nowMs: Date.parse(at) - 5 * 60_000,
+    });
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('node node-a · approval gate · expires in 5m');
+    expect(frame).not.toContain(at);
   });
 
   it('keeps a worst-case card inside the terminal: a long message, four gates, a long notice, an overdue deadline', () => {

@@ -19,7 +19,7 @@ describe('Home native prompt custody', () => {
         },
         homeStore: {
           read: () => ({
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],
@@ -77,7 +77,7 @@ describe('Home native prompt custody', () => {
         startChat: () => Promise.resolve(session),
         homeStore: {
           read: () => ({
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],

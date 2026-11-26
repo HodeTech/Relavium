@@ -38,7 +38,7 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
         resumeChat: resume,
         homeStore: {
           read: () => ({
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: [
               {
                 sessionId: 'saved',

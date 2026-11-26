@@ -123,6 +123,7 @@ function rig(options: RigOptions = {}) {
     }),
     loadDetail: createRunDetailLoader({
       reader,
+      projectRoot: ROOT,
       listHeld: () => Promise.resolve((options.held ?? []).map((runId) => ({ runId }))),
       loadSnapshot: snapshot,
     }),

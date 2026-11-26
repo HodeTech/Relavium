@@ -23,7 +23,7 @@ import type { HistoryPort } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

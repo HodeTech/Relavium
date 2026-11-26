@@ -36,7 +36,7 @@ import type { HistoryPort } from './tab-host-history.js';
 import type { DefinedPort } from './tab-host-workflows.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

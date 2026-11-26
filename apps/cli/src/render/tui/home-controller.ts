@@ -1415,6 +1415,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const restoreRowFocus = (patch: Partial<HomeControllerState>): void => {
     const origin = screenFromRow;
     screenFromRow = undefined;
+    // `'stripFocus' in patch` is a DEFENSIVE guard of the rule stated above (no caller closes a screen with a focus of its own today): a change
+    // that does name one keeps it, whatever a later caller writes.
     if (origin === undefined || 'stripFocus' in patch) return;
     if (state.mode !== 'home' || state.homePage !== 'work') return;
     const rows = stripRows(state.parkedRuns, state.snapshot);
@@ -2793,9 +2795,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   /**
    * `Enter` on a failed or recent run of the strip (ADR-0140 §6): the tab host opens on the History tab at that run's detail, loaded as
-   * a detail opened from a History row is, and `Esc` steps back to the list and then to the landing. No run is written, resumed or
-   * cancelled from the strip (`p` on the detail only marks a finished run), so a run of another directory opens as well as this one's. A
-   * Home with no history to read says so.
+   * a detail opened from a History row is, and `Esc` steps back to the list and then to the landing. The strip lists THIS directory's runs
+   * only (the Home reads no other), so the run opened is one this directory recorded. Nothing is resumed or cancelled from the detail and `p`
+   * only marks a finished run; `r` starts a NEW run, and only through the run form (its inputs asked again, its confirmation card the
+   * consent: ADR-0113), never straight from here. A Home with no history to read says so.
    */
   const openRunDetail = (runId: string): boolean => {
     if (deps.history === undefined) {

@@ -37,7 +37,7 @@ describe.each(['home', 'standalone'] as const)('mounted searchable picker in %s'
           startChat: () => Promise.resolve(session),
           homeStore: {
             read: () => ({
-              attention: { failedRuns: [] },
+              failedRuns: [],
               recentSessions: [],
               recentRuns: [],
               recentAgents: [],

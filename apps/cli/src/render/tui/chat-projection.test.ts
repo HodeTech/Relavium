@@ -18,13 +18,12 @@ import {
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
   sanitizeApprovalReason,
-  sanitizeInline,
   transcriptDocument,
   streamingAbortHint,
-  stripTerminalControls,
   wrapTranscript,
   liveAnswerRowBudget,
 } from './chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 import { formatTokens } from './format.js';
 import { formatDuration } from '../notation.js';
 import {

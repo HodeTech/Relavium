@@ -35,7 +35,7 @@ const unreadable = (runId: string, createdAt?: string): HomeUnreadableRun => ({
   ...(createdAt === undefined ? {} : { createdAt }),
 });
 const snapshot = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -60,7 +60,7 @@ describe('attentionOrder: urgency first, a total order', () => {
         parked('p-expired-short', at(-1)),
       ],
       snapshot({
-        attention: { failedRuns: [failed('f-old', at(-600)), failed('f-new', at(-60))] },
+        failedRuns: [failed('f-old', at(-600)), failed('f-new', at(-60))],
         unreadableRuns: [unreadable('u-1', at(-30)), unreadable('u-2', at(-700))],
       }),
       NOW,
@@ -109,14 +109,14 @@ describe('attentionOrder: urgency first, a total order', () => {
     const a = attentionOrder(
       [parked('p-b', same), parked('p-a', same)],
       snapshot({
-        attention: { failedRuns: [failed('f-b', at(-5)), failed('f-a', at(-5))] },
+        failedRuns: [failed('f-b', at(-5)), failed('f-a', at(-5))],
         unreadableRuns: [unreadable('u-b', at(-5)), unreadable('u-a', at(-5))],
       }),
     );
     const b = attentionOrder(
       [parked('p-a', same), parked('p-b', same)],
       snapshot({
-        attention: { failedRuns: [failed('f-a', at(-5)), failed('f-b', at(-5))] },
+        failedRuns: [failed('f-a', at(-5)), failed('f-b', at(-5))],
         unreadableRuns: [unreadable('u-a', at(-5)), unreadable('u-b', at(-5))],
       }),
     );
@@ -136,7 +136,7 @@ describe('attentionOrder: urgency first, a total order', () => {
     const order = attentionOrder(
       [parked('p-bad', 'soon'), parked('p-due', at(3))],
       snapshot({
-        attention: { failedRuns: [failed('f-bad', 'yesterday'), failed('f-ok', at(-9))] },
+        failedRuns: [failed('f-bad', 'yesterday'), failed('f-ok', at(-9))],
         unreadableRuns: [unreadable('u-none'), unreadable('u-ok', at(-9))],
       }),
       NOW,
@@ -148,7 +148,7 @@ describe('attentionOrder: urgency first, a total order', () => {
     const order = attentionOrder(
       [parked('both'), parked('broken')],
       snapshot({
-        attention: { failedRuns: [failed('both', at(-1)), failed('broken', at(-1))] },
+        failedRuns: [failed('both', at(-1)), failed('broken', at(-1))],
         unreadableRuns: [unreadable('broken', at(-1))],
       }),
     );
@@ -162,7 +162,7 @@ describe('attentionOrder: urgency first, a total order', () => {
     const order = attentionOrder(
       [{ ...parked('p'), workflow: 'release-notes' }],
       snapshot({
-        attention: { failedRuns: [failed('f', at(-1))] },
+        failedRuns: [failed('f', at(-1))],
         unreadableRuns: [{ ...unreadable('u'), workflowSlug: 'nightly' }],
       }),
     );
@@ -173,7 +173,7 @@ describe('attentionOrder: urgency first, a total order', () => {
 describe('the keys walk the same order (strip-focus)', () => {
   it('stripRows lists the Attention items in the urgency order, then the sessions, then the runs', () => {
     const snap = snapshot({
-      attention: { failedRuns: [failed('f', at(-1))] },
+      failedRuns: [failed('f', at(-1))],
       unreadableRuns: [unreadable('u', at(-2))],
       recentRuns: [{ ...failed('r', at(-3)), status: 'completed' }],
     });

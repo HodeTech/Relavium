@@ -220,9 +220,8 @@ import {
   contextOverflowRemedy,
   formatToolCall,
   projectDenialExplanation,
-  sanitizeInline,
-  stripTerminalControls,
 } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 import { agentNotice } from '../chat/agent-notice.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { withGlyphForm } from '../render/tui/glyphs.js';

@@ -119,6 +119,11 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/home/home-status-facts.ts',
   'apps/cli/src/render/tui/home-pages.ts',
   'apps/cli/src/render/tui/home-work-budget.ts',
+  'apps/cli/src/render/tui/run-again.ts',
+  'apps/cli/src/render/tui/home-attention.ts',
+  'apps/cli/src/render/tui/strip-focus.ts',
+  'apps/cli/src/render/tui/home-projection.ts',
+  'apps/cli/src/render/tui/home-deadline.ts',
   DATA_MODULE,
 ];
 

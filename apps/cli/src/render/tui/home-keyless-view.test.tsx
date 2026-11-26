@@ -24,7 +24,7 @@ describe('keyless Home view', () => {
         <HomeView
           page="work"
           snapshot={{
-            attention: { failedRuns: [] },
+            failedRuns: [],
             recentSessions: sessions,
             recentRuns: [],
             recentAgents: [],
@@ -58,7 +58,7 @@ describe('keyless Home view', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
@@ -114,7 +114,7 @@ describe('the Home hint bar', () => {
         // a focused row is the work page's (MVP-11 unit 7)
         page={over.stripFocus === undefined ? 'start' : 'work'}
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: sessions,
           recentRuns: [],
           recentAgents: [],
@@ -189,7 +189,7 @@ describe('the keyless line and the other things Enter does first', () => {
         // a focused parked row is the work page's (MVP-11 unit 7)
         page={over.parkedFocus === undefined ? 'start' : 'work'}
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
@@ -260,7 +260,7 @@ describe('the hint bar on a focused parked row', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
@@ -305,7 +305,7 @@ describe('the focused parked row at 80 columns', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
@@ -356,7 +356,7 @@ describe('the keyless Home hint bar by what the draft is', () => {
     const view = render(
       <HomeView
         snapshot={{
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

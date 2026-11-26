@@ -1,5 +1,5 @@
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import {
   HOME_PROMPT_LEAD_COLUMNS,
   homeMargin,
@@ -55,9 +55,10 @@ export interface HomeNoticeOptions {
   readonly onLanding: boolean;
   /**
    * The strip lists a session, which `↓` can focus: its section keeps its title, its first row and its marker (with "Continue", three rows
-   * and the heading), so a long notice pages instead of taking them (`workListFloor`).
+   * and the heading), so a long notice pages instead of taking them (`workListFloor`). Read on the work page only (`onLanding` false): the
+   * landing lists nothing a notice could take, so it passes none of the three `has…` flags.
    */
-  readonly hasSessions: boolean;
+  readonly hasSessions?: boolean;
   /**
    * The strip lists an Attention row that `↓` can focus (a run parked in this directory, a failed run, a run whose log cannot be read): the
    * Attention rows come first and are what `↓` reaches first, so the notice leaves them the three rows they cost at the least (their heading,
@@ -114,7 +115,7 @@ function listFloorRows(
 ): number {
   return workListFloor({
     attention: options.hasAttentionRuns === true,
-    sessions: options.hasSessions,
+    sessions: options.hasSessions === true,
     runs: options.hasRecentRuns === true,
   });
 }

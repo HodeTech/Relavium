@@ -27,7 +27,7 @@ import type { HistoryPort } from './tab-host-history.js';
 import type { SessionsPort } from './tab-host-sessions.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

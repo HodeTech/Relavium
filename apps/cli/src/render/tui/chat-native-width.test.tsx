@@ -59,7 +59,7 @@ describe.each([false, true])('native chat geometry (color %s)', (color) => {
                 }),
               homeStore: {
                 read: () => ({
-                  attention: { failedRuns: [] },
+                  failedRuns: [],
                   recentSessions: [],
                   recentRuns: [],
                   recentAgents: [],

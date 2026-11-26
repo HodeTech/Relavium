@@ -265,7 +265,7 @@ describe('the time comes from the run’s own record, with no read of the log of
 });
 
 describe('the time takes no part in the Attention order', () => {
-  const snapshot = { attention: { failedRuns: [] }, unreadableRuns: [] } as const;
+  const snapshot = { failedRuns: [], unreadableRuns: [] } as const;
   const parked = (
     runId: string,
     since: string,

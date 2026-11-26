@@ -60,7 +60,7 @@ const PARKED: ParkedRunRow = {
 };
 const BROKEN_ID = 'u1000000-0000-4000-8000-000000000000';
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [failedRun] },
+  failedRuns: [failedRun],
   recentSessions: [sessionRow],
   recentRuns: [doneRun],
   recentAgents: [],

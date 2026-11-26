@@ -26,7 +26,7 @@ import { tagStyles } from './legend-golden/frames.js';
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

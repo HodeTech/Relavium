@@ -88,7 +88,7 @@ export interface SurfaceBase {
     | ((variant: Variant, live?: PopupFrame, locked?: boolean) => PopupBox)
     | undefined;
   /**
-   * A popup surface whose body behind it holds NO inverse cell BY DESIGN, and the reason (one line, never empty). Read ONLY by `checkBackdropDim`,
+   * A popup surface whose body behind it holds NO inverse cell BY DESIGN, and the reason (one line; an empty or blank one counts as none). Read ONLY by `checkBackdropDim`,
    * and there only to drop its demand that the body held an inverse cell before the popup opened; the demands that the body held a bold cell and a
    * coloured one, and every assertion that the backdrop is dim, stay. The demand exists so the dim check cannot pass on a plain body; a body whose
    * only selection is a tinted Attention row (`›`, bold and the tint, no inverse: MVP-11 unit 7) is not plain, and has none. A surface that does not

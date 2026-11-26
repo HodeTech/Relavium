@@ -31,7 +31,7 @@ const session = (n: number) => ({
   totalCostMicrocents: 0,
 });
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -40,7 +40,7 @@ const EMPTY: HomeSnapshot = {
   isEmpty: true,
 };
 const FULL: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: Array.from({ length: 8 }, (_, n) => session(n)),
   recentRuns: [],
   recentAgents: [],

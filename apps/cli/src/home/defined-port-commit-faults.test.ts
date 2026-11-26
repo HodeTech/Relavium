@@ -159,7 +159,7 @@ describe('a commit the file system refuses is a refusal with a fixed sentence', 
 // ---------------------------------------------------------------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

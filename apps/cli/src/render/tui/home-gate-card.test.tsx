@@ -22,7 +22,7 @@ import {
   type HomeControllerState,
   type HomeGateCardsPort,
 } from './home-controller.js';
-import type { RunCardSnapshot } from './run-card-model.js';
+import type { RunCard, RunCardSnapshot } from './run-card-model.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 
 afterEach(cleanup);
@@ -55,7 +55,7 @@ async function eventually(predicate: () => boolean, what = 'the condition'): Pro
 }
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -309,7 +309,7 @@ describe('the Attention rows', () => {
       snapshot: {
         ...EMPTY,
         isEmpty: false,
-        attention: { failedRuns: [] },
+        failedRuns: [],
         totals: { attention: 1, sessions: 0, runs: 0 },
       },
     });
@@ -605,6 +605,41 @@ describe('a card that has not been painted refuses an answer', () => {
     }
     expect(m.resume).not.toHaveBeenCalled();
     expect(m.frame()).not.toContain('Ship the release?');
+  });
+
+  describe('below 80×24 a key the Home does not deliver is still typing, as far as the card goes', () => {
+    /** A typeahead window longer than the test, every other layer off: what separates the two runs below is the one key typed before the chord. */
+    const TYPEAHEAD: ApprovalGuard = { ...OFF, typeaheadMs: 60_000 };
+    /** The card opened below the minimum and acknowledged as shown, so that the typeahead is the only thing that can refuse a chord. */
+    async function openSmall(): Promise<{
+      readonly m: Mounted;
+      readonly card: RunCard;
+    }> {
+      const m = mount({ size: { cols: 60, rows: 20 }, guard: TYPEAHEAD });
+      await settleFrames();
+      m.controller.handleKey('', { downArrow: true });
+      m.controller.handleKey('', { return: true });
+      await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
+      const screen = m.controller.getSnapshot().screen;
+      if (screen?.kind !== 'gate-card') throw new Error('Expected the gate card.');
+      m.controller.bindGateCardFrame(() => true);
+      screen.card.shown(screen.card.getSnapshot());
+      return { m, card: screen.card };
+    }
+
+    it('control: with nothing typed, a chord given to the card answers', async () => {
+      const { m, card } = await openSmall();
+      expect(card.input('y', { ctrl: true })).toMatchObject({ kind: 'answered' });
+      expect(m.resume).toHaveBeenCalledOnce();
+    });
+
+    it('a letter typed below the minimum is not delivered and not lost to the guard: the chord right after it is refused', async () => {
+      const { m, card } = await openSmall();
+      m.harness.stdin.write('x');
+      await flush();
+      expect(card.input('y', { ctrl: true })).toEqual({ kind: 'refused' });
+      expect(m.resume).not.toHaveBeenCalled();
+    });
   });
 });
 

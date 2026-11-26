@@ -306,7 +306,9 @@ export function LandingPalette(
 export function HomeLanding(props: Readonly<HomeLandingProps>): ReactElement {
   const { cols, color, showBlock, notice } = props;
   // The rows between the head and the prompt: the block's two (the title's one), and a notice stands in them directly over the prompt with
-  // a blank row above it, so a short notice moves nothing (`landingGapRows`). The hosted run's row is part of the prompt block.
+  // a blank row above it, so a short notice moves nothing (`landingGapRows`). The hosted run's row is part of the prompt block. The footer
+  // is a row of the notice and counts as one: dropping it would draw the same rows today (the resting gap is at most two and a notice has
+  // a line), but only because of that constant, so the count stays true to what is drawn.
   const noticeRows =
     notice === undefined ? 0 : notice.lines.length + (notice.footer === undefined ? 0 : 1);
   return (

@@ -16,7 +16,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  * `recordHistory` is the one function every prompt records through, so Up and `Ctrl+R` cannot bring a pasted key back. A new file.
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

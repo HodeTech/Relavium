@@ -219,7 +219,7 @@ describe('the stand-alone chat writes its inline header once per process', () =>
 
 describe('the chat the Home hosts, inline: the header belongs to a chat’s start and not to a swap of its conversation', () => {
   const SNAPSHOT = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],

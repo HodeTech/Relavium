@@ -51,7 +51,7 @@ describe.each(['home', 'standalone'] as const)(
             startChat: () => Promise.reject(new Error('Unexpected chat submission')),
             homeStore: {
               read: () => ({
-                attention: { failedRuns: [] },
+                failedRuns: [],
                 recentSessions: [],
                 recentRuns: [],
                 recentAgents: [],

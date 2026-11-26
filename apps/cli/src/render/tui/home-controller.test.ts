@@ -52,7 +52,7 @@ const runningStore = (): ChatStoreController => {
 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -2497,7 +2497,7 @@ function makeModelsPort(
 
 describe('/effort in a chat the Home hosts (the /models picker’s cases moved to `home-models.test.ts` with its retirement)', () => {
   const EMPTY_HOME: HomeSnapshot = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
@@ -3088,7 +3088,7 @@ describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', (
 describe('the lines the controller writes into a chat itself follow `plainGlyphs` (ADR-0145 §5)', () => {
   const RUN = '3f2a9c1e-7b64-4d0a-9c11-5a2e8f6d0b13';
   const EMPTY_HOME: HomeSnapshot = {
-    attention: { failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],

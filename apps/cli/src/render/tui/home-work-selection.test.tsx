@@ -62,7 +62,7 @@ const WAITING: ParkedRunRow = {
   expiresAt: '2026-11-26T13:00:00.000Z',
 };
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [failedRun] },
+  failedRuns: [failedRun],
   recentSessions: [sessionRow],
   recentRuns: [],
   recentAgents: [],

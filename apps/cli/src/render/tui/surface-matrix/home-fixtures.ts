@@ -53,7 +53,7 @@ const session = (n: number): HomeSessionRow => ({
 
 /** A Home with something on each strip: a failed run needing attention, two conversations, a finished run and an agent. */
 export const POPULATED_SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [run('f1', 'failed', 'ship-it')] },
+  failedRuns: [run('f1', 'failed', 'ship-it')],
   recentSessions: [session(1), session(2)],
   recentRuns: [run('r1', 'completed', 'nightly-report')],
   recentAgents: [{ agentSlug: 'reviewer', lastUsedAt: '2026-11-22T00:00:00.000Z' }],
@@ -306,6 +306,7 @@ export async function historySetup(): Promise<HomeSetup> {
     }),
     loadDetail: createRunDetailLoader({
       reader,
+      projectRoot: '/work/project',
       listHeld: () => Promise.resolve([]),
       loadSnapshot,
     }),

@@ -43,7 +43,7 @@ const runRow = (id: string): HomeRunRow => ({
 });
 /** A snapshot of this directory; `parked` is how many parked runs the store counts (the controller's parked rows are a separate read). */
 const snapshotOf = (over: { sessions?: number; runs?: number; parked?: number }): HomeSnapshot => ({
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: Array.from({ length: over.sessions ?? 0 }, (_, index) => sessionRow(index + 1)),
   recentRuns: Array.from({ length: over.runs ?? 0 }, (_, index) => runRow(String(index + 1))),
   recentAgents: [],

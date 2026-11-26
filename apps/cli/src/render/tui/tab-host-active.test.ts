@@ -571,7 +571,7 @@ describe('before a read, and when there is none', () => {
 // ---- Through the real Home controller -------------------------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

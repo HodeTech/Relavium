@@ -352,14 +352,15 @@ describe('the answer goes through the same guard as the human-gate card', () => 
 });
 
 describe('an overdue budget gate, and a run with a human gate and a budget gate', () => {
-  it('says overdue with its deadline, still takes the answer, and quotes no timeout policy (a budget gate has none)', () => {
+  it('says expired in the deadline’s words, still takes the answer, and quotes no timeout policy (a budget gate has none)', () => {
     const f = fixture(AMOUNT, {
       run: run(AMOUNT, { expiresAt: '2026-11-23T10:00:00.000Z' }),
     });
     const late = Date.parse('2026-11-23T11:00:00.000Z');
     const text = f.text(late);
-    expect(text).toContain('overdue');
-    expect(text).toContain('Overdue since 2026-11-23T10:00:00.000Z.');
+    expect(text).toContain('expired');
+    expect(text).not.toContain('overdue');
+    expect(text, 'the stored timestamp is never drawn').not.toContain('2026-11-23T10:00:00.000Z');
     expect(text).not.toContain('On timeout');
     expect(text).not.toContain('No timeout policy');
     expect(text).toContain('Budget allowance: $0.0420');

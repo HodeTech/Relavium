@@ -9,7 +9,7 @@ import { createHomeController, type HomeController } from './home-controller.js'
  * — type a message to start one.` instead, which on a keyless Home even invited a message that cannot start a chat.
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

@@ -48,7 +48,7 @@ import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
 import type { RemainingBudget } from '../process/invocation-registry.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import {
   createNativeProcessController,

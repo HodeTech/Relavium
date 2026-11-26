@@ -29,7 +29,7 @@ import {
 import { INLINE_TRANSCRIPT_BOUND, type TranscriptEntry } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

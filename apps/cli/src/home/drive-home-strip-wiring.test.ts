@@ -214,7 +214,7 @@ describe('driveHome tells the store which directory this Home is, so it lists th
     const snapshot = home.props.controller.getSnapshot().snapshot;
     expect(snapshot.totals).toEqual({ attention: 0, sessions: 0, runs: 1 });
     expect(snapshot.unreadableRuns).toEqual([]);
-    expect(snapshot.attention.failedRuns).toEqual([]);
+    expect(snapshot.failedRuns).toEqual([]);
     const own = home.row('this-project');
     expect(own === undefined ? 'missing' : runLabel(own, Date.now())).not.toContain(
       'other project',

@@ -17,7 +17,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
  * Home-hosted chat here; the stand-alone chat is `palette-typed-line-chat.test.tsx`. A new file.
  */
 const SNAPSHOT: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

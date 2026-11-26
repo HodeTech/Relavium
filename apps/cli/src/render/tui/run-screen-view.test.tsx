@@ -399,7 +399,7 @@ describe('a notice wider than the terminal', () => {
 // ---- Through a mounted RootApp, with real stdin bytes ---------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

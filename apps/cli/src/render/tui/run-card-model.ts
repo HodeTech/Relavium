@@ -57,6 +57,7 @@ import {
 import type { StatusColor } from './format.js';
 import { blankHostGlyphs, glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { formatUsdExact } from '../notation.js';
+import { deadlinePassed, expiryLabel } from './home-deadline.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-floor.js';
 import { exitKey, legend, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
@@ -504,7 +505,8 @@ interface Appearance {
 
 export const RUN_CARD_APPEARANCE: Readonly<Record<RunCardState, Appearance>> = {
   waiting: { role: 'paused', word: 'waiting for you', tone: toneOf('paused') },
-  overdue: { role: 'warning', word: 'overdue', tone: 'red' },
+  // The word is the deadline's own (`expired`, as the work page's row and page 1 say it: `home-deadline.ts`); the state keeps its name.
+  overdue: { role: 'warning', word: 'expired', tone: 'red' },
   answering: { role: 'starting', word: 'answering', tone: toneOf('starting') },
   answered: { role: 'completed', word: 'answered', tone: toneOf('completed') },
   decided: { role: 'ended', word: 'already decided', tone: toneOf('ended') },
@@ -683,18 +685,6 @@ function messageBlock(gate: RunGate, width: number, room: number): readonly RunC
   return [...kept.map(author), ...rest];
 }
 
-/** The instant the deadline passes, or `undefined` for a gate with none (or one that does not parse). */
-function deadline(gate: RunCardGate): number | undefined {
-  if (gate.expiresAt === undefined) return undefined;
-  const at = Date.parse(gate.expiresAt);
-  return Number.isFinite(at) ? at : undefined;
-}
-
-export function isGateOverdue(gate: RunCardGate, nowMs: number): boolean {
-  const at = deadline(gate);
-  return at !== undefined && nowMs >= at;
-}
-
 function stateOf(
   snapshot: RunCardSnapshot,
   gate: RunCardGate | undefined,
@@ -711,7 +701,7 @@ function stateOf(
       return 'none';
     case 'open':
       if (snapshot.refused) return 'not-answered';
-      return gate !== undefined && isGateOverdue(gate, nowMs) ? 'overdue' : 'waiting';
+      return gate !== undefined && deadlinePassed(gate.expiresAt, nowMs) ? 'overdue' : 'waiting';
   }
 }
 
@@ -754,14 +744,12 @@ function gateKind(gate: RunCardGate): string {
   return isBudgetGate(gate) ? 'budget' : sanitizeInline(gate.gateType);
 }
 
-/** What an overdue gate adds: when it passed, what the engine does at the deadline (a human gate's policy), and that the answer counts. */
+/**
+ * What an expired gate adds beyond its deadline's words (the title's `expired` and the node row's, `expiryLabel`): what the engine does at the
+ * deadline (a human gate's policy), and that the answer counts. No timestamp: how long ago it passed is not a fact the rows say.
+ */
 function overdueRows(gate: RunCardGate, width: number): readonly RunCardRow[] {
-  const rows: RunCardRow[] = [
-    {
-      role: 'warn',
-      text: clipLine(`Overdue since ${sanitizeInline(gate.expiresAt ?? '')}.`, width),
-    },
-  ];
+  const rows: RunCardRow[] = [];
   if (!isBudgetGate(gate)) rows.push({ role: 'warn', text: clipLine(policyWords(gate), width) });
   rows.push({
     role: 'fact',
@@ -864,15 +852,20 @@ function budgetRows(gate: RunBudgetGate, width: number): readonly RunCardRow[] {
 }
 
 /** The facts under the author's message: where the gate sits, its deadline, and what an answer does. */
-function gateFacts(gate: RunCardGate, width: number, overdue: boolean): readonly RunCardRow[] {
+function gateFacts(
+  gate: RunCardGate,
+  width: number,
+  overdue: boolean,
+  nowMs: number,
+): readonly RunCardRow[] {
+  // The deadline in the words the row and page 1 use (`expires in 5m`, `expired`), never the stored timestamp.
+  const deadline = expiryLabel(gate.expiresAt, nowMs);
   const rows: RunCardRow[] = [
     {
       role: 'fact',
       text: clipLine(
         `node ${sanitizeInline(gate.nodeId)} · ${gateKind(gate)} gate` +
-          (gate.expiresAt === undefined || overdue
-            ? ''
-            : ` · expires ${sanitizeInline(gate.expiresAt)}`),
+          (deadline === undefined ? '' : ` · ${deadline}`),
         width,
       ),
     },
@@ -950,7 +943,9 @@ export function projectRunCard(
   const open = snapshot.phase === 'open' && gate !== undefined ? gate : undefined;
   // The facts, the list and the notice are counted before the message is: the message block takes what the terminal has left of them.
   const facts =
-    open === undefined ? [] : [...gateFacts(open, width, overdue), ...listRows(snapshot, width)];
+    open === undefined
+      ? []
+      : [...gateFacts(open, width, overdue, input.nowMs), ...listRows(snapshot, width)];
   const notice = noticeRows(snapshot, width);
   // A budget gate has no author text: what it shows is the host's own words and the structured allowance.
   const message =

@@ -19,7 +19,7 @@ import { EXAMPLE_PROMPT } from './home-layout.js';
  */
 
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

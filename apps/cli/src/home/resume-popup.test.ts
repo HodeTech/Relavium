@@ -308,7 +308,7 @@ describe('the Home runs the whole resume inside the frame, and says what it has 
       startChat: () => Promise.resolve(session),
       homeStore: {
         read: () => ({
-          attention: { failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],

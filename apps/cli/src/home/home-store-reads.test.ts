@@ -174,7 +174,7 @@ describe('the Home snapshot’s reads and their order', () => {
       },
     });
     expect(snapshot.unreadableRuns.map((run) => run.runId)).toEqual(['moved']);
-    expect(snapshot.attention.failedRuns).toEqual([]);
+    expect(snapshot.failedRuns).toEqual([]);
   });
 
   it('a failed run that a later statement also returns (its status moved under the read) is placed once, in Attention, and not again in the Runs section', async () => {
@@ -193,7 +193,7 @@ describe('the Home snapshot’s reads and their order', () => {
         },
       },
     });
-    expect(snapshot.attention.failedRuns.map((run) => run.runId)).toEqual(['f1']);
+    expect(snapshot.failedRuns.map((run) => run.runId)).toEqual(['f1']);
     expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['c1']);
   });
 

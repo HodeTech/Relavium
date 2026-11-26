@@ -40,7 +40,7 @@ const session: HomeSessionRow = {
   totalCostMicrocents: 0,
 };
 const BASE: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
@@ -56,7 +56,7 @@ const withSessions: HomeSnapshot = {
 };
 const withFailed: HomeSnapshot = {
   ...BASE,
-  attention: { failedRuns: [failed] },
+  failedRuns: [failed],
   totals: { attention: 1, sessions: 0, runs: 0 },
   isEmpty: false,
 };

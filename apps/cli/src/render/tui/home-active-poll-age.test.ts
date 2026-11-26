@@ -33,7 +33,7 @@ const RUN = 'run-lease-lapsing';
 
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

@@ -8,7 +8,7 @@ import type { MentionReader } from './mention.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY_HOME: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],

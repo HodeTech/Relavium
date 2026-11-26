@@ -28,7 +28,7 @@ const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'gu');
 const BIDI = String.fromCharCode(0x202e);
 const NOW = Date.parse('2026-11-26T12:00:00.000Z');
 const EMPTY: HomeSnapshot = {
-  attention: { failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
