@@ -111,11 +111,11 @@ describe('the resume picker’s legend', () => {
     expect(pickerLegend(promptOf(failed, 'back'))).toBe('Enter retry · Esc back · [Ctrl+C] close');
   });
 
-  it('OB-7: a page with no row names no `Enter resume`, while one that is still loading does', () => {
+  it('OB-7: a page with no row, or one still loading, names no `Enter resume` (the picker ignores it then)', () => {
     expect(pickerLegend(promptOf(picker({ options: [] })))).toBe(
       '↑/↓ select · Tab all directories · PgUp/PgDn page · Esc close',
     );
-    expect(pickerLegend(promptOf(picker({ options: [], loading: true })))).toContain(
+    expect(pickerLegend(promptOf(picker({ options: [], loading: true })))).not.toContain(
       'Enter resume',
     );
   });

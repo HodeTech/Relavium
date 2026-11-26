@@ -164,9 +164,20 @@ function scrubbed(text: string): string {
  */
 function subjectOf(source: string, typed: string | undefined): string {
   if (source === '') return THAT_PATH;
-  return scrubbed(
-    typed !== undefined && outsideTheWorkingDirectory(source) ? typed.trim() : source,
-  );
+  return typed !== undefined && outsideTheWorkingDirectory(source)
+    ? endOf(scrubbed(typed.trim()))
+    : scrubbed(source);
+}
+
+/** How many characters of a path typed from outside the working directory a refusal names: more would push the sentence's own position (`line 5, column 3`) past the cut. */
+const SUBJECT_LIMIT = 56;
+
+/** `path` whole, or its END (the file a person knows it by) after a `…` when it is longer than {@link SUBJECT_LIMIT} (whole characters, never half of one). */
+function endOf(path: string): string {
+  const characters = [...path];
+  return characters.length <= SUBJECT_LIMIT
+    ? path
+    : `…${characters.slice(characters.length - (SUBJECT_LIMIT - 1)).join('')}`;
 }
 
 /** `text` with the first mention of `source` (the command's name for the file) said as `subject`; an empty name has no mention to find. */

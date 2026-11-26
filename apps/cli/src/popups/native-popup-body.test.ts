@@ -622,9 +622,14 @@ describe('a field, a wait and the picker', () => {
     expect(legend(card.items, card.exit)).toBe(
       '↑/↓ select · Tab all directories · PgUp/PgDn page · Esc close',
     );
-    // While it loads, the rows are not known yet: `Enter resume` stays named.
+    // While a page loads the picker ignores `Enter`, so the key is not named, with or without the rows of the page it replaces.
     const loading = { ...empty, picker: { ...empty.picker!, loading: true } };
-    expect(legendText(loading)).toContain('Enter resume');
+    expect(legendText(loading)).not.toContain('Enter resume');
+    expect(legendText({ ...PICKER, picker: { ...PICKER.picker!, loading: true } })).not.toContain(
+      'Enter resume',
+    );
+    expect(PICKER.options.length, 'the fixture has a row').toBeGreaterThan(0);
+    expect(legendText(PICKER), 'a loaded page with a row names it').toContain('Enter resume');
   });
 
   it('the picker inline: its rows in a window of ten rows or fewer, the highlighted one in it', () => {

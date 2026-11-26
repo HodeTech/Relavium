@@ -105,9 +105,9 @@ export function pickerEmptyText(snapshot: NativePromptSnapshot): string {
   return here ? NATIVE_PICKER_NONE_HERE : NATIVE_PICKER_EMPTY;
 }
 
-/** Whether the picker's page has no row to resume (it is not loading: the rows are known). Its legend then names no `Enter resume`. */
-function pickerHasNoRow(snapshot: NativePromptSnapshot): boolean {
-  return snapshot.options.length === 0 && snapshot.picker?.loading !== true;
+/** Whether `Enter` resumes a session now: there is a row, and the page is not being read (the picker ignores `Enter` while it loads). */
+function pickerCanResume(snapshot: NativePromptSnapshot): boolean {
+  return snapshot.options.length > 0 && snapshot.picker?.loading !== true;
 }
 
 /** The page a framed prompt's body is drawn on: its rows, the rows a list may use of them (ten inline), and the columns of each row. */
@@ -561,9 +561,9 @@ export function pickerLegendParts(snapshot: NativePromptSnapshot): {
   readonly exit: LegendExit;
 } {
   const { before, exit } = nativeLeave(snapshot.escape === 'back');
-  const resume: readonly LegendItem[] = pickerHasNoRow(snapshot)
-    ? []
-    : [{ keys: 'Enter', verb: 'resume' }];
+  const resume: readonly LegendItem[] = pickerCanResume(snapshot)
+    ? [{ keys: 'Enter', verb: 'resume' }]
+    : [];
   if (snapshot.error === '')
     return {
       items: [

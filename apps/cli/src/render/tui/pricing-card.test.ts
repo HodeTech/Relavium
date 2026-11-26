@@ -42,6 +42,7 @@ import {
   PRICING_CLEAR_OWNERSHIP,
   PRICING_DENY_LABEL,
   PRICING_EDIT_LABEL,
+  PRICING_CLEAR_FAILED,
   PRICING_FAILED,
   PRICING_MODEL_ID_FAULTS,
   PRICING_NOT_RECORDED,
@@ -518,6 +519,26 @@ describe('the confirmation shows exactly what will be recorded, and whose overri
     ]);
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
+  });
+
+  it('a CLEAR the database refuses at the commit says `Not removed.`, not `Not recorded.`, and the override stays', async () => {
+    const r = rig();
+    const seed = r.port.prepare(
+      { modelId: 'gpt-5.5', provider: 'openai' },
+      { action: 'set', prices: { input: '3', output: '9' } },
+    );
+    if (!seed.ok) throw new Error(seed.reason);
+    seed.commit();
+    await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
+    await r.cardUp();
+    client.sqlite.pragma('query_only = ON');
+    r.ui.input('y', ctrl);
+    const done = await r.done();
+    client.sqlite.pragma('query_only = OFF');
+    expect(done.tone).toBe('failed');
+    expect(done.message).toBe(PRICING_CLEAR_FAILED);
+    expect(done.message).not.toBe(PRICING_FAILED);
+    expect(rowsFor('gpt-5.5'), 'the override is still there').toHaveLength(1);
   });
 
   it('a CLEAR of a model with no override says so and asks for nothing', async () => {

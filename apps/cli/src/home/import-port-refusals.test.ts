@@ -134,9 +134,37 @@ describe.skipIf(process.platform === 'win32')(
         `/relavium-nonexistent/evil${rlo}gnp/${'a-very-long-directory-name/'.repeat(20)}x.yaml`,
       );
       expect(reason).not.toContain(rlo);
-      expect(reason.startsWith('no file at /relavium-nonexistent/evil')).toBe(true);
+      expect(reason.startsWith('no file at …'), 'a long path is cut from the front').toBe(true);
       expect(reason.length).toBeLessThanOrEqual(240);
-      expect(reason.endsWith('…')).toBe(true);
+      expect(reason.endsWith('/x.yaml'), 'the file a person knows it by stays').toBe(true);
+    });
+
+    it('OB-6d a long path does not push the sentence’s own position out of the reason: it is cut from the front, the line and column stay', () => {
+      const directory = join(
+        home,
+        ...Array.from({ length: 3 }, () => 'a-very-long-directory-name'),
+      );
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'broken.yaml'),
+        'id: x\nprovider: [unclosed\n  - a\nmodel: 3\n',
+      );
+      const reason = refused(join(directory, 'broken.yaml'));
+      expect(reason).toMatch(/^…\S* is not a valid workflow or agent \(/u);
+      expect(reason, 'the position the error carries').toMatch(/\(line \d+, column \d+\)\)\.$/u);
+      expect(reason.length).toBeLessThanOrEqual(240);
+      expect(balanced(reason)).toBe(true);
+      expect(reason).toContain('broken.yaml');
+    });
+
+    it('OB-6d a path is cut by whole characters: a pair of code units is never split', () => {
+      const emoji = String.fromCodePoint(0x1f600);
+      // 8 trailing characters leave 47 of the 55 kept: an odd number of code units, so a cut by code units would split a pair.
+      const reason = refused(`/relavium-nonexistent/${emoji.repeat(60)}/xx.yaml`);
+      expect(reason.startsWith('no file at …')).toBe(true);
+      expect(reason, 'no lone surrogate').toMatch(
+        /^(?:[^\ud800-\udfff]|[\ud800-\udbff][\udc00-\udfff])*$/u,
+      );
     });
   },
 );

@@ -137,6 +137,8 @@ export const PRICING_EDIT_LABEL = 'Change the prices';
 export const PRICING_NOT_RECORDED = 'Nothing was written.';
 /** What the Done step says when the write itself was refused. */
 export const PRICING_FAILED = 'Not recorded.';
+/** What it says when a CLEAR's write was refused: the override is still there. */
+export const PRICING_CLEAR_FAILED = 'Not removed.';
 const PRICING_TITLE = '/pricing';
 const PRICING_STEPS = ['Action', 'Model', 'Rates', 'Confirm', 'Done'] as const;
 /** The rail's step of each prompt of the form (the Done step is the rail's last). */
@@ -580,7 +582,7 @@ async function confirmAndCommit(
   if (attempt.ok) await flow.done(pricingDoneText(prepared.offer, attempt.written));
   else
     await flow.done({
-      message: PRICING_FAILED,
+      message: prepared.offer.kind === 'clear' ? PRICING_CLEAR_FAILED : PRICING_FAILED,
       lines: [clipLine(flowText(say(attempt.reason)), REASON_COLUMNS)],
       tone: 'failed',
       ...passedBy(prepared.offer.kind),
