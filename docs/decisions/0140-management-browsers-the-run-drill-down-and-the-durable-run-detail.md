@@ -210,3 +210,13 @@ This note records where §§2, 4 and 6 said more than the code does, and what th
 - **§2, the node page's output.** The member-name rule shared with the final summary is an exact list of credential names (a listed name masks a string or a number whole, never a boolean or a null), and a value is cut without splitting a character. The node page also scrubs its emitted text once more as a whole; that second pass can corrupt indented JSON where a header- or query-named member holds an object or an array, and the summary has no such pass. Keeping or removing it is the maintainer's decision, registered.
 
 > Amended 2026-11-24 ([ADR-0146](0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) §3, accepted the same day). **§6:** the Home's body order, which this section relies on, is stated there: the prompt stays where it is and the strip sits below it; a palette opens downward and hides the strip while it is open.
+
+### Amendment note — 2026-11-27 (unit 8: the tab host narrows to the Runs screen)
+
+The maintainer's ruling of 2026-11-26 ([OD-24](../roadmap/phases/mvp-11.md#72-decisions-od-1-to-od-23), D83) changes where §1–§3 put three commands; it reverses no data contract of §4. Plan and frames: [unit-8-plan.md](../roadmap/phases/mvp-11/unit-8-plan.md).
+
+- **§1 One tab host:** the host keeps **Active** and **History** and becomes the **Runs** screen. The **Defined** (workflows) tab, the **Permissions** tab and the agents host (**Defined** and **Sessions**) leave it: `/workflows`, `/agents` and `/permissions` open popups ([ADR-0148](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md), the note of 2026-11-27 at §10). The Runs screen opens from `[h]` in the `/workflows` popup and from the work page's run rows (`Enter`, §6: unchanged); no `/runs` command is added for now.
+- **§2 Active and History default to this directory**, as the work page does since unit 7 (the Active tab listed other projects' paused runs as `another project`): the rest is behind `[a] all`, read-only as today.
+- **§2 Defined, the workflow detail page** (description, declared inputs, node count, the three latest runs: owed since the amendment of 2026-11-24, never built) is built as the **detail step of the `/workflows` popup**, with the last runs read through `listRunSummaries({projectRoot, workflowId, limit})`.
+- **§3 `/agents`:** the Sessions tab goes (a saved conversation is `/resume`'s); the agent detail and `[c] chat` move into the `/agents` popup. `/permissions` is the chat popup's Home variant.
+

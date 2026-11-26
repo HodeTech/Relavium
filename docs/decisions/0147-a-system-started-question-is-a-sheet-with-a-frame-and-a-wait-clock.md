@@ -70,3 +70,8 @@ The answer chords (`Ctrl+Y`, `Ctrl+G` then Enter, `Ctrl+O` then Enter, `Ctrl+N`,
 - **The 80×24 arithmetic is brittle** (a 12-row sheet leaves exactly nine transcript rows once the status line and hint are hidden). Mitigation: the surface matrix, derived from the code's constants, and a real-terminal check.
 - **Gating the store's tick is a change to a hot path** every chat shares. Mitigation: the byte-count regression test and the existing store tests; the gate only ever removes flushes while the turn is blocked on the person.
 - **The ASCII `=` rule** may look heavy in a plain terminal. Mitigation: it is the price of keeping the two rules apart without colour.
+
+### Amendment note — 2026-11-27 (the unit-8 plan)
+
+This ADR is built in MVP-11 **unit 8** together with the inspection popup (ADR-0148 §7) and the Home's management popups, as one increment with one review cycle. The build list, what earlier units owe it (the `(wait)` display on the cards, the exit guard's held `Ctrl+Y`, the tab-host legend fits, the gate card's words) and its acceptance are in [unit-8-plan.md](../roadmap/phases/mvp-11/unit-8-plan.md) §2. Nothing in the decision changes.
+

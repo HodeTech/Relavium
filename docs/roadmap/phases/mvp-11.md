@@ -2,6 +2,8 @@
 
 > Status: **Planned** (2026-11-24). MVP-11's product work was to start when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) was merged to `main`; it was merged on 2026-11-24 as `c17e9763`, so nothing waits on it. **Step 1 (decisions, ADRs and a spike, no product code) is done:** the four ADRs it asks for are written and were **accepted by the maintainer on 2026-11-24** ([ADR-0145](../../decisions/0145-the-cli-has-one-surface-language.md), [ADR-0146](../../decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md), [ADR-0147](../../decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md), [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)), the real-terminal spike and a sandboxed first-run baseline are in [mvp-11/step-1-evidence.md](mvp-11/step-1-evidence.md), and the two open sub-questions of OD-8 and OD-23 are ruled (the spaced wordmark; one starter table of current models, Haiku 5.5 for Anthropic). Nothing in this file is built. **The ADRs refine this plan in places (their refinements are listed in [the evidence file's section E](mvp-11/step-1-evidence.md#e-corrections-owed-to-the-plan-made-in-the-end-of-mvp-documents-pass)); where this file and an ADR differ, the ADR wins until the close-out step brings this file into line.**
 >
+> **Progress (2026-11-27):** units 1 to 7 are built (the log: [mvp-11/implementation-log.md](mvp-11/implementation-log.md)); **unit 8 (Steps 5 and 5b plus the Home's management popups, OD-24, and the `/mode` redesign, OD-25 proposed) is planned in [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md)**, the resume point for it. The live status is in [current.md](../current.md); where a sentence above still says nothing is built, the log and that plan are newer.
+>
 > Last updated: 2026-11-24
 
 - **Related**: [current.md](../current.md) (order and live progress), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md) (the MVP-1…MVP-10 scope and acceptance this MVP extends), [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md), [ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md), [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md), [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md), [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md), [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md), [accessibility.md](../../reference/cli/accessibility.md), [home.md](../../reference/cli/home.md), [chat-session.md](../../reference/cli/chat-session.md), [glossary.md](../../glossary.md)
@@ -250,6 +252,7 @@ flowchart TD
 ![The inline form of a popup](mvp-11/popup-inline-fallback-80x24.png)
 
 - **Screens that stay screens.** On the Home, the management tab host (`/workflows`, `/agents`, `/permissions`), the run view and `/help` are screens in the Home's slot: they are longer than a popup's 21 rows and they are places you work in, not steps you pass through. This is a deliberate exception to "the same rule on the Home and in chat" for the three commands that exist in both places (`/workflows`, `/permissions`, `/help`) and is recorded as [OD-21](#72-decisions-od-1-to-od-23). The approval's full view and `/details` become the large inspection popup ([§4.5](#45-sheets), [OD-17](#72-decisions-od-1-to-od-23)).
+  - **Amended 2026-11-26 by [OD-24](#72-decisions-od-1-to-od-23) (maintainer: "öneriler ile ilerleyelim" on the popup study):** on the Home `/workflows`, `/agents`, `/permissions` and `/help` are **popups**; the exception above survives only for the **run browser** (the tab host narrowed to **Active | History**, the "Runs" screen, reached from `[h]` in the `/workflows` popup and from the work page's run rows) and the run view. The rule that decides the class: a popup is what you do in at most three keys and then return to what you were doing; a screen is what you browse and work in for a while. Design, the six decisions and the frames: [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md) §4–5.
 
 **Which step is answered how** (the guards named here are the existing ones; a popup adds none and removes none):
 
@@ -919,6 +922,8 @@ After Step 3 the language (one key grammar, one glyph table, one host-glyph set,
 
 ### Step 5 — Sheets
 
+> **Scope of unit 8 (2026-11-27):** see [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md) (it also lists what earlier units owe this step: the `(wait)` display on the cards, the exit guard's held `Ctrl+Y`, the tab-host legend fits).
+
 *Size L; rigor, certain: this step reframes the approval path.*
 
 **Goal:** one frame for every system-started question, with the wait clock in the rule.
@@ -930,6 +935,8 @@ After Step 3 the language (one key grammar, one glyph table, one host-glyph set,
 **Acceptance:** every floor pin of [§5.5](#55-security-invariants-the-floor-that-does-not-move) green and not rewritten; nine transcript rows with a 12-row sheet at 80×24; the question's gutter and label tested; the new frame's acknowledgement shown; the `━` and `─` rule distinguishable without colour.
 
 ### Step 5b — The inspection popup
+
+> **Scope of unit 8 (2026-11-27):** Steps 5 and 5b run as ONE increment with ONE review cycle (maintainer: do not slice), together with the Home's four management popups and the Runs screen (OD-24) and the `/mode` redesign (OD-25, proposed). The detailed plan, the owed items and the frames are in [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md).
 
 *Size M; rigor.*
 
@@ -1013,9 +1020,11 @@ Each was put to the maintainer with a recommendation, and on 2026-11-24 the main
 | **OD-18** | 2 | The speaker marker, and whether the inline renderer adds role words | `›` in the margin and bold text for your turn, the reply plain, no tint, no role labels in the full-screen renderer. The inline renderer is the accessible mode and may keep the words `you` / `agent` for screen readers: yes, as a per-renderer rule | 1 (ADR-A) |
 | **OD-19** | 1 | A message typed before any key exists | The first `Enter` opens the setup and **keeps the draft**; when setup closes the draft is in the prompt and is **not** sent (the alternative, sending it on success, risks sending to a model the user did not look at) | 2 |
 | **OD-20** | 1 | Text that names a shell command without being a remedy (the `/clear` notice names `relavium chat-resume`; the `/export` notice names `relavium run`) | Drop it from in-TUI notices; the exit line printed to the shell after the TUI has closed may keep it | 2 |
-| **OD-21** | 2 | Commands that exist on both surfaces but stay a screen on the Home (`/workflows`, `/permissions`, `/help`) | Yes: the tab host, the run view and `/help` are places you work in, not steps you pass through; the chat's versions are popups | 1 (ADR-C2) |
+| **OD-21** | 2 | Commands that exist on both surfaces but stay a screen on the Home (`/workflows`, `/permissions`, `/help`) | Yes: the tab host, the run view and `/help` are places you work in, not steps you pass through; the chat's versions are popups. **Amended 2026-11-26 by OD-24: only the run browser and the run view stay screens** | 1 (ADR-C2) |
 | **OD-22** | 1 | Does `/compact` ask first? | No: it shows what it spent in a notification; revisit if the usability run shows surprise | 4b |
 | **OD-23** | 2 | The first-run defaults: the consent card's first row, the default after a network failure, and naming the model | `Use it` stays the first row (the alternative is to start the cursor on `Not now`) but the step says it is saved and which model will be used; no failure case pre-selects `Save it anyway`; the model is named wherever a default is chosen. **Still open:** whether the three default-model paths should agree (`claude-haiku-4-5`, `claude-sonnet-4-6`), a product ruling this plan does not make | 4d |
+| **OD-24** | 2 | The Home's management commands (`/workflows`, `/agents`, `/permissions`, `/help`) as popups (amends OD-21) | **Accepted 2026-11-26 (maintainer, "öneriler ile ilerleyelim"), all six recommendations:** **D1** `/workflows` is a catalogue popup (detail step with description, inputs, node chain and the last three runs; `[r]` stacks the `/run` popup, `[x]` export, `[p]` pin) with `[h]` opening the Runs screen; the one-big-tabbed-popup alternative is rejected (an 18-row body, three depths, a legend that does not fit); **D2** the tab host keeps only Active and History (the Runs screen); **D3** no `/runs` command for now; **D4** Active and History default to this directory (`[a] all`); **D5** `/agents` is a list and detail popup with `[c] chat`, the Sessions tab goes (`/resume`); **D6** `/help` is Keys and Commands only, one page. The rule: a popup is what you do in at most three keys and then return to what you were doing; a screen is what you browse and work in for a while. Design, frames and code pointers: [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md) §4–5 | 5, 5b |
+| **OD-25** | 2 | `/mode`: a popup never asks for a decision that changes nothing (Home and chat); the same for `/models` | **PROPOSED 2026-11-27, not ruled (the mock-ups are under review):** in a chat one screen with two actions (`Enter` uses the highlighted mode in this chat, `Enter` on the mode in force just closes, `[s]` saves the startup default behind the existing confirmation; the *Apply to* screen goes; "New chats" becomes "startup default"); on the Home the same list without `this chat`, `Enter` on the saved value closes with a notification and any other mode opens the one confirmation; `/models`: a step in which nothing changed closes. **Open (recommendation first):** (1) `Enter` applies to this chat at once (alternative: keep the two steps and only skip the second when nothing changes); (2) the letter `[s]`; (3) a notification when the saved value is chosen again; (4) the rule joins `/models`. Analysis and frames: [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md) §6 | 5, 5b |
 
 ---
 
@@ -1106,21 +1115,21 @@ MVP-11 is complete when all of these hold on `development`, with the evidence wr
 
 | Command | Offered in | Today | MVP-11 class |
 |---|---|---|---|
-| `/help` | chat (typed, not in the palette); the Home has its own | chat: a text list in the transcript; Home: a screen | **popup** (report) in a chat; the Home's stays a screen |
+| `/help` | chat (typed, not in the palette); the Home has its own | chat: a text list in the transcript; Home: a screen | **popup** (report) in a chat; the Home's too (**OD-24**: Keys and Commands, one page) |
 | `/exit` | Home, chat | ends the Home (with the exit guard when a run is hosted), or the Home-hosted chat, or a stand-alone chat | instant; last in every list; the description says which |
 | `/cancel` | chat | cancels the turn and ends the resumable session | instant |
 | `/clear` | chat; listed in the Home but inert there | ends the conversation and starts a fresh session; on the bare Home it answers "No active conversation to clear — type a message to start one." | instant, with a content-free conversation marker; **dim with its reason** on the Home |
 | `/export` | chat | writes the `.relavium.yaml` scaffold without a card | **popup with confirmation** if OD-10 is accepted |
 | `/agent` | chat | a docked sheet | **popup** (report) |
-| `/workflows` | chat; Home | chat: a list in the transcript; Home: the tab host's Defined tab | chat: **popup** (report); Home: screen (OD-21) |
+| `/workflows` | chat; Home | chat: a list in the transcript; Home: the tab host's Defined tab | chat: **popup** (report); Home: **popup** (catalogue, detail step, stacked `/run`; **OD-24**, 2026-11-26, amends OD-21) |
 | `/cost` | chat | a note with the cumulative cost | **popup** (report; per-model breakdown; the release of held estimates is a confirmed control) |
 | `/doctor` | Home, chat | Home: the quick tier into a notice under the strip (a typed `--deep` is refused); chat: a note, with `--deep` | **popup** (report with controls and the deep tier's consent) |
-| `/mode` | Home, chat | a native picker that replaces the body on the bare Home and in a stand-alone chat; in a Home-hosted chat it shares the screen and shrinks the transcript | **popup** (two steps) |
+| `/mode` | Home, chat | a native picker that replaces the body on the bare Home and in a stand-alone chat; in a Home-hosted chat it shares the screen and shrinks the transcript | **popup** (two steps); **built so in units 5 and 7**; **OD-25 (proposed, 2026-11-27):** one screen with two actions (`Enter` uses the mode in this chat, `[s]` saves the startup default behind its confirmation; a choice that changes nothing asks nothing) |
 | `/effort` | chat | an overlay list | **popup** |
 | `/thinking` | chat | toggles the reasoning panel | instant |
 | `/details` | chat | a screen (the call list, then a call) | **inspection popup** (large; OD-17) |
 | `/compact` | chat | immediate; spends tokens | instant (whether it asks first is OD-22) |
-| `/permissions` | chat; Home | chat: a docked sheet; Home: the tab host | chat: **popup**; Home: screen (OD-21) |
+| `/permissions` | chat; Home | chat: a docked sheet; Home: the tab host | chat: **popup**; Home: **popup** (OD-24; the same content without *This session*) |
 | `/trim` | chat | immediate | instant, with a content-free conversation marker |
 | `/models` | Home, chat | an overlay picker | **popup** (two steps: the model, then *Effort & scope*) |
 | `/scrollback`, `/edit` | chat | immediate | instant |
@@ -1129,7 +1138,7 @@ MVP-11 is complete when all of these hold on `development`, with the evidence wr
 | `/init` | Home (and the Home-hosted chat today) | a native flow | **popup** flow (OD-2: Home only) |
 | `/resume` | Home (and the Home-hosted chat today) | a native picker | **popup** |
 | `/run` | Home | a native flow, then the run view | **popup** (three steps); the run view stays a screen |
-| `/agents` | Home | the tab host | screen |
+| `/agents` | Home | the tab host | **popup** (list and detail, `[c] chat`; OD-24; the Sessions tab goes: `/resume`) |
 | `/import` | Home | a native flow | **popup** flow |
 | `/pricing` | Home | a native flow | **popup** flow |
 
