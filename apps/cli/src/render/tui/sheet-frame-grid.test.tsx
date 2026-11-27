@@ -168,14 +168,26 @@ describe('what a pending sheet writes while it waits (ADR-0147 §2: the byte-cou
   async function waitWithTicks(
     m: ReturnType<typeof mount>,
     ms: number,
-  ): Promise<{ readonly bytes: number; readonly frames: number }> {
+  ): Promise<{
+    readonly bytes: number;
+    readonly frames: number;
+    /** The rows of the frame on screen before the wait, then of each frame written during it (the renderer rewrites the whole frame). */
+    readonly shown: readonly (readonly string[])[];
+  }> {
     const from = m.output.frames.length;
     const timer = setInterval(() => m.store.tick(), 80);
     await pause(ms);
     clearInterval(timer);
     const written = m.output.frames.slice(from).join('');
+    const rowsOf = (segment: string): readonly string[] => segment.replace(CONTROL, '').split('\n');
+    const before = m.output.frames.slice(0, from).join('').split(SYNC_BEGIN).at(-1) ?? '';
     // A frame is one synchronized update (`ESC [?2026h` … `ESC [?2026l`): the renderer writes each in a few chunks.
-    return { bytes: written.length, frames: written.split(SYNC_BEGIN).length - 1 };
+    const during = written.split(SYNC_BEGIN).slice(1);
+    return {
+      bytes: written.length,
+      frames: during.length,
+      shown: [rowsOf(before), ...during.map(rowsOf)],
+    };
   }
 
   it('inline: the rule says `waiting since HH:MM` and N ticks write ZERO bytes', async () => {
@@ -188,7 +200,10 @@ describe('what a pending sheet writes while it waits (ADR-0147 §2: the byte-cou
       /^== Approval needed =+ waiting since \d\d:\d\d ==$/mu,
     );
     const written = await waitWithTicks(m, 2500);
-    expect(written, 'not one byte while the sheet waits').toEqual({ bytes: 0, frames: 0 });
+    expect(
+      { bytes: written.bytes, frames: written.frames },
+      'not one byte while the sheet waits',
+    ).toEqual({ bytes: 0, frames: 0 });
   });
 
   it('alternate screen: at most one frame a second, the clock’s, while the frame loop ticks at its own rate', async () => {
@@ -202,7 +217,68 @@ describe('what a pending sheet writes while it waits (ADR-0147 §2: the byte-cou
     // Each second the clock's text changes once: one frame per second, against the frame loop's 37 ticks.
     expect(written.frames).toBeGreaterThan(0);
     expect(written.frames).toBeLessThanOrEqual(seconds + 1);
+    // And every one of them is the clock's: each frame written differs from the one before it in the sheet's rule row alone, and there only in
+    // the clock's text (unit 8 fix wave, D-5: the bytes are the clock's frames and nothing else's).
+    for (let index = 1; index < written.shown.length; index += 1) {
+      const previous = written.shown[index - 1] ?? [];
+      const next = written.shown[index] ?? [];
+      expect(next.length, 'the frame keeps its rows').toBe(previous.length);
+      const changed = next.flatMap((row, at) => (row === previous[at] ? [] : [at]));
+      expect(changed, `frame ${String(index)} changes one row`).toHaveLength(1);
+      const row = changed[0] ?? -1;
+      expect(next[row]).toMatch(/^== Approval needed =+ waiting 0:\d\d ==$/u);
+      expect(next[row]?.replace(/waiting 0:\d\d/u, '')).toBe(
+        previous[row]?.replace(/waiting 0:\d\d/u, ''),
+      );
+    }
     const clock = m.rowsWith('Esc stops the turn').find((row) => row.startsWith('== '));
     expect(clock).toMatch(/waiting 0:0[2-5] ==$/u);
   });
+});
+
+describe('R1-M proposed: the agent’s question and the continue checkpoint wear the clock too (ADR-0147 §1, §2)', () => {
+  const QUESTION = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which file?',
+        multiSelect: false,
+        options: [
+          { label: 'a.ts', description: 'first' },
+          { label: 'b.ts', description: 'second' },
+        ],
+      },
+    ],
+  };
+  const CARDS = [
+    [
+      'the agent’s question',
+      'Which file?',
+      /^== Question from the agent .{1,3} not an approval =+ CLOCK ==$/u,
+    ],
+    ['the continue checkpoint', 'Stop here', /^== Checkpoint =+ CLOCK ==$/u],
+  ] as const;
+
+  it.each(CARDS)(
+    '%s: ticking in the alternate screen, `waiting since HH:MM` inline',
+    async (name, needle, rule) => {
+      for (const alternate of [true, false]) {
+        const m = mount(alternate, { cols: 80, rows: 24 });
+        await pause(40);
+        for (const event of TURN) m.store.apply(event);
+        if (name.includes('question'))
+          void m.store.requestQuestion(QUESTION).catch(() => undefined);
+        else void m.store.requestCheckpoint({ rounds: 12, interval: 8 }).catch(() => undefined);
+        await vi.waitFor(() => expect(m.rowsWith(needle).length).toBeGreaterThan(1));
+        await pause(120);
+        const clock = alternate ? 'waiting 0:\\d\\d' : 'waiting since \\d\\d:\\d\\d';
+        const expected = new RegExp(rule.source.replace('CLOCK', clock), 'u');
+        const rows = m.rowsWith(needle);
+        expect(
+          rows.find((row) => row.startsWith('== ')),
+          rows.join('\n'),
+        ).toMatch(expected);
+      }
+    },
+  );
 });

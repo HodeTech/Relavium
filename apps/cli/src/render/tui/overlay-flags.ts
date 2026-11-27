@@ -136,7 +136,7 @@ const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
  *
  * | # | Gate | Where the lists disagreed |
  * |---|------|---------------------------|
- * | 1 | `screenSlot` | a screen is not one: it REPLACES the slot (`openHelp` checks on its own), and it is never open in a chat |
+ * | 1 | `screenSlot` | a screen is not one: it REPLACES the slot (`openScreen` checks on its own), and it is never open in a chat |
  * | 2 | `screenSlot` | `nativeActionBusy` is not one: three of the slot's five callers check the flag themselves |
  * | 3 | `stripPause` | `nativePrompt` does not pause the strip, though `nativeActionBusy`, which is set with it, does |
  * | 4 | `pointer` | the cards close it, but `approval` does not: it is always paired with `review` |
@@ -150,7 +150,7 @@ const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
   palette: [...SUBMODE, ...ON_THE_LANDING],
   search: SUBMODE,
   mention: SUBMODE,
-  // A screen replaces the slot rather than being refused by it (`openHelp` checks it on its own), and it is never open in a chat.
+  // A screen replaces the slot rather than being refused by it (`openScreen` checks it on its own), and it is never open in a chat.
   screen: ['stripPause', 'pageNotice'],
   // The slot checks the card on its own today; the table says the same thing once.
   exitGuard: ['screenSlot', 'stripPause', 'activePoll', 'pageNotice'],

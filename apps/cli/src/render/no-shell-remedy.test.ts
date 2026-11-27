@@ -262,7 +262,7 @@ const ALLOWANCES: readonly Allowance[] = [
     file: 'home/defined-port.ts',
     includes: 'Use relavium export ',
     reason:
-      "the Defined tab's export never overwrites (ADR-0140 §9); `--force` exists only in the shell, and the popup has no way to replace a file",
+      "the `/workflows` popup's export never overwrites (ADR-0140 §9); `--force` exists only in the shell, and the popup has no way to replace a file",
   },
   {
     file: 'home/import-port.ts',

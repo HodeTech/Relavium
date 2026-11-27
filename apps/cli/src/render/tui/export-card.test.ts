@@ -1,5 +1,5 @@
 /**
- * The export card of the Defined tab ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * The export card of the `/workflows` popup ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §2, MVP-8 step 4): it shows the destination and the size before anything is written, its default is No, and only a `Ctrl+Y` the chord
  * guard accepts writes, once, through the commit. `Esc`, `Ctrl+C`, `Ctrl+N`, a flow cancelled under the card and every key that is not a
  * chord write nothing; a refusal is shown in the same place and writes nothing.

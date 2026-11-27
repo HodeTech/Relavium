@@ -68,7 +68,7 @@ export interface ReplCommandContext {
    * `/permissions` where there is no popup to open ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
    * §2, ADR-0148 §10): a plain, `--json` or one-shot chat, which has no store and no one to ask. The interactive hosts route the command to
    * its popup before it gets here, as they do `/models`. The command takes no argument (the typed `--revoke` forms are gone, and the
-   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens its Permissions tab through its own controller.
+   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens its `/permissions` popup through its own controller.
    */
   readonly managePermissions: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).

@@ -566,7 +566,7 @@ describe('how the view is reached', () => {
   });
 
   describe('a /run that started no run opens no view, however it ended, while another run executes or starts', () => {
-    // The launch flow ends in a notice: the view is for the run it STARTED, told by the leg it left behind, as `r` on a Defined row tells it.
+    // The launch flow ends in a notice: the view is for the run it STARTED, told by the leg it left behind, as `r` on a `/workflows` row tells it.
     // A view of ANOTHER run that is executing would hide the notice and is not what `/run` asked for.
     const scenarios: readonly {
       readonly name: string;

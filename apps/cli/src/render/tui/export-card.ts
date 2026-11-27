@@ -4,7 +4,7 @@ import type { NativeChordPort, NativePromptFlow } from './native-prompt-channel.
 import { clipLine } from './sheet-frame.js';
 
 /**
- * The export of the Defined tab, drawn as a popup ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * The export of the `/workflows` popup, drawn as a popup ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §2, MVP-8 step 4; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1, §3, §6):
  * what `x` on a row asks the person before a file is written. Its rail is `Review · Done`. It is drawn by the native channel framed as a popup
  * (`framedFlow`), so it owns no keys of its own and every layer of the chord guard applies to its Yes.

@@ -70,6 +70,7 @@ import {
   type RunLaunch,
 } from './run-launch.js';
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
+import { CliError } from '../process/errors.js';
 
 let root: string;
 /**
@@ -1038,7 +1039,7 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
   });
 });
 
-describe('open(slug) starts the form for one workflow (the Defined tab’s r)', () => {
+describe('open(slug) starts the form for one workflow (the `/workflows` popup’s `[r]`)', () => {
   it('skips the picker: the first prompt is the workflow’s own, and the confirmation is still answered by Ctrl+Y alone', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
@@ -1209,6 +1210,76 @@ describe('a launch started from the /workflows popup (MVP-11 unit 8, OD-24 D1)',
     expect(r.startCalls).toHaveLength(0);
   });
 
+  it('a No at the confirmation, a step back and a refusal do not tell the Home the stack was left; `Ctrl+C` does, once', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    // `Ctrl+N` is the person's own No: the popup it came from comes back.
+    const declined = rig();
+    const onDeclined = vi.fn();
+    const first = declined.launch.open('no-inputs', undefined, {
+      ...FROM_WORKFLOWS,
+      onLeave: onDeclined,
+    });
+    await shows(declined, 'chord', 'Run no-inputs');
+    keys(declined).ctrlN();
+    expect(await first).toBe(LAUNCH_CANCELLED);
+    expect(onDeclined).not.toHaveBeenCalled();
+    // `Esc` at the first thing it asks steps back to the popup.
+    const stepped = rig();
+    const onStepped = vi.fn();
+    const second = stepped.launch.open('no-inputs', undefined, {
+      ...FROM_WORKFLOWS,
+      onLeave: onStepped,
+    });
+    await shows(stepped, 'chord', 'Run no-inputs');
+    keys(stepped).esc();
+    expect(await second).toBe('');
+    expect(onStepped).not.toHaveBeenCalled();
+    // `Ctrl+C` closes the whole stack.
+    const left = rig();
+    const onLeft = vi.fn();
+    const third = left.launch.open('no-inputs', undefined, { ...FROM_WORKFLOWS, onLeave: onLeft });
+    await shows(left, 'chord', 'Run no-inputs');
+    keys(left).ctrlC();
+    expect(await third).toBe(LAUNCH_CANCELLED);
+    expect(onLeft).toHaveBeenCalledOnce();
+  });
+
+  it('a file the catalog refuses at the pick is the flow’s own failure, said in the popup: the Home is not told the stack was left', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig({
+      catalog: (real) => ({
+        ...real,
+        load: () => {
+          throw new CliError('invalid_invocation', 'The workflow file could not be read.');
+        },
+      }),
+    });
+    const onLeave = vi.fn();
+    const opened = r.launch.open('no-inputs', undefined, { ...FROM_WORKFLOWS, onLeave });
+    expect((await lastStep(r)).message).toContain('could not be read');
+    expect(await opened).toBe('');
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  it('a launch that names its workflow does not show the picker’s warning about files it did not offer (review round 1, O-8)', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    writeWorkflow('not-a-workflow.relavium.yaml', BROKEN);
+    const stacked = rig();
+    const opened = stacked.launch.open('no-inputs', undefined, FROM_WORKFLOWS);
+    const card = await shows(stacked, 'chord', 'Run no-inputs');
+    expect(card.note ?? '', 'no warning above the first question').not.toContain('Not offered');
+    expect(stacked.snapshots.some((snapshot) => snapshot.includes('Not offered'))).toBe(false);
+    keys(stacked).ctrlN();
+    await opened;
+    // The typed `/run` (no workflow named) keeps it: the picker is where it belongs.
+    const plain = rig();
+    const picked = plain.launch.open();
+    const picker = await shows(plain, 'select', 'Run which workflow?');
+    expect(picker.note).toContain('Not offered');
+    keys(plain).esc();
+    await picked;
+  });
+
   it('a launch that names no workflow (the picker) is the plain `/run`, whatever opener it was given: the picker is its first thing', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     const r = rig();
@@ -1232,7 +1303,7 @@ describe('a launch started from the /workflows popup (MVP-11 unit 8, OD-24 D1)',
 });
 
 describe('open(slug, path) refuses a slug whose file is not the one the row was listed from', () => {
-  /** The path the Defined row carried: the catalog's own, as it listed `none.relavium.yaml` before the file changed. */
+  /** The path the `/workflows` row carried: the catalog's own, as it listed `none.relavium.yaml` before the file changed. */
   const listed = join('.relavium', 'workflows', 'none.relavium.yaml');
 
   it('starts the form when the fresh catalog holds the slug in the very file the row named', async () => {
@@ -1296,7 +1367,7 @@ describe('the file that is read for the pick must still declare the id it was li
     },
   });
 
-  it('refuses a slug that was asked for (the Defined tab’s `r`), names the id the file declares now, and shows no form or confirmation', async () => {
+  it('refuses a slug that was asked for (the `/workflows` popup’s `[r]`), names the id the file declares now, and shows no form or confirmation', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
     const r = rig({ catalog: changesIdBeforeRead });
     const opened = r.launch.open('no-inputs');
@@ -2206,7 +2277,7 @@ describe('a request while the host already hosts a leg is answered before the fo
     expect(r.channel.ui.getSnapshot().active).toBe(false);
     expect(list, 'the catalog was not read').not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
-    // The same for `r` on a workflow of the Defined tab (the slug is not even looked at), said whole on the tab's own row.
+    // The same for `r` on a workflow of the `/workflows` popup (the slug is not even looked at), said whole on the notification.
     const whole = await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml');
     expect(whole).toBe(
       'A run is already executing (01234567). Enter on its row in the strip opens it.',

@@ -72,6 +72,33 @@ describe('wrapHanging', () => {
   });
 });
 
+describe('wrapHanging: every line after the first starts at the hang (found on the real binary, review round 1)', () => {
+  it('a chain that breaks just before a space does not start the next line one column deeper than the others', () => {
+    const chain = [
+      'start',
+      ...Array.from({ length: 12 }, (_, at) => `step-${String(at + 1)}`),
+      'out',
+    ].join(' → ');
+    // As the detail wraps its rows: two columns less than a line of text has (a section row is drawn two columns in).
+    const lines = wrapHanging(`Nodes    ${chain}`, POPUP_TEXT_COLUMNS - 2, 9);
+    expect(lines.length).toBeGreaterThan(2);
+    for (const line of lines.slice(1)) {
+      expect(line.startsWith(' '.repeat(9)), line).toBe(true);
+      expect(line.slice(9).startsWith(' '), `no extra space: "${line}"`).toBe(false);
+    }
+    for (const line of lines)
+      expect(displayWidth(line)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS - 2);
+  });
+
+  it('holds wherever the break falls: for every width the continuation lines all start at the hang', () => {
+    const text =
+      'Nodes    start → step-1 → step-2 → step-3 → step-4 → step-5 → step-6 → step-7 → out';
+    for (let columns = 24; columns <= 80; columns += 1)
+      for (const line of wrapHanging(text, columns, 9).slice(1))
+        expect(/^ {9}\S/u.test(line), `${String(columns)}: "${line}"`).toBe(true);
+  });
+});
+
 describe('no wrap leaves a line that starts with a lone slash', () => {
   it('moves the break to before the word in front of it, so a slash that means "or" stays with the word it follows', () => {
     // `off / low / medium / high / max.`: a break before the fourth `/` would leave `/ high / max.` at the head of a line, which reads as a command.

@@ -19,6 +19,7 @@ import {
   settleWork,
   workflowEntry,
 } from './home-popups.test-support.js';
+import type { WorkflowsAt } from './home-port.js';
 import { WORKFLOWS_STEP } from './home-workflows-popup.js';
 
 const NOW = Date.parse('2026-11-27T12:00:00Z');
@@ -26,7 +27,7 @@ const ago = (ms: number): string => new Date(NOW - ms).toISOString();
 const HOUR = 3_600_000;
 
 /** The popup opened and its catalogue landed and settled. */
-async function opened(fakes = fakeWorkflows(), at?: { readonly slug: string }) {
+async function opened(fakes = fakeWorkflows(), at?: WorkflowsAt) {
   const rig = homeRig();
   expect(rig.open('workflows', { workflows: fakes.port }, at).opened).toBe(true);
   await settleWork();
@@ -168,7 +169,82 @@ describe('the detail', () => {
     expect(words).toMatch(/done\s+2d ago\s+092e6161/u);
     expect(words).toMatch(/failed\s+4d ago\s+fa7f8a61/u);
     expect(rig.controls()).toEqual(['r', 'x', 'p']);
+    expect(
+      rig.highlighted(),
+      'the page opens at its title: no last run is in front for an Enter to open (a held or doubled Enter stops here)',
+    ).toBe('title');
+  });
+
+  it('a detail opened after another was left on a last run opens at its title again, never on the line the last page ended on (no stale highlight for an Enter to open)', async () => {
+    const fakes = fakeWorkflows([workflowEntry('alpha'), workflowEntry('beta')], { now: NOW });
+    for (const slug of ['alpha', 'beta'])
+      fakes.runs.set(slug, [
+        { runId: `${slug}-run-1-full-id`, status: 'completed', at: ago(HOUR) },
+      ]);
+    const { rig } = await opened(fakes);
+    rig.press('', ENTER);
+    await settleWork();
+    rig.clock.advance(700);
+    for (let step = 0; step < 30 && rig.highlighted() !== 'run:0'; step += 1) rig.press('', DOWN);
     expect(rig.highlighted()).toBe('run:0');
+    rig.press('', ESC);
+    expect(rig.step()).toBe(WORKFLOWS_STEP.list);
+    rig.press('', DOWN);
+    rig.press('', ENTER);
+    await settleWork();
+    expect(rig.step()).toBe(WORKFLOWS_STEP.detail);
+    expect(rig.words()).toContain('beta');
+    expect(rig.highlighted(), 'at the title, not on the last page’s run').toBe('title');
+  });
+
+  it.each([
+    ['a doubled Enter, 60 ms apart', 60],
+    ['a held Enter at 25 Hz', 40],
+  ])(
+    '%s stops at the detail: the host is never asked for the Runs screen (review round 1, X-5/O-6)',
+    async (_name, gap) => {
+      const fakes = fakeWorkflows([workflowEntry('backup-db')], { now: NOW });
+      fakes.runs.set('backup-db', [
+        { runId: '41ae651d-aaaa', status: 'completed', at: ago(HOUR) },
+        { runId: '092e6161-bbbb', status: 'failed', at: ago(2 * HOUR) },
+      ]);
+      const { rig } = await opened(fakes);
+      rig.press('', ENTER);
+      // The repeats come while the detail is read and after it landed: neither answers.
+      for (let repeat = 0; repeat < 5; repeat += 1) {
+        rig.clock.advance(gap);
+        rig.press('', { return: true, eventType: 'repeat' });
+        rig.press('', ENTER);
+      }
+      await settleWork();
+      for (let repeat = 0; repeat < 25; repeat += 1) {
+        rig.clock.advance(gap);
+        rig.press('', repeat % 2 === 0 ? ENTER : { return: true, eventType: 'repeat' });
+      }
+      expect(rig.step()).toBe(WORKFLOWS_STEP.detail);
+      expect(rig.isOpen()).toBe(true);
+      expect(fakes.asked, 'nothing was opened').toEqual([]);
+      expect(rig.highlighted()).toBe('title');
+    },
+  );
+
+  it('a workflow file added between the detail and the refresh after `[p]` moves the indices: the detail does not turn into another workflow’s, it goes back to the catalogue (review round 1, X-4)', async () => {
+    const fakes = fakeWorkflows([workflowEntry('backup-db'), workflowEntry('release-notes')], {
+      now: NOW,
+    });
+    const { rig } = await opened(fakes);
+    rig.press('', ENTER);
+    await settleWork();
+    rig.clock.advance(700);
+    expect(rig.words()).toContain('backup-db');
+    // Another terminal adds a file that sorts before it: its entry index is now another workflow's.
+    fakes.entries.unshift(workflowEntry('aaa-added'));
+    rig.press('p');
+    expect(rig.step(), 'back on the catalogue').toBe(WORKFLOWS_STEP.list);
+    expect(rig.words()).toContain('aaa-added');
+    expect(fakes.pins.calls, 'the pin was written for the workflow that was in front').toEqual([
+      'pin backup-db',
+    ]);
   });
 
   it('a workflow with no run says so; `Enter` is then offered nowhere', async () => {
@@ -260,8 +336,8 @@ describe('what the keys hand the host', () => {
     rig.press('', DOWN);
     rig.press('r');
     expect(rig.isOpen()).toBe(false);
-    expect(fakes.asked).toEqual([
-      'run release-notes .relavium/workflows/release-notes.relavium.yaml',
+    expect(fakes.asked, 'pressed on the catalogue: the host brings the catalogue back').toEqual([
+      'run release-notes .relavium/workflows/release-notes.relavium.yaml from list',
     ]);
   });
 
@@ -272,7 +348,9 @@ describe('what the keys hand the host', () => {
     rig.clock.advance(700);
     rig.press('x');
     expect(rig.isOpen()).toBe(false);
-    expect(fakes.asked).toEqual(['export backup-db']);
+    expect(fakes.asked, 'pressed on the detail: the host brings the detail back').toEqual([
+      'export backup-db from detail',
+    ]);
 
     const second = await opened();
     second.rig.press('', ENTER);
@@ -280,7 +358,7 @@ describe('what the keys hand the host', () => {
     second.rig.clock.advance(700);
     second.rig.press('r');
     expect(second.fakes.asked).toEqual([
-      'run backup-db .relavium/workflows/backup-db.relavium.yaml',
+      'run backup-db .relavium/workflows/backup-db.relavium.yaml from detail',
     ]);
   });
 
@@ -305,6 +383,10 @@ describe('what the keys hand the host', () => {
     second.rig.press('', ENTER);
     await settleWork();
     second.rig.clock.advance(700);
+    // The page opens at its title; ↓ walks down to the last run, which is the one line that answers `Enter`.
+    for (let step = 0; step < 30 && second.rig.highlighted() !== 'run:0'; step += 1)
+      second.rig.press('', DOWN);
+    expect(second.rig.highlighted()).toBe('run:0');
     second.rig.press('', ENTER);
     expect(second.rig.isOpen()).toBe(false);
     expect(fakes.asked).toEqual(['runs run-1-full-id']);
@@ -423,7 +505,9 @@ describe('reopened on a workflow (a flow handed it back)', () => {
   it('opens on the detail of that workflow with the catalogue behind it highlighted on it', async () => {
     const fakes = fakeWorkflows([workflowEntry('a'), workflowEntry('b')]);
     const rig = homeRig();
-    expect(rig.open('workflows', { workflows: fakes.port }, { slug: 'b' }).opened).toBe(true);
+    expect(
+      rig.open('workflows', { workflows: fakes.port }, { slug: 'b', step: 'detail' }).opened,
+    ).toBe(true);
     await settleWork();
     await settleWork();
     expect(rig.step()).toBe(WORKFLOWS_STEP.detail);
@@ -434,10 +518,24 @@ describe('reopened on a workflow (a flow handed it back)', () => {
     expect(rig.highlighted()).toBe('wf:1');
   });
 
+  it('reopened from the catalogue row it was pressed on: the catalogue, the highlight on that workflow, and no detail', async () => {
+    const fakes = fakeWorkflows([workflowEntry('a'), workflowEntry('b')]);
+    const rig = homeRig();
+    expect(
+      rig.open('workflows', { workflows: fakes.port }, { slug: 'b', step: 'list' }).opened,
+    ).toBe(true);
+    await settleWork();
+    await settleWork();
+    expect(rig.step()).toBe(WORKFLOWS_STEP.list);
+    expect(rig.highlighted()).toBe('wf:1');
+    expect(fakes.describe, 'no detail was read').not.toHaveBeenCalled();
+  });
+
   it('a workflow that left the catalogue opens the catalogue', async () => {
     const rig = homeRig();
     expect(
-      rig.open('workflows', { workflows: fakeWorkflows().port }, { slug: 'nobody' }).opened,
+      rig.open('workflows', { workflows: fakeWorkflows().port }, { slug: 'nobody', step: 'detail' })
+        .opened,
     ).toBe(true);
     await settleWork();
     expect(rig.step()).toBe(WORKFLOWS_STEP.list);
@@ -481,6 +579,87 @@ describe('what a stored word cannot do', () => {
           expect([...text].length).toBeLessThanOrEqual(120);
         }
       }
+    },
+  );
+});
+
+describe('R1-M proposed: the slug and an invalid file’s note are stored words too', () => {
+  const FORGED = [
+    `${String.fromCharCode(27)}[31mred`,
+    '▼ 9 more',
+    '[Enter] open',
+    'Press Ctrl+Y now',
+  ];
+
+  it.each(FORGED)(
+    'a workflow slug and a parse note of %j are drawn as text in the list, its effect and the detail',
+    async (hostile) => {
+      const fakes = fakeWorkflows([
+        workflowEntry(`ok-${hostile}`),
+        invalidWorkflowEntry(`bad-${hostile}`, hostile),
+      ]);
+      const { rig } = await opened(fakes);
+      const listed = rig.content();
+      if (listed.kind !== 'list') throw new Error('list');
+      const texts = (
+        rows: readonly {
+          label: string;
+          detail?: string | undefined;
+          effect?: string | undefined;
+          tail?: { words: string } | undefined;
+        }[],
+      ): string[] =>
+        rows.flatMap((row) => [
+          row.label,
+          row.detail ?? '',
+          row.effect ?? '',
+          row.tail?.words ?? '',
+        ]);
+      const all = texts(listed.rows);
+      rig.press('', DOWN); // the invalid row: its effect says why it cannot run
+      rig.press('r'); // and so does the notification of `[r]` on it
+      const notified = rig.notice() ?? '';
+      const effects = rig.content();
+      if (effects.kind !== 'list') throw new Error('list');
+      rig.press('', ENTER); // its detail
+      await settleWork();
+      const detail = rig.content();
+      const lines =
+        detail.kind === 'list'
+          ? texts(detail.rows)
+          : detail.kind === 'report'
+            ? [...detail.lines]
+            : [];
+      for (const text of [...all, ...texts(effects.rows), ...lines, notified]) {
+        expect(text.includes(String.fromCharCode(27)), text).toBe(false);
+        expect(text, text).not.toMatch(/▼ \d+ more/u);
+        expect(text, text).not.toMatch(/\[Enter\]/u);
+        expect(text, text).not.toMatch(/Ctrl\+Y/u);
+      }
+    },
+  );
+});
+
+describe('R1-M proposed: the catalog’s own words of a failed read are stored words too', () => {
+  it.each(['▼ 9 more', '[Enter] open', 'Press Ctrl+Y now'])(
+    'an unreadable catalogue saying %j is drawn as text',
+    async (hostile) => {
+      const rig = homeRig();
+      const port = {
+        workflows: {
+          ...fakeWorkflows().port,
+          read: () => {
+            throw new CliError('invalid_invocation', hostile);
+          },
+        },
+        workOwner: recordingOwner([]),
+      };
+      expect(rig.open('workflows', port).opened).toBe(true);
+      await settleWork();
+      const words = rig.words();
+      expect(words).not.toMatch(/▼ \d+ more/u);
+      expect(words).not.toMatch(/\[Enter\]/u);
+      expect(words).not.toMatch(/Ctrl\+Y/u);
     },
   );
 });

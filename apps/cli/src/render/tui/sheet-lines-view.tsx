@@ -11,29 +11,8 @@ import {
   type EmphasisSet,
 } from './emphasis.js';
 import type { StatusColor } from './format.js';
-import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
-import {
-  permissionsSheetLines,
-  type PermissionsSheetState,
-  type SheetLine,
-  type SheetLineKind,
-  type SheetRole,
-} from './permissions-sheet.js';
-
-/**
- * The `/permissions` sheet ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2)
- * — a PURE ink view over {@link permissionsSheetLines}. It owns no `useInput`: the host routes keys to `foldPermissionsSheetKey` and
- * re-renders this from the resulting state, as it does for the model picker. Every state the colour shows also has a word or a glyph (the
- * `›` marker, the `[d]` and `Enter` chips, the `✓`/`✗` of an answer, the `▲`/`▼` markers), so the sheet reads the same with colour
- * off (ADR-0122 §7.2).
- */
-export interface PermissionsSheetViewProps {
-  readonly state: PermissionsSheetState;
-  readonly color: boolean;
-  readonly columns: number;
-  readonly rows: number;
-}
+import type { SheetLine, SheetLineKind, SheetRole } from './sheet-frame.js';
 
 /** What colour (and dim) a line or a stretch takes: nothing with colour off. Its weight is {@link kindEmphasis} and {@link roleEmphasis}, which colour does not switch. */
 type StyleProps = { readonly color?: StatusColor; readonly dimColor?: true };
@@ -163,9 +142,12 @@ function lineKey(line: SheetLine, index: number): string {
 }
 
 /**
- * Lines drawn as the sheet draws them: each in the style of its kind, each span in its role, no line wrapped. The one painter of a
- * {@link SheetLine} list, so a screen that composes the sheet's body in a frame of its own (the Home's tab host, ADR-0140 §3) paints
- * the very same rows the chat's docked sheet does. The selected row is bold and inverse with colour on and off alike (ADR-0145 §5).
+ * The one painter of a {@link SheetLine} list: each line in the style of its kind, each span in its role, no line wrapped. Every popup frame
+ * ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)) and the tab host's body (ADR-0140 §3) are
+ * painted by it, so a row of one looks like a row of the other. It owns no `useInput` and no state: a pure view over lines a model built. Every
+ * state the colour shows also has a word or a glyph (the `›` marker, the `[d]` and `Enter` chips, the `✓`/`✗` of an answer, the `▲`/`▼`
+ * markers), so a screen reads the same with colour off (ADR-0122 §7.2). The selected row is bold and inverse with colour on and off alike
+ * (ADR-0145 §5).
  */
 export function SheetLinesView(
   props: Readonly<{ lines: readonly SheetLine[]; color: boolean }>,
@@ -189,14 +171,4 @@ export function SheetLinesView(
       ))}
     </Box>
   );
-}
-
-export function PermissionsSheetView(props: Readonly<PermissionsSheetViewProps>): ReactElement {
-  const lines = withGlyphForm(!props.color, () =>
-    permissionsSheetLines(props.state, {
-      columns: props.columns,
-      terminalRows: props.rows,
-    }),
-  );
-  return <SheetLinesView lines={lines} color={props.color} />;
 }

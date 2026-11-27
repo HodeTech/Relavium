@@ -182,7 +182,7 @@ describe('no view draws bold, inverse or underline except through the one rule',
     const names = new Set(FILES.map((file) => file.name));
     for (const view of [
       'render/tui/palette-view.tsx',
-      'render/tui/permissions-sheet-view.tsx',
+      'render/tui/sheet-lines-view.tsx',
       'render/tui/home-view.tsx',
       'render/tui/tool-review-view.tsx',
       'render/tui/prompt-view.tsx',

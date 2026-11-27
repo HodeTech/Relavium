@@ -248,13 +248,18 @@ export function visibleRows(step: PopupStepState): readonly PopupListRow[] {
 const canAct = (row: PopupListRow | undefined): boolean =>
   row !== undefined && row.enabled !== false;
 
-function firstEnabled(rows: readonly PopupListRow[]): number {
-  const index = rows.findIndex(canAct);
+/** Whether the highlight may stand on a row: any row of a page of lines (`PopupContent` list `page`: the arrows walk every line), else a row that can act. */
+type Walkable = (row: PopupListRow | undefined) => boolean;
+const walkable = (content: PopupContent): Walkable =>
+  content.kind === 'list' && content.page === true ? (row) => row !== undefined : canAct;
+
+function firstEnabled(rows: readonly PopupListRow[], can: Walkable = canAct): number {
+  const index = rows.findIndex(can);
   return index < 0 ? 0 : index;
 }
 
-function lastEnabled(rows: readonly PopupListRow[]): number {
-  for (let index = rows.length - 1; index >= 0; index -= 1) if (canAct(rows[index])) return index;
+function lastEnabled(rows: readonly PopupListRow[], can: Walkable = canAct): number {
+  for (let index = rows.length - 1; index >= 0; index -= 1) if (can(rows[index])) return index;
   return 0;
 }
 
@@ -642,9 +647,14 @@ function withStep(frame: PopupFrame, state: PopupStepState): PopupFrame {
 }
 
 /** The next row from `from` in `direction` that can act, or `from` when there is none (no wrap-around). */
-function nextEnabled(rows: readonly PopupListRow[], from: number, direction: 1 | -1): number {
+function nextEnabled(
+  rows: readonly PopupListRow[],
+  from: number,
+  direction: 1 | -1,
+  can: Walkable = canAct,
+): number {
   for (let at = from + direction; at >= 0 && at < rows.length; at += direction)
-    if (canAct(rows[at])) return at;
+    if (can(rows[at])) return at;
   return from;
 }
 
@@ -654,13 +664,14 @@ function pageEnabled(
   from: number,
   direction: 1 | -1,
   pageRows: number,
+  can: Walkable = canAct,
 ): number {
   const target = Math.max(0, Math.min(rows.length - 1, from + direction * Math.max(1, pageRows)));
-  if (canAct(rows[target])) return target;
-  const onward = nextEnabled(rows, target, direction);
+  if (can(rows[target])) return target;
+  const onward = nextEnabled(rows, target, direction, can);
   if (onward !== target) return onward;
   const opposite: 1 | -1 = direction === 1 ? -1 : 1;
-  return nextEnabled(rows, target, opposite);
+  return nextEnabled(rows, target, opposite, can);
 }
 
 /**
@@ -696,14 +707,15 @@ function selectedAfter(
   from: number,
   action: NavigationAction,
   pageRows: number,
+  can: Walkable,
 ): number {
   switch (action.kind) {
     case 'move':
-      return nextEnabled(rows, from, action.delta);
+      return nextEnabled(rows, from, action.delta, can);
     case 'page':
-      return pageEnabled(rows, from, action.delta, pageRows);
+      return pageEnabled(rows, from, action.delta, pageRows, can);
     case 'jump':
-      return action.to === 'first' ? firstEnabled(rows) : lastEnabled(rows);
+      return action.to === 'first' ? firstEnabled(rows, can) : lastEnabled(rows, can);
   }
 }
 
@@ -761,7 +773,7 @@ function moveIn(
   if (state.content.kind === 'form') return moveInForm(frame, state, state.content, action);
   const rows = visibleRows(state);
   if (rows.length === 0) return { kind: 'unchanged' };
-  const selected = selectedAfter(rows, state.selected, action, pageRows);
+  const selected = selectedAfter(rows, state.selected, action, pageRows, walkable(state.content));
   return selected === state.selected
     ? { kind: 'unchanged' }
     : { kind: 'frame', frame: withStep(frame, { ...state, selected }) };
@@ -871,6 +883,8 @@ export function foldPopupAction(
 export const POPUP_KEYS = {
   select: '↑/↓',
   scroll: '↑/↓',
+  /** `PgUp` and `PgDn`: a page of lines that overflows names them beside `↑/↓ scroll`. */
+  page: 'PgUp/PgDn',
   /** The keys that change a form's tabs (`←/→ effort`). */
   adjust: '←/→',
   enter: 'Enter',
@@ -1048,6 +1062,23 @@ function formItems(form: PopupForm): LegendItem[] {
 }
 
 /**
+ * The keys that move through a list: `↑/↓ select` when there is more than one row to choose. A page of lines (`page`) that overflows its page is
+ * scrolled, not chosen from, and says `↑/↓ scroll` and names the pages (`PgUp/PgDn`); one that fits has its rows to choose from (a last run).
+ */
+function listItems(state: PopupStepState, page: number): LegendItem[] {
+  const content = state.content;
+  if (content.kind !== 'list') return [];
+  const rows = visibleRows(state);
+  if (content.page === true && rows.length > page)
+    return [
+      { keys: POPUP_KEYS.scroll, verb: 'scroll' },
+      { keys: POPUP_KEYS.page, verb: 'page' },
+    ];
+  const choices = content.page === true ? rows.filter(canAct).length : rows.length;
+  return choices > 1 ? [{ keys: POPUP_KEYS.select, verb: 'select' }] : [];
+}
+
+/**
  * The keys of a step that is not a line, in the order a person reaches for them. A step that is loading answers nothing yet, so it names no
  * key that answers (ADR-0148 §5: its cancel key is the one it really has); one that says there is nothing, or that it failed, names no `Enter`,
  * and a form that is not wholly on its page ({@link formFits}) names none either.
@@ -1060,8 +1091,7 @@ function stepItems(
   locked: boolean,
 ): LegendItem[] {
   const items: LegendItem[] = [];
-  if (state.content.kind === 'list' && visibleRows(state).length > 1)
-    items.push({ keys: POPUP_KEYS.select, verb: 'select' });
+  if (state.content.kind === 'list') items.push(...listItems(state, page()));
   if (state.content.kind === 'report' && state.content.lines.length > page())
     items.push({ keys: POPUP_KEYS.scroll, verb: 'scroll' });
   if (state.content.kind === 'form') items.push(...formItems(state.content));
@@ -1118,20 +1148,28 @@ export function withContent(
       };
       // A form keeps the options the person chose, by id, when its content is replaced (a step that becomes a form opens on its initial options).
       if (content.kind === 'form') return { ...next, ...formChoices(content, state), offset: 0 };
-      // The highlight stays on the row it was on, by id: rows that land (a refreshed catalog) may sort before it, and a highlight kept by index
-      // would slide off the model in force onto another (a bare `Enter` chain would then choose it). A row that is gone leaves it at its index.
-      const heldId =
-        visibleRows(state)[state.selected]?.id ??
-        (state.content.kind !== 'list' && content.kind === 'list' ? content.initialRow : undefined);
-      const rows = visibleRows(next);
-      const sameRow = heldId === undefined ? -1 : rows.findIndex((row) => row.id === heldId);
-      const selected =
-        sameRow >= 0 && canAct(rows[sameRow])
-          ? sameRow
-          : canAct(rows[state.selected])
-            ? state.selected
-            : firstEnabled(rows);
-      return { ...next, selected, offset: 0 };
+      return { ...next, selected: selectionAfter(state, next, content), offset: 0 };
     }),
   };
+}
+
+/**
+ * The highlight after `content` replaces what a step showed. It stays on the row it was on, by id: rows that land (a refreshed catalog) may sort
+ * before it, and a highlight kept by index would slide off the model in force onto another (a bare `Enter` chain would then choose it). A row that is
+ * gone leaves it at its index. A page of lines that lands on a step that showed no list opens at its top (never on an index the last page left).
+ */
+function selectionAfter(
+  state: PopupStepState,
+  next: PopupStepState,
+  content: PopupContent,
+): number {
+  const can = walkable(content);
+  const heldId =
+    visibleRows(state)[state.selected]?.id ??
+    (state.content.kind !== 'list' && content.kind === 'list' ? content.initialRow : undefined);
+  const rows = visibleRows(next);
+  const sameRow = heldId === undefined ? -1 : rows.findIndex((row) => row.id === heldId);
+  if (sameRow >= 0 && can(rows[sameRow])) return sameRow;
+  if (content.kind === 'list' && content.page === true && state.content.kind !== 'list') return 0;
+  return can(rows[state.selected]) ? state.selected : firstEnabled(rows, can);
 }

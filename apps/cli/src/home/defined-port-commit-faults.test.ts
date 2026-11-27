@@ -1,6 +1,6 @@
 /**
  * The Home's export card when the write itself is refused by the file system (LAUNCH-3, a review finding): a raw errno out of
- * `commitExport` (an unwritable directory, a read-only volume, a full disk) is a refusal the person reads on the Defined tab, not a fault
+ * `commitExport` (an unwritable directory, a read-only volume, a full disk) is a refusal the person reads on the `/workflows` popup, not a fault
  * that ends the Home and its background run. The sentences are fixed and quote neither the path nor the error's own message; any
  * other fault is a defect and is still thrown (ADR-0139 decided that an unclassified fault ends the Home).
  *
@@ -247,7 +247,7 @@ async function exportFirstRow(controller: HomeController): Promise<void> {
   controller.handlePaste('/workflows');
   controller.handleKey('', ENTER);
   await flush();
-  workflowsPort?.export('code-review');
+  workflowsPort?.export('code-review', 'detail');
   await flush();
   await flush();
 }

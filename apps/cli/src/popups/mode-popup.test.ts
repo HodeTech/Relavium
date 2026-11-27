@@ -123,7 +123,6 @@ describe('the list: one step, no rail', () => {
       expect(spec.steps[0]?.initialRow).toBe(mode);
       expect(modeSpec('home', home(mode)).steps[0]?.initialRow).toBe(mode);
     }
-    expect(modeSpec('chat', chat('plan', 'ask'), 'auto').steps[0]?.initialRow).toBe('auto');
     expect(modeSpec('chat', chat('plan')).title).toBe('/mode');
     // no rail and no step count on the top edge, in either surface
     for (const rows of [drawn(chat('ask'), 'ask'), drawn(home('ask'), 'ask')]) {
@@ -345,6 +344,54 @@ describe('the effect under the list: amber where the mode approves without a car
   });
 });
 
+describe('the effect under the list without colour: a leading mark carries the warning (W1 P-10)', () => {
+  /** The rows under the list (the effect paragraph), trimmed, for `mode` highlighted, in the form `color` asks for. */
+  function effectRowsOf(
+    mode: ChatMode,
+    cols: number,
+    rows: number,
+    renderer: 'alt' | 'inline',
+    color: boolean,
+  ): string[] {
+    const all = trimmed(drawn(chat('ask', 'ask'), mode, cols, rows, renderer, color));
+    return all.slice(7, all.length - 2).filter((row) => row !== '');
+  }
+
+  it.each([
+    ['accept-edits', 2],
+    ['auto', 3],
+  ] as const)(
+    '%s without colour: the effect starts with `! `, and takes no more rows than with colour (%i) at 80 and 100 columns, alternate and inline',
+    (mode, rowCount) => {
+      for (const [cols, rows] of [
+        [80, 24],
+        [100, 30],
+      ] as const)
+        for (const renderer of ['alt', 'inline'] as const) {
+          const plain = effectRowsOf(mode, cols, rows, renderer, false);
+          const coloured = effectRowsOf(mode, cols, rows, renderer, true);
+          expect(plain[0], `${String(cols)} ${renderer}`).toMatch(/^ ! \S/u);
+          expect(plain, `${String(cols)} ${renderer}: no more rows than with colour`).toHaveLength(
+            coloured.length,
+          );
+          expect(coloured).toHaveLength(rowCount);
+          // colour on: the amber text alone, no mark (the maintainer's frames)
+          expect(coloured[0]).not.toMatch(/^ ! /u);
+        }
+    },
+  );
+
+  it('the modes that approve nothing without a card carry no mark in either form, and every highlight has the same frame height without colour', () => {
+    for (const mode of ['ask', 'plan'] as const)
+      for (const color of [true, false])
+        expect(effectRowsOf(mode, 80, 24, 'alt', color)[0]).not.toMatch(/^ ! /u);
+    const heights = new Set(
+      CHAT_MODES.map((mode) => drawn(chat('ask', 'ask'), mode, 80, 24, 'alt', false).length),
+    );
+    expect(heights.size).toBe(1);
+  });
+});
+
 describe('the legend follows the row', () => {
   it('another mode: `Enter use in this chat` and `[s] startup`; the mode in force: `Enter keep`; the startup default: no `[s]`', () => {
     expect(legendAt(chat('ask', 'plan'), 'auto', INNER)).toBe(
@@ -484,6 +531,15 @@ describe('in a chat: Enter applies at once or keeps; [s] is the startup default'
     expect(r.fake.mode()).toBe('ask');
   });
 
+  it('R1-M proposed: the hand-off starts only after the key that asked has been handled to its end (the writer’s first card is a frame of its own)', async () => {
+    const r = openMode({ current: 'ask', startup: 'ask' });
+    r.press('', DOWN); // plan
+    r.press('s', {});
+    expect(popupOpen(r)).toBe(false);
+    expect(r.fake.saved, 'not inside the key’s own turn of the loop').toEqual([]);
+    await vi.waitFor(() => expect(r.fake.saved).toEqual(['plan']));
+  });
+
   it('`[s]` on the mode in force saves THAT mode (not the one the list opened on, not the startup default)', async () => {
     const r = openMode({ current: 'plan', startup: 'ask' });
     r.press('s', {});
@@ -542,7 +598,7 @@ describe('what the hand-off came to (the startup-default flow’s outcome)', () 
     await vi.waitFor(() => expect(r.announced).toEqual(['Startup default unchanged']));
   });
 
-  it('a step back (`Esc` on the confirmation) opens the list AGAIN on the mode chosen; there it can be changed or closed', async () => {
+  it('a step back (`Esc` on the confirmation) opens the list AGAIN on the mode IN FORCE, not on the mode asked for; there it can be changed or closed (W1 X-2)', async () => {
     let answers = 0;
     const r = openMode({
       current: 'ask',
@@ -553,7 +609,7 @@ describe('what the hand-off came to (the startup-default flow’s outcome)', () 
     r.press('', DOWN); // accept-edits
     r.press('s', {});
     await vi.waitFor(() => expect(popupOpen(r)).toBe(true));
-    expect(r.rows().highlighted).toBe('accept-edits');
+    expect(r.rows().highlighted, 'the mode in force, exactly as the first open').toBe('ask');
     expect(r.fake.saved).toEqual(['accept-edits']);
     r.settle();
     r.press('', ESC);
@@ -561,6 +617,32 @@ describe('what the hand-off came to (the startup-default flow’s outcome)', () 
     expect(r.announced).toEqual([]);
     expect(r.fake.applied).toEqual([]);
   });
+
+  it.each(['accept-edits', 'auto'] as const)(
+    'a widening mode asked to be saved, then `Esc` on the confirmation: ONE bare `Enter` after the reopen keeps the mode in force and applies NOTHING (probe R1-X, W1 X-2) — %s',
+    async (widening) => {
+      let answers = 0;
+      const r = openMode({
+        current: 'ask',
+        startup: 'ask',
+        outcome: () => (answers++ === 0 ? { kind: 'back' } : { kind: 'said' }),
+      });
+      r.press('', widening === 'auto' ? END : DOWN);
+      if (widening === 'accept-edits') r.press('', DOWN);
+      expect(r.rows().highlighted).toBe(widening);
+      r.press('s', {});
+      await vi.waitFor(() => expect(popupOpen(r)).toBe(true));
+      expect(r.rows().highlighted).toBe('ask');
+      // the reopened frame is seen and settles (500 ms and then some), and the person presses one bare Enter
+      r.settle();
+      r.press('', ENTER);
+      expect(r.fake.applied, 'nothing was widened').toEqual([]);
+      expect(r.fake.mode()).toBe('ask');
+      expect(popupOpen(r)).toBe(false);
+      expect(r.announced).toEqual([modeChangedNotice('ask')]);
+      expect(r.fake.saved, 'and nothing more was handed off').toEqual([widening]);
+    },
+  );
 
   it('a fault of the hand-off itself (the owner no longer admits work) is the owner’s and says the startup default could not be saved', async () => {
     const r = openMode({
@@ -693,7 +775,7 @@ describe('on the bare Home: Enter sets the startup default, or keeps the saved o
     expect(r.announced).toEqual([MODE_NOT_COMPLETED]);
   });
 
-  it('a step back from the confirmation opens the Home’s list again on the mode chosen, and `Esc` there closes without a word', async () => {
+  it('a step back from the confirmation opens the Home’s list again on the SAVED startup default, and one bare `Enter` there keeps (no hand-off, no write) (W1 X-2)', async () => {
     let answers = 0;
     const r = openMode({
       scope: 'home',
@@ -703,7 +785,24 @@ describe('on the bare Home: Enter sets the startup default, or keeps the saved o
     r.press('', DOWN);
     r.press('', ENTER);
     await vi.waitFor(() => expect(popupOpen(r)).toBe(true));
-    expect(r.rows().highlighted).toBe('plan');
+    expect(r.rows().highlighted).toBe('ask');
+    r.settle();
+    r.press('', ENTER);
+    expect(popupOpen(r)).toBe(false);
+    expect(r.announced).toEqual(['Startup default is already ask']);
+    expect(r.fake.saved, 'only the first hand-off').toEqual(['plan']);
+  });
+
+  it('`Esc` on the reopened Home list closes without a word', async () => {
+    let answers = 0;
+    const r = openMode({
+      scope: 'home',
+      startup: 'ask',
+      outcome: () => (answers++ === 0 ? { kind: 'back' } : { kind: 'said' }),
+    });
+    r.press('', DOWN);
+    r.press('', ENTER);
+    await vi.waitFor(() => expect(popupOpen(r)).toBe(true));
     r.settle();
     r.press('', ESC);
     expect(popupOpen(r)).toBe(false);

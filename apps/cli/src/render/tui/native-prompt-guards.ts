@@ -12,7 +12,7 @@
  *   after the dwell. So a deliberate `Enter` on a guarded option needs about two seconds after the select appeared, and a key held at any
  *   repeat rate never gets there: each refused repeat inside the lockout restarts it (`createChordGuard`'s strict rule).
  * - **The chord card** ({@link createChordCardGuard}): the same rule for a card answered by `Ctrl+Y`, framed or not. Its lockout runs from the
- *   moment the card opened, so a card that is the FIRST prompt of a flow (`/init`, the Defined export, `/run` started on a workflow with no
+ *   moment the card opened, so a card that is the FIRST prompt of a flow (`/init`, the `/workflows` export, `/run` started on a workflow with no
  *   inputs) and a card that appears after a wait with the key held through it (the MCP consent card a `/run` start or a gate's resume raises,
  *   the repeats of the `Ctrl+Y` that answered the card before landing on the wait as typing) are locked against a held `Ctrl+Y` as a card
  *   right after an answer always was. A deliberate `Ctrl+Y` needs about two seconds after the card appeared; `Ctrl+N` is never delayed.

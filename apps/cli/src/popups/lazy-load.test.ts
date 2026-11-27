@@ -51,6 +51,9 @@ const LAZY = [
   'permissions-session',
   'permissions-popup',
   'unreadable-run-card',
+  // The startup-default write of `/mode` (MVP-11 unit 8, OD-25): loaded by `await import` from the chat and the Home, only when a write is asked.
+  'mode-confirm',
+  'mode-home',
   // The Home's management popups (MVP-11 unit 8): `home-port.ts` is the eager half; the session and the three popups' words load on first use.
   'home-session',
   'home-text',

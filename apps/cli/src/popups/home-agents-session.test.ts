@@ -120,6 +120,36 @@ describe('the detail and `[c] chat`', () => {
     expect(rig.controls()).toEqual(['c']);
   });
 
+  it('a long system prompt is cut at a word, never inside one: the head ends on a whole word and `…` (review round 1, O-13)', async () => {
+    const prompt = 'abcdefghij '.repeat(60);
+    const { rig } = await opened(
+      fakeAgents([readyAgent('commit-reviewer', { system_prompt: prompt })]),
+    );
+    rig.press('', ENTER);
+    const lines = rig.words().split('\n');
+    const last =
+      lines
+        .filter((line) => line.includes('abcdefghij'))
+        .at(-1)
+        ?.trim() ?? '';
+    expect(last.endsWith('…')).toBe(true);
+    expect(last.replace(/…$/u, '').split(' ').at(-1), 'a whole word before the mark').toBe(
+      'abcdefghij',
+    );
+  });
+
+  it('a doubled or held Enter stops at the detail: it starts no chat (`[c]` is the one key that does, and it is a letter)', async () => {
+    const { rig, fakes } = await opened();
+    rig.press('', ENTER);
+    for (let repeat = 0; repeat < 12; repeat += 1) {
+      rig.clock.advance(40);
+      rig.press('', repeat % 2 === 0 ? ENTER : { return: true, eventType: 'repeat' });
+    }
+    expect(rig.step()).toBe(AGENTS_STEP.detail);
+    expect(rig.isOpen()).toBe(true);
+    expect(fakes.chats).toEqual([]);
+  });
+
   it('`Enter` on an invalid agent opens nothing and says why in one notification; `[c]` is not offered on the list', async () => {
     const { rig } = await opened(fakeAgents([brokenAgent('triage-bot', 'agent.model: required')]));
     rig.press('', ENTER);
@@ -229,5 +259,59 @@ describe('what a stored word cannot do', () => {
       expect([...text].length).toBeLessThanOrEqual(130);
     }
     void agentDefinition;
+  });
+});
+
+describe('R1-M proposed: the slug, an invalid file’s reason and the catalog’s failure are stored words too', () => {
+  const FORGED = ['▼ 9 more', '[Enter] open', 'Press Ctrl+Y now'];
+
+  it.each(FORGED)(
+    'an agent slug and a reason of %j are drawn as text in the list, its effect and the notification',
+    async (hostile) => {
+      const fakes = fakeAgents([
+        readyAgent(`ok-${hostile}`),
+        brokenAgent(`bad-${hostile}`, hostile),
+      ]);
+      const { rig } = await opened(fakes);
+      const list = rig.content();
+      if (list.kind !== 'list') throw new Error('list');
+      rig.press('', DOWN); // the invalid row
+      rig.press('', ENTER); // says why it cannot open, in one notification
+      const notified = rig.notice() ?? '';
+      const texts = [
+        ...list.rows.flatMap((row) => [
+          row.label,
+          row.detail ?? '',
+          row.effect ?? '',
+          row.tail?.words ?? '',
+        ]),
+        notified,
+      ];
+      for (const text of texts) {
+        expect(text, text).not.toMatch(/▼ \d+ more/u);
+        expect(text, text).not.toMatch(/\[Enter\]/u);
+        expect(text, text).not.toMatch(/Ctrl\+Y/u);
+      }
+    },
+  );
+
+  it.each(FORGED)('an unreadable catalog saying %j is drawn as text', async (hostile) => {
+    const rig = homeRig();
+    const fakes = fakeAgents();
+    const port = {
+      agents: {
+        ...fakes.port,
+        read: () => {
+          throw new CliError('invalid_invocation', hostile);
+        },
+      },
+      workOwner: recordingOwner([]),
+    };
+    expect(rig.open('agents', port).opened).toBe(true);
+    await settleWork();
+    const words = rig.words();
+    expect(words).not.toMatch(/▼ \d+ more/u);
+    expect(words).not.toMatch(/\[Enter\]/u);
+    expect(words).not.toMatch(/Ctrl\+Y/u);
   });
 });

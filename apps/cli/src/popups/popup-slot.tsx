@@ -34,7 +34,7 @@ import {
 import { withGlyphForm } from '../render/tui/glyphs.js';
 import type { NativePromptAcknowledgement } from '../render/tui/native-prompt-acknowledgement.js';
 import type { NativePromptSnapshot } from '../render/tui/native-prompt-channel.js';
-import { SheetLinesView } from '../render/tui/permissions-sheet-view.js';
+import { SheetLinesView } from '../render/tui/sheet-lines-view.js';
 import type { SheetLine } from '../render/tui/sheet-frame.js';
 import {
   bodyPageRows,
@@ -173,11 +173,13 @@ export interface FramePage {
 export function framePage(
   frame: PopupFrame | undefined,
   geometry: PopupGeometry | undefined,
+  color = true,
 ): FramePage {
   if (frame === undefined || geometry?.fits !== true) return { rows: 1, innerWidth: 0 };
   const { spec, state } = currentStep(frame);
+  // The rows an effect paragraph takes depend on the glyph form (a warning leads with `! ` where colour is off): count them in the form drawn.
   return {
-    rows: bodyPageRows(state.content, spec.filter === true, geometry),
+    rows: withGlyphForm(!color, () => bodyPageRows(state.content, spec.filter === true, geometry)),
     innerWidth: geometry.innerWidth,
   };
 }
@@ -252,7 +254,7 @@ function HostPopup(
   // it scrolls by) else a list's window, and the inner width its rows are cut to (no line of a confirmation line may be cut either). Read
   // through a ref, so the host always reads the frame that was drawn last.
   const pageRef = useRef<FramePage>({ rows: 1, innerWidth: 0 });
-  pageRef.current = framePage(frame, geometry);
+  pageRef.current = framePage(frame, geometry, color);
   useLayoutEffect(() => {
     host.bindPageRows(() => pageRef.current.rows);
     host.bindInnerWidth(() => pageRef.current.innerWidth);

@@ -94,7 +94,7 @@ function mount(resolveWith: string | undefined = undefined) {
       controller.handleKey('', ENTER);
       await flush();
       clock += 3000;
-      workflowsPort?.export('nightly');
+      workflowsPort?.export('nightly', 'detail');
       return;
     }
     controller.handlePaste(`/${opener}`);

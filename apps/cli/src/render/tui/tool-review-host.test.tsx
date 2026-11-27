@@ -239,10 +239,9 @@ function fixture(
 }
 
 /** The inspection popup's top edge without colour: the popup's name and where it came from (ADR-0148 §7). */
-const INSPECTION_TOP =
-  /^ {2}- (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
-/** Its bottom edge: the thin rule over the inner width. */
-const INSPECTION_BOTTOM = /^ {2}-{20,} *$/u;
+const INSPECTION_TOP = /^ - (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
+/** Its bottom edge: the thin rule across the box. */
+const INSPECTION_BOTTOM = /^ -{20,} *$/u;
 /** The columns a row of the popup is inset by: the box's margin from the terminal's edge (the screen spans the box's whole width). */
 const INSPECTION_INSET = 1;
 
@@ -268,10 +267,38 @@ function unframe(frame: string): string {
  */
 const framedRows = (rows: number): number => rows - 1 - INSPECTION_EDGE_ROWS;
 /**
- * The terminal the navigation tests run on: 80×26, where the popup's body is the 14 rows the full screen had at 80×24 and every page number
- * below was written for. The 80×24 popup (a body of 12 rows) is pinned by the geometry tests.
+ * The taller of the two terminals the navigation tests run on: 80×26, where the popup's body is the 14 rows the full screen had at 80×24 and the
+ * page numbers were first written for; {@link NAV_CASES} runs them at 80×24 (a body of 12 rows) too.
  */
 const NAV_SIZE = [80, 26] as const;
+/** A context row of the SIXTY fixture's diff, as the full view draws it. */
+const navLine = (n: number): string => ` ${String(n)} line ${String(n)}`;
+/**
+ * The five navigation tests run on both terminals (unit 8 fix wave, M-11): 80×24, where the popup's body is 12 rows, and {@link NAV_SIZE}, 14.
+ * SIXTY's page numbers follow from the body (60 lines, changes at 30 and 52, each a `-`/`+` pair, so 62 listed rows): the opening page is the first
+ * change with three lines of context (27); PgDn starts at the row after it (27 + 3 + 2 + 7 = 38 for 12 rows, 40 for 14); End is the last full page,
+ * the 12 or 14 rows that end at 60 (50, 48); Tab to the second change starts three lines above it (49) unless that page would end short of a full
+ * one (for 14 rows it would: 49..60 is 13 rows, so it is End's page, 48). The page after the opening one holds both changes' neighbours at 12 rows
+ * (`2 above, 2 below`) and reaches the second change at 14 (`2 above`).
+ */
+const NAV_CASES = [
+  {
+    label: '80×24, a body of 12 rows',
+    size: [80, 24] as const,
+    pageDown: 38,
+    pageDownRule: /changed lines off this page: 2 above, 2 below -+$/u,
+    end: 50,
+    lastChange: 49,
+  },
+  {
+    label: '80×26, a body of 14 rows',
+    size: NAV_SIZE,
+    pageDown: 40,
+    pageDownRule: /changed lines off this page: 2 above -+$/u,
+    end: 48,
+    lastChange: 48,
+  },
+] as const;
 
 /** An overwrite of `target`: the longest verb the card prints before the target (`Overwrite `). */
 function overwritePreview(target: string): ToolPreview {
@@ -2748,7 +2775,7 @@ describe.each(['chat', 'home'] as const)(
     };
     /** The details screen's closing note: only that screen draws it, whatever its header looks like (the identity may sit on its own row). */
     const DETAILS_NOTE =
-      '[b] back to the list \u00b7 viewing never executes a tool \u00b7 Esc close';
+      '[b] back to the list \u00b7 viewing never executes a tool \u00b7 Esc back';
     const details = (f: Fixture): FullView | undefined =>
       read(f.lastFrameWith(DETAILS_NOTE), DETAILS_NOTE);
 
@@ -3059,87 +3086,110 @@ describe.each(['chat', 'home'] as const)(
     });
 
     describe('keys (real stdin)', () => {
-      it('moves the page with every navigation key and keeps the status rule true', async () => {
-        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
-        const first = view(f);
-        expect(first?.diff[0]).toBe(' 27 line 27');
-        expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
-        const percent0 = first?.percent ?? -1;
-        // Down and Up move one listed line.
-        const down = await move(f, KEY.down, (screen) => screen.diff[0] === ' 28 line 28');
-        expect(down.percent).toBeGreaterThan(percent0);
-        const up = await move(f, KEY.up, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(up.percent).toBe(percent0);
-        // PgDn goes to the row after the page: 3 lines of context, the change, and nine more fill the 14 rows.
-        const pageDown = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(pageDown.rows[pageDown.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
-        expect(pageDown.percent).toBeGreaterThan(percent0);
-        // PgUp goes back up a page.
-        const pageUp = await move(f, KEY.pageUp, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(pageUp.percent).toBe(percent0);
-        // End is the last full page, so the screen never ends in blank rows.
-        const end = await move(f, KEY.end, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(end.diff.at(-1)).toBe(' 60 line 60');
-        expect(end.percent).toBe(100);
-        expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
-        // Home is the top.
-        const home = await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below -+$/u);
-        expect(home.percent).toBeLessThan(percent0);
-        // Tab goes to the next change, with its context; Shift+Tab goes back.
-        const tab = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(tab.percent).toBe(percent0);
-        const tab2 = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(tab2.diff).toEqual(expect.arrayContaining(['-52 line 52', '+52 fifty two']));
-        expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
-        // Shift+Tab lands a page up from just below the nearest changed line above the page it leaves, so that line (`+30`) is on the
-        // new page and the page lies strictly before the old one; no changed line is stepped over.
-        const back = await move(f, KEY.shiftTab, (screen) => screen.diff[0] !== ' 48 line 48');
-        expect(back.diff, 'the nearest changed line above is drawn').toContain('+30 thirty');
-        expect(firstLine(back) ?? Infinity, 'strictly backward').toBeLessThan(firstLine(tab2) ?? 0);
-        expect(back.percent ?? 100, 'and so the status moved up').toBeLessThan(tab2.percent ?? 0);
-        expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
-        expect(back.percent, 'the whole first change is on this page, as at the opening').toBe(
-          percent0,
-        );
-        expect(f.errors).toEqual([]);
-      });
+      it.each(NAV_CASES)(
+        '$label: moves the page with every navigation key and keeps the status rule true',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const first = view(f);
+          expect(first?.diff[0]).toBe(' 27 line 27');
+          expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
+          const percent0 = first?.percent ?? -1;
+          // Down and Up move one listed line.
+          const down = await move(f, KEY.down, (screen) => screen.diff[0] === ' 28 line 28');
+          expect(down.percent).toBeGreaterThan(percent0);
+          const up = await move(f, KEY.up, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(up.percent).toBe(percent0);
+          // PgDn goes to the row after the page: 3 lines of context, the change, and the rest of the body.
+          const pageDown = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff[0] === navLine(c.pageDown),
+          );
+          expect(pageDown.rows[pageDown.rule]).toMatch(c.pageDownRule);
+          expect(pageDown.percent).toBeGreaterThan(percent0);
+          // PgUp goes back up a page.
+          const pageUp = await move(f, KEY.pageUp, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(pageUp.percent).toBe(percent0);
+          // End is the last full page, so the screen never ends in blank rows.
+          const end = await move(f, KEY.end, (screen) => screen.diff[0] === navLine(c.end));
+          expect(end.diff.at(-1)).toBe(' 60 line 60');
+          expect(end.percent).toBe(100);
+          expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
+          // Home is the top.
+          const home = await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below -+$/u);
+          expect(home.percent).toBeLessThan(percent0);
+          // Tab goes to the next change, with its context; Shift+Tab goes back.
+          const tab = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(tab.percent).toBe(percent0);
+          const tab2 = await move(f, KEY.tab, (screen) => screen.diff[0] === navLine(c.lastChange));
+          expect(tab2.diff).toEqual(expect.arrayContaining(['-52 line 52', '+52 fifty two']));
+          expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
+          // Shift+Tab lands a page up from just below the nearest changed line above the page it leaves, so that line (`+30`) is on the
+          // new page and the page lies strictly before the old one; no changed line is stepped over.
+          const back = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.diff[0] !== navLine(c.lastChange),
+          );
+          expect(back.diff, 'the nearest changed line above is drawn').toContain('+30 thirty');
+          expect(firstLine(back) ?? Infinity, 'strictly backward').toBeLessThan(
+            firstLine(tab2) ?? 0,
+          );
+          expect(back.percent ?? 100, 'and so the status moved up').toBeLessThan(tab2.percent ?? 0);
+          expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
+          expect(back.percent, 'the whole first change is on this page, as at the opening').toBe(
+            percent0,
+          );
+          expect(f.errors).toEqual([]);
+        },
+      );
 
-      it('says there is no later (or earlier) change at the last (or first) one, and Ctrl+Y still answers afterwards', async () => {
-        const { f, outcome } = await openFull(SIXTY(), { size: NAV_SIZE });
-        await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
-        const none = await move(f, KEY.tab, (screen) => screen.message === 'No later change');
-        expect(none.diff[0], 'a key that goes nowhere moves nothing').toBe(' 48 line 48');
-        // Shift+Tab from the last page lands where the nearest changed line above it (`+30`) is drawn.
-        const earlier = await move(f, KEY.shiftTab, (screen) => screen.diff[0] !== ' 48 line 48');
-        expect(earlier.diff).toContain('+30 thirty');
-        expect(earlier.message, 'a move that happens clears the message').toBeUndefined();
-        // Nothing changed lies above that page: the note, and the page stays.
-        const noEarlier = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(noEarlier.diff, 'a key that goes nowhere moves nothing').toEqual(earlier.diff);
-        // Moving around changes what is on screen, never what is answered: the answer key works from the moved frame.
-        await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        expect(outcome()).toBeUndefined();
-        f.input.push(CTRL_Y);
-        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
-      });
+      it.each(NAV_CASES)(
+        '$label: says there is no later (or earlier) change at the last (or first) one, and Ctrl+Y still answers afterwards',
+        async (c) => {
+          const { f, outcome } = await openFull(SIXTY(), { size: c.size });
+          await move(f, KEY.tab, (screen) => screen.diff[0] === navLine(c.lastChange));
+          const none = await move(f, KEY.tab, (screen) => screen.message === 'No later change');
+          expect(none.diff[0], 'a key that goes nowhere moves nothing').toBe(navLine(c.lastChange));
+          // Shift+Tab from the last page lands where the nearest changed line above it (`+30`) is drawn.
+          const earlier = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.diff[0] !== navLine(c.lastChange),
+          );
+          expect(earlier.diff).toContain('+30 thirty');
+          expect(earlier.message, 'a move that happens clears the message').toBeUndefined();
+          // Nothing changed lies above that page: the note, and the page stays.
+          const noEarlier = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(noEarlier.diff, 'a key that goes nowhere moves nothing').toEqual(earlier.diff);
+          // Moving around changes what is on screen, never what is answered: the answer key works from the moved frame.
+          await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          expect(outcome()).toBeUndefined();
+          f.input.push(CTRL_Y);
+          await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+        },
+      );
 
-      it('scrolls on a bare j, k and Space but never answers', async () => {
-        const { f, outcome } = await openFull(SIXTY(), { size: NAV_SIZE });
-        const down = await move(f, 'j', (screen) => screen.diff[0] === ' 28 line 28');
-        expect(down.diff.length).toBeGreaterThan(0);
-        await move(f, 'k', (screen) => screen.diff[0] === ' 27 line 27');
-        await move(f, ' ', (screen) => screen.diff[0] === ' 40 line 40');
-        expect(outcome(), 'a movement key is not an answer').toBeUndefined();
-        expect(f.store.getSnapshot().approval).toBeDefined();
-        expect(f.store.getSnapshot().review?.screen).toBe('full');
-        f.input.push(CTRL_Y);
-        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
-      });
+      it.each(NAV_CASES)(
+        '$label: scrolls on a bare j, k and Space but never answers',
+        async (c) => {
+          const { f, outcome } = await openFull(SIXTY(), { size: c.size });
+          const down = await move(f, 'j', (screen) => screen.diff[0] === ' 28 line 28');
+          expect(down.diff.length).toBeGreaterThan(0);
+          await move(f, 'k', (screen) => screen.diff[0] === ' 27 line 27');
+          await move(f, ' ', (screen) => screen.diff[0] === navLine(c.pageDown));
+          expect(outcome(), 'a movement key is not an answer').toBeUndefined();
+          expect(f.store.getSnapshot().approval).toBeDefined();
+          expect(f.store.getSnapshot().review?.screen).toBe('full');
+          f.input.push(CTRL_Y);
+          await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+        },
+      );
     });
 
     describe('the reveal hint', () => {
@@ -3283,7 +3333,7 @@ describe.each(['chat', 'home'] as const)(
         expect(f.errors).toEqual([]);
       });
 
-      it('opens the selected call: counts for a preview, none for a call without one; b returns to the same call; Esc closes', async () => {
+      it('opens the selected call: counts for a preview, none for a call without one; b and Esc return to the same call; Esc on the list closes', async () => {
         const f = await openList();
         // The edit has a preview: counts in the header, the diff, a status rule about its changed lines.
         await select(f, KEY.home, 'call 1 of 3');
@@ -3331,7 +3381,8 @@ describe.each(['chat', 'home'] as const)(
         await vi.waitFor(() => expect(listRows(f)?.[4]).toBe('call 2 of 3'));
         await pause(80);
         expect(listRows(f)?.[2], 'back on the same call').toMatch(/^> ok git_status/u);
-        // Esc closes the details from the list, and from the screen of one call.
+        // Esc closes the details from the list; from the screen of one call it steps back to the list first, on the same call (ADR-0148 §7;
+        // unit 8 fix wave, O-4).
         f.input.push('\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review).toBeUndefined());
         f.store.openDetails();
@@ -3340,6 +3391,10 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('\r');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
         await pause(80);
+        f.input.push('\x1b');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('list'));
+        await pause(80);
+        expect(listRows(f)?.[3], 'back on the call that was open').toMatch(/^> /u);
         f.input.push('\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review).toBeUndefined());
         expect(f.errors).toEqual([]);
@@ -3448,35 +3503,39 @@ describe.each(['chat', 'home'] as const)(
 
       // ADR-0134 §3: the chrome is constant, so the body is as tall with a message as without one (the message row is always
       // drawn, blank when there is none), and every motion limit agrees with the page that is drawn.
-      it('ends on a full page when End is pressed while a message is shown, and the body is as tall as without one', async () => {
-        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
-        const plain = view(f);
-        if (plain === undefined) throw new Error('no full view');
-        const message = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(message.diff.length, 'the message does not take a row from the body').toBe(
-          plain.diff.length,
-        );
-        expect(message.rule, 'the status rule does not move').toBe(plain.rule);
-        expect(message.rows).toHaveLength(plain.rows.length);
-        const end = await move(f, KEY.end, (screen) => screen.message === undefined);
-        expect(end.diff[0]).toBe(' 48 line 48');
-        expect(end.diff.at(-1)).toBe(' 60 line 60');
-        expect(end.rows[end.rule - 1], 'the last row of the body is a line, not padding').not.toBe(
-          '',
-        );
-        expect(end.diff.length, 'End leaves the body as tall as it was').toBe(plain.diff.length);
-        expect(end.rule).toBe(plain.rule);
-        expect(end.percent).toBe(100);
-        // The same page without any message: End from the top gives the identical frame body.
-        await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        const again = await move(f, KEY.end, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(again.diff).toEqual(end.diff);
-        expect(again.rule).toBe(end.rule);
-      });
+      it.each(NAV_CASES)(
+        '$label: ends on a full page when End is pressed while a message is shown, and the body is as tall as without one',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const plain = view(f);
+          if (plain === undefined) throw new Error('no full view');
+          const message = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(message.diff.length, 'the message does not take a row from the body').toBe(
+            plain.diff.length,
+          );
+          expect(message.rule, 'the status rule does not move').toBe(plain.rule);
+          expect(message.rows).toHaveLength(plain.rows.length);
+          const end = await move(f, KEY.end, (screen) => screen.message === undefined);
+          expect(end.diff[0]).toBe(navLine(c.end));
+          expect(end.diff.at(-1)).toBe(' 60 line 60');
+          expect(
+            end.rows[end.rule - 1],
+            'the last row of the body is a line, not padding',
+          ).not.toBe('');
+          expect(end.diff.length, 'End leaves the body as tall as it was').toBe(plain.diff.length);
+          expect(end.rule).toBe(plain.rule);
+          expect(end.percent).toBe(100);
+          // The same page without any message: End from the top gives the identical frame body.
+          await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          const again = await move(f, KEY.end, (screen) => screen.diff[0] === navLine(c.end));
+          expect(again.diff).toEqual(end.diff);
+          expect(again.rule).toBe(end.rule);
+        },
+      );
 
       it('draws the target once, however the full view is scrolled', async () => {
         const { f } = await openFull(SIXTY());
@@ -3779,22 +3838,33 @@ describe.each(['chat', 'home'] as const)(
         }
       });
 
-      it('pages down to the last row while a message lingers, and the body keeps its height', async () => {
-        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
-        const open = view(f);
-        const lingering = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(lingering.diff).toHaveLength(open?.diff.length ?? -1);
-        const next = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(next.diff).toHaveLength(open?.diff.length ?? -1);
-        const last = await move(f, KEY.pageDown, (screen) => screen.diff.at(-1) === ' 60 line 60');
-        expect(last.diff[0], 'the last page, clamped to a full page').toBe(' 48 line 48');
-        expect(last.diff).toHaveLength(open?.diff.length ?? -1);
-        expect(last.rows[last.rule - 1]).not.toBe('');
-      });
+      it.each(NAV_CASES)(
+        '$label: pages down to the last row while a message lingers, and the body keeps its height',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const open = view(f);
+          const lingering = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(lingering.diff).toHaveLength(open?.diff.length ?? -1);
+          const next = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff[0] === navLine(c.pageDown),
+          );
+          expect(next.diff).toHaveLength(open?.diff.length ?? -1);
+          const last = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff.at(-1) === ' 60 line 60',
+          );
+          expect(last.diff[0], 'the last page, clamped to a full page').toBe(navLine(c.end));
+          expect(last.diff).toHaveLength(open?.diff.length ?? -1);
+          expect(last.rows[last.rule - 1]).not.toBe('');
+        },
+      );
 
       it.each([
         [false, 'Clipboard unavailable.'],

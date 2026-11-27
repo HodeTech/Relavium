@@ -7,7 +7,7 @@ import type { PinPort } from '../render/tui/tab-host-pin.js';
  * §5, MVP-8 step 4). Thin on purpose: the keys are the store's.
  *
  * - **A workflow** is pinned under `{ kind: 'workflow', projectRoot, ref: slug }`, where the root is the project the Home is in, found
- *   afresh for every call (the same root the Defined tab lists the pins of), and the store makes it canonical.
+ *   afresh for every call (the same root the `/workflows` popup lists the pins of), and the store makes it canonical.
  * - **A run** is pinned under `{ kind: 'run', projectRoot: '', ref: <the full run id> }`: a run id is global, so a second spelling of one
  *   run would be a second pin.
  * - **A row** is removed by its row id, for a pin whose key cannot be spelled back.

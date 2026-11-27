@@ -294,6 +294,60 @@ describe('the content states (ADR-0148 §5)', () => {
     }
   });
 
+  it('the markers count entries, not rows: a heading above 32 entries is no entry, for every highlight, and a marker that would stand for no entry is not drawn (review round 1, O-9)', () => {
+    const heading = (id: string): PopupListRow => ({
+      id,
+      label: id,
+      section: true,
+      enabled: false,
+    });
+    const entries = Array.from(
+      { length: 32 },
+      (_, index): PopupListRow => ({ id: `e${String(index)}`, label: `entry ${String(index)}` }),
+    );
+    const counted = (list: readonly PopupListRow[], selected: number): number => {
+      const body = frame({ kind: 'list', rows: list }, { selected }).text.slice(1, -2);
+      const marker = (glyph: string): number =>
+        Number(
+          body.map((row) => new RegExp(`${glyph} (\\d+) more`, 'u').exec(row)?.[1]).find(Boolean) ??
+            0,
+        );
+      const shown = body.filter((row) => /entry \d+/u.test(row)).length;
+      return marker('▲') + shown + marker('▼');
+    };
+    // One heading: the 32 entries are rows 1 to 32.
+    for (let selected = 1; selected <= 32; selected += 1)
+      expect(
+        counted([heading('head'), ...entries], selected),
+        `highlight ${String(selected)}`,
+      ).toBe(32);
+    // Three rows that are no entry above them: the window can start past all three, and says nothing above (it hides no entry).
+    const padded = [heading('head'), heading('note'), heading('blank'), ...entries];
+    for (let selected = 3; selected <= 34; selected += 1)
+      expect(counted(padded, selected), `padded, highlight ${String(selected)}`).toBe(32);
+    const lowered = frame({ kind: 'list', rows: padded }, { selected: 10 }).text.slice(1, -2);
+    expect(
+      lowered.some((row) => row.includes('▲')),
+      'nothing above is an entry',
+    ).toBe(false);
+    expect(lowered[0]?.trim(), 'the first row stays what it is').toBe('blank');
+    // A page the arrows walk line by line has no entries to count: every hidden line is what its marker stands for, sections included.
+    const lines: PopupListRow[] = Array.from({ length: 40 }, (_, index) => ({
+      id: `l${String(index)}`,
+      label: `line ${String(index)}`,
+      section: true,
+      enabled: false,
+    }));
+    const page = frame({ kind: 'list', rows: lines, page: true }, { selected: 39 }).text.slice(
+      1,
+      -2,
+    );
+    expect(
+      page.some((row) => /▲ \d+ more/u.test(row)),
+      'the lines above are said',
+    ).toBe(true);
+  });
+
   it('a report that does not fit is windowed the same way, from its offset', () => {
     const lines = Array.from({ length: 40 }, (_, i) => `line ${String(i)}`);
     const top = frame({ kind: 'report', lines }).text.slice(1, -2);

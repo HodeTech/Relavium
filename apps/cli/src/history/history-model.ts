@@ -14,7 +14,7 @@ import {
 } from './run-detail-model.js';
 
 /**
- * A stored project root as a row of the History, Active or Defined tab may carry it: named as the rest of the CLI names a directory
+ * A stored project root as a row of the History, Active or `/workflows` popup may carry it: named as the rest of the CLI names a directory
  * ({@link placeForDisplay}: shortened FIRST against `paths`, so the project's own directory reads `. (project root)` and never a lone
  * `.`), then scrubbed WHOLE and cut to `max` code points ({@link scrubbedBounded}: the root is stored text that could carry a secret, so
  * the scrub is the sanitiser the helper runs and the bound is the one it applies). The three tabs call this one function, so a directory

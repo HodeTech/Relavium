@@ -10,8 +10,8 @@
  *   right after the step back is ignored (the settle of the step back), and one after the settle rejects as before; `Ctrl+C` still stops.
  * - **Resize.** The popup is laid out again at the new size, and below the floor it is the refusal, where no answer counts.
  *
- * The ADR's two mutation tests of the content-node measurement (a row one cell too wide, one extra row) are run against
- * `tool-review-host.test.tsx`'s acknowledged-frame test (the unit-8 report lists them).
+ * The ADR's two mutation tests of the content-node measurement (a row one cell too wide, one extra row) are tests of their own:
+ * `inspection-popup-misfit.test.tsx` injects the mis-fitted geometry and asserts the refusal.
  */
 import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
 import { render } from 'ink';
@@ -60,8 +60,8 @@ const ESC = '\x1b';
 
 // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
 const CONTROL = /\u001b\[[0-9;?]*[A-Za-z]|\u001b[78]/gu;
-const TOP = /^ {2}- (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
-const BOTTOM = /^ {2}-{20,} *$/u;
+const TOP = /^ - (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
+const BOTTOM = /^ -{20,} *$/u;
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -194,6 +194,16 @@ describe('the popup on the grid', () => {
         expect(displayWidth(row), row).toBeLessThanOrEqual(cols - 1);
         expect(row === '' || row.startsWith(' '), `one column in: ${row}`).toBe(true);
       }
+      // The edges and the screen they frame start and end at the same columns (unit 8 fix wave, O-12): the box's first and last.
+      const status = frame.findIndex((row) => /^ - \d+% · /u.test(row));
+      expect(status, frame.join('\n')).toBeGreaterThan(0);
+      for (const edge of [frame[0] ?? '', frame[rows - 2] ?? '']) {
+        expect(edge.search(/\S/u), `the edge starts with the screen: ${edge}`).toBe(1);
+        expect(edge.trimEnd().length, `and ends with it: ${edge}`).toBe(
+          frame[status]?.trimEnd().length,
+        );
+      }
+      expect(frame[status]?.trimEnd().length, 'the box’s last column').toBe(cols - 1);
       // The screen it frames, its answers and its way back: the sheet's own keys, in the popup.
       const text = frame.join('\n');
       expect(text).toContain('[Ctrl+Y] Allow');
@@ -225,7 +235,7 @@ describe('the popup on the grid', () => {
     await vi.waitFor(() => expect(m.store.getSnapshot().review?.screen).toBe('list'));
     await vi.waitFor(() => expect(m.rowsWith('/details').length).toBeGreaterThan(1));
     const frame = m.rowsWith('/details');
-    expect(frame[0]).toMatch(/^ {2}- \/details -+ from chat - *$/u);
+    expect(frame[0]).toMatch(/^ - \/details -+ from chat - *$/u);
     expect(frame.join('\n')).not.toContain('[Ctrl+Y]');
     expect(frame[23]).toBe('');
   });
@@ -290,8 +300,8 @@ describe('the sheet’s keys in its popup (ADR-0148 §7, MVP-11 §5.5 rule 17)',
     await pause(40);
     await m.openFull();
     m.resize(100, 30);
-    // The box is 98 wide one column in: its top edge ends at column 98 (its last cell is the blank of its side margin).
-    await vi.waitFor(() => expect(m.rowsWith('Full diff')[0]?.trimEnd().length).toBe(98));
+    // The box is 98 wide one column in: its top edge runs across it, to the box's last column (98, counted from 0).
+    await vi.waitFor(() => expect(m.rowsWith('Full diff')[0]?.trimEnd().length).toBe(99));
     expect(m.rowsWith('Full diff')).toHaveLength(30);
     expect(m.rowsWith('Full diff')[28]).toMatch(BOTTOM);
     m.resize(60, 20);
@@ -383,5 +393,24 @@ describe('a mashed Esc does not reject by accident (ADR-0148 §7)', () => {
     expect(r.key('', { escape: true })).toBe('abort');
     await Promise.resolve();
     expect(r.answers).toEqual([{ outcome: 'reject' }]);
+  });
+
+  it('the settle belongs to the card that stepped back: the next card’s first Esc rejects at once (unit 8 fix wave, S-4)', async () => {
+    const r = rig();
+    r.toFull();
+    expect(r.key('', { escape: true }), 'card A steps back').toBe('handled');
+    expect(r.key('n', { ctrl: true }), 'and is denied inside the settle').toBe('handled');
+    await Promise.resolve();
+    expect(r.answers).toHaveLength(1);
+    expect(r.store.getSnapshot().approval, 'card A is settled').toBeUndefined();
+    // Card B opens and is on screen while A's settle would still run: its legend says `Esc stops the turn`, and it does.
+    void r.store
+      .requestApproval(REQUEST, true, undefined, { callId: 'next', preview: SIXTY })
+      .then((answer) => r.answers.push(answer));
+    r.show();
+    vi.advanceTimersByTime(10);
+    expect(r.key('', { escape: true }), 'B’s first Esc is no mashed key').toBe('abort');
+    await Promise.resolve();
+    expect(r.answers.at(-1)).toEqual({ outcome: 'reject' });
   });
 });

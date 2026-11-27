@@ -512,7 +512,8 @@ export const EXIT_GUARD_RULE_ROWS = 1;
  * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The title
  * row is a glyph and a few words; each line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y`
  * stops the run and leaves and the other three keys stay; once the person confirmed, the card only says that the run is stopping and for
- * how long the Home waits.
+ * how long the Home waits. With `width` (the card's rule's width) every line is clipped to it, and the one legend that can outgrow it (a run
+ * that is stopping, its `Ctrl+Y` saying `(wait)`) gives up its bound first: the way back is never the part that is cut (ADR-0145 §2).
  */
 export function exitGuardLines(
   phase: ExitGuardPhase,
@@ -521,8 +522,20 @@ export function exitGuardLines(
   boundSeconds: number,
   /** The card's lockout holds `Ctrl+Y` now (the controller's `exitGuardLock`, a display value): it reads `(wait)` (ADR-0145 §3). */
   locked = false,
+  /** The columns the card's rows are drawn in (the width of its rule); unset, the lines are not fitted. */
+  width?: number,
 ): readonly string[] {
-  const wait = waitMark(locked);
+  const lines = exitGuardText(phase, snapshot, boundSeconds, waitMark(locked), width);
+  return width === undefined ? lines : lines.map((line) => clipLine(line, width));
+}
+
+function exitGuardText(
+  phase: ExitGuardPhase,
+  snapshot: RunHostSnapshot | undefined,
+  boundSeconds: number,
+  wait: ReturnType<typeof waitMark>,
+  width: number | undefined,
+): readonly string[] {
   const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
   // `: <run id>` for a leg that has named its run, nothing for one that has not: the card's title names the run when it can.
   const named = active?.runId === undefined ? '' : `: ${sanitizeInline(active.runId)}`;
@@ -536,20 +549,15 @@ export function exitGuardLines(
       `${glyph('ended')} The run has ended.`,
       legend([{ keys: 'Ctrl+Y', verb: 'leave the Home', ...wait }], EXIT_GUARD_STAY),
     ];
-  if (active?.cancelling === true)
+  if (active?.cancelling === true) {
+    const leave = (verb: string): string =>
+      legend([{ keys: 'Ctrl+Y', verb, ...wait }], EXIT_GUARD_STAY);
+    const whole = leave(`leave once it stops (about ${formatElapsed(boundSeconds * 1000)})`);
     return [
       `${glyph('warning')} The run is stopping${named}.`,
-      legend(
-        [
-          {
-            keys: 'Ctrl+Y',
-            verb: `leave once it stops (about ${formatElapsed(boundSeconds * 1000)})`,
-            ...wait,
-          },
-        ],
-        EXIT_GUARD_STAY,
-      ),
+      width === undefined || displayWidth(whole) <= width ? whole : leave('leave once it stops'),
     ];
+  }
   return [
     `${glyph('warning')} A workflow run is executing${named}.`,
     'Leaving stops it, and a stopped run cannot be resumed.',

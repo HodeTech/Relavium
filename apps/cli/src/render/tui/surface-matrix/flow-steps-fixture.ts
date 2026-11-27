@@ -16,7 +16,7 @@ import type { Variant } from './variants.js';
 
 /**
  * The steps of the Home's project flows that no other cell draws (MVP-11 unit 6, round 1: test gap "matrix"): the Done step of `/init`, `/import`,
- * `/pricing` and the Defined tab's export, in both tones (what was written, and what was refused at the write), `/init`'s refusal step, `/import`'s
+ * `/pricing` and the `/workflows` popup's export, in both tones (what was written, and what was refused at the write), `/init`'s refusal step, `/import`'s
  * path field and `/pricing`'s rates. Each is the product's own run function on the channel the Home wires, over scripted ports and temporary
  * directories (nothing is written elsewhere), driven through the guards the person's answers pass: the process's own clock is moved on by what the
  * guards need (`skipClock`: the opening settle, a chord card's dwell and its two-second lockout) instead of waited for, so nine cells of a surface
@@ -219,7 +219,7 @@ async function importToLastStep(m: HomeMount, commit: 'written' | 'refused'): Pr
   await lastStepShown(m, channel);
 }
 
-/** The Defined tab's `x` to its review, the guards passed, `Ctrl+Y`, and the last step. */
+/** The `/workflows` popup's `[x]` to its review, the guards passed, `Ctrl+Y`, and the last step. */
 async function exportToLastStep(m: HomeMount, commit: 'written' | 'refused'): Promise<void> {
   const channel = channelOf(m);
   leave(runExportCard({ flow: channel.flow, port: exportPort(commit) }, 'nightly-report'));
@@ -392,7 +392,7 @@ export const FLOW_STEP_SURFACES: readonly HomeSurface[] = [
   stepSurface(
     {
       id: 'home.export-done',
-      title: 'The Defined tab’s export popup’s Done step: what was exported and the file',
+      title: 'The `/workflows` popup’s export Done step: what was exported and the file',
       landmark: "Exported workflow 'nightly-report'",
       legendRow: DONE_LEGEND,
     },
@@ -401,7 +401,7 @@ export const FLOW_STEP_SURFACES: readonly HomeSurface[] = [
   stepSurface(
     {
       id: 'home.export-done-failed',
-      title: 'The Defined tab’s export popup’s failed Done step: the write was refused',
+      title: 'The `/workflows` popup’s export, its failed Done step: the write was refused',
       landmark: 'Not exported.',
       legendRow: DONE_LEGEND,
     },

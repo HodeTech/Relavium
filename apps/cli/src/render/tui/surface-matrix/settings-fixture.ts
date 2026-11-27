@@ -40,7 +40,8 @@ export type SettingsState = keyof typeof SETTINGS_LANDMARKS;
 
 /** The legend row of each settings surface, whole on one row of every cell. */
 export const SETTINGS_LEGEND_ROW: Readonly<Record<SettingsState, string | readonly string[]>> = {
-  effort: '↑/↓ select · Enter apply · Esc close',
+  // opened on the tier in force (`medium`): `Enter` there keeps (W1 O-15), as `/mode` says it
+  effort: '↑/↓ select · Enter keep · Esc close',
   form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
   effect: '↑/↓ select · Enter apply · Esc close',
   mode: '↑/↓ select · Enter keep · Esc close',

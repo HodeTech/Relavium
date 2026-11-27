@@ -513,3 +513,18 @@ describe.each(['chat', 'home'] as const)(
     });
   },
 );
+
+describe.each(['chat', 'home'] as const)(
+  'the sheet’s wait clock follows the screen in the %s host (ADR-0147 §2; unit 8 fix wave, M-12 I04)',
+  (host) => {
+    it.each([
+      [true, /^== Question from the agent · not an approval =+ waiting 0:\d\d ==$/mu],
+      [false, /^== Question from the agent · not an approval =+ waiting since \d\d:\d\d ==$/mu],
+    ] as const)('alternate=%s: the rule carries the clock in its form', async (alternate, rule) => {
+      const f = fixture(host, alternate, false);
+      await f.ready();
+      void f.store.requestQuestion(QUESTION).catch(() => undefined);
+      await vi.waitFor(() => expect(f.lastFrameWith('Question from the agent')).toMatch(rule));
+    });
+  },
+);

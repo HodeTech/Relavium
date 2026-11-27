@@ -3,7 +3,7 @@
  * 2026-11-27, [MVP-11 unit 8](../../../../docs/roadmap/phases/mvp-11/unit-8-plan.md) §4 D1; frames `14-workflows-list.png` and `17-workflow-detail.png`): the
  * project's workflows as a catalogue (a name, its node count, how its last run stands, `pinned` as a word) and one workflow's detail (its description, the
  * inputs it asks, the chain of its nodes, its file and its last three runs), from which `[r]` runs it, `[x]` exports it and `[p]` pins it. It replaces the
- * Defined tab of the tab host; the run browser is the Runs screen (`[h]`).
+ * `/workflows` popup; the run browser is the Runs screen (`[h]`).
  *
  * - **Rows name their entry by index, never by slug.** A slug is the file's word (a pin's ref is whatever `history.db` holds): a row's id is the entry
  *   index of the catalogue's read, and the slug a request carries is what the read says for it (`slugOf`), so a crafted name is a line of text and never
@@ -29,6 +29,7 @@ import { formatAgeOfIso } from '../render/notation.js';
 import type { StatusGlyphRole } from '../render/tui/glyphs.js';
 import { waitingLabel, rowId } from '../render/tui/home-projection.js';
 import { keyToken } from '../render/tui/legend.js';
+import { displayWidth, padTo } from '../render/tui/viewport.js';
 import {
   HOME_EXIT_VERB,
   type PopupContent,
@@ -38,7 +39,7 @@ import {
 } from './frame-model.js';
 import type { HomeWorkflowRun } from './home-port.js';
 import { stored, storedParagraph } from './home-text.js';
-import type { PopupControl, PopupSpec } from './popup-reducer.js';
+import { POPUP_KEYS, type PopupControl, type PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, wrapHanging } from './popup-text.js';
 
 /** The popup's steps: the catalogue, and the detail `Enter` opens. */
@@ -119,9 +120,6 @@ export function definedRowOf(
   return read.model.rows.find((candidate) => workflowRowId(candidate) === row.id);
 }
 
-const padTo = (text: string, width: number): string =>
-  text + ' '.repeat(Math.max(0, width - [...text].length));
-
 const nodeCountWords = (count: number): string =>
   `${String(count)} ${count === 1 ? 'node' : 'nodes'}`;
 
@@ -188,9 +186,9 @@ export function workflowsListContent(
   const rows = read.model.rows;
   if (rows.length === 0) return WORKFLOWS_EMPTY_CONTENT;
   const slugs = rows.map((row) => stored(row.slug, SLUG_COLUMNS, '?'));
-  const slugWidth = Math.max(...slugs.map((slug) => [...slug].length));
+  const slugWidth = Math.max(...slugs.map(displayWidth));
   const standings = rows.map((row) => tailOf(row, nowMs, 0)?.words ?? '');
-  const wordsWidth = Math.max(0, ...standings.map((words) => [...words].length));
+  const wordsWidth = Math.max(0, ...standings.map(displayWidth));
   const heading: PopupListRow = {
     id: 'head',
     label: `This project · ${String(read.model.total)} ${read.model.total === 1 ? 'workflow' : 'workflows'}`,
@@ -291,7 +289,7 @@ function runRows(runs: readonly HomeWorkflowRun[], nowMs: number): PopupListRow[
         ? ''
         : formatAgeOfIso(run.at, nowMs),
   );
-  const ageWidth = Math.max(0, ...ages.map((age) => [...age].length));
+  const ageWidth = Math.max(0, ...ages.map(displayWidth));
   return [
     heading,
     ...runs.map(
@@ -301,7 +299,9 @@ function runRows(runs: readonly HomeWorkflowRun[], nowMs: number): PopupListRow[
         statusWord: RUN_WORDS[run.status].word,
         label: padTo(ages[index] ?? '', ageWidth),
         detail: rowId(run.runId),
-        // The legend row of a stepped popup keeps `[Ctrl+C] close` to the last, so at the floor it has no room for `Enter open run`: the highlighted run says it.
+        // The run in front carries its own `Enter` (a header line has none), and, as the legend row of a stepped popup keeps `[Ctrl+C] close` to
+        // the last and so has no room for it at the floor, says what choosing it does.
+        enterVerb: DETAIL_ENTER,
         effect: RUN_EFFECT,
       }),
     ),
@@ -336,6 +336,9 @@ export function workflowDetailContent(view: WorkflowDetailView, nowMs: number): 
       : storedParagraph(detail.description, POPUP_TEXT_COLUMNS - 2, DESCRIPTION_ROWS);
   return {
     kind: 'list',
+    // A page of lines: it opens at its title, the arrows walk every line (a long chain or a long list of inputs is read by scrolling), and a last run
+    // is the one line that answers `Enter`.
+    page: true,
     rows: [
       sectionRow('title', `${slug}${name}${facts.length === 0 ? '' : `  ·  ${facts.join(' · ')}`}`),
       ...description.map((line, at) => sectionRow(`description:${String(at)}`, line)),
@@ -396,7 +399,8 @@ export function homeWorkflowsSpec(origin: PopupOrigin): PopupSpec {
         name: 'Detail',
         content: DETAIL_LOADING_CONTENT,
         back: WORKFLOWS_STEP.list,
-        legendKeep: ['r', 'x', 'p', 'Enter'],
+        // A page that overflows names its pages before `[p]`, which gives way first at the floor.
+        legendKeep: ['r', 'x', POPUP_KEYS.page, 'p', 'Enter'],
       },
     ],
   };

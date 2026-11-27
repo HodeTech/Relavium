@@ -188,6 +188,24 @@ const active = (state: TabHostState) => {
 };
 const focusedId = (state: TabHostState): string | undefined => active(state).focus;
 
+/**
+ * `↓` until the run `id` is the focused one, a bounded walk: a state that never gets there (a scope that did not recompute, a default that listed
+ * every directory) fails with the run it was looking for instead of looping at full speed (review round 1, D08/D09).
+ */
+function walkTo(
+  r: {
+    readonly press: (input: string, key?: ChatKey) => TabHostStep;
+    readonly state: TabHostState;
+  },
+  id: string,
+): void {
+  for (let step = 0; step < 100; step += 1) {
+    if (focusedId(r.state) === id) return;
+    r.press('', DOWN);
+  }
+  throw new Error(`the run ${id} was never focused (focus: ${String(focusedId(r.state))})`);
+}
+
 describe('every class of run is drawn with a glyph and a word', () => {
   const lines = textOf(rig().state);
 
@@ -307,7 +325,7 @@ describe('what a key does', () => {
 
   it('Enter on a run paused at a gate in this project asks for its gate card, and for nothing else', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     expect(r.press('', ENTER)).toMatchObject({ kind: 'open-gate', runId: IDS.gate });
   });
 
@@ -348,7 +366,7 @@ describe('what a key does', () => {
     'Enter on %s opens nothing: it says the row is read-only, and why',
     (id) => {
       const r = rig();
-      while (focusedId(r.state) !== id) r.press('', DOWN);
+      walkTo(r, id);
       const step = r.press('', ENTER);
       expect(step.kind).toBe('state');
       const message = active(r.state).message ?? '';
@@ -371,13 +389,13 @@ describe('what a key does', () => {
 
   it('says there is no cross-process cancel for a run another process owns', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.other) r.press('', DOWN);
+    walkTo(r, IDS.other);
     expect(textOf(r.state).join('\n')).toContain('no cross-process cancel');
   });
 
   it('a message goes with the next key', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.other) r.press('', DOWN);
+    walkTo(r, IDS.other);
     r.press('', ENTER);
     expect(active(r.state).message).toBeDefined();
     r.press('', UP);
@@ -400,6 +418,31 @@ describe('what a key does', () => {
       expect(step.kind, `${input} ${JSON.stringify(key)}`).toBe('state');
     }
     expect(r.state).toEqual(before);
+  });
+
+  it('`A` (Caps Lock on) widens and narrows the scope as `a` does; a chord with it is nothing (review round 1, D02)', () => {
+    const r = rig(undefined, 'project');
+    expect(active(r.state).scope).toBe('project');
+    r.press('A');
+    expect(active(r.state).scope).toBe('all');
+    r.press('A');
+    expect(active(r.state).scope).toBe('project');
+    r.press('a', { ctrl: true });
+    r.press('a', { meta: true });
+    expect(active(r.state).scope, 'a chord is never `a`').toBe('project');
+  });
+
+  it('`a` before a read has landed, or where there is nothing to read, changes nothing: there is no list to widen (review round 1, D03)', () => {
+    const loading = rig(null, 'project');
+    expect(active(loading.state).phase).toBe('loading');
+    loading.press('a');
+    loading.press('A');
+    expect(active(loading.state).scope).toBe('project');
+    const none = enterTab(freshTabMemory('active'), 'active', { now: 0 });
+    expect(active(none).phase).toBe('unreadable');
+    const step = foldTabHostKey(none, 'a', {}, { now: 0 });
+    if (step.kind === 'close') throw new Error('`a` closed the screen');
+    expect(active(step.state).scope).toBe('project');
   });
 
   it('an Enter with no row makes no step', () => {
@@ -449,7 +492,7 @@ describe('Esc and Ctrl+C at the Active tab', () => {
 describe('the cursor follows the run', () => {
   it('stays on its run when a newer read moves it down the list', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     const before = active(r.state).cursor;
     const shuffled = [
       ...classify([run('newcome1', 'running'), run('newcome2', 'running')], {}),
@@ -463,7 +506,7 @@ describe('the cursor follows the run', () => {
 
   it('keeps its position, inside the rows, when the run left the list, and selects nothing', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
     const next = withActiveRead(r.state, read(without));
     expect(active(next).cursor).toBe(without.length - 1);
@@ -485,7 +528,7 @@ describe('the cursor follows the run', () => {
     const above = order[gateAt - 1];
     if (above === undefined) throw new Error('the gate row has no row above it in this fixture');
     const r = rig();
-    while (focusedId(r.state) !== above.runId) r.press('', DOWN);
+    walkTo(r, above.runId);
     // The run under the cursor ends; the gate row below it moves up and now stands at the very number the cursor is on.
     r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== above.runId)));
     expect(
@@ -504,7 +547,7 @@ describe('the cursor follows the run', () => {
 
   it('draws no selected row while nothing is selected, and the first arrow selects one, even at an end', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== IDS.held)));
     const lines = tabHostLines(r.state, SIZE);
     expect(
@@ -521,7 +564,7 @@ describe('the cursor follows the run', () => {
 
   it('keeps nothing selected through further reads until a key selects, and says why only once', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
     r.state = withActiveRead(r.state, read(without));
     r.press('', ENTER); // "No run is selected": the key's own sentence
@@ -534,7 +577,7 @@ describe('the cursor follows the run', () => {
 
   it('is remembered by the tab host as a row and as a run, and the tab is entered there again', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     const memory = tabHostMemory(r.state);
     expect(memory.positions.active).toBe(active(r.state).cursor);
     expect(memory.activeFocus).toBe(IDS.gate);

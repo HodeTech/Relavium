@@ -167,7 +167,7 @@ export function parkedRunSetup(gates: RunGates, kind: ParkedRunRow['kind']): Hom
   };
 }
 
-/** The Defined tab over two workflows, one pinned and one file that does not parse. */
+/** The `/workflows` popup's catalogue over three workflows, one pinned and one file that does not parse. */
 export const DEFINED_PORT: DefinedPort = {
   read: () => {
     const entries: readonly DefinedEntry[] = [

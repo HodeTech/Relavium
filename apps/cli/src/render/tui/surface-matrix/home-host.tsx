@@ -31,6 +31,7 @@ import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
 import {
   openHomePopup,
   type HomePopupKind,
+  type WorkflowsAt,
   type HomePopupsPort,
 } from '../../../popups/home-port.js';
 import { openUnreadableRun } from '../../../popups/unreadable-run-port.js';
@@ -292,7 +293,7 @@ export function mountHome(
     }: {
       readonly kind: HomePopupKind;
       readonly port: HomePopupsPort;
-      readonly at?: { readonly slug: string } | undefined;
+      readonly at?: WorkflowsAt | undefined;
     }) => {
       void openHomePopup({ host: popups, port, kind, origin: 'home', at });
     },

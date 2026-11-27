@@ -34,7 +34,7 @@ export const EXPORT_LOADING_CONTENT: PopupContent = {
 };
 
 /**
- * The confirmation's question, its first line: what `Ctrl+Y` answers, as the Defined export asks it (`Write workflow 'x' to a file in this
+ * The confirmation's question, its first line: what `Ctrl+Y` answers, as the `/workflows` export asks it (`Write workflow 'x' to a file in this
  * directory?`), for a session. A product constant: no data in it.
  */
 export const EXPORT_QUESTION = 'Write this chat to a workflow file in the project?';
@@ -59,7 +59,7 @@ export const EXPORT_TARGET_CHANGED = {
 } as const;
 
 /**
- * What the result says above the reason when the write (or the look before it) failed: the Defined tab's export says it in the same words
+ * What the result says above the reason when the write (or the look before it) failed: the `/workflows` popup's export says it in the same words
  * (`EXPORT_FAILED` of `render/tui/export-card.ts`, which the Home loads first), so one name is one text.
  */
 export { EXPORT_FAILED };
@@ -135,7 +135,7 @@ export function exportSpec(origin: PopupOrigin): PopupSpec {
         name: 'Export',
         content: EXPORT_LOADING_CONTENT,
         holds: 'chord',
-        // The words of the Defined tab's export and of `/init`, `/import` and `/pricing`: the same answer, the same explicit No (`[Ctrl+N]
+        // The words of the `/workflows` popup's export and of `/init`, `/import` and `/pricing`: the same answer, the same explicit No (`[Ctrl+N]
         // Write nothing`) and the same `Esc` (it refuses, and nothing is written), so the legend does not say one thing in four ways.
         chord: { verb: EXPORT_ALLOW_LABEL, deny: EXPORT_DENY_LABEL },
         exitVerb: 'denies',

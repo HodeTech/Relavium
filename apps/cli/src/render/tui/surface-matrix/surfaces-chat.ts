@@ -5,6 +5,7 @@ import { editedFilePreview } from '../fixtures/edit-diff.js';
 import type { MentionReader } from '../mention.js';
 import type { ChatMount, ChatSetup } from './chat-host.js';
 import { openModeFlow } from './home-flows.js';
+import { liveModeBox, openModeTo } from './mode-home-fixture.js';
 import { KEYS } from './home-host.js';
 import type { KnownFailure, SurfaceBase } from './registry.js';
 import { PALETTE_LEGEND_ROW } from './palette-legend.js';
@@ -418,6 +419,35 @@ function chatSettingsSurface(state: SettingsState, title: string): ChatSurfaceDe
 }
 
 /**
+ * The chat's `/mode` `[s]` confirmation and its Done step (MVP-11 unit 8, W1 D-6): the product's own run function (`saveChatStartupDefault`, framed
+ * `from chat`, saying the chat stays in `ask`) on the channel the chat wires, over a temporary operator home whose config the real writer writes,
+ * its guards passed by moving the process clock on. The list that hands it over is `settings-mode-use`.
+ */
+function chatModeSaveSurface(
+  name: string,
+  title: string,
+  landmark: string,
+  upTo: 'confirm' | 'done',
+): ChatSurfaceDefinition {
+  return {
+    name,
+    title,
+    exitKey: 'Esc',
+    landmark,
+    ...(upTo === 'done' ? { legendRow: 'Enter / Esc close' } : {}),
+    belowFloor: /too small for this popup/iu,
+    popup: liveModeBox,
+    setup: { seed: SHORT_CONVERSATION, nativePrompt: true },
+    notes:
+      'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the flow is the product’s own run function on the channel the chat wires, over a temporary operator home, its guards passed by moving the process clock on',
+    open: async (m) => {
+      recordBaseline(m);
+      await openModeTo(m, upTo, 'chat');
+    },
+  };
+}
+
+/**
  * The chat's `/permissions` popup in one state (ADR-0137 §2 as a popup): the short exchange behind it and `/permissions` typed and routed by
  * the host; its lists (the first row highlighted), the withdrawal's line `[d]` armed, or nothing to withdraw.
  */
@@ -572,6 +602,18 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   chatPermissionsSurface(
     'empty',
     'The /permissions popup over the chat: nothing remembered and nothing approved',
+  ),
+  chatModeSaveSurface(
+    'mode-confirm',
+    'The /mode popup’s `[s]` over the chat: the confirmation of the startup default (what is written, to which file, that this chat stays), the Ctrl+Y chord step',
+    'Save plan as your startup default?',
+    'confirm',
+  ),
+  chatModeSaveSurface(
+    'mode-done',
+    'The /mode popup’s `[s]` over the chat: its Done step (the startup default saved, the file)',
+    'Startup default: plan',
+    'done',
   ),
   {
     name: 'mode-prompt',

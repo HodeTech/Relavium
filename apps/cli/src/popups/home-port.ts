@@ -48,9 +48,18 @@ export interface HomeWorkflowRun {
   readonly at: string;
 }
 
+/** The step of the `/workflows` popup a key was pressed on: the catalogue's row, or the workflow's detail. */
+export type WorkflowsStep = 'list' | 'detail';
+
+/** Where `/workflows` is brought back to: the workflow (by slug) and the step its flow was started from. */
+export interface WorkflowsAt {
+  readonly slug: string;
+  readonly step: WorkflowsStep;
+}
+
 /** What `/workflows` reads and starts. */
 export interface HomeWorkflowsPort {
-  /** The catalogue and its pins and last runs, read now (the Defined tab's own read). May throw: the popup says so. */
+  /** The catalogue and its pins and last runs, read now (the `/workflows` popup's own read). May throw: the popup says so. */
   readonly read: DefinedPort['read'];
   /** The detail of the file at `path` (a catalog entry's own path). May throw a `CliError`. Absent ⇒ the detail says it cannot be read. */
   readonly describe?: ((path: string) => WorkflowDetail) | undefined;
@@ -62,13 +71,14 @@ export interface HomeWorkflowsPort {
   readonly now: () => number;
   /**
    * `[r]`: start the `/run` popup at this workflow, from `/workflows`. Called once the popup has closed. The controller opens the flow (its picker
-   * skipped once, its form, its `Ctrl+Y` confirmation and its single start are the flow's own); `Esc` at the first thing it asks, and a refusal,
-   * bring `/workflows` back on the detail of `slug`; a run that starts opens the run view. `path` is the catalog's own path the row was listed
-   * from, so the flow refuses a slug whose file is another one by then.
+   * skipped once, its form, its `Ctrl+Y` confirmation and its single start are the flow's own); `Esc` at the first thing it asks, a `Ctrl+N` and a
+   * refusal bring `/workflows` back on the step `from` names (the catalogue row it was pressed on, or the detail); a run that started closes
+   * everything, and `Ctrl+C` too. `path` is the catalog's own path the row was listed from, so the flow refuses a slug whose file is another one
+   * by then.
    */
-  readonly run: (slug: string, path: string) => void;
-  /** `[x]`: the export confirmation of this workflow, from `/workflows`; the popup is brought back on the detail when it ends. Called once the popup has closed. */
-  readonly export: (slug: string) => void;
+  readonly run: (slug: string, path: string, from: WorkflowsStep) => void;
+  /** `[x]`: the export confirmation of this workflow, from `/workflows`; the popup is brought back on the step `from` names when it ends. Called once the popup has closed. */
+  readonly export: (slug: string, from: WorkflowsStep) => void;
   /** `[h]` (no run) and `Enter` on a last run (that run's detail): leave for the Runs screen. Called once the popup has closed. */
   readonly openRuns: (runId?: string) => void;
 }
@@ -90,17 +100,13 @@ export interface HomePopupOpenRequest {
   readonly kind: HomePopupKind;
   readonly origin: PopupOrigin;
   /**
-   * Open `/workflows` ON the detail of this workflow (its slug), the highlight on it in the list behind: the popup the `/run` and the export it
-   * handed the workflow to bring back when they end. A slug the catalogue no longer holds opens the list.
+   * Open `/workflows` back where a flow it handed a workflow to was started: on the catalogue with the highlight on that workflow (`step: 'list'`),
+   * or on its detail (`'detail'`, the list behind with the highlight on it): the popup the `/run` and the export bring back when they end. A
+   * slug the catalogue no longer holds opens the list.
    */
-  readonly at?: { readonly slug: string } | undefined;
+  readonly at?: WorkflowsAt | undefined;
   /** How the work gives the event loop back before it reads (production: a macrotask); a test injects its own. */
   readonly yieldToLoop?: (() => Promise<void>) | undefined;
-}
-
-/** Whether `port` has what the popup `kind` needs: a Home that wired none opens none, and the word says it is not available here. */
-export function homePopupAvailable(port: HomePopupsPort, kind: HomePopupKind): boolean {
-  return port[kind] !== undefined;
 }
 
 /**

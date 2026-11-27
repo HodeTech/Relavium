@@ -382,12 +382,15 @@ describe('the full view navigation legend: every key it names moves, searches or
 });
 
 describe('the details screen and the tool-call list: every key they name does what they say', () => {
-  it('names b back to the list and Esc close on a call’s details, and each does it', () => {
+  it('names b back to the list and Esc back on a call’s details, and each does it: Esc steps back to the list (ADR-0148 §7; unit 8 fix wave, O-4)', () => {
     const at = review(SMALL, { screen: 'full' }, 'details');
     expect(keysOf(DETAILS_CLOSE_LEGEND)).toEqual(['[b]', 'Esc']);
     expect(nextState(press(at, 'b', {})).screen).toBe('list');
-    expect(press(at, '', { escape: true })).toEqual({ kind: 'close' });
-    expect(DETAILS_CLOSE_LEGEND.text.endsWith('Esc close')).toBe(true);
+    expect(nextState(press(at, '', { escape: true })).screen).toBe('list');
+    expect(DETAILS_CLOSE_LEGEND.text.endsWith('Esc back')).toBe(true);
+    // From the list, the next Esc closes.
+    const list = { ...at, state: nextState(press(at, '', { escape: true })) };
+    expect(press(list, '', { escape: true })).toEqual({ kind: 'close' });
   });
 
   it('names ↑/↓, PgUp/PgDn, Enter, Home/End and Esc on the list, and each selects, opens or closes', () => {

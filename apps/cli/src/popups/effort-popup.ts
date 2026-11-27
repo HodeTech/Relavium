@@ -21,6 +21,10 @@ import type { PopupSpec } from './popup-reducer.js';
 /** The word beside the tier in force. */
 export const EFFORT_CURRENT = 'current';
 
+/** What `Enter` says on the tier in force (nothing changes) and on any other tier (it applies to the session). */
+export const EFFORT_KEEP_VERB = 'keep';
+export const EFFORT_APPLY_VERB = 'apply';
+
 /** What the popup says when the model has no tier to choose after all (it was routed here a moment before: never expected). */
 export const EFFORT_NONE = {
   what: 'This model has no reasoning effort to choose.',
@@ -49,7 +53,14 @@ export function effortContent(
   const marked = currentRowOf(model, tiers, current);
   const rows = tiers.map((tier): PopupListRow => {
     const { label, hint } = effortRowLabel(model, tier);
-    return { id: tier, label, detail: tier === marked ? `${hint} · ${EFFORT_CURRENT}` : hint };
+    return {
+      id: tier,
+      label,
+      detail: tier === marked ? `${hint} · ${EFFORT_CURRENT}` : hint,
+      // What `Enter` does to THIS row, as `/mode` says it (OD-25): on the tier in force it changes nothing and closes with "Already at reasoning
+      // effort …" (`settings-session.ts` compares the row with the tier in force, not with the row that represents it), elsewhere it applies.
+      enterVerb: tier === current ? EFFORT_KEEP_VERB : EFFORT_APPLY_VERB,
+    };
   });
   return { kind: 'list', rows };
 }
@@ -76,6 +87,6 @@ export function effortSpec(
     id: 'effort',
     title: '/effort',
     origin,
-    steps: [{ name: 'Effort', content, enter: 'apply', initialRow }],
+    steps: [{ name: 'Effort', content, enter: EFFORT_APPLY_VERB, initialRow }],
   };
 }

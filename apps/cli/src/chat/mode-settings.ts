@@ -211,7 +211,7 @@ const NOT_OFFERED = Symbol('mode not offered');
 
 /**
  * Save `mode`, chosen elsewhere, as the global startup default: the startup branch of {@link runModeSettings} and nothing else (the chat's
- * `/mode` popup hands off here for "New chats", ADR-0148 §3 and §6). It RUNS that branch rather than repeating it: the flow it is given
+ * `/mode` popup's `[s]` and the bare Home's `Enter` on another mode hand off here, through `popups/mode-confirm.ts`, ADR-0148 §3 and §6). It RUNS that branch rather than repeating it: the flow it is given
  * answers the branch's one selection with `mode` without drawing it (a selection alone saves nothing, and the person chose the mode in the
  * popup), and every other step is today's, on the same prompt: the effective-startup note, the confirmation that defaults to No (`auto`
  * states its effect first), the revocation a confirmed narrowing makes, the config-rewrite disclosure and the visibly admitted publication,
@@ -245,7 +245,7 @@ export function runStartupDefaultSave(
 // ── The `/mode` popup's hand-off: the result, not the words (ADR-0148 §3, §6) ───────────────────────────────────────────────
 
 /**
- * What saving the global startup default from the `/mode` popup's "New chats" came to, as {@link runStartupDefaultSave} said it, read back
+ * What saving the global startup default from the `/mode` popup (a chat's `[s]`, the Home's `Enter`) came to, as {@link runStartupDefaultSave} said it, read back
  * as a result so that the popup can say it on the host's channel in a few words (the residue rule, ADR-0148 §6: nothing of a setting goes into
  * the transcript). The bare Home's `/mode` popup (`popups/mode-home.ts`) reads the same result for its Done step, with the flow's own sentence.
  *
@@ -282,7 +282,7 @@ const OVERRIDE = /^Global startup default saved: [a-z-]+\. (project|workspace) o
 
 /**
  * The result {@link runStartupDefaultSave}'s one sentence says, or `unchanged` when it said none (a declined confirmation ends the branch with
- * no word). Read from the branch's own fixed words, so a sentence it adds or rewords is pinned by `mode-settings-handoff.test.ts`, which drives
+ * no word). Read from the branch's own fixed words, so a sentence it adds or rewords is pinned by `popups/mode-confirm.test.ts`, which drives
  * every path of the real flow; an unknown sentence is read as nothing saved, never as saved.
  */
 export function startupDefaultResultOf(said: string | undefined): StartupDefaultSaveResult {
@@ -306,41 +306,4 @@ export function startupDefaultResultOf(said: string | undefined): StartupDefault
     };
   }
   return { kind: 'refused', autoRevoked: said.endsWith(SAID.revoked) };
-}
-
-/**
- * What {@link saveStartupDefaultForPopup} is given: the options of {@link runStartupDefaultSave} without its `notice` (the result is returned
- * instead), and where a fault that escapes the flow is reported first (the host's work owner).
- */
-export type StartupDefaultHandOffOptions = Omit<StartupDefaultSaveOptions, 'notice'> & {
-  readonly failure?: ((cause: unknown) => void) | undefined;
-};
-
-/**
- * The `/mode` popup's "New chats" (ADR-0148 §3, §6): {@link runStartupDefaultSave} exactly as it runs (its card, its confirmation, its
- * disclosure, its publication), its one sentence kept from the transcript and returned as a {@link StartupDefaultSaveResult}, which the popup
- * says on the host's channel. Never rejects: a fault after the flow said its result (its prompt could not be released) is the owner's, and
- * the result stands; one before it is a refusal.
- */
-export async function saveStartupDefaultForPopup(
-  options: StartupDefaultHandOffOptions,
-  mode: ChatMode,
-): Promise<StartupDefaultSaveResult> {
-  const { failure, ...save } = options;
-  let said: string | undefined;
-  try {
-    await runStartupDefaultSave(
-      {
-        ...save,
-        notice: (text) => {
-          said = text;
-        },
-      },
-      mode,
-    );
-  } catch (cause) {
-    failure?.(cause);
-    if (said === undefined) return { kind: 'refused', autoRevoked: false };
-  }
-  return startupDefaultResultOf(said);
 }

@@ -16,6 +16,7 @@ import type {
 import { exitKey, keyToken, legend } from './legend.js';
 import type { ScrollGeometry } from './scroll.js';
 import { wrapText, type DisplayLine } from './viewport.js';
+import { clipLine } from './sheet-frame.js';
 
 /**
  * Pure projection helpers for the `relavium chat` ink `ChatApp` (workstream **2.M**) — extracted so the
@@ -575,6 +576,52 @@ export interface ReasoningPanel {
   readonly header: string;
   /** The reasoning text — present only when EXPANDED (`visible`); absent when collapsed. */
   readonly body?: string;
+}
+
+/** A row of the in-flight turn drawn above a docked sheet, by its role: the view colours it as the prompt block colours the same row. */
+export interface DockedTurnRow {
+  readonly text: string;
+  readonly tone: 'warning' | 'tool' | 'reasoning' | 'note';
+}
+
+/**
+ * The in-flight turn as it stays on screen while a sheet is docked ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings (newest first, one row), this turn's tool-call lines with their
+ * outcomes, the reasoning panel's header and body, and the interrupt note, each cut to `columns`. NOT the busy line: under a card that waits it
+ * would say `Working…`, which is false. At most `maxRows`, the NEWEST kept: the sheet keeps its rows, and the rows the conversation keeps above
+ * it show the latest of the turn. Pure; it reads the glyph form in force (the caller runs it inside `withGlyphForm`).
+ */
+export function dockedTurnRows(input: {
+  readonly warnings: readonly string[];
+  readonly toolLines: readonly string[];
+  readonly reasoning: ReasoningPanel | undefined;
+  readonly interrupt: string | undefined;
+  readonly columns: number;
+  readonly maxRows: number;
+}): readonly DockedTurnRow[] {
+  const width = Math.max(1, Math.floor(input.columns));
+  const row = (text: string, tone: DockedTurnRow['tone']): DockedTurnRow => ({
+    text: clipLine(text, width),
+    tone,
+  });
+  const rows: DockedTurnRow[] = [];
+  if (input.warnings.length > 0) {
+    const said = [...input.warnings]
+      .reverse()
+      .map((warning) => `${glyph('warning')} ${stripTerminalControls(warning)}`)
+      .join('  ');
+    rows.push(row(said, 'warning'));
+  }
+  for (const line of input.toolLines) rows.push(row(line, 'tool'));
+  if (input.reasoning !== undefined) {
+    rows.push(row(input.reasoning.header, 'reasoning'));
+    const body = input.reasoning.body ?? '';
+    if (body !== '')
+      for (const line of body.split('\n'))
+        for (const wrapped of wrapText(line, width)) rows.push(row(wrapped, 'reasoning'));
+  }
+  if (input.interrupt !== undefined) rows.push(row(input.interrupt, 'note'));
+  return rows.slice(Math.max(0, rows.length - Math.max(0, Math.floor(input.maxRows))));
 }
 
 /**

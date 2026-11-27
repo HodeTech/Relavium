@@ -1,6 +1,6 @@
 /**
  * The journeys of the flows that write, in the real hosts at 80×24 (the alternate screen's overlay and the inline renderer's floor; MVP-11
- * unit 6, 6.3; ADR-0148 §1, §3, §4, §6): `/init`, `/import`, `/pricing` and the Defined tab's `x` on the Home, typed as a person types them;
+ * unit 6, 6.3; ADR-0148 §1, §3, §4, §6): `/init`, `/import`, `/pricing` and the `/workflows` popup's `[x]` on the Home, typed as a person types them;
  * `/export` in the stand-alone chat and the chat the Home hosts. Each is drawn as a popup (its title, `step N of M`, the rail's names, its
  * legend row), is answered only by `Ctrl+Y` after its guards, ends in a Done step that `Enter` closes, and leaves no residue: the Home's notice,
  * the chat's transcript and the notification row are what they were before it opened.
@@ -334,7 +334,7 @@ describe.each(VARIANTS)('the Home’s flows that write, $renderer at 80×24', (v
         await m.until(() => m.controller.getSnapshot().nativeActionBusy === false, 2000);
         expect(wrote()).toBe(false);
         expect(m.controller.getSnapshot().notice).toBeUndefined();
-        // One notification on the Home's channel. The Defined tab is a screen: its hint row is not drawn, so the channel holds it until the
+        // One notification on the Home's channel. The `/workflows` popup is closed while its export is: nothing draws its legend, so the channel holds it until the
         // screen is left (`notifications.ts`), and it waits there rather than showing.
         await m.until(() => {
           const now = m.notifications.getSnapshot();

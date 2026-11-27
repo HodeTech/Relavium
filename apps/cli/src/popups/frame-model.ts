@@ -32,6 +32,7 @@ import {
   blankHostGlyphs,
   glyph,
   markWithWord,
+  plainFormInForce,
   type GlyphRole,
   type StatusGlyphRole,
 } from '../render/tui/glyphs.js';
@@ -54,7 +55,7 @@ import {
   type SheetRole,
   type SheetSpan,
 } from '../render/tui/sheet-frame.js';
-import { displayWidth, wrapWords } from '../render/tui/viewport.js';
+import { displayWidth, padTo, wrapWords } from '../render/tui/viewport.js';
 import {
   POPUP_FLOOR,
   POPUP_SIDE_MARGIN,
@@ -201,7 +202,8 @@ export interface PopupForm {
   /** The warning drawn under the fields (`⚠ This chat moves from Anthropic to OpenAI. …`), wrapped whole; a chosen radio option's replaces it. */
   readonly warning?: string | undefined;
   /**
-   * Applying the form widens authority or sends data elsewhere (`/mode auto`, `/models` to another provider): its `Enter` also waits out the
+   * Applying the form widens authority or sends data elsewhere (`/models` to another provider; `/mode`'s `auto` form retired in MVP-11 unit 8, OD-25,
+   * and survives only as the test fixture `guarded-form.test-support.ts`): its `Enter` also waits out the
    * approval's lockout after the answer that reached it, so a key held down never applies it (`popup-host.ts`). A form that only narrows or
    * stays within one provider has the settle and the quiet gap alone: it applies as soon as it has been read.
    */
@@ -236,8 +238,19 @@ export type PopupContent =
        * was on, as always (`withContent`).
        */
       readonly initialRow?: string | undefined;
+      /**
+       * The rows are the LINES of a page (a detail), not choices of a list: the arrows and the pages walk every line (a line that cannot act is
+       * walked over, `Enter` answers on one that can), the page opens on its first line, the legend says `↑/↓ scroll` while it overflows (and names
+       * `PgUp/PgDn`), and inline the page may use the body's whole height (a list to choose from is windowed to ten rows there, ADR-0148 §4).
+       */
+      readonly page?: true | undefined;
     }
-  | { readonly kind: 'report'; readonly lines: readonly string[] }
+  | {
+      readonly kind: 'report';
+      readonly lines: readonly string[];
+      /** The lines are a page of text, not a list: inline they may use the body's whole height (see `list`'s `page`). */
+      readonly page?: true | undefined;
+    }
   | PopupForm
   | PopupDone;
 
@@ -335,10 +348,15 @@ export function filterListRows(
 /** The columns a row is counted at when a caller gives none: the inner width of a standard popup at the floor (80 columns). */
 const FLOOR_INNER_WIDTH = popupInnerWidth(POPUP_FLOOR.columns, 'standard');
 
-/** The effect of `row` as its rows of `width` columns: none for a row that has no effect (or a heading). */
+/**
+ * The effect of `row` as its rows of `width` columns: none for a row that has no effect (or a heading). A `warn` effect (it approves without a card)
+ * is amber where colour is on; where it is off nothing else tells it from a plain effect, so it leads with the warning mark's plain form (`! `, two
+ * columns: a leading WORD would push the longest effect, `auto`'s, past its three rows at the floor's width) (W1 P-10).
+ */
 function effectRows(row: PopupListRow | undefined, width: number): readonly string[] {
   if (row?.effect === undefined || row.section === true) return [];
-  return wrapRows(popupText(row.effect), width);
+  const cue = row.effectTone === 'warn' && plainFormInForce() ? `${glyph('warning')} ` : '';
+  return wrapRows(`${cue}${popupText(row.effect)}`, width);
 }
 
 /** The rows the effect paragraph keeps under a list of `rows` at `width`: the longest effect's, or 0 when no row has one. */
@@ -403,11 +421,6 @@ function warningRoom(form: PopupForm, width: number): number {
     (room, text) => (text === undefined ? room : Math.max(room, warningRows(text, width).length)),
     0,
   );
-}
-
-/** `text` padded with spaces to `width` display columns (it is not cut). */
-function padTo(text: string, width: number): string {
-  return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
 }
 
 /** A line cut to `width`, its spans cut with it (a span past the cut is dropped, one across it shortened). */
@@ -630,15 +643,18 @@ export function naturalBodyRows(
     }
     case 'list': {
       const room = effectRoom(content.rows, innerWidth ?? FLOOR_INNER_WIDTH);
+      const cap = content.page === true ? Number.POSITIVE_INFINITY : maxListRows;
       return (
         filterRows +
         (content.heading === undefined ? 0 : 1) +
-        Math.min(maxListRows, Math.max(1, content.rows.length)) +
+        Math.min(cap, Math.max(1, content.rows.length)) +
         (room === 0 ? 0 : 1 + room)
       );
     }
-    case 'report':
-      return filterRows + Math.min(maxListRows, Math.max(1, content.lines.length));
+    case 'report': {
+      const cap = content.page === true ? Number.POSITIVE_INFINITY : maxListRows;
+      return filterRows + Math.min(cap, Math.max(1, content.lines.length));
+    }
     case 'form': {
       const width = innerWidth ?? FLOOR_INNER_WIDTH;
       const spacious = formRowCount(content, width, 'spacious');
@@ -664,16 +680,14 @@ export function bodyPageRows(
   const filterRows = hasFilter ? 1 : 0;
   switch (content.kind) {
     case 'report':
-      return reportPageRows(geometry, hasFilter);
+      return reportPageRows(geometry, hasFilter, content.page === true);
     case 'form':
       return Math.max(1, geometry.bodyRows - filterRows);
     case 'list': {
       const room = effectRoom(content.rows, geometry.innerWidth);
       const above = filterRows + (content.heading === undefined ? 0 : 1);
-      return Math.min(
-        geometry.listRows,
-        Math.max(1, geometry.bodyRows - above - (room === 0 ? 0 : 1 + room)),
-      );
+      const free = Math.max(1, geometry.bodyRows - above - (room === 0 ? 0 : 1 + room));
+      return content.page === true ? free : Math.min(geometry.listRows, free);
     }
     case 'loading':
     case 'empty':
@@ -745,16 +759,45 @@ function rowKind(row: PopupListRow, selected: boolean): SheetLine['kind'] {
   return selected ? 'selected' : 'row';
 }
 
+/** How many of `rows[from..to)` are entries: a heading, a sentence or a blank row is a row of the page, not one of the things the list lists. */
+function entriesIn(rows: readonly PopupListRow[], from: number, to: number): number {
+  return rows.slice(from, to).filter((row) => row.section !== true).length;
+}
+
+/**
+ * The marker rows of a list's window, counting what a person counts: the ENTRIES a marker stands for (`▲ 9 more` over 32 workflows after a page
+ * down is nine workflows, not ten rows with the heading in them), the entry under the marker included. A marker that would stand for no entry (only
+ * a heading is hidden above) is not drawn, and the row stays what it is (review round 1, O-9). A `page` (a detail the arrows walk line by line) has
+ * no entries to count: its lines are what a marker stands for, and a hidden line is always said.
+ */
+function listMarkers(
+  rows: readonly PopupListRow[],
+  window: ReturnType<typeof markedWindow>,
+  page: boolean,
+): ReturnType<typeof windowMarkers> {
+  const counted = (from: number, to: number): number =>
+    page ? to - from : entriesIn(rows, from, to);
+  const above = window.above === undefined ? 0 : counted(0, window.start + 1);
+  const below = window.below === undefined ? 0 : counted(window.end - 1, rows.length);
+  return windowMarkers({
+    start: window.start,
+    end: window.end,
+    ...(above > 0 ? { above } : {}),
+    ...(below > 0 ? { below } : {}),
+  });
+}
+
 /** `count` rows of `total` from `start`, as a list window would draw them, the marker rows in the glyph form in force. */
 function listLines(
   rows: readonly PopupListRow[],
   selected: number,
   height: number,
   width: number,
+  page: boolean,
 ): SheetLine[] {
   if (rows.length === 0) return [bodyLine('text', 'Nothing to show.', width)];
   const window = markedWindow(rows.length, selected, height);
-  const markers = windowMarkers(window);
+  const markers = listMarkers(rows, window, page);
   const out: SheetLine[] = [];
   for (let index = window.start; index < window.end; index += 1) {
     const first = index === window.start && markers.above !== undefined;
@@ -846,8 +889,10 @@ function headingText(heading: PopupHeading): string {
 export function reportPageRows(
   geometry: Pick<PopupBoxGeometry, 'bodyRows' | 'listRows'>,
   hasFilter: boolean,
+  page = false,
 ): number {
-  return Math.min(Math.max(1, geometry.bodyRows - (hasFilter ? 1 : 0)), geometry.listRows);
+  const free = Math.max(1, geometry.bodyRows - (hasFilter ? 1 : 0));
+  return page ? free : Math.min(free, geometry.listRows);
 }
 
 /** The furthest a report of `total` lines scrolls in a body of `height` rows. */
@@ -905,6 +950,7 @@ export function popupBody(
           state.selected,
           bodyPageRows(content, state.filter !== undefined, geometry),
           width,
+          content.page === true,
         ),
         ...effectBlock(content.rows, shown[state.selected], width),
       );
@@ -915,7 +961,7 @@ export function popupBody(
         ...reportLines(
           content.lines,
           state.offset,
-          reportPageRows(geometry, state.filter !== undefined),
+          reportPageRows(geometry, state.filter !== undefined, content.page === true),
           width,
         ),
       );
@@ -979,11 +1025,6 @@ export interface PopupFrameParts {
   readonly notice?: string | undefined;
 }
 
-/** `text` filled with spaces to exactly `width` columns (it is already clipped to fit). */
-function fill(text: string, width: number): string {
-  return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
-}
-
 /**
  * A row of the frame: the margin, the content clipped to the inner width, then spaces to the frame's width. Spans move with the margin. The
  * content's line separators are folded first, whatever built it: the width measure and the terminal must agree on every cell.
@@ -1007,7 +1048,7 @@ function framedRow(line: SheetLine, geometry: PopupBoxGeometry): SheetLine {
     );
   return {
     kind: line.kind,
-    text: fill(`${margin}${content}`, geometry.width),
+    text: padTo(`${margin}${content}`, geometry.width),
     ...(spans === undefined ? {} : { spans }),
   };
 }
@@ -1037,7 +1078,7 @@ function topEdge(parts: PopupFrameParts, geometry: PopupBoxGeometry): SheetLine 
   const titleEnd = Math.min(at + text.length, at + 2 + title.length);
   return {
     kind: 'rule',
-    text: fill(`${gutter}${text}`, geometry.width),
+    text: padTo(`${gutter}${text}`, geometry.width),
     spans: [
       { from: at, to: at + 2, role: 'dim' },
       { from: at + 2, to: titleEnd, role: 'strong' },
@@ -1051,7 +1092,10 @@ function bottomEdge(geometry: PopupBoxGeometry): SheetLine {
   const at = POPUP_SIDE_MARGIN;
   return {
     kind: 'rule',
-    text: fill(`${' '.repeat(at)}${glyph('thinRule').repeat(geometry.innerWidth)}`, geometry.width),
+    text: padTo(
+      `${' '.repeat(at)}${glyph('thinRule').repeat(geometry.innerWidth)}`,
+      geometry.width,
+    ),
     spans: [{ from: at, to: at + geometry.innerWidth, role: 'dim' }],
   };
 }
@@ -1237,7 +1281,7 @@ export function popupNoticeLines(
     .filter((span) => span.from < row.length)
     .map((span) => (span.to <= row.length ? span : { ...span, to: row.length }));
   return [
-    ...reasonRows.map((text): SheetLine => ({ kind: 'notice', text: fill(` ${text}`, width) })),
-    { kind: 'legend', text: fill(row, width), spans },
+    ...reasonRows.map((text): SheetLine => ({ kind: 'notice', text: padTo(` ${text}`, width) })),
+    { kind: 'legend', text: padTo(row, width), spans },
   ];
 }

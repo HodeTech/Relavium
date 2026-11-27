@@ -138,7 +138,7 @@ describe('a step back to the workflow list lands on the workflow that was chosen
     expect(r.host.start).not.toHaveBeenCalled();
   });
 
-  it('a workflow the Defined tab chose skips the list once, and a step back lands the list on it', async () => {
+  it('a workflow the `/workflows` popup chose skips the list once, and a step back lands the list on it', async () => {
     const r = rig();
     const opened = r.launch.open('bravo');
     await until(r, (s) => s.kind === 'text');

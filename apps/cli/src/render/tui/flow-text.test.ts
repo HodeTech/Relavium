@@ -1,5 +1,5 @@
 /**
- * `flowText`, the full scrub the Home's flows (`/init`, `/import`, `/pricing`, the Defined tab's export) put on every string a project, a
+ * `flowText`, the full scrub the Home's flows (`/init`, `/import`, `/pricing`, the `/workflows` popup's export) put on every string a project, a
  * file, a provider or a model wrote before it reaches the prompt channel ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §1, §3; [ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §5). It is written in the eager flows' closure so that
  * the Home's first paint does not load `popups/popup-text.ts` (`popups/lazy-load.test.ts`), and this file is what keeps the two from drifting:

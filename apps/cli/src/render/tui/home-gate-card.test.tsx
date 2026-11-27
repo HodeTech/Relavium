@@ -205,7 +205,7 @@ async function openCard(m: Mounted): Promise<void> {
   );
   m.harness.stdin.write(ENTER);
   await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
-  await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
+  await eventually(() => m.frame().includes('Waiting for you'), 'the card`s frame');
 }
 
 /**
@@ -358,10 +358,20 @@ describe('the Attention rows keep a row on screen at 80×24, whatever else the H
 });
 
 describe('opening the card', () => {
+  it('the title names the workflow the row named while the card waits, and the rule says the waiting (the frame sheet-gate-home-80x24; unit 8 fix wave, S-11)', async () => {
+    const m = mount({ rows: [{ ...ROW, workflow: 'release-notes' }] });
+    await openCard(m);
+    const frame = m.frame();
+    expect(frame).toContain('|| release-notes  ·  run run-0001');
+    expect(frame).not.toContain('waiting for you');
+    expect(frame).toMatch(/^== Waiting for you =+/mu);
+  });
+
   it('`Enter` on the focused row opens the card in front of the landing: the message behind the gutter, the gate and the keys', async () => {
     const m = mount();
     await openCard(m);
     const frame = m.frame();
+    // This row names no workflow: the title says the state's word.
     expect(frame).toContain('|| waiting for you  ·  run run-0001');
     expect(frame).toContain('│ Ship the release?');
     expect(frame).toContain('node review-step · approval gate');
@@ -434,7 +444,7 @@ describe('opening the card', () => {
     expect(m.frame()).toContain('Enter open the gate · Esc / [Ctrl+C] close');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
-    await eventually(() => m.frame().includes('waiting for you'));
+    await eventually(() => m.frame().includes('Waiting for you'));
     expect(m.controller.getSnapshot().screen).toMatchObject({ back: 'run-view' });
     m.harness.stdin.write(ESC);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'run-view');
@@ -559,7 +569,7 @@ describe('a card that has not been painted refuses an answer', () => {
     );
     m.harness.stdin.write(ENTER);
     m.harness.stdin.write(CTRL_Y);
-    await eventually(() => m.frame().includes('waiting for you'));
+    await eventually(() => m.frame().includes('Waiting for you'));
     expect(m.resume, 'refused: nothing was answered').not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card' });
     // The gate is still open and answers once its frame has been painted.
@@ -678,7 +688,7 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     await eventually(() => m.frame().includes('Enter open the gate'), 'the run view');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
-    await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
+    await eventually(() => m.frame().includes('Waiting for you'), 'the card`s frame');
     m.harness.stdin.write(CTRL_C);
     await eventually(() => m.controller.getSnapshot().screen === undefined, 'the landing');
     expect(m.resume, 'a close decides nothing').not.toHaveBeenCalled();
@@ -826,7 +836,7 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
     expect(m.frame()).toContain('Enter show how to answer');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
-    await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
+    await eventually(() => m.frame().includes('Waiting for you'), 'the card`s frame');
     const frame = m.frame();
     expect(frame).toContain(
       'This gate takes a typed value, which this card cannot take. In a shell:',

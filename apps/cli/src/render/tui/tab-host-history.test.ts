@@ -317,7 +317,7 @@ describe('the rows say what they are, in a glyph and a word', () => {
 
   it('says so when there is nothing to list, and when the tab cannot be read', () => {
     expect(rig({ total: 0 }).text()).toContain(
-      'No finished run in this project yet. Run a workflow from the Defined tab.',
+      'No finished run in this project yet. Start one with /run or from /workflows.',
     );
     const none = enterTab(freshTabMemory('history'), 'history', { now: 0 });
     const drawn = tabHostLines(none, { columns: 80, terminalRows: 24 }).map((l) => l.text);
@@ -873,7 +873,9 @@ describe('the 80×24 budget', () => {
         expect(lines[0]?.text).toContain('› History');
         expect(lines.at(-1)?.kind).toBe('legend');
         expect(lines.some((line) => line.kind === 'selected')).toBe(true);
-        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(/Esc back to Home$/u);
+        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(
+          /Esc( \/ \[Ctrl\+C\])? back to Home$/u,
+        );
       }
     },
   );
@@ -895,6 +897,45 @@ describe('the 80×24 budget', () => {
     expect(displayWidth(legendLine()), 'the detail legend fits 80 columns').toBeLessThanOrEqual(
       usableColumns(80),
     );
+  });
+
+  it('fits the legend to the width the screen is drawn at: `[f] filter` is named at 100 columns and is the first key to go at 80 (review round 1, D-2)', () => {
+    const r = rig({ total: 3 });
+    const at = (columns: number): string =>
+      tabHostLines(r.state, { columns, terminalRows: 30 }).at(-1)?.text.trimEnd() ?? '';
+    expect(at(80)).toBe('←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · Esc back to Home');
+    expect(at(100)).toBe(
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc / [Ctrl+C] back to Home',
+    );
+    for (const columns of [80, 100])
+      expect(displayWidth(at(columns))).toBeLessThanOrEqual(usableColumns(columns));
+    // The model says the same without the screen: the width it is asked for, and the floor when it is not asked.
+    expect(tabHostLegendText(r.state, 100)).toBe(at(100));
+    expect(tabHostLegendText(r.state)).toBe(at(80));
+    // The widest terminal draws the same as 100: a sheet is never wider than 100 columns.
+    expect(at(140)).toBe(at(100));
+    // `[a] here` is the longer scope verb: it still fits at 100 and still gives way at 80.
+    r.press('a');
+    expect(at(100)).toContain('[a] here · [f] filter');
+    expect(at(80)).not.toContain('[f] filter');
+  });
+
+  it('the detail’s legend names `[Ctrl+C] close` where the keys leave it room: at 100 columns, not at 80 (review round 1, D-2)', () => {
+    const r = rig({ total: 3, detail: { kind: 'ready', detail: detailRead() } });
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(0, 'completed').id, {
+      kind: 'ready',
+      detail: detailRead(),
+    });
+    const at = (columns: number): string =>
+      tabHostLines(r.state, { columns, terminalRows: 30 }).at(-1)?.text.trimEnd() ?? '';
+    expect(at(80)).toBe(
+      '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back',
+    );
+    expect(at(100)).toBe(
+      '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · [Ctrl+C] close · Esc back',
+    );
+    expect(displayWidth(at(100))).toBeLessThanOrEqual(usableColumns(100));
   });
 
   it('draws the detail of a very long log in the same rows, and the enlarge line below the floor', () => {

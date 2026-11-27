@@ -570,14 +570,16 @@ function summaryText(identity: string, stats: string, gap: number | undefined): 
 /**
  * The spaces between the card's first title row and its numbers (`+3 -1 · 214 bytes`), when both fit the card's drawable width with at least two
  * columns between them (ADR-0147 §1: what it is on the left, the numbers on the right); `undefined` when they do not, and the numbers stay on the
- * summary row. The title row is never shortened for them: the target's rows are fitted by the projection the Allow lock reads.
+ * summary row. The title row is never shortened for them: the target's rows are fitted by the projection the Allow lock reads. A title row with a
+ * run of two or more spaces keeps them off too: the target is the model's text, and such a run is how it would imitate the gap and set its own
+ * numbers where the host's stand, so the host's never stand beside them (unit 8 fix wave, S-10).
  */
 export function titleStatsGap(
   first: string | undefined,
   stats: string,
   columns: number,
 ): number | undefined {
-  if (first === undefined || stats === '') return undefined;
+  if (first === undefined || stats === '' || first.includes('  ')) return undefined;
   const gap = Math.max(1, columns - 2) - displayWidth(first) - displayWidth(stats);
   return gap >= 2 ? gap : undefined;
 }

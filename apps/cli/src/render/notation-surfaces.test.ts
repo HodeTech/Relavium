@@ -209,7 +209,7 @@ describe('a project directory on a Home row is project-relative or from ~, short
     expect(row?.projectRoot).toBe('~/other');
   });
 
-  it('the Defined tab: a pin of another project shows its root from ~', () => {
+  it('the `/workflows` popup: a pin of another project shows its root from ~', () => {
     const model = buildDefinedModel({
       entries: [],
       pins: [],

@@ -146,6 +146,95 @@ describe('the exit guard’s (wait)', () => {
   });
 });
 
+describe('the (wait) keeps the way back (unit 8 fix wave, S-2, S-11; ADR-0145 §2)', () => {
+  const CANCELLING: RunHostSnapshot = {
+    ...RUNNING,
+    active: { leg: 'start', runId: 'run-0001', cancelling: true },
+  };
+
+  it('a run that is stopping: the bound gives way to `(wait)`, `[Ctrl+N] stay` is never cut', () => {
+    const locked = exitGuardLines('confirm', CANCELLING, 13, true, 72).at(-1) ?? '';
+    expect(locked).toBe('[Ctrl+Y] leave once it stops (wait) · Esc / [Ctrl+C] / [Ctrl+N] stay');
+    // Where it fits the bound stays (the other three legends fit 72 whole, locked or not).
+    expect(exitGuardLines('confirm', CANCELLING, 13, false, 80).at(-1)).toBe(
+      '[Ctrl+Y] leave once it stops (about 13s) · Esc / [Ctrl+C] / [Ctrl+N] stay',
+    );
+    // At 80 columns the card's rule is 72 wide (the Home's 74-column content less its two), one short of the unlocked line: the bound gives
+    // way there too (the confirmed exit's `stopping` row still says it).
+    expect(exitGuardLines('confirm', CANCELLING, 13, false, 72).at(-1)).toBe(
+      '[Ctrl+Y] leave once it stops · Esc / [Ctrl+C] / [Ctrl+N] stay',
+    );
+    expect(exitGuardLines('confirm', RUNNING, 13, true, 72).at(-1)).toBe(
+      '[Ctrl+Y] stop the run and leave (wait) · Esc / [Ctrl+C] / [Ctrl+N] stay',
+    );
+    expect(exitGuardLines('confirm', undefined, 13, true, 72).at(-1)).toBe(
+      '[Ctrl+Y] leave the Home (wait) · Esc / [Ctrl+C] / [Ctrl+N] stay',
+    );
+  });
+
+  it.each([80, 100])(
+    'drawn at %i columns, locked and then open: the card’s rows end where its rule ends, and the way back is whole',
+    async (cols) => {
+      let t = 1_000;
+      let fire: (() => void) | undefined;
+      // A run id long enough that the title row would run past the rule unless it is fitted to it.
+      const LONG_ID: RunHostSnapshot = {
+        ...CANCELLING,
+        active: { leg: 'start', runId: `run-${'7'.repeat(70)}`, cancelling: true },
+      };
+      const controller = createHomeController({
+        startChat: () => new Promise<HomeChatSession>(() => {}),
+        homeStore: { read: () => EMPTY },
+        hostedRuns: {
+          snapshot: () => LONG_ID,
+          cancel: () => true,
+          close: () => Promise.resolve(),
+        },
+        schedule: () => () => {},
+        lockSchedule: (run) => {
+          fire = run;
+          return () => {
+            fire = undefined;
+          };
+        },
+        now: () => t,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      const harness = render(
+        <RootApp
+          controller={controller}
+          nowMs={() => 0}
+          color={false}
+          getSize={() => ({ cols, rows: 24 })}
+          subscribeResize={() => () => {}}
+        />,
+      );
+      await settleFrames();
+      harness.stdin.write('\u0004'); // Ctrl+D
+      await waitFor(() => (harness.lastFrame() ?? '').includes('(wait)'));
+      const cardRows = (): readonly string[] => {
+        const rows = withoutStyles(harness.lastFrame() ?? '').split('\n');
+        const rule = rows.findIndex((row) => row.includes('== Leaving the Home'));
+        expect(rule, rows.join('\n')).toBeGreaterThanOrEqual(0);
+        const end = rows[rule]?.length ?? 0;
+        // The Home's sheets end two columns short of the terminal's edge (the run card's `columns − 2`): so does this one (M-12 X05).
+        expect(end, 'the rule ends at the Home sheets’ right edge').toBe(cols - 2);
+        const card = rows.slice(rule + 1).filter((row) => row.trim() !== '');
+        expect(card.at(-1), 'the way back whole').toMatch(/\[Ctrl\+N\] stay$/u);
+        for (const row of card)
+          expect(row.length, `ends inside the rule: ${row}`).toBeLessThanOrEqual(end);
+        return card;
+      };
+      expect(cardRows().at(-1)).toContain('(wait)');
+      t += APPROVAL_LOCKOUT_MS;
+      fire?.();
+      await waitFor(() => !(harness.lastFrame() ?? '').includes('(wait)'));
+      expect(cardRows().at(-1)).toMatch(/^\s*\[Ctrl\+Y\] leave once it stops/u);
+    },
+  );
+});
+
 describe('on the drawn Home', () => {
   it('the card says (wait) on its Ctrl+Y, and flips once the lock opens', async () => {
     let t = 1_000;

@@ -64,8 +64,10 @@ import {
   type HomePopupKind,
   type HomePopupsPort,
   type HomeWorkflowRun,
+  type WorkflowsAt,
+  type WorkflowsStep,
 } from '../../popups/home-port.js';
-import { LAUNCH_CANCELLED, type LaunchOptions } from '../../home/run-launch.js';
+import { launchSaysStarted, type LaunchOptions } from '../../home/run-launch.js';
 import type { WorkflowDetail } from '../../home/workflow-detail.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
@@ -676,7 +678,7 @@ export interface HomeControllerDeps {
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
   /** The bare Home's permissions port (ADR-0137 §3, ADR-0140 §3): the project's remembered commands only, there being no chat, and the
-   *  repository's allowlist, read again every time the Permissions tab is entered. Absent ⇒ the Home has no tab to open (a test may omit
+   *  repository's allowlist, read again every time the `/permissions` popup opens. Absent ⇒ the Home has no popup to open (a test may omit
    *  it); a live chat's `/permissions` is a popup over its own port (`HomeChatSession.settings`). */
   readonly permissions?: PermissionsPort;
   /**
@@ -710,13 +712,13 @@ export interface HomeControllerDeps {
    * picker, the form and the confirmation, all on the native prompt channel, then the host's start. It resolves with the notice the
    * Home shows; it holds the native action for as long as the flow is open, so no key reaches the composer meanwhile. A Home command
    * only: a live chat never reaches it (the typed `/run` is routed here only with no session, and the chat palette does not list it).
-   * Absent ⇒ `/run` says it is unavailable. With a `slug` the picker is skipped (the Defined tab's `r`), and with the catalog `path` the
+   * Absent ⇒ `/run` says it is unavailable. With a `slug` the picker is skipped (the `/workflows` popup's `[r]`), and with the catalog `path` the
    * row was listed from the flow refuses a slug whose file is another one by then.
    */
   readonly launchRun?: (slug?: string, path?: string, options?: LaunchOptions) => Promise<string>;
   /**
-   * The Defined tab's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   * §2): read again every time the tab is entered. Absent ⇒ the tab says it cannot list, and a typed `/workflows` at the Home says the
+   * The `/workflows` popup's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2): read again every time the popup opens. Absent ⇒ the popup says it cannot list, and a typed `/workflows` at the Home says the
    * workflows are not available.
    */
   readonly defined?: DefinedPort | undefined;
@@ -737,9 +739,9 @@ export interface HomeControllerDeps {
    */
   readonly agents?: AgentsPort | undefined;
   /**
-   * The Defined tab's export popup: prepare the export of one catalog workflow, show where it would be written, write it only on a Yes and
+   * The `/workflows` popup's export confirmation: prepare the export of one catalog workflow, show where it would be written, write it only on a Yes and
    * end in its Done step (ADR-0148 §6). It resolves with the ONE notification the Home shows (nothing was written), or `undefined` when the
-   * popup said what happened; it holds the native action while the popup is open. Absent ⇒ `x` says export is unavailable.
+   * popup said what happened; it holds the native action while the popup is open. Absent ⇒ `[x]` says export is unavailable.
    */
   readonly exportDefined?:
     | ((slug: string, origin?: 'home' | 'workflows') => Promise<string | undefined>)
@@ -767,7 +769,7 @@ export interface HomeControllerDeps {
     | ((request: {
         readonly kind: HomePopupKind;
         readonly port: HomePopupsPort;
-        readonly at?: { readonly slug: string } | undefined;
+        readonly at?: WorkflowsAt | undefined;
       }) => void)
     | undefined;
   /**
@@ -965,8 +967,8 @@ export interface HomeController {
    *  assume a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
   /**
-   * Open the tab host on the Permissions tab as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3,
-   * ADR-0140 §1): the screen opens at once and, when the person closes it, the Home ends with success instead of staying open behind it.
+   * Open the `/permissions` popup as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   * ADR-0140 §1): the popup opens at once and, when the person closes it, the Home ends with success instead of staying open behind it.
    * If it cannot open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
    */
   readonly openPermissionsAsCommand: () => void;
@@ -2078,6 +2080,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     const card = createRunCard({
       runId: run.runId,
+      // The title names the workflow by the slug the Home's row showed (the gate read knows only its record's id).
+      workflow: state.parkedRuns.find((row) => row.runId === run.runId)?.workflow,
       gates,
       resume: answerGate,
       ...(deps.now === undefined ? {} : { now: deps.now }),
@@ -2151,6 +2155,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const noteOpeningKey = (input: string, key: HomeKeyEvent): void => {
     if (key.ctrl === true || key.meta === true || Array.from(input).length !== 1) return;
     chordHistory.openedBy = { input, at: (deps.now ?? ((): number => performance.now()))() };
+  };
+  /**
+   * The key that opened a launch is the flow's to take when it begins ({@link noteOpeningKey}). Whatever settles WITHOUT beginning one (no port, an
+   * open the Home refused, a launch refused before anything was asked) must not leave it on the shared history: the next flow would take a fast `rr`
+   * typed at its start for that key held down (round 2 sitting #2, F5). The one function both launches (`r` on a run's detail, `[r]` in `/workflows`) call.
+   */
+  const forgetOpeningKey = (): void => {
+    chordHistory.openedBy = undefined;
   };
   /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
   const routeTabHostKey = (screen: TabHostScreen, input: string, key: HomeKeyEvent): void => {
@@ -2551,16 +2563,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       deps.announce?.(options.announce);
   };
   /**
-   * What a Home flow that writes (`/init`, `/import`, `/pricing`, the Defined tab's export) resolved with: the ONE notification it asks for (a
+   * What a Home flow that writes (`/init`, `/import`, `/pricing`, the `/workflows` popup's export) resolved with: the ONE notification it asks for (a
    * cancel, nothing written), on the Home's channel, or nothing when its popup said what happened (its Done step, a refusal). Never the Home's
    * notice and never a transcript (ADR-0148 §6): the flows leave no residue.
    */
   const announceFlowResult = (notification: string | undefined): void => {
     if (!exiting && notification !== undefined) deps.announce?.(notification);
   };
-  // The key that opens a Home flow (the composer's `Enter` of `/init`, `/import` or `/pricing`, `x` or `r` on a Defined row) is NOT stamped as an
+  // The key that opens a Home flow (the composer's `Enter` of `/init`, `/import` or `/pricing`, `[x]` or `[r]` in the `/workflows` popup) is NOT stamped as an
   // answer: a chord card's lockout runs from the moment the card opened (`createChordCardGuard`, `native-prompt-guards.ts`), so a flow whose
-  // first prompt is its `Ctrl+Y` card (`/init`, the Defined export, `/run` on a workflow with no inputs) is armed against a held key by the card
+  // first prompt is its `Ctrl+Y` card (`/init`, the `/workflows` export, `/run` on a workflow with no inputs) is armed against a held key by the card
   // itself, and so is a card that appears after a wait (the MCP consent card a start raises).
   const openProjectInit = (): void => {
     const open = deps.initializeProject;
@@ -2580,7 +2592,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * launch began. The run this Home hosts is another one than it was before, and the host was not already starting one then: a leg that is
    * still acquiring its run (a resume) has no run id yet, so the id it gets while this launch is refused would read as a run THIS launch
    * started. A refusal (another leg already executes or starts) or a cancel leaves that other leg as it was, and its view is not what the
-   * launch asked for. `/run` and `r` on a Defined row both ask here, so the two cannot drift.
+   * launch asked for. `/run` and `[r]` in the `/workflows` popup both ask here, so the two cannot drift.
    */
   const launchStartedRun = (before: RunHostSnapshot | undefined): boolean => {
     const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
@@ -2670,37 +2682,31 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * `r` on a Defined row, or `r` on a History run's detail (the same request: the catalog's slug and path of the run's workflow): the launch
+   * `r` on a History run's detail (the same request: the catalog's slug and path of the run's workflow): the launch
    * flow, started at that workflow (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own, and
    * the form asks the inputs again: a run's own are never read). A run that started is shown at once, `Esc` returns to the tab, and the start is
-   * one notification; a launch that was refused or left says so on the tab's own message row (the Defined tab's, or the detail's), never in
+   * one notification; a launch that was refused or left says so on the tab's own message row (the detail's), never in
    * the Home's notice (ADR-0148 §6), and one whose failure the popup has already said (`''`) adds nothing. A run STARTED is told by
    * {@link launchStartedRun}, as `/run` tells it: a refusal leaves another leg as it was, and its view is not what `r` asked for, so the
    * refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
-    // The key that opened this launch (`noteOpeningKey`) is the flow's to take when it begins. Whatever settles WITHOUT beginning one (no
-    // port, an open the Home refused, a launch refused before anything was asked) must not leave it on the shared history: the next flow
-    // would take a fast `rr` typed at its start for that key held down (round 2 sitting #2, F5).
-    const forgetOpener = (): void => {
-      chordHistory.openedBy = undefined;
-    };
     const launch = deps.launchRun;
     if (launch === undefined) {
-      forgetOpener();
+      forgetOpeningKey();
       noteOnRunTab('Running a workflow is unavailable in this session.');
       return;
     }
     const opening = !state.nativeActionBusy;
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const said = await launch(slug, path).finally(forgetOpener);
+      const said = await launch(slug, path).finally(forgetOpeningKey);
       if (exiting) return;
       set({ ...parkedPatch() });
       if (launchStartedRun(before) && openRunView('tab-host')) deps.announce?.(said);
       else if (said !== '') noteOnRunTab(said);
     }, 'Run workflow');
-    if (!opening || !state.nativeActionBusy) forgetOpener();
+    if (!opening || !state.nativeActionBusy) forgetOpeningKey();
   };
 
   // ---- The management popups: `/help`, `/agents`, `/workflows` (ADR-0148 §10 as amended 2026-11-27; MVP-11 unit 8, OD-24) -------------------------
@@ -2725,15 +2731,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             lastRuns: deps.workflowReads?.lastRuns,
             pins: deps.pins,
             now: deps.epochNow ?? ((): number => Date.now()),
-            run: (slug, path) => openWorkflowRun(slug, path),
-            export: (slug) => openWorkflowExport(slug),
+            run: (slug, path, from) => openWorkflowRun(slug, path, from),
+            export: (slug, from) => openWorkflowExport(slug, from),
             openRuns: (runId) => openRunsScreen(runId),
           },
         }),
   });
 
   /** Open the popup `kind` over the Home through the host's one adapter; a Home that wired none says so, in the notice a word with no port uses. */
-  const openManagePopup = (kind: HomePopupKind, at?: { readonly slug: string }): void => {
+  const openManagePopup = (kind: HomePopupKind, at?: WorkflowsAt): void => {
     const open = deps.openHomePopup;
     if (open === undefined) {
       set({ notice: `/${kind} is not available here.` });
@@ -2742,60 +2748,63 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     open({ kind, port: homePopupsPort(), at });
   };
 
-  /** `/workflows` brought back on the detail of `slug`, once the flow it handed that workflow to is over. */
-  const reopenWorkflows = (slug: string): void => {
-    if (!exiting) openManagePopup('workflows', { slug });
+  /** `/workflows` brought back where the flow was started (the catalogue's row of `slug`, or its detail), once the flow it handed that workflow to is over. */
+  const reopenWorkflows = (slug: string, step: WorkflowsStep): void => {
+    if (!exiting) openManagePopup('workflows', { slug, step });
   };
 
   /**
    * `[r]` in the `/workflows` popup (the popup is already closed): the `/run` popup started at that workflow, saying it came from `/workflows`
-   * (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own). A run that started is shown at once.
-   * The popup comes back on the workflow's detail when the flow ends without one, except for a cancel (`Run cancelled.`: `Ctrl+C` closes the whole
-   * stack, and `Ctrl+N` is the person's own No). What the launch says is one notification, as it is anywhere. The `r` that opened it is the flow's
-   * to take: a held key's repeats are dropped there (`noteOpeningKey`).
+   * (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own). A run that STARTED closes everything, as
+   * it does for a plain `/run`: its notification, and its view when it is still executing; it is told by the launch's own word, so a run that parks or
+   * finishes before the host is looked at is no different. A flow that ends without one (`Esc` at its first step, a No, a refusal) brings the popup
+   * back on the step `from` names, the catalogue's row or the detail the key was pressed on; only `Ctrl+C` closes the whole stack. What the launch
+   * says is one notification, as it is anywhere. The `r` that opened it is the flow's to take: a held key's repeats are dropped there
+   * (`noteOpeningKey`).
    */
-  const openWorkflowRun = (slug: string, path: string): void => {
-    const forgetOpener = (): void => {
-      chordHistory.openedBy = undefined;
-    };
+  const openWorkflowRun = (slug: string, path: string, from: WorkflowsStep): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
       deps.announce?.('Running a workflow is unavailable in this session.');
-      reopenWorkflows(slug);
+      reopenWorkflows(slug, from);
       return;
     }
     noteOpeningKey('r', {});
-    let started = false;
-    let cancelled = false;
+    let closedAll = false;
     const opening = !state.nativeActionBusy;
     openNativeAction(
       async () => {
         const before = deps.hostedRuns?.snapshot();
-        const said = await launch(slug, path, { opener: { origin: 'workflows' } }).finally(
-          forgetOpener,
-        );
+        const said = await launch(slug, path, {
+          opener: { origin: 'workflows' },
+          onLeave: () => {
+            closedAll = true;
+          },
+        }).finally(forgetOpeningKey);
         if (exiting) return;
         set({ ...parkedPatch() });
-        started = launchStartedRun(before);
-        cancelled = said === LAUNCH_CANCELLED;
-        if (started) openRunView();
+        // A run that started closes everything, and is shown while it executes; one that parked or finished already says so in its notification.
+        if (launchSaysStarted(said) || launchStartedRun(before)) {
+          closedAll = true;
+          if (launchStartedRun(before)) openRunView();
+        }
         if (said !== '') deps.announce?.(said);
       },
       'Run workflow',
       {},
       () => {
-        if (!started && !cancelled) reopenWorkflows(slug);
+        if (!closedAll) reopenWorkflows(slug, from);
       },
     );
-    if (!opening || !state.nativeActionBusy) forgetOpener();
+    if (!opening || !state.nativeActionBusy) forgetOpeningKey();
   };
 
   /** `[x]` in the `/workflows` popup (already closed): the export confirmation, from `/workflows`; the popup comes back on the workflow when it ends. */
-  const openWorkflowExport = (slug: string): void => {
+  const openWorkflowExport = (slug: string, from: WorkflowsStep): void => {
     const exportDefined = deps.exportDefined;
     if (exportDefined === undefined) {
       deps.announce?.('Export is unavailable in this session.');
-      reopenWorkflows(slug);
+      reopenWorkflows(slug, from);
       return;
     }
     openNativeAction(
@@ -2805,7 +2814,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       'Export',
       {},
       () => {
-        reopenWorkflows(slug);
+        reopenWorkflows(slug, from);
       },
     );
   };
@@ -3674,7 +3683,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     help: () => {
       openManagePopup('help');
     },
-    showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens the Defined tab from the controller (MVP-8 step 4)
+    showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens its popup from the controller (MVP-11 unit 8)
     // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
     // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs

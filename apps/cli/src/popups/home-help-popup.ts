@@ -20,14 +20,10 @@ import { blankHostGlyphs } from '../render/tui/glyphs.js';
 import { inertLegendText } from '../render/tui/legend.js';
 import { buildPaletteEntries } from '../render/tui/palette-entries.js';
 import { HOME_EXIT_VERB, type PopupContent, type PopupOrigin } from './frame-model.js';
+import type { HomeHelpPort } from './home-port.js';
 import { copyControlsFor } from './popup-copy.js';
 import type { PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, scrubPopupText, wrapHanging } from './popup-text.js';
-
-/** What the Home's `/help` lists beside its commands: the keys of the Home, as the controller's table gives them. */
-export interface HomeHelpKeys {
-  readonly keys: readonly { readonly keys: string; readonly verb: string }[];
-}
 
 /** The two headings of the report. */
 const HEADINGS = {
@@ -72,7 +68,7 @@ function commandGroups(): readonly { readonly label: string; readonly names: rea
 }
 
 /** The report's lines: the keys of the port, then the Home's commands by group. */
-export function homeHelpLines(keys: HomeHelpKeys['keys']): readonly string[] {
+export function homeHelpLines(keys: HomeHelpPort['keys']): readonly string[] {
   const labels = keys.map((key) => keyLabel(key.keys));
   const keyWidth = Math.max(0, ...labels.map((label) => label.length));
   const groups = commandGroups();
@@ -89,7 +85,7 @@ export function homeHelpLines(keys: HomeHelpKeys['keys']): readonly string[] {
 }
 
 /** The content of the one step. */
-export function homeHelpContent(keys: HomeHelpKeys['keys']): PopupContent {
+export function homeHelpContent(keys: HomeHelpPort['keys']): PopupContent {
   return { kind: 'report', lines: homeHelpLines(keys) };
 }
 

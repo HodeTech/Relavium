@@ -199,6 +199,30 @@ describe('/models, This chat: a second step in which nothing changed closes with
   });
 });
 
+describe('/models: the "Already the default" rule from a default the PORT names is a chat’s rule (W1 M-12 F03)', () => {
+  it('a bare Home whose port also names a default equal to the choice (while the model in force differs) still writes it: the rule is the chat’s `New chats`, not the Home’s', async () => {
+    const fake = fakeModels({
+      scope: 'home',
+      current: GRADED,
+      effort: 'medium',
+      defaultModel: OPENAI,
+      defaultProvider: 'openai',
+      defaultEffort: 'medium',
+    });
+    const rig = modelsRig(fake.member);
+    expect(rig.open().opened).toBe(true);
+    rig.settle();
+    highlight(rig, OPENAI);
+    rig.press('', ENTER);
+    rig.settle();
+    rig.press('', ENTER);
+    await settleWork();
+    expect(fake.saved).toHaveLength(1);
+    expect(fake.saved[0]).toMatchObject({ modelId: OPENAI, provider: 'openai' });
+    expect(rig.announced.join(' ')).not.toContain('Already');
+  });
+});
+
 describe('/models on the bare Home: the default already in force is never written again', () => {
   it('the model and the tier in force: closes with “Already the default”, no writer', async () => {
     const fake = fakeModels({ scope: 'home', current: GRADED, effort: 'medium' });

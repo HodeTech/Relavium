@@ -1,6 +1,6 @@
 /**
  * The key that OPENED a native flow, still held down ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §3; MVP-11 unit 7, round 2: security F2). `r` on a History run's detail (and on a Defined row) opens the launch form, and a person who keeps
+ * §3; MVP-11 unit 7, round 2: security F2). `r` on a History run's detail (and in the `/workflows` popup) opens the launch form, and a person who keeps
  * the key down while it opens sends the form its auto-repeats: the first field would be typed `rrrrrrr…` (a masked one with as many bullets, which
  * nobody can read back). Nothing started (the start is the form's own `Ctrl+Y`, past its guards), but the field was the person's to fill, not the
  * key's.

@@ -10,7 +10,7 @@ import { authorLine } from './run-card-model.js';
  * It IS the popups' scrub (`scrubPopupText`, `popups/popup-text.ts`): the run cards' author-text floor (`authorLine`: secrets scrubbed, control,
  * bidirectional and invisible characters removed, compatibility forms folded, host glyphs blanked, an answer chord such as `Ctrl+Y` replaced),
  * then the legend's key tokens and separators made inert. It is written here because the flows of `/init`, `/import`, `/pricing` and the
- * Defined tab's export are in the Home's first paint and `popup-text.ts` is loaded only when a report popup opens (`popups/lazy-load.test.ts`);
+ * `/workflows` popup's export are in the Home's first paint and `popup-text.ts` is loaded only when a report popup opens (`popups/lazy-load.test.ts`);
  * `flow-text.test.ts` (beside this file) holds the two equal over the hostile corpus, so they cannot drift apart.
  *
  * Applied by the flow BEFORE the text reaches the channel: the popup body's own pass on a chord step (`inertLegendText`) is not a scrub (a bare
@@ -22,7 +22,7 @@ export function flowText(text: string): string {
 
 /**
  * {@link flowText} for a word that is drawn as ONE row: its line and paragraph separators (U+2028 and U+2029) folded to a space too. The popup
- * folds them as it draws a body, but a word that reaches a row of a list, a notification or the Defined tab's row (`/run`'s workflow list, the
+ * folds them as it draws a body, but a word that reaches a row of a list, a notification or the `/workflows` popup's row (`/run`'s workflow list, the
  * `/resume` picker, which the stand-alone chat draws unframed) would break one row in two.
  */
 export function flowLine(text: string): string {

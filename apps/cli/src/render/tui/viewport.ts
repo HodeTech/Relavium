@@ -78,6 +78,15 @@ export function displayWidth(str: string): number {
   return stringWidth(str, { countAnsiEscapeCodes: true });
 }
 
+/**
+ * `text` followed by spaces up to `width` display columns; it is never cut, and text that is already `width` columns or wider is returned as it is.
+ * The one place a list's columns are aligned: a code-point count would misalign a wide glyph (a CJK name is two cells a character) and a
+ * combining mark (none), which is what `displayWidth` counts (review round 1 of MVP-11 unit 8, D-7).
+ */
+export function padTo(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
+}
+
 /** Which of the three pieces a grapheme cluster belongs to, relative to a display-column span. */
 type ColumnPiece = 'before' | 'selected' | 'after';
 

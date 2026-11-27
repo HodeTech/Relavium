@@ -223,7 +223,7 @@ export const MODEL_SWITCH_FAILED = 'The model could not be switched; this chat s
  * What the `/permissions` popup of a chat reads and does ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
  * §2 in a popup, ADR-0148 §10): the project's remembered commands and this session's approvals, read when the popup opens and again after a
  * withdrawal, and a withdrawal carried out (the chat's own `createPermissionsPort(…, 'chat')`: it never throws, and says what happened when it
- * could not). A chat has it with its own port; the bare Home has it over the project's port (MVP-11 unit 8: the Permissions tab is a popup).
+ * could not). A chat has it with its own port; the bare Home has it over the project's port (MVP-11 unit 8: the `/permissions` popup became a popup).
  */
 export interface PermissionsSettingsPort {
   readonly port: PermissionsPort;

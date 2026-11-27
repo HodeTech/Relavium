@@ -17,7 +17,7 @@ import type { Variant } from './variants.js';
 
 /**
  * The Home's flows that write, as the popups they are (MVP-11 unit 6, 6.3; ADR-0148 §1, §3, §6): `/init`'s confirmation, `/import`'s review
- * (after its path was given), the Defined tab's export review and `/pricing`'s first question, each run by the product's own run function on the
+ * (after its path was given), the `/workflows` popup's export review and `/pricing`'s first question, each run by the product's own run function on the
  * channel the Home wires, over scripted ports (nothing is written outside a temporary directory) and left open. Each is checked as every popup
  * is: its box from the slot's own geometry over the snapshot the channel shows NOW (so a drift between what the flow asked and what the frame
  * draws fails the box), the overlay layer, the dimmed backdrop, and its legend row whole on one row.
@@ -125,7 +125,7 @@ async function openImport(m: HomeMount): Promise<void> {
   await m.until(() => channel.ui.getSnapshot().kind === 'chord' && shownOn(channel));
 }
 
-/** The Defined tab's `x`: its review. */
+/** The `/workflows` popup's `[x]`: its review. */
 async function openExport(m: HomeMount): Promise<void> {
   const channel = channelOf(m);
   leave(runExportCard({ flow: channel.flow, port: EXPORT_PORT }, 'nightly-report'));
@@ -189,7 +189,7 @@ export const PROJECT_FLOW_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.export-card',
-    title: 'The Defined tab’s export popup (where a workflow would be written, a chord step)',
+    title: 'The `/workflows` popup’s export (where a workflow would be written, a chord step)',
     exitKey: 'Esc',
     landmark: "Write workflow 'nightly-report'",
     // Captured while the card's lockout holds its `Ctrl+Y` (`(wait)`, dim): at 80 columns the longer part drops `[Ctrl+N]` (Esc refuses too);

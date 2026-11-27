@@ -13,7 +13,7 @@ import { MentionView } from './mention-view.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
 import type { PaletteList } from './palette-reducer.js';
 import { PaletteView } from './palette-view.js';
-import { SheetLinesView } from './permissions-sheet-view.js';
+import { SheetLinesView } from './sheet-lines-view.js';
 import { INITIAL_SCROLL } from './scroll.js';
 import type { SheetLine } from './sheet-frame.js';
 import { TranscriptViewport } from './transcript-viewport.js';

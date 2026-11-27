@@ -41,7 +41,7 @@ export const PROJECT_FLOWS_PRODUCERS: readonly Producer[] = [
     id: 'project-flow-popups',
     file: 'home/project-init.ts',
     describe:
-      'the Home’s flows that write as popups (MVP-11 unit 6): /init’s confirmation and Done step, /import’s path, review and Done step, /pricing’s questions, confirmation and Done step, and the Defined tab’s export review and Done step, each with its rail and legend (`[Ctrl+Y] … · [Ctrl+N] … · Esc denies`, `Enter / Esc close`)',
+      'the Home’s flows that write as popups (MVP-11 unit 6): /init’s confirmation and Done step, /import’s path, review and Done step, /pricing’s questions, confirmation and Done step, and the `/workflows` popup’s export review and Done step, each with its rail and legend (`[Ctrl+Y] … · [Ctrl+N] … · Esc denies`, `Enter / Esc close`)',
   },
   {
     id: 'export-popup',

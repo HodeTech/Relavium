@@ -36,6 +36,11 @@ describe('waitClockText — the alternate screen’s clock, quantised to the uni
     expect(waitClockText(100 * DAY)).toBe('waiting 99d+');
   });
 
+  it('R1-M proposed: the unit boundaries are exact (an hour is 1h 00m, a day is 1d 00h)', () => {
+    expect(waitClockText(HOUR)).toBe('waiting 1h 00m');
+    expect(waitClockText(DAY)).toBe('waiting 1d 00h');
+  });
+
   it('a clock stepped back or a value that is not a time reads as no wait at all', () => {
     expect(waitClockText(-5 * SECOND)).toBe('waiting 0:00');
     expect(waitClockText(Number.NaN)).toBe('waiting 0:00');
@@ -66,10 +71,22 @@ describe('waitClockText — the alternate screen’s clock, quantised to the uni
     ];
     for (const ms of samples)
       expect(displayWidth(waitClockText(ms))).toBeLessThanOrEqual(WAIT_CLOCK_COLUMNS);
-    for (let hour = 0; hour < 24; hour += 1)
-      expect(displayWidth(waitSinceText(new Date(2026, 10, 27, hour, 59).getTime()))).toBe(
-        WAIT_CLOCK_COLUMNS,
-      );
+    // The inline form on every day of a year, at every hour, seen the same day, a later day of that year and the next year: the widest is
+    // the dated form of a two-digit day, and the constant is exactly its width (unit 8 fix wave, S-3: re-derived from 19).
+    const NOW = new Date(2027, 0, 1, 12, 0).getTime();
+    let widest = 0;
+    for (let month = 0; month < 12; month += 1)
+      for (let day = 1; day <= 31; day += 1)
+        for (const hour of [0, 9, 23]) {
+          const since = new Date(2026, month, day, hour, 59).getTime();
+          for (const now of [since, since + DAY, NOW]) {
+            const width = displayWidth(waitSinceText(since, now));
+            expect(width).toBeLessThanOrEqual(WAIT_CLOCK_COLUMNS);
+            widest = Math.max(widest, width);
+          }
+        }
+    expect(widest).toBe(WAIT_CLOCK_COLUMNS);
+    expect(WAIT_CLOCK_COLUMNS).toBe(displayWidth('waiting since Nov 25 14:05'));
   });
 });
 
@@ -83,6 +100,24 @@ describe('waitSinceText — the inline renderer’s static clock', () => {
 
   it('an origin that is not a time draws the bare word', () => {
     expect(waitSinceText(Number.NaN)).toBe('waiting');
+  });
+
+  it('a wait that began on an earlier day says the date, so it does not read as today (unit 8 fix wave, S-3)', () => {
+    const since = new Date(2026, 10, 25, 14, 5).getTime();
+    expect(waitSinceText(since, new Date(2026, 10, 25, 23, 59).getTime()), 'the same day').toBe(
+      'waiting since 14:05',
+    );
+    expect(waitSinceText(since, new Date(2026, 10, 26, 0, 1).getTime()), 'the next day').toBe(
+      'waiting since Nov 25 14:05',
+    );
+    expect(waitSinceText(new Date(2026, 2, 3, 8, 0).getTime(), since)).toBe(
+      'waiting since Mar 3 08:00',
+    );
+    expect(waitSinceText(since, new Date(2027, 0, 2, 9, 0).getTime()), 'another year').toBe(
+      'waiting since Nov 25 2026',
+    );
+    // A display clock stepped back below the origin is no earlier day: the time alone.
+    expect(waitSinceText(since, since - DAY)).toBe('waiting since 14:05');
   });
 });
 
@@ -109,6 +144,7 @@ describe('sheetRule — the heavy rule with the label and the clock', () => {
       waitClockText(23 * HOUR + 59 * MINUTE),
       waitClockText(1e15),
       waitSinceText(new Date(2026, 10, 27, 23, 59).getTime()),
+      waitSinceText(new Date(2026, 10, 25, 23, 59).getTime(), new Date(2026, 10, 27).getTime()),
     ];
     const long = 'Question from the agent · not an approval and a label much longer than the row';
     for (const label of [LABEL, 'Question from the agent · not an approval', long]) {

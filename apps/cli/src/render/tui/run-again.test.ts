@@ -1,7 +1,7 @@
 /**
  * `r` on a run's detail ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §6, MVP-11 unit 7, W4c): which workflow of THIS directory's catalog a run's workflow is, or the one honest line that says why it is none.
- * A pure decision over what the detail read (the closed directory word and the workflow's slug) and what the Defined tab reads (the
+ * A pure decision over what the detail read (the closed directory word and the workflow's slug) and what the `/workflows` popup reads (the
  * catalog entries by index): it asks nothing else, so it cannot read a run's inputs, and the words it answers with are CLOSED: no stored
  * text (a path, a slug, a message) is ever in one.
  */
@@ -110,7 +110,7 @@ describe('the workflow must still be defined in this directory, by the slug the 
     expect(JSON.stringify(decision)).not.toContain('bad');
   });
 
-  it('finds an entry past the rows the Defined tab lists: the scan is over the catalog, not the bounded rows', () => {
+  it('finds an entry past the rows the `/workflows` popup lists: the scan is over the catalog, not the bounded rows', () => {
     const many: DefinedEntry[] = Array.from({ length: 260 }, (_, index) => ({
       slug: `wf-${String(index).padStart(3, '0')}`,
       name: undefined,

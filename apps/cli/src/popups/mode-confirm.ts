@@ -126,19 +126,41 @@ export interface ConfirmFacts {
 }
 
 /**
- * The confirmation's body, one row per entry: what is written, `auto`'s extra line, the file and what saving does to it, the override the
+ * The confirmation's body, one row per entry: what is written, `auto`'s extra line (only where the writer's message was understood and names no
+ * override: a project or workspace setting that selects another mode says the opposite), the file and what saving does to it, the override the
  * writer names, and what stays for this chat. Never empty: the file is always named.
  */
 export function confirmDetails(facts: ConfirmFacts): readonly string[] {
   const { mode, parts } = facts;
   return [
     confirmWritesLine(mode),
-    ...(mode === 'auto' ? [CONFIRM_AUTO_LINE] : []),
+    ...(mode === 'auto' && parts !== undefined && parts.override === undefined
+      ? [CONFIRM_AUTO_LINE]
+      : []),
     confirmFileLine(facts.target),
     facts.exists ? CONFIRM_REWRITE_LINE : CONFIRM_CREATES_LINE,
     ...(parts?.override === undefined ? [] : [parts.override]),
     ...(facts.inChat === undefined ? [] : [confirmChatStaysLine(facts.inChat)]),
   ];
+}
+
+/**
+ * What the chord card says, from the writer's own message: the card's message and its body. The question is ITS OWN line:
+ * - a message in a shape not known is drawn whole as the card's message (a disclosure of the writer is never dropped);
+ * - without a risk sentence (every mode but `auto`) the message is the question and the body follows;
+ * - with `auto`'s risk sentence the message is the risk text and the body opens with a blank row and then the question, so the question is never
+ *   wrapped into the risk's paragraph (a chord card carries no note of a flow, `native-prompt-channel.ts`: the text on it is a decision about
+ *   what it says, so the risk has to be the card's own words, and it comes first).
+ */
+export function confirmCard(
+  writerMessage: string,
+  facts: ConfirmFacts,
+): { readonly message: string; readonly details: readonly string[] } {
+  const { mode, parts } = facts;
+  const body = confirmDetails(facts);
+  if (parts === undefined) return { message: writerMessage, details: body };
+  if (parts.risk === undefined) return { message: confirmQuestion(mode), details: body };
+  return { message: parts.risk, details: ['', confirmQuestion(mode), ...body] };
 }
 
 /** What the flow is given: the options of the writer's startup branch without its words, and where the confirmation is drawn. */
@@ -181,21 +203,16 @@ function adaptedFlow(
     note: () => undefined,
     confirm: async (message) => {
       seen.asked = true;
-      const parts = splitConfirmMessage(message, mode);
+      const card = confirmCard(message, {
+        mode,
+        target: deps.target,
+        exists: existsSync(deps.runtime.configPath),
+        inChat: deps.inChat,
+        parts: splitConfirmMessage(message, mode),
+      });
       const answer = await framed.at(CONFIRM_STEP).chord({
-        // `auto`'s risk sentence comes before the question, as the writer asks it: in the card's own words (a chord card carries no note of a
-        // flow, `native-prompt-channel.ts`: the text on it is a decision about what it says).
-        message:
-          parts === undefined
-            ? message
-            : `${parts.risk === undefined ? '' : `${parts.risk} `}${confirmQuestion(mode)}`,
-        details: confirmDetails({
-          mode,
-          target: deps.target,
-          exists: existsSync(deps.runtime.configPath),
-          inChat: deps.inChat,
-          parts,
-        }),
+        message: card.message,
+        details: card.details,
         allow: MODE_SAVE_LABEL,
         deny: MODE_KEEP_LABEL,
         escape: 'back',

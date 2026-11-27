@@ -26,13 +26,14 @@ import type {
   PermissionsSnapshot,
   WithdrawAnswer,
 } from '../permissions/chat-permissions.js';
-import { WITHDRAW_FAULT } from '../render/tui/permissions-sheet-port.js';
 import {
   entryOfRow,
   PERMISSIONS_STEP,
   PERMISSIONS_UNREADABLE_AGAIN_CONTENT,
   PERMISSIONS_UNREADABLE_CONTENT,
   homePermissionsContent,
+  homePermissionText,
+  permissionText,
   permissionsContent,
   permissionsControls,
   permissionsSpec,
@@ -45,6 +46,12 @@ import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.
 import { faultCode } from './popup-work.js';
 import type { SettingsOpenRequest } from './settings-port.js';
 
+/** The answer a withdrawal gets when the port itself throws: nothing is known to have changed. */
+const WITHDRAW_FAULT: WithdrawAnswer = {
+  tone: 'failed',
+  text: 'Could not withdraw that row; nothing changed.',
+};
+
 /** Open the `/permissions` popup over `request.host` with the chat's port; see the module header. */
 export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenResult {
   const { host, port, origin } = request;
@@ -54,6 +61,9 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
   let snapshot: PermissionsSnapshot | undefined;
   /** The entry the line was armed for, while it is up. */
   let armed: PermissionEntry | undefined;
+  /** The bare Home has no chat: a `project` port draws the Home's lists, with the Home's row scrub for every stored word on them and on its line. */
+  const forHome = permissions.port.surface === 'project';
+  const draw = forHome ? homePermissionText : permissionText;
 
   /** The lists read now, or `undefined` when the port threw (a defect: nothing it could not read is shown). */
   const read = (): PermissionsSnapshot | undefined => {
@@ -81,7 +91,7 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
       PERMISSIONS_STEP.list,
       // The bare Home has no chat: a `project` port (the remembered commands and the repository's allowlist, no session) draws the Home's
       // lists, which name no mode; a chat's port draws the chat's, as it always did.
-      permissions.port.surface === 'project'
+      forHome
         ? homePermissionsContent(snapshot, result)
         : permissionsContent(snapshot, permissions.mode?.() ?? 'ask', result),
       permissionsControls(snapshot),
@@ -94,7 +104,7 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
       const entry = snapshot === undefined ? undefined : entryOfRow(snapshot, row);
       if (entry === undefined) return;
       armed = entry;
-      context.setContent(PERMISSIONS_STEP.withdraw, withdrawLineContent(entry));
+      context.setContent(PERMISSIONS_STEP.withdraw, withdrawLineContent(entry, draw));
       context.goToStep(PERMISSIONS_STEP.withdraw);
     },
     chord: (context) => {
@@ -112,7 +122,7 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
       // The lists read again, then back to them, then the result: on the host's channel, once the line (which holds it) is gone.
       land(context, answer);
       context.goToStep(PERMISSIONS_STEP.list);
-      port.announce(withdrawnAnnouncement(entry, answer, code));
+      port.announce(withdrawnAnnouncement(entry, answer, code, draw));
     },
     // However it closed (never an answer): a bare `relavium permissions` ends with it, which is the opener's to know.
     closed: () => {

@@ -1,5 +1,5 @@
 /**
- * The four Home flows that write (`/init`, `/import`, `/pricing`, the Defined tab's `x` export) as popups (MVP-11 unit 6, 6.3; ADR-0148 §1,
+ * The four Home flows that write (`/init`, `/import`, `/pricing`, the `/workflows` popup's `x` export) as popups (MVP-11 unit 6, 6.3; ADR-0148 §1,
  * §3, §6), each driven through its own run function on the real native prompt channel with a manual clock: the frame each step is drawn in (the
  * title, the origin, the rail and `step N of M`), the chord that is the only Yes (`Ctrl+Y`) and that a held key never answers, `Esc` at every
  * step, the Done step that names the target project-relative, and every untrusted string through the full scrub on its way to the channel.
@@ -414,7 +414,7 @@ describe('/init in a folder that is already a project', () => {
   });
 });
 
-/** A workflow with no inputs: `/run` started on it from the Defined tab (`r`) opens on its confirmation. */
+/** A workflow with no inputs: `/run` started on it from the `/workflows` popup (`r`) opens on its confirmation. */
 const NO_INPUTS = `schema_version: '1.0'
 workflow:
   id: no-inputs
@@ -464,7 +464,7 @@ describe('a chord card that is the first prompt of a flow is locked from the mom
   );
 
   /**
-   * Unit 6 round 1, S2/A1: `r` on a Defined row starts the launch on that workflow, and one with no inputs opens on its `Ctrl+Y` confirmation,
+   * Unit 6 round 1, S2/A1: `r` on a `/workflows` row starts the launch on that workflow, and one with no inputs opens on its `Ctrl+Y` confirmation,
    * which no answer came before (`r` is a screen's key: nothing stamped it at all). A held `Ctrl+Y` started the run in 17 of 25 initial delays
    * and repeat gaps; the card's own lockout now holds it, and one patient press after the key was let go starts it once.
    */

@@ -284,9 +284,8 @@ describe('/mode in the chat the Home hosts', () => {
       await vi.waitFor(() => {
         const snapshot = prompt.getSnapshot();
         expect(snapshot.kind).toBe('chord');
-        expect(snapshot.message).toBe(
-          `${MODE_EFFECT.auto.full} Save auto as your startup default?`,
-        );
+        expect(snapshot.message).toBe(MODE_EFFECT.auto.full);
+        expect(snapshot.details.slice(0, 2)).toEqual(['', 'Save auto as your startup default?']);
         expect(snapshot.popup).toMatchObject({ origin: 'chat', stepIndex: 1, stepCount: 3 });
         expect(snapshot.details).toContain('This chat stays in ask mode.');
       }, WAIT);
@@ -359,7 +358,7 @@ describe('/mode on the bare Home', () => {
     expect(f.error()).toBeUndefined();
   });
 
-  it('Esc on the confirmation steps back to the list, opened on the mode chosen; Esc there closes without a word', async () => {
+  it('Esc on the confirmation steps back to the list, opened on the saved default (not the mode asked for); Esc there closes without a word', async () => {
     const f = await fixture();
     try {
       await vi.waitFor(() => expect(f.mounted.controller.getSnapshot().mode).toBe('home'), WAIT);
@@ -378,7 +377,7 @@ describe('/mode on the bare Home', () => {
       prompt.input('', { ...NONE, escape: true });
       await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
       const frame = f.mounted.popups?.getSnapshot().frame;
-      expect(frame?.steps[0]?.selected).toBe(2); // the intro is row 0: `plan` is row 2
+      expect(frame?.steps[0]?.selected).toBe(1); // the intro is row 0: the saved default `ask` is row 1 (not `plan`, row 2, the mode asked for)
       await f.pressFrom('mode:0', { escape: true });
       expect(f.notified).toEqual([]);
       expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);

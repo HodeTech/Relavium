@@ -1,5 +1,5 @@
 /**
- * The Defined tab's read ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * The `/workflows` popup's read ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §2, MVP-8 step 4, increment 4b): the catalog and the pins in, rows that name their entries by index out. The export half of the same
  * file is proved with the card in `render/tui/export-card.test.ts`, over a real temporary project.
  */
@@ -73,20 +73,27 @@ describe('createDefinedPort', () => {
 
   it('adds each workflow’s latest run, by slug, to a ready row only, and shows none when no read is given', () => {
     const catalog = { list: () => [entry('alpha'), entry('torn', { valid: false, error: 'bad' })] };
-    const lastRuns = vi.fn(
+    const at = '2026-11-27T10:00:00.000Z';
+    const latestRuns = vi.fn(
       () =>
-        new Map<string, RunStatus>([
-          ['alpha', 'completed'],
-          ['torn', 'failed'],
+        new Map<string, { status: RunStatus; at: string }>([
+          ['alpha', { status: 'completed', at }],
+          ['torn', { status: 'failed', at }],
         ]),
     );
-    const withRuns = createDefinedPort({ catalog, pins: () => [], lastRuns }).read();
+    const withRuns = createDefinedPort({ catalog, pins: () => [], latestRuns }).read();
     expect(
-      withRuns.model.rows.map((row) => [row.slug, row.lastRunStatus, row.lastRunGlyph]),
+      withRuns.model.rows.map((row) => [
+        row.slug,
+        row.lastRunStatus,
+        row.lastRunGlyph,
+        row.lastRunAt,
+      ]),
     ).toEqual([
-      ['alpha', 'completed', '✓'],
-      ['torn', undefined, undefined], // a file that did not parse borrows no run
+      ['alpha', 'completed', '✓', at],
+      ['torn', undefined, undefined, undefined], // a file that did not parse borrows no run
     ]);
+    expect(latestRuns, 'status and age come from ONE read').toHaveBeenCalledTimes(1);
     const without = createDefinedPort({ catalog, pins: () => [] }).read();
     expect(without.model.rows.map((row) => row.lastRunStatus)).toEqual([undefined, undefined]);
   });

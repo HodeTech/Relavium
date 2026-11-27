@@ -1,44 +1,21 @@
 import '../frames.js';
 
-import type {
-  PermissionsSnapshot,
-  ProjectGrantRow,
-  SessionApprovalRow,
-} from '../../../../permissions/chat-permissions.js';
+import type { PermissionsSnapshot } from '../../../../permissions/chat-permissions.js';
 import { emptyEditor } from '../../chat-input.js';
 import { layoutHomeNotice } from '../../home-notice.js';
-import { keyLabel, legend, legendSpans, type LegendItem } from '../../legend.js';
-import {
-  foldPermissionsSheetKey,
-  initialPermissionsSheetState,
-  permissionsSheetLines,
-  SHEET_CHIP_ARMED,
-  SHEET_CHIP_IDLE,
-  SHEET_ENTER_NOTE,
-  SHEET_KEYS,
-  SHEET_LEGEND_ARMED,
-  SHEET_LEGEND_ARMED_ITEMS,
-  SHEET_LEGEND_EMPTY,
-  SHEET_LEGEND_EMPTY_ITEMS,
-  SHEET_LEGEND_IDLE,
-  SHEET_LEGEND_IDLE_ITEMS,
-  SHEET_SETTLE_MS,
-  SHEET_TOO_SMALL_TEXT,
-  SHEET_TYPED_NOTE,
-  SHEET_WAIT_NOTE,
-  tooSmallSheetLines,
-  type PermissionsSheetState,
-  type PermissionsSheetStep,
-} from '../../permissions-sheet.js';
 import type { SheetGeometry, SheetLine } from '../../sheet-frame.js';
 import { isHintShaped } from '../hint-shape.js';
 import { label, type Producer, type Recorder, type StateRows } from '../golden.js';
 import {
+  emptyProjectText,
+  EMPTY_SESSION_TEXT,
+  grantNote,
   permissionsContent,
   permissionsControls,
   permissionsSpec,
   PERMISSIONS_STEP,
   PERMISSIONS_UNREADABLE_CONTENT,
+  withdrawHint,
   withdrawLineContent,
   withdrawRefusedText,
 } from '../../../../popups/permissions-popup.js';
@@ -47,9 +24,10 @@ import { openFrame, withContent, type PopupFrame } from '../../../../popups/popu
 import { frameRows } from './popups.js';
 
 /**
- * The sheets' hint producers: the permissions sheet (its legend, its row chip, the sentences under the list) and the
- * help sheet's legends and the help sheet's key listing, and the Home's notice footer. Every string is recorded through the function that
- * builds it, at the sizes a legend's clipping can differ at.
+ * The sheets' hint producers: the chat's `/permissions` popup (its legends, its lists' effect lines and empty sentences, what each refusal of
+ * its line says) and the Home's notice footer, and the helpers the tab host's recorders share (`bySize`, `footRows`, `rolesOf`, `lineOfKind`).
+ * Every string is recorded through the function that builds it, at the sizes a legend's clipping can differ at. (The permissions sheet, its
+ * port and its view were deleted in review round 1 of MVP-11 unit 8, D-3: the popup is the one implementation, so its producers went with them.)
  */
 
 /** The two sizes a sheet is recorded at: the floor of 80×24, and a wider one (a line is never drawn wider than 100 columns). */
@@ -145,217 +123,6 @@ export function lineOfKind(
 ): SheetLine | undefined {
   return lines.find((line) => line.kind === kind);
 }
-
-// ---- The permissions sheet ----------------------------------------------------------------------------------------------------
-
-const T0 = 50_000;
-const SETTLED = T0 + SHEET_SETTLE_MS + 600;
-const ENTER = { return: true } as const;
-
-const project = (
-  id: string,
-  text = 'npm, 1 argument',
-  at = '2026-11-19 12:00Z',
-): ProjectGrantRow => ({
-  id,
-  label: text,
-  remembered: at,
-});
-const session = (text: string, alsoRemembered = false): SessionApprovalRow => ({
-  argv: text.split(' '),
-  text,
-  alsoRemembered,
-});
-
-const snapshotOf = (
-  projectRows: readonly ProjectGrantRow[],
-  sessionRows: readonly SessionApprovalRow[] | undefined,
-): PermissionsSnapshot => ({ project: { ok: true, rows: projectRows }, session: sessionRows });
-
-/** Two remembered commands, then three session approvals: one plain, one a Remember also made, one plain. */
-const FULL = snapshotOf(
-  [project('a'), project('b', 'node, 1 argument')],
-  [session('git status'), session('npm test', true)],
-);
-
-/** The Home's own sheet: the project's rows and no session section. */
-const PROJECT_ONLY = snapshotOf([project('a'), project('b', 'node, 1 argument')], undefined);
-
-const open = (
-  snapshot: PermissionsSnapshot,
-  surface: 'chat' | 'project',
-  mode: PermissionsSheetState['mode'],
-  cursor = 0,
-): PermissionsSheetState => ({
-  ...initialPermissionsSheetState(snapshot, surface, mode, T0),
-  cursor,
-});
-
-const stateOf = (step: PermissionsSheetStep): PermissionsSheetState => {
-  if (step.kind === 'close') throw new Error('expected a state, got close');
-  return step.state;
-};
-
-/** The sheet with its question up on the selected row. */
-const armed = (from: PermissionsSheetState): PermissionsSheetState =>
-  stateOf(foldPermissionsSheetKey('d', {}, from, true, SETTLED));
-
-/** The row (a selected row or an armed one) a sheet draws its action chip on. */
-function chipRow(lines: readonly SheetLine[]): SheetLine | undefined {
-  return lines.find((line) => line.kind === 'selected' || line.kind === 'armed');
-}
-
-/** One state of the sheet at both sizes: the chip row and the foot (the message row and the legend). */
-function sheetStates(
-  name: string,
-  state: PermissionsSheetState,
-  options: FootOptions = {},
-): StateRows {
-  return bySize(name, (geometry) => {
-    const lines = permissionsSheetLines(state, geometry);
-    const chip = chipRow(lines);
-    return [...(chip === undefined ? [] : [chip.text]), ...footRows(lines, options)];
-  });
-}
-
-/** The `text` lines of `lines` as the sentences they were wrapped from: consecutive text rows joined by a space, a heading or a rule ending one. */
-export function paragraphs(lines: readonly SheetLine[]): string[] {
-  const out: string[] = [];
-  let current: string[] = [];
-  const flush = (): void => {
-    if (current.length > 0) out.push(current.join(' '));
-    current = [];
-  };
-  for (const line of lines) {
-    if (line.kind === 'text' && line.text !== '') current.push(line.text.trim());
-    else flush();
-  }
-  flush();
-  return out;
-}
-
-/** An empty sheet at both sizes: the sentences of its body, and its legend. */
-function emptyStates(name: string, state: PermissionsSheetState): StateRows {
-  return bySize(name, (geometry) => {
-    const lines = permissionsSheetLines(state, geometry);
-    return [...paragraphs(lines), ...footRows(lines, { kinds: ['legend'], last: 1 })];
-  });
-}
-
-/** One item as the legend writes it (`keys verb`): a key table's entry recorded by itself. */
-const itemText = (item: LegendItem): string =>
-  'keys' in item ? `${keyLabel(item.keys)} ${item.verb}` : item.text;
-
-/** The legend constants, the row chips and the sentences the sheet's keys answer with, recorded through what builds them. */
-const permissionsSheet: Recorder = () => {
-  const out: Record<string, string | readonly string[]> = {
-    'constant=SHEET_LEGEND_IDLE': SHEET_LEGEND_IDLE,
-    'constant=SHEET_LEGEND_EMPTY': SHEET_LEGEND_EMPTY,
-    'constant=SHEET_LEGEND_ARMED': SHEET_LEGEND_ARMED,
-    'constant=SHEET_CHIP_IDLE': SHEET_CHIP_IDLE,
-    'constant=SHEET_CHIP_ARMED': SHEET_CHIP_ARMED,
-    'constant=SHEET_ENTER_NOTE': SHEET_ENTER_NOTE,
-    'constant=SHEET_WAIT_NOTE': SHEET_WAIT_NOTE,
-    'constant=SHEET_TYPED_NOTE': SHEET_TYPED_NOTE,
-    'constant=SHEET_TOO_SMALL_TEXT': SHEET_TOO_SMALL_TEXT,
-    'keys=withdraw confirm keep close alone': [
-      itemText(SHEET_KEYS.withdraw),
-      itemText(SHEET_KEYS.confirm),
-      itemText(SHEET_KEYS.keep),
-      itemText(SHEET_KEYS.close),
-    ],
-  };
-  // The idle sheet: the hint under the list says what withdrawing the selected row does, by the row it is on.
-  const idle = (surface: 'chat' | 'project', cursor: number): PermissionsSheetState =>
-    open(surface === 'chat' ? FULL : PROJECT_ONLY, surface, 'ask', cursor);
-  Object.assign(
-    out,
-    sheetStates(label({ state: 'idle', row: 'project', surface: 'chat' }), idle('chat', 0)),
-    sheetStates(label({ state: 'idle', row: 'session', surface: 'chat' }), idle('chat', 2)),
-    sheetStates(
-      label({ state: 'idle', row: 'session also-remembered', surface: 'chat' }),
-      idle('chat', 3),
-    ),
-    sheetStates(label({ state: 'idle', row: 'project', surface: 'project' }), idle('project', 0)),
-    // The question: a withdrawal waits for its `Enter`; the legend names its two answers.
-    sheetStates(label({ state: 'armed', row: 'project' }), armed(idle('chat', 0))),
-    sheetStates(label({ state: 'armed', row: 'session' }), armed(idle('chat', 2))),
-    // Nothing to select: the legend is only the way out, and the sentences in the body say how a row is made (each one as a sentence, not
-    // as the rows the width wrapped it to).
-    emptyStates(
-      label({ state: 'empty', surface: 'chat', mode: 'ask' }),
-      open(snapshotOf([], []), 'chat', 'ask'),
-    ),
-    emptyStates(
-      label({ state: 'empty', surface: 'chat', mode: 'plan' }),
-      open(snapshotOf([], []), 'chat', 'plan'),
-    ),
-    emptyStates(
-      label({ state: 'empty', surface: 'project', mode: 'none' }),
-      open(snapshotOf([], undefined), 'project', undefined),
-    ),
-  );
-  // The notes a refused key leaves on the message row.
-  const idleSheet = idle('chat', 0);
-  const tooEarly = stateOf(foldPermissionsSheetKey('d', {}, idleSheet, true, T0 + 1));
-  const typed = stateOf(foldPermissionsSheetKey('x', {}, idleSheet, true, SETTLED));
-  const typedThenD = stateOf(foldPermissionsSheetKey('d', {}, typed, true, SETTLED));
-  const askedAt = armed(idleSheet);
-  const early = stateOf(foldPermissionsSheetKey('', ENTER, askedAt, true, SETTLED + 1));
-  Object.assign(
-    out,
-    sheetStates(label({ state: 'note', key: 'd too early' }), tooEarly),
-    sheetStates(label({ state: 'note', key: 'd after typing' }), typedThenD),
-    sheetStates(label({ state: 'note', key: 'Enter too early' }), early),
-  );
-  // The frame below the floor: why, and the way out.
-  for (const [name, state] of [
-    ['chat ask', idleSheet],
-    ['project', idle('project', 0)],
-  ] as const) {
-    out[label({ state: 'too-small', sheet: name })] = permissionsSheetLines(state, BELOW_FLOOR).map(
-      (line) => line.text,
-    );
-  }
-  out[label({ state: 'too-small', sheet: 'another sheet via tooSmallSheetLines' })] =
-    tooSmallSheetLines('Agent · reviewer').map((line) => line.text);
-  return out;
-};
-
-/** The roles the legend's keys take (the `[d / Del]` danger, the `[Enter]` warn), and the chip and hint keys on the rows. */
-const permissionsSheetRoles: Recorder = () => {
-  const out: Record<string, string> = {
-    'legend=SHEET_LEGEND_IDLE_ITEMS': rolesOf({
-      kind: 'legend',
-      text: legend(SHEET_LEGEND_IDLE_ITEMS, SHEET_KEYS.close),
-      spans: legendSpans(SHEET_LEGEND_IDLE_ITEMS, SHEET_KEYS.close),
-    }),
-    'legend=SHEET_LEGEND_EMPTY_ITEMS': rolesOf({
-      kind: 'legend',
-      text: legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
-      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
-    }),
-    'legend=SHEET_LEGEND_ARMED_ITEMS': rolesOf({
-      kind: 'legend',
-      text: legend(SHEET_LEGEND_ARMED_ITEMS, SHEET_KEYS.keep),
-      spans: legendSpans(SHEET_LEGEND_ARMED_ITEMS, SHEET_KEYS.keep),
-    }),
-  };
-  const geometry = GEOMETRIES[0].geometry;
-  const idleLines = permissionsSheetLines(open(FULL, 'chat', 'ask'), geometry);
-  const armedLines = permissionsSheetLines(armed(open(FULL, 'chat', 'ask')), geometry);
-  out['state=idle chip row'] = rolesOf(chipRow(idleLines));
-  out['state=idle hint row'] = rolesOf(lineOfKind(idleLines, 'hint'));
-  out['state=idle legend'] = rolesOf(lineOfKind(idleLines, 'legend'));
-  out['state=armed chip row'] = rolesOf(chipRow(armedLines));
-  out['state=armed legend'] = rolesOf(lineOfKind(armedLines, 'legend'));
-  out['state=empty legend'] = rolesOf(
-    lineOfKind(permissionsSheetLines(open(snapshotOf([], []), 'chat', 'ask'), geometry), 'legend'),
-  );
-  return out;
-};
-
-// ---- The help sheet ----------------------------------------------------------------------------------------------------------
 
 // ---- The Home's notice -------------------------------------------------------------------------------------------------------
 
@@ -454,27 +221,37 @@ const permissionsPopup: Recorder = () => {
         .filter((text) => isHintShaped(text));
   for (const reason of ['unseen', 'early', 'expired', 'typed', 'cut'] satisfies ChordRefusal[])
     out[label({ refusal: reason })] = withdrawRefusedText(reason);
+  // The sentences the lists say through their own builders: what withdrawing a row does (the highlighted row's effect, by the row's kind),
+  // what an empty list says (by the chat's mode, and on the Home, which names a card), and the note on what a grant is worth in each mode.
+  const remembered = { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-20 09:12Z' };
+  out[label({ effect: 'withdraw', row: 'project' })] = withdrawHint({
+    kind: 'project',
+    row: remembered,
+  });
+  out[label({ effect: 'withdraw', row: 'session' })] = withdrawHint({
+    kind: 'session',
+    row: { argv: ['git', 'status'], text: 'git status', alsoRemembered: false },
+  });
+  out[label({ effect: 'withdraw', row: 'session also-remembered' })] = withdrawHint({
+    kind: 'session',
+    row: { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true },
+  });
+  out[label({ empty: 'project', mode: 'ask' })] = emptyProjectText('ask');
+  out[label({ empty: 'project', mode: 'plan' })] = emptyProjectText('plan');
+  out[label({ empty: 'project', mode: 'none (the Home)' })] = emptyProjectText(undefined);
+  out['empty=session'] = EMPTY_SESSION_TEXT;
+  for (const mode of ['ask', 'accept-edits', 'auto', 'plan'] as const)
+    out[label({ note: 'grant', mode })] = grantNote(mode);
+  out[label({ note: 'grant', mode: 'none (the Home)' })] = grantNote(undefined);
   return out;
 };
 
 export const SHEETS_PRODUCERS: readonly Producer[] = [
   {
-    id: 'permissions-sheet',
-    file: 'render/tui/permissions-sheet.ts',
-    describe:
-      'The /permissions sheet: its legend constants, the row chip `[d] withdraw` / `[Enter] withdraw`, the hint under the selected row, the question, the notes a refused `d` or `Enter` leaves, the empty-list sentences naming Ctrl+O, and the frame below the floor; by surface, row kind, armed and size.',
-  },
-  {
-    id: 'permissions-sheet-roles',
-    file: 'render/tui/permissions-sheet.ts',
-    describe:
-      'The roles the permissions sheet gives its keys: `[d / Del]` danger and `[Enter]` warn in the legend, the chip and the hint key on the rows, idle versus armed.',
-  },
-  {
     id: 'permissions-popup',
     file: 'popups/permissions-popup.ts',
     describe:
-      'The chat’s /permissions popup: the legend of its lists (`[d] / Del withdraw (then Enter)`), of a withdrawal’s line answered by Enter (`Enter withdraw · Esc keep`), of nothing to withdraw and of lists that could not be read, colour off and on; and what each refusal of the line says.',
+      'The /permissions popup: the legend of its lists (`[d] / Del withdraw (then Enter)`), of a withdrawal’s line answered by Enter (`Enter withdraw · Esc keep`), of nothing to withdraw and of lists that could not be read, colour off and on; what each refusal of the line says; the effect of withdrawing each kind of row, the empty-list sentences (by mode, and the Home’s) and the note on what a grant is worth in each mode.',
   },
   {
     id: 'home-notice',
@@ -485,8 +262,6 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
 ];
 
 export const SHEETS_RECORDERS = {
-  'permissions-sheet': permissionsSheet,
-  'permissions-sheet-roles': permissionsSheetRoles,
   'permissions-popup': permissionsPopup,
   'home-notice': homeNotice,
 } as const satisfies Readonly<Record<string, Recorder>>;

@@ -400,6 +400,9 @@ const FRAMED_FLOW_SURFACE =
 // too: each draws the frame its host has open, the box exists only while a surface has one open, and the matrix's own backdrop check covers every
 // cell of each (`checkBackdropDim`, run in every alternate-screen colour cell). The rule is the one every other product popup here is left out by.
 const HOME_MANAGE_SURFACE = /^home\.(help|agents-|workflows-)/u;
+// The chat's `/mode` `[s]` confirmation and Done step are framed native prompts like the Home's `mode-(confirm|done)` above: the box is where the
+// live flow draws it, so it exists only while a surface has the flow open, and the matrix's own backdrop check covers every cell of each.
+const CHAT_MODE_SAVE_SURFACE = /^(?:standalone-)?chat\.mode-(confirm|done)/u;
 const POPUP_SURFACES = ALL_SURFACES.filter(
   (surface) =>
     surface.popup !== undefined &&
@@ -415,7 +418,8 @@ const POPUP_SURFACES = ALL_SURFACES.filter(
     // The flows of unit 6 are framed native prompts too (a field, a wait, a chord step or a Done step): their box is where the live flow
     // draws it, so it exists only while a surface has the flow open, and the matrix's own backdrop check covers every cell of each.
     !FRAMED_FLOW_SURFACE.test(surface.id) &&
-    !HOME_MANAGE_SURFACE.test(surface.id),
+    !HOME_MANAGE_SURFACE.test(surface.id) &&
+    !CHAT_MODE_SAVE_SURFACE.test(surface.id),
 );
 
 /** Where the popup of `entry` is drawn in `ALT`, and the cells inside it. */

@@ -127,11 +127,12 @@ export function modeContent(facts: ModeListFacts): PopupContent {
 
 /**
  * The popup's spec: ONE step (so no rail and no `step N of M`), opened on the mode `current` in a chat and on the saved default on the Home, so a
- * bare `Enter` keeps and changes nothing, or on `initial` (the mode a step back from the confirmation returns to). `Esc` closes. The step's own `Enter` word is the row's (`PopupListRow.enterVerb`); `legendKeep` makes
- * `↑/↓ select` the first item to go when the row is short.
+ * bare `Enter` keeps and changes nothing (a step back from the confirmation opens it the same way, never on the mode that was asked for). `Esc`
+ * closes. The step's own `Enter` word is the row's (`PopupListRow.enterVerb`); `legendKeep` makes `↑/↓ select` the first item to go when the row
+ * is short.
  */
-export function modeSpec(origin: PopupOrigin, facts: ModeListFacts, initial?: ChatMode): PopupSpec {
-  const opened = initial ?? (facts.surface === 'chat' ? facts.current : facts.startup);
+export function modeSpec(origin: PopupOrigin, facts: ModeListFacts): PopupSpec {
+  const opened = facts.surface === 'chat' ? facts.current : facts.startup;
   return {
     id: 'mode',
     title: '/mode',

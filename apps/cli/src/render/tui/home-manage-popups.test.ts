@@ -125,6 +125,8 @@ interface Options {
   readonly host?: () => RunHostSnapshot;
   readonly startChat?: (agent?: HomeAgentRequest) => Promise<HomeChatSession>;
   readonly permissions?: PermissionsPort;
+  /** Whether a popup is open when the Home is asked to open a flow (the Home's opening gate refuses one then). */
+  readonly popupOpen?: () => boolean;
 }
 
 /** The Home's monotonic clock, as the key history reads it. */
@@ -160,6 +162,7 @@ function mount(options: Options = {}) {
     ...(options.launch === undefined ? {} : { launchRun: options.launch }),
     ...(options.exporter === undefined ? {} : { exportDefined: options.exporter }),
     ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
+    ...(options.popupOpen === undefined ? {} : { popupOpen: options.popupOpen }),
     ...(options.popups === false
       ? {}
       : {
@@ -371,10 +374,13 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
     });
     submit(controller, '/workflows');
     expect(chordHistory.openedBy, 'no key opened a flow yet').toBeUndefined();
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     expect(launch).toHaveBeenCalledOnce();
     expect(launch.mock.calls[0]?.slice(0, 2)).toEqual([NODE, PATH]);
-    expect(launch.mock.calls[0]?.[2]).toEqual({ opener: { origin: 'workflows' } });
+    expect(launch.mock.calls[0]?.[2]).toEqual({
+      opener: { origin: 'workflows' },
+      onLeave: expect.any(Function) as unknown,
+    });
     // The `r` that asked is left on the Home's one key history for the flow to take when it begins: this launch never begins one, and the
     // record is forgotten as soon as it settles (a stale record would make the next flow's fast `rr` look like a held key).
     expect(chordHistory.openedBy, 'the `r` is the flow’s to take').toEqual({
@@ -392,10 +398,13 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
     const launch = vi.fn(() => Promise.resolve(''));
     const { controller, opened } = mount({ agents: agentsPort, defined: definedPort, launch });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
     expect(opened[1]?.kind).toBe('workflows');
-    expect(opened[1]?.at).toEqual({ slug: NODE });
+    expect(opened[1]?.at, 'pressed on the detail: back on the detail').toEqual({
+      slug: NODE,
+      step: 'detail',
+    });
     expect(
       controller.getSnapshot().nativeActionBusy,
       'the keyboard is the Home’s when the popup comes back',
@@ -410,25 +419,70 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
       launch,
     });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
     expect(announced).toEqual(['A run is already executing (run-0001).']);
   });
 
-  it('a cancel (`Run cancelled.`: Ctrl+C closes the whole stack, Ctrl+N is the person’s own No) leaves the Home with its one notification and no popup', async () => {
-    const launch = vi.fn(() => Promise.resolve('Run cancelled.'));
+  it('`Ctrl+C` closes the whole stack: the flow told the Home it was left, so its notification is the whole answer and no popup comes back', async () => {
+    const launch = vi.fn(
+      (_slug?: string, _path?: string, options?: LaunchOptions): Promise<string> => {
+        options?.onLeave?.();
+        return Promise.resolve('Run cancelled.');
+      },
+    );
     const { controller, opened, announced } = mount({
       agents: agentsPort,
       defined: definedPort,
       launch,
     });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await flush();
     await flush();
     expect(opened).toHaveLength(1);
     expect(announced).toEqual(['Run cancelled.']);
   });
+
+  it.each([
+    { from: 'list', what: 'the catalogue row it was pressed on' },
+    { from: 'detail', what: 'the detail it was pressed on' },
+  ] as const)(
+    'a No (`Ctrl+N`, `Run cancelled.` and no leave) brings the popup back on $from: $what',
+    async ({ from }) => {
+      const launch = vi.fn(() => Promise.resolve('Run cancelled.'));
+      const { controller, opened, announced } = mount({
+        agents: agentsPort,
+        defined: definedPort,
+        launch,
+      });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.run(NODE, PATH, from);
+      await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
+      expect(opened[1]?.at).toEqual({ slug: NODE, step: from });
+      expect(announced).toEqual(['Run cancelled.']);
+    },
+  );
+
+  it.each(['list', 'detail'] as const)(
+    'a run that started and was already parked or finished when the host was looked at (from the %s) closes everything and says what a plain `/run` says, the popup not back',
+    async (from) => {
+      // The host is idle again by the time it is read (the leg parked at a gate, or finished): only the launch's own word says a run started.
+      const launch = vi.fn(() => Promise.resolve('Started code-review · run run-0001'));
+      const { controller, opened, announced } = mount({
+        agents: agentsPort,
+        defined: definedPort,
+        launch,
+      });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.run(NODE, PATH, from);
+      await flush();
+      await flush();
+      expect(opened, 'no popup comes back').toHaveLength(1);
+      expect(controller.getSnapshot().screen, 'no leg executes, so no run view').toBeUndefined();
+      expect(announced).toEqual(['Started code-review · run run-0001']);
+    },
+  );
 
   it('a run that started opens the run view and the popup does not come back', async () => {
     let snapshot: RunHostSnapshot = IDLE;
@@ -443,7 +497,7 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
       host: () => snapshot,
     });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await vi.waitFor(() => expect(controller.getSnapshot().screen?.kind).toBe('run-view'), {
       timeout: WAIT_MS,
     });
@@ -454,9 +508,74 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
   it('a Home with no launch flow says so and the popup comes back; nothing is started', () => {
     const { controller, opened, announced } = mount({ agents: agentsPort, defined: definedPort });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.run(NODE, PATH);
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
     expect(announced).toEqual(['Running a workflow is unavailable in this session.']);
     expect(opened).toHaveLength(2);
+  });
+});
+
+describe('what a refused or a closing Home leaves behind (review round 1, G04 and G05)', () => {
+  const NODE = 'code-review';
+  const PATH = 'code-review.relavium.yaml';
+
+  it('a `[r]` the Home refuses because a flow is already open forgets the key that asked, so the next flow does not take it for a key held down (G04)', () => {
+    // The first launch never settles: its flow is open, the keyboard is the flow's, and the second `[r]` is refused by the Home itself.
+    const launch = vi.fn(() => new Promise<string>(() => {}));
+    const { controller, opened, chordHistory } = mount({
+      agents: agentsPort,
+      defined: definedPort,
+      launch,
+    });
+    submit(controller, '/workflows');
+    last(opened).port.workflows?.run(NODE, PATH, 'list');
+    expect(controller.getSnapshot().nativeActionBusy).toBe(true);
+    expect(chordHistory.openedBy, 'the first `r` is the first flow’s to take').toBeDefined();
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
+    expect(launch, 'the second asks for no second flow').toHaveBeenCalledOnce();
+    expect(chordHistory.openedBy, 'a refused open leaves no key behind').toBeUndefined();
+  });
+
+  it('a `[r]` the Home’s opening gate refuses (a popup is open) forgets the key too: the flow never began, so nothing is left for the next one (G04)', async () => {
+    const launch = vi.fn(() => Promise.resolve(''));
+    const { controller, opened, announced, chordHistory } = mount({
+      agents: agentsPort,
+      defined: definedPort,
+      launch,
+      popupOpen: () => true,
+    });
+    submit(controller, '/workflows');
+    last(opened).port.workflows?.run(NODE, PATH, 'list');
+    await flush();
+    expect(controller.getSnapshot().nativeActionBusy, 'no flow began').toBe(false);
+    expect(announced.join('\n')).toMatch(/Run workflow/u);
+    expect(chordHistory.openedBy, 'a refused open leaves no key behind').toBeUndefined();
+  });
+
+  it.each([
+    ['a run', (port: HomePopupsPort) => port.workflows?.run(NODE, PATH, 'list')],
+    ['an export', (port: HomePopupsPort) => port.workflows?.export(NODE, 'detail')],
+  ] as const)(
+    'a Home that is closing does not bring /workflows back for %s it cannot start (G05)',
+    async (_what, ask) => {
+      // Neither `launchRun` nor `exportDefined` is wired: both paths answer at once and would reopen the popup on the spot.
+      const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
+      submit(controller, '/workflows');
+      await flush();
+      expect(opened).toHaveLength(1);
+      await controller.teardownActive();
+      ask(last(opened).port);
+      await flush();
+      expect(opened, 'nothing is opened into a Home that is going away').toHaveLength(1);
+    },
+  );
+
+  it('the same request on a Home that is not closing brings the popup back, on the step it was pressed on (the control of the two above)', async () => {
+    const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
+    submit(controller, '/workflows');
+    last(opened).port.workflows?.run(NODE, PATH, 'detail');
+    await flush();
+    expect(opened).toHaveLength(2);
+    expect(opened[1]?.at).toEqual({ slug: NODE, step: 'detail' });
   });
 });
 
@@ -469,17 +588,26 @@ describe('`[x]` hands the controller an export, from /workflows', () => {
       exporter,
     });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.export('nightly');
+    last(opened).port.workflows?.export('nightly', 'detail');
     expect(exporter.mock.calls).toEqual([['nightly', 'workflows']]);
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-    expect(opened[1]?.at).toEqual({ slug: 'nightly' });
+    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'detail' });
     expect(announced).toEqual(['Nothing exported.']);
+  });
+
+  it('an export started from the catalogue row comes back to the catalogue, not to a detail nobody opened', async () => {
+    const exporter = vi.fn(() => Promise.resolve<string | undefined>('Nothing exported.'));
+    const { controller, opened } = mount({ agents: agentsPort, defined: definedPort, exporter });
+    submit(controller, '/workflows');
+    last(opened).port.workflows?.export('nightly', 'list');
+    await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
+    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'list' });
   });
 
   it('a Home with no export says so and the popup comes back', () => {
     const { controller, opened, announced } = mount({ agents: agentsPort, defined: definedPort });
     submit(controller, '/workflows');
-    last(opened).port.workflows?.export('nightly');
+    last(opened).port.workflows?.export('nightly', 'detail');
     expect(announced).toEqual(['Export is unavailable in this session.']);
     expect(opened).toHaveLength(2);
   });

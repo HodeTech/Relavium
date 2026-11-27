@@ -9,8 +9,10 @@
  * 2. **The acknowledgement survives a thousand ticks.** The card's state is the same object across them, the host's re-acknowledgement of the
  *    same frame does not restart the dwell, and a `Ctrl+Y` right after the last tick counts. The mutation that gives a tick a new state (the
  *    elapsed text in a snapshot) fails it.
- * 3. **Shifting the display clock changes no guard outcome.** The clock is derived from the wall clock (`Date.now`); every guard runs on the
- *    monotonic clock (`performance.now`) from its own origin. A wall clock stepped an hour either way moves the clock's text and nothing else.
+ * 3. **Shifting the display clock changes no guard outcome.** The clock is derived from the wall clock (`Date.now`); the guards of the three
+ *    sheets that wear it (the approval's dwell, the question's settle, the checkpoint's dwell) run on the monotonic clock (`performance.now`)
+ *    from their own origins. A wall clock stepped an hour either way moves the clock's text and nothing else. (The question's settle read the
+ *    wall clock until unit 8's fix wave, S-5: stepped back, it refused every choosing key for as long as it was stepped.)
  *
  * The clocks are faked (`Date` and `performance` only): `vi.advanceTimersByTime` moves both, `vi.setSystemTime` steps only the wall clock.
  */
@@ -25,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { QUESTION_SETTLE_MS } from './question-card-model.js';
 import { APPROVAL_SETTLE_MS, toolReviewPage, type ApprovalGuard } from './tool-review-model.js';
 import { waitClockText } from './sheet-frame.js';
 import { waitClockFor } from './wait-clock.js';
@@ -289,6 +292,61 @@ describe('shifting the display clock changes no guard outcome (ADR-0147 §2, MVP
     },
   );
 
+  /**
+   * The other two sheets that wear the clock (unit 8 fix wave, S-5/M-14): the question's settle and the checkpoint's dwell. What a choosing
+   * key (the question's `1`) or a `Ctrl+Y` (the checkpoint's continue) pressed `afterMs` after the sheet was on screen does, the wall clock
+   * stepped by `shiftMs` in between.
+   */
+  async function sheetOutcome(
+    kind: 'question' | 'checkpoint',
+    afterMs: number,
+    shiftMs: number,
+  ): Promise<boolean> {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND); // the real guard
+    const answers: unknown[] = [];
+    if (kind === 'question') {
+      void store.requestQuestion(QUESTION).then((answer) => answers.push(answer));
+      store.bindQuestionVisibility(() => true);
+    } else {
+      void store
+        .requestCheckpoint({ rounds: 12, interval: 8 })
+        .then((answer) => answers.push(answer));
+      store.bindCheckpointVisibility(() => true);
+      const frame = store.getSnapshot().checkpointFrame;
+      if (frame === undefined) throw new Error('no checkpoint frame');
+      store.acknowledgeCheckpointFrame(frame);
+    }
+    vi.advanceTimersByTime(afterMs);
+    vi.setSystemTime(Date.now() + shiftMs);
+    if (kind === 'question') store.handleReviewInput('1', {});
+    else store.handleReviewInput('y', { ctrl: true });
+    await Promise.resolve();
+    return answers.length > 0;
+  }
+
+  it.each([
+    ['question', 'an hour forward', 3_600_000],
+    ['question', 'an hour back', -3_600_000],
+    ['question', 'a day forward', 86_400_000],
+    ['checkpoint', 'an hour forward', 3_600_000],
+    ['checkpoint', 'an hour back', -3_600_000],
+  ] as const)(
+    'the %s, the wall clock %s: a key inside its settle is still refused, and one after it still counts',
+    async (kind, _label, shift) => {
+      const settle = kind === 'question' ? QUESTION_SETTLE_MS : APPROVAL_SETTLE_MS;
+      const unshifted = [
+        await sheetOutcome(kind, settle - 100, 0),
+        await sheetOutcome(kind, settle + 100, 0),
+      ];
+      const shifted = [
+        await sheetOutcome(kind, settle - 100, shift),
+        await sheetOutcome(kind, settle + 100, shift),
+      ];
+      expect(unshifted).toEqual([false, true]);
+      expect(shifted, 'the same outcomes with the wall clock stepped').toEqual([false, true]);
+    },
+  );
+
   it('the clock’s own text follows the wall clock and is quantised to what it shows', () => {
     const since = Date.now();
     expect(waitClockFor(since, 'ticking', since + 41_000)).toBe('waiting 0:41');
@@ -298,5 +356,12 @@ describe('shifting the display clock changes no guard outcome (ADR-0147 §2, MVP
       waitClockFor(since, 'static', since + 3_600_000),
       'inline: the origin, not a count',
     ).toMatch(/^waiting since \d\d:\d\d$/u);
+    // The inline form reads the day against the host's `now`, not the process clock (S-3): seen the same day it is the time alone, seen two
+    // days later it names the day.
+    const earlier = since - 3 * 86_400_000;
+    expect(waitClockFor(earlier, 'static', earlier + 60_000)).toMatch(/^waiting since \d\d:\d\d$/u);
+    expect(waitClockFor(earlier, 'static', earlier + 2 * 86_400_000)).toMatch(
+      /^waiting since [A-Z][a-z]{2} \d{1,2} \d\d:\d\d$/u,
+    );
   });
 });

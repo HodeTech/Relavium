@@ -2,7 +2,7 @@ import type { LegendKey } from './legend.js';
 
 /**
  * The pin toggle of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §5, MVP-8 step 4): `p` on a Defined row pins or unpins its workflow, and `p` on a History row does the same for its run. PURE, like the
+ * §5, MVP-8 step 4): `[p]` in the `/workflows` popup pins or unpins its workflow, and `p` on a History row does the same for its run. PURE, like the
  * tabs it serves: the store is behind a {@link PinPort} (`home/pin-port.ts` over `createRunPinStore`), so the toggle is testable without a
  * database and a test of the whole wiring can hand it the real store.
  *
@@ -69,7 +69,7 @@ export interface PinsStored {
   readonly elsewhere: number;
 }
 
-/** What the Defined tab calls the pins it does not list: the workflow pins of other projects, and the run pins. */
+/** What the `/workflows` popup calls the pins it does not list: the workflow pins of other projects, and the run pins. */
 const ELSEWHERE_ON_DEFINED = 'in other projects or runs';
 /** What the History tab calls the pins it does not list: the workflow pins. */
 const ELSEWHERE_ON_HISTORY = 'of them workflows';
@@ -86,7 +86,7 @@ export function pinFullMessage(
 }
 
 /**
- * The refusal at the cap on the History tab: the same sentence the Defined tab gives, with the store's own counts (the total, and how many of
+ * The refusal at the cap on the History tab: the same sentence the `/workflows` popup gives, with the store's own counts (the total, and how many of
  * them are not runs, which this list does not hold). Without a count, or when the store cannot be read, the sentence without them.
  */
 export function runPinFullMessage(port: PinPort, label: string): string {
@@ -147,7 +147,7 @@ function unpinRowOf(port: PinPort, rowid: number | undefined): boolean {
   return rowid === undefined ? false : port.unpinRow(rowid);
 }
 
-/** A Defined row to toggle: its catalog slug when it has one, and the pin it carries when it is pinned. */
+/** A `/workflows` row to toggle: its catalog slug when it has one, and the pin it carries when it is pinned. */
 export interface WorkflowPinTarget {
   /** The row's sanitized label, for the sentence. */
   readonly label: string;

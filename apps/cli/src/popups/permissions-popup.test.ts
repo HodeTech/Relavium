@@ -14,17 +14,17 @@ import type {
   WithdrawAnswer,
 } from '../permissions/chat-permissions.js';
 import { legend } from '../render/tui/legend.js';
-import {
-  sheetNote,
-  initialPermissionsSheetState,
-  withdrawHint,
-} from '../render/tui/permissions-sheet.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { popupFrameLines, popupBody, popupText } from './frame-model.js';
 import { POPUP_NOTICE_MAX_COLUMNS, popupGeometry } from './geometry.js';
 import type { ChordRefusal } from './popup-host.js';
 import {
+  EMPTY_SESSION_TEXT,
+  emptyProjectText,
   entryOfRow,
+  escaped,
+  grantNote,
+  permissionEntries,
   permissionsContent,
   permissionsControls,
   permissionsSpec,
@@ -32,6 +32,7 @@ import {
   PERMISSIONS_STEP,
   WITHDRAW_CONTROL,
   WITHDRAW_NARROWS,
+  withdrawHint,
   withdrawLineContent,
   withdrawnAnnouncement,
   withdrawRefusedText,
@@ -84,10 +85,86 @@ const rowsOf = (content: ReturnType<typeof permissionsContent>) => {
   return content.rows;
 };
 
+describe('the words the lists are made of (the sheet’s tests, kept: review round 1, D-3)', () => {
+  const GIT = { argv: ['git', 'status'], text: 'git status', alsoRemembered: false };
+
+  it('the entries are the project rows then the session rows, the order they are drawn in; a store that cannot answer leaves only the session’s', () => {
+    expect(
+      permissionEntries(FULL).map((entry) => [
+        entry.kind,
+        entry.kind === 'project' ? entry.row.id : entry.row.text,
+      ]),
+    ).toEqual([
+      ['project', 'a'],
+      ['project', 'b'],
+      ['session', 'pnpm test --filter @acme/billing'],
+    ]);
+    expect(
+      permissionEntries({ project: { ok: false, text: 'nope' }, session: [GIT] }).map(
+        (entry) => entry.kind,
+      ),
+    ).toEqual(['session']);
+    expect(permissionEntries({ project: { ok: true, rows: [] }, session: undefined })).toEqual([]);
+  });
+
+  it('says what a grant is worth in each mode, never that plan runs anything, and the Home’s note names where a remembered command runs', () => {
+    // A session approval removes the card in every mode that asks, so the note says so; a remembered command is what only `auto` runs unasked.
+    expect(grantNote('ask')).toBe(
+      'Session-approved commands run unasked here; a remembered one still asks.',
+    );
+    expect(grantNote('accept-edits')).toBe(grantNote('ask'));
+    expect(grantNote('auto')).toBe(
+      'Auto runs approved commands; remembered ones ask again after a file write.',
+    );
+    expect(grantNote('plan')).toBe('Plan mode refuses every command; nothing here runs.');
+    expect(grantNote(undefined)).toBe(
+      'Only auto mode runs a remembered command unasked, in a chat in this project.',
+    );
+    for (const mode of ['ask', 'accept-edits', 'auto', 'plan', undefined] as const)
+      expect(displayWidth(grantNote(mode)), String(mode)).toBeLessThanOrEqual(78);
+  });
+
+  it('says what to do when nothing is remembered, by where the person is, and that nothing is approved for the session', () => {
+    expect(emptyProjectText('ask')).toBe(
+      'Nothing is remembered for this project. Press [Ctrl+O] on a command card, then Enter, to remember one.',
+    );
+    expect(emptyProjectText('auto')).toBe(emptyProjectText('ask'));
+    // `plan` has no cards, so it has nothing to point at.
+    expect(emptyProjectText('plan')).toBe('Nothing is remembered for this project.');
+    expect(emptyProjectText(undefined)).toBe(
+      'Nothing is remembered for this project. A command is remembered from its card in a chat ([Ctrl+O], then Enter).',
+    );
+    expect(EMPTY_SESSION_TEXT).toBe('Nothing is approved for this session.');
+  });
+
+  it('says what withdrawing a row does before it is done, for each kind of row, with the key named', () => {
+    const remembered = { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-20 09:12Z' };
+    expect(withdrawHint({ kind: 'project', row: remembered })).toBe(
+      'Press [d] to withdraw it: auto mode will ask about this command again.',
+    );
+    expect(withdrawHint({ kind: 'session', row: GIT })).toBe(
+      'Press [d] to withdraw it: this command will need approval again.',
+    );
+    expect(withdrawHint({ kind: 'session', row: { ...GIT, alsoRemembered: true } })).toBe(
+      'Press [d] to withdraw the session approval; the project still remembers it.',
+    );
+  });
+
+  it('shows a command as the approval card does: a `<`, a bidi override and a tab are visible tokens, never their effect', () => {
+    const override = String.fromCharCode(0x202e);
+    const shown = escaped(`echo a<b${override}c\td`);
+    expect(shown).toContain('<U+003C>');
+    expect(shown).toContain('<U+202E>');
+    expect(shown).toContain('<TAB>');
+    expect(shown).not.toContain(override);
+    expect(escaped('npm test')).toBe('npm test');
+  });
+});
+
 describe('the lists (the sheet’s content, in a popup)', () => {
   it('the note on what a grant is worth in the mode, then the project’s rows (dates in one column), then the session’s, as the frame draws them', () => {
     const rows = rowsOf(permissionsContent(FULL, 'ask'));
-    const note = sheetNote(initialPermissionsSheetState(FULL, 'chat', 'ask', 0));
+    const note = grantNote('ask');
     expect(
       rows
         .filter((row) => row.id.startsWith('note:'))

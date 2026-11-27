@@ -65,7 +65,7 @@ import { exitKey, legend, waitMark, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 import { clipLine, sheetRule } from './sheet-frame.js';
-import { wrapText } from './viewport.js';
+import { displayWidth, wrapText } from './viewport.js';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The controller.
@@ -87,6 +87,11 @@ export type RunCardPhase =
 /** One state of the card, as the view and the tests read it. Replaced, never mutated: its identity is the frame's. */
 export interface RunCardSnapshot {
   readonly runId: string;
+  /**
+   * The workflow the run belongs to, by its slug (what the Home's row named it), when the host knows it: the waiting card's title names it, as
+   * the frame `sheet-gate-home-80x24` draws it. Repository text: drawn sanitised. Constant for the card's life.
+   */
+  readonly workflow?: string | undefined;
   /** The gates still open, in the order the log raised them (a run's human gates, then its budget gates). */
   readonly gates: readonly RunCardGate[];
   /** Which of them the next chord answers. */
@@ -111,6 +116,8 @@ export type RunCardKeyOutcome =
 
 export interface RunCardDeps {
   readonly runId: string;
+  /** The run's workflow by its slug, for the title (see {@link RunCardSnapshot.workflow}). */
+  readonly workflow?: string | undefined;
   readonly gates: readonly RunCardGate[];
   /** Answer one gate: the run host's `resume`, with the native flow around it (see {@link createGateResumer}). */
   readonly resume: (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch>;
@@ -257,8 +264,13 @@ export function createRunCard(deps: RunCardDeps): RunCard {
   });
   const listeners = new Set<() => void>();
   let disposed = false;
-  let snapshot: RunCardSnapshot = Object.freeze({
+  // What names the card for its whole life: every snapshot carries it.
+  const identity = {
     runId: deps.runId,
+    ...(deps.workflow === undefined ? {} : { workflow: deps.workflow }),
+  };
+  let snapshot: RunCardSnapshot = Object.freeze({
+    ...identity,
     gates: deps.gates,
     cursor: 0,
     phase: deps.gates.length === 0 ? 'empty' : 'open',
@@ -268,8 +280,8 @@ export function createRunCard(deps: RunCardDeps): RunCard {
   guard.begin();
   lock.sync(); // the card's appearance starts its lockout: the legend says `(wait)` until it opens
 
-  const publish = (next: Omit<RunCardSnapshot, 'runId'>): void => {
-    snapshot = Object.freeze({ runId: deps.runId, ...next });
+  const publish = (next: Omit<RunCardSnapshot, 'runId' | 'workflow'>): void => {
+    snapshot = Object.freeze({ ...next, ...identity });
     lock.sync(); // a card that is no longer open holds no key
     for (const listener of listeners) listener();
   };
@@ -782,6 +794,7 @@ function keysFor(
   gate: RunCardGate | undefined,
   fits: boolean,
   locked: boolean,
+  width: number,
 ): string {
   switch (snapshot.phase) {
     case 'answering':
@@ -794,23 +807,33 @@ function keysFor(
       const pending = exitKey.leave('leaves it pending');
       // Below the minimum the Home delivers no answer key and no cursor key (only its way out is live), so the line offers none.
       if (!fits) return legend([], pending);
-      const items: LegendItem[] = [];
-      if (snapshot.gates.length > 1) items.push({ keys: '↑/↓', verb: 'choose a gate' });
-      // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
-      const budget = gate !== undefined && isBudgetGate(gate);
-      // The guarded keys say `(wait)` while the lockout holds them: an approval, and a human gate's rejection (a budget abort is never delayed).
-      if (gate?.accepts.includes('approved') === true)
-        items.push({ keys: 'Ctrl+Y', verb: 'Approve', role: 'ok', ...waitMark(locked) });
-      if (gate?.accepts.includes('rejected') === true)
-        items.push({
-          keys: 'Ctrl+N',
-          verb: budget ? 'Abort' : 'Reject',
-          role: 'danger',
-          ...waitMark(locked && !budget),
-        });
-      return legend(items, pending);
+      const items = answerItems(gate, locked);
+      // `↑/↓ choose a gate` is the one item that gives way when the line does not fit (a `(wait)` makes it longer): the answers and the way
+      // back are never the part a narrow line cuts (ADR-0145 §2, the fit rule unit 6 built).
+      const choose: LegendItem[] =
+        snapshot.gates.length > 1 ? [{ keys: '↑/↓', verb: 'choose a gate' }] : [];
+      const whole = legend([...choose, ...items], pending);
+      return displayWidth(whole) <= width ? whole : legend(items, pending);
     }
   }
+}
+
+/** The answer keys an open gate accepts, as the legend names them. */
+function answerItems(gate: RunCardGate | undefined, locked: boolean): readonly LegendItem[] {
+  const items: LegendItem[] = [];
+  // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
+  const budget = gate !== undefined && isBudgetGate(gate);
+  // The guarded keys say `(wait)` while the lockout holds them: an approval, and a human gate's rejection (a budget abort is never delayed).
+  if (gate?.accepts.includes('approved') === true)
+    items.push({ keys: 'Ctrl+Y', verb: 'Approve', role: 'ok', ...waitMark(locked) });
+  if (gate?.accepts.includes('rejected') === true)
+    items.push({
+      keys: 'Ctrl+N',
+      verb: budget ? 'Abort' : 'Reject',
+      role: 'danger',
+      ...waitMark(locked && !budget),
+    });
+  return items;
 }
 
 function gateKind(gate: RunCardGate): string {
@@ -925,6 +948,17 @@ function budgetRows(gate: RunBudgetGate, width: number): readonly RunCardRow[] {
 }
 
 /** The facts under the author's message: where the gate sits, its deadline, and what an answer does. */
+/**
+ * What the title row names beside the glyph: while the card waits, the workflow, because the rule above it already says `Waiting for you` and the
+ * clock `waiting 1h 07m` (the frame `sheet-gate-home-80x24`; unit 8 fix wave, S-11: the card said "waiting" three times); in every other state,
+ * and where the host does not know the workflow, the state's word.
+ */
+function titleName(state: RunCardState, snapshot: RunCardSnapshot, word: string): string {
+  return state === 'waiting' && snapshot.workflow !== undefined
+    ? sanitizeInline(snapshot.workflow)
+    : word;
+}
+
 function gateFacts(
   gate: RunCardGate,
   width: number,
@@ -998,7 +1032,7 @@ export function projectRunCard(
   const width = Math.max(1, Math.floor(input.columns) - 2);
   const keys: RunCardRow = {
     role: 'keys',
-    text: clipLine(keysFor(snapshot, gate, fits, input.locked === true), width),
+    text: clipLine(keysFor(snapshot, gate, fits, input.locked === true, width), width),
   };
   if (!fits) {
     return {
@@ -1030,7 +1064,10 @@ export function projectRunCard(
       : messageBlock(open, width, messageRoom(input.rows, 3 + facts.length + notice.length));
   const title: RunCardRow = {
     role: 'title',
-    text: clipLine(`${mark} ${word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`, width),
+    text: clipLine(
+      `${mark} ${titleName(state, snapshot, word)}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
+      width,
+    ),
   };
   const rows: readonly RunCardRow[] = [
     ruleRow(snapshot, input),

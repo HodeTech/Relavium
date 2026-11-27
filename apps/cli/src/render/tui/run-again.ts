@@ -5,10 +5,10 @@ import type { DefinedPort, DefinedRead } from '../../history/defined-model.js';
  * `r` on a run's detail ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §6, MVP-11 unit 7): which workflow of THIS directory's catalog a finished run's workflow is, or the one honest line that says why it is
  * none. PURE, and it asks for nothing but two facts the detail already read (where the run was started, as a closed word, and the slug it was
- * recorded under) and the catalog the Defined tab reads. It cannot read a run's inputs (ADR-0113: not shown, not reused): the form asks them
+ * recorded under) and the catalog the `/workflows` popup reads. It cannot read a run's inputs (ADR-0113: not shown, not reused): the form asks them
  * again, and nothing starts without the form's own confirmation, which is the launch flow's and not this module's.
  *
- * The answer is what the Defined tab's own `r` asks the Home for: the catalog entry's slug and the path it was listed from, so the launch
+ * The answer is what the `/workflows` popup's own `r` asks the Home for: the catalog entry's slug and the path it was listed from, so the launch
  * flow refuses a slug whose file is another one by the time of the press (`launchMoved`). Every refusal is a closed sentence: no stored text
  * (the run's slug, a project path, a parse error of the file) is ever in one.
  *
@@ -60,7 +60,7 @@ function refused(message: string): RunAgainDecision {
   return { kind: 'refused', message };
 }
 
-/** The index of the catalog entry that carries `slug`, or `undefined`: every entry is looked at, the ones the Defined tab's rows were cut before too. */
+/** The index of the catalog entry that carries `slug`, or `undefined`: every entry is looked at, the ones the `/workflows` popup's rows were cut before too. */
 function entryIndexOf(read: DefinedRead, slug: string): number | undefined {
   for (let index = 0; index < ENTRY_SCAN_MAX; index += 1) {
     const entry = read.slugOf(index);

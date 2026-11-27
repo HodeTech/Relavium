@@ -4,9 +4,8 @@ import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
 /**
  * The small, pure frame a sheet is drawn on ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
  * §5): the roles of its lines, the width a line may use, how a line is cut to it, how a label and a value share one row, and the window of a
- * long list that keeps the cursor on a real line. Nothing here knows what a sheet is about; `permissions-sheet.ts` is the first screen built
- * on it, and `legend.ts` is its other half. The older overlays (`/models`, `/effort`, the palette, the session picker) keep their own
- * footers and windows until the common-language increment moves them.
+ * long list that keeps the cursor on a real line. Nothing here knows what a sheet is about; the popup frames (`popups/frame-model.ts`) and the tab host's
+ * lines are built on it, and `legend.ts` is its other half.
  */
 
 /** The role of one drawn line, so a view colours by role and never by guessing from the text. */
@@ -128,10 +127,28 @@ export function titleRule(title: string, width: number): SheetLine {
 
 /**
  * The widest text the wait clock can be ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
- * §2): `waiting since HH:MM` (the inline form) is the longest of both forms, so the room a rule keeps for its clock is this many columns
- * whichever form it shows and whatever the time is. The label is clipped against it, so a tick never changes what the rule's label shows.
+ * §2): the inline form of a wait that began on an earlier day, `waiting since Nov 25 14:05`, is the longest of both forms (the ticking form is at
+ * most `waiting 23h 59m`, the inline one of the same day `waiting since 14:05`, of another year `waiting since Nov 25 2026`), so the room a rule
+ * keeps for its clock is this many columns whichever form it shows and whatever the time is. The label is clipped against it, so a tick never
+ * changes what the rule's label shows.
  */
-export const WAIT_CLOCK_COLUMNS = 19;
+export const WAIT_CLOCK_COLUMNS = 26;
+
+/** The months as the inline clock names them: fixed English words, the product's language, never the locale's. */
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
 
 /** `n` as two digits. */
 function twoDigits(n: number): string {
@@ -156,12 +173,30 @@ export function waitClockText(elapsedMs: number): string {
 
 /**
  * The inline renderer's wait clock (ADR-0147 §2): a static `waiting since HH:MM` in local time, because a live region rewritten every second is
- * hostile to assistive tools and costly over SSH. An origin that is not a time draws `waiting`.
+ * hostile to assistive tools and costly over SSH. A wait that began on an earlier day than `nowMs` says the day too (`waiting since Nov 25
+ * 14:05`), and one of an earlier year the day and the year (`waiting since Nov 25 2026`), so a gate parked yesterday never reads as today. An
+ * origin that is not a time draws `waiting`.
  */
-export function waitSinceText(sinceMs: number): string {
+export function waitSinceText(sinceMs: number, nowMs: number = Date.now()): string {
   const at = new Date(sinceMs);
   if (!Number.isFinite(at.getTime())) return 'waiting';
-  return `waiting since ${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}`;
+  const time = `${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}`;
+  const now = new Date(nowMs);
+  // A display clock stepped back below the origin (or one that is not a time) is no later day: the time alone.
+  if (!(nowMs > sinceMs) || sameLocalDay(at, now)) return `waiting since ${time}`;
+  const day = `${MONTHS[at.getMonth()] ?? ''} ${String(at.getDate())}`;
+  return at.getFullYear() === now.getFullYear()
+    ? `waiting since ${day} ${time}`
+    : `waiting since ${day} ${String(at.getFullYear())}`;
+}
+
+/** Whether `a` and `b` fall on the same calendar day in local time. */
+function sameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 /**

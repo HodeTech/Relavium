@@ -52,45 +52,89 @@ function waitWords(ms: number): string {
   return `${String(Math.max(1, Math.round(ms / 1000)))} s`;
 }
 
-/** How many edges lead to each node, and which nodes each node leads to (an edge that names a node the document does not declare is ignored). */
+/**
+ * How many edges lead to each node, and which nodes each node leads to, both by the node's position in the document (an edge that names a node
+ * the document does not declare is ignored). Linear in the nodes and the edges: the adjacency is appended in place.
+ */
 function edgeIndex(
   ids: readonly string[],
   edges: readonly { readonly from: string; readonly to: string }[],
-): { readonly waiting: Map<string, number>; readonly following: Map<string, string[]> } {
-  const known = new Set(ids);
-  const waiting = new Map<string, number>(ids.map((id) => [id, 0]));
-  const following = new Map<string, string[]>();
+): { readonly waiting: number[]; readonly following: number[][] } {
+  const position = new Map(ids.map((id, at) => [id, at] as const));
+  const waiting = ids.map(() => 0);
+  const following = ids.map((): number[] => []);
   for (const edge of edges) {
-    if (!known.has(edge.from) || !known.has(edge.to)) continue;
-    waiting.set(edge.to, (waiting.get(edge.to) ?? 0) + 1);
-    following.set(edge.from, [...(following.get(edge.from) ?? []), edge.to]);
+    const from = position.get(edge.from);
+    const to = position.get(edge.to);
+    if (from === undefined || to === undefined) continue;
+    waiting[to] = (waiting[to] ?? 0) + 1;
+    following[from]?.push(to);
   }
   return { waiting, following };
 }
 
+/** `value` into a binary min-heap of node positions: of the nodes that are ready, the next one a run reaches is the one the document declares first. */
+function pushPosition(heap: number[], value: number): void {
+  let at = heap.push(value) - 1;
+  while (at > 0) {
+    const parent = (at - 1) >> 1;
+    const above = heap[parent] ?? 0;
+    if (above <= value) break;
+    heap[at] = above;
+    at = parent;
+  }
+  heap[at] = value;
+}
+
+/** The smallest position of the heap, taken out of it; `undefined` when it is empty. */
+function popPosition(heap: number[]): number | undefined {
+  const top = heap[0];
+  const last = heap.pop();
+  if (top === undefined || last === undefined || heap.length === 0) return top;
+  let at = 0;
+  for (;;) {
+    const left = 2 * at + 1;
+    if (left >= heap.length) break;
+    const right = left + 1;
+    const child = right < heap.length && (heap[right] ?? 0) < (heap[left] ?? 0) ? right : left;
+    if ((heap[child] ?? 0) >= last) break;
+    heap[at] = heap[child] ?? last;
+    at = child;
+  }
+  heap[at] = last;
+  return top;
+}
+
 /**
- * The nodes in the order the edges lead to them: each node comes after the nodes that point at it (Kahn's algorithm, ties broken by the order
- * the document declares them in), and a node left over by a cycle (the parser refuses one, but this reads a parsed document, not a promise) follows
- * in declared order, so every node is listed exactly once.
+ * The first `limit` nodes in the order the edges lead to them: each node comes after the nodes that point at it (Kahn's algorithm, ties broken by
+ * the order the document declares them in), and a node left over by a cycle (the parser refuses one, but this reads a parsed document, not a
+ * promise) follows in declared order. The document is the workflow author's and may be enormous, so the work is `O((nodes + edges) log nodes)` and
+ * the walk stops as soon as `limit` nodes are placed.
  */
 function chainOrder(
-  nodes: readonly { readonly id: string }[],
+  ids: readonly string[],
   edges: readonly { readonly from: string; readonly to: string }[],
+  limit: number,
 ): readonly string[] {
-  const ids = nodes.map((node) => node.id);
   const { waiting, following } = edgeIndex(ids, edges);
-  const order: string[] = [];
-  let ready = ids.filter((id) => waiting.get(id) === 0);
-  for (let next = ready.shift(); next !== undefined; next = ready.shift()) {
+  const ready: number[] = [];
+  waiting.forEach((count, at) => {
+    if (count === 0) pushPosition(ready, at);
+  });
+  const order: number[] = [];
+  for (let next = popPosition(ready); next !== undefined; next = popPosition(ready)) {
     order.push(next);
-    for (const after of following.get(next) ?? []) {
-      const left = (waiting.get(after) ?? 0) - 1;
-      waiting.set(after, left);
-      if (left === 0) ready = [...ready, after].sort((a, b) => ids.indexOf(a) - ids.indexOf(b));
+    if (order.length >= limit) break;
+    for (const after of following[next] ?? []) {
+      const left = (waiting[after] ?? 0) - 1;
+      waiting[after] = left;
+      if (left === 0) pushPosition(ready, after);
     }
   }
   const placed = new Set(order);
-  return [...order, ...ids.filter((id) => !placed.has(id))];
+  for (let at = 0; at < ids.length && order.length < limit; at += 1)
+    if (!placed.has(at)) order.push(at);
+  return order.map((at) => ids[at] ?? '');
 }
 
 /** The note of a node: a human gate's kind and wait. */
@@ -106,7 +150,8 @@ export function buildWorkflowDetail(definition: WorkflowDefinition): WorkflowDet
   const { workflow } = definition;
   const declared = workflow.inputs ?? [];
   const byId = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const order = chainOrder(workflow.nodes, workflow.edges);
+  const ids = [...byId.keys()];
+  const order = chainOrder(ids, workflow.edges, WORKFLOW_DETAIL_ITEMS_MAX);
   return {
     description: workflow.description,
     inputs: declared.slice(0, WORKFLOW_DETAIL_ITEMS_MAX).map((input) => ({
@@ -115,11 +160,11 @@ export function buildWorkflowDetail(definition: WorkflowDefinition): WorkflowDet
       required: input.required === true && input.default === undefined,
     })),
     inputsMore: Math.max(0, declared.length - WORKFLOW_DETAIL_ITEMS_MAX),
-    nodes: order.slice(0, WORKFLOW_DETAIL_ITEMS_MAX).map((id) => {
+    nodes: order.map((id) => {
       const node = byId.get(id);
       const note = node === undefined ? undefined : noteOf(node);
       return { id, ...(note === undefined ? {} : { note }) };
     }),
-    nodesMore: Math.max(0, order.length - WORKFLOW_DETAIL_ITEMS_MAX),
+    nodesMore: Math.max(0, ids.length - order.length),
   };
 }

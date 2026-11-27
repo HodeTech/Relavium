@@ -652,7 +652,8 @@ describe('the Review tab (ADR-0132 §3)', () => {
   it('lists every question with its answer, the way it will be sent', () => {
     const view = projectQuestionCard(answered(), COLUMNS);
     const rows = view.body.map((row) => row.text);
-    expect(rows[0]).toBe('Review your answers  ● ● ● · [Review]');
+    // The title line as on the question pages (ADR-0147 §1; unit 8 fix wave, O-14): behind the gutter, the strip flush right.
+    expect(rows[0]).toBe(titleLine('Review your answers', '● ● ● · [Review]'));
     expect(rows[1]).toBe('● 1 Pick → alpha.ts');
     expect(rows[2]).toBe('● 2 Also → two');
     expect(rows[3]).toBe('● 3 Last → “my own”');

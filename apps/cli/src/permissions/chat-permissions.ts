@@ -35,7 +35,7 @@ export interface PermissionsDeps {
   /** This chat's session approvals; `undefined` on a surface with no chat (the bare Home, a bare `relavium permissions`). */
   readonly session: SessionCommandApprovals | undefined;
   /**
-   * The repository's `[chat]` allowlist, read now, for a surface that lists it (the Home's Permissions tab, ADR-0140 §3); `undefined`
+   * The repository's `[chat]` allowlist, read now, for a surface that lists it (the Home's `/permissions` popup, ADR-0140 §3); `undefined`
    * on one that does not (a chat's own sheet). It may throw: the snapshot then says the allowlist could not be read.
    */
   readonly allowlist?: (() => RepoAllowlistSource) | undefined;
@@ -95,7 +95,7 @@ export type ProjectPermissions =
   | { readonly ok: false; readonly text: string };
 
 /**
- * The repository's `[chat]` allowlist as the Permissions tab lists it, read-only and bounded: at most {@link MAX_ALLOWLIST_ENTRIES} entries
+ * The repository's `[chat]` allowlist as the `/permissions` popup lists it, read-only and bounded: at most {@link MAX_ALLOWLIST_ENTRIES} entries
  * of each list are kept, each masked by the shared scrubber and THEN cut to {@link MAX_ROW_TEXT} characters (a secret that straddled the
  * cut would otherwise be left as a fragment no pattern matches), and `omitted` counts what was not kept. It pre-approves nothing in a
  * chat ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1, amended 2026-11-21): the

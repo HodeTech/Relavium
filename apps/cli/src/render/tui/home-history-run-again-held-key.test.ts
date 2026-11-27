@@ -219,7 +219,8 @@ async function mount(
     /** `r` pressed, and the form's first text field up for it. */
     pressR: async (): Promise<void> => {
       clock = PRESSED_AT;
-      if (options.via === 'popup') popups[0]?.port.workflows?.run('nightly', 'nightly.yaml');
+      if (options.via === 'popup')
+        popups[0]?.port.workflows?.run('nightly', 'nightly.yaml', 'detail');
       else controller.handleKey('r', {});
       const first = options.card === true ? 'chord' : options.secret === true ? 'password' : 'text';
       for (let turn = 0; turn < 50 && channel.ui.getSnapshot().kind !== first; turn += 1)
@@ -296,9 +297,11 @@ describe('a `r` held down in the /workflows popup types nothing into the form’
       it(`first repeat after ${String(initial)} ms, then every ${String(interval)} ms: the popup closed itself on the first press, so the field is empty once the key is known to be held`, async () => {
         const m = await mount({ via: 'popup' });
         await m.pressR();
-        expect(m.open).toHaveBeenCalledWith('nightly', 'nightly.yaml', {
-          opener: { origin: 'workflows' },
-        });
+        expect(m.open).toHaveBeenCalledWith(
+          'nightly',
+          'nightly.yaml',
+          expect.objectContaining({ opener: { origin: 'workflows' } }),
+        );
         expect(m.snapshot().popup?.origin, 'the `/run` popup is stacked from /workflows').toBe(
           'workflows',
         );
@@ -525,11 +528,13 @@ describe('the key that opened the form is left on the Home’s key history, and 
     expect(refused.popups.map((request) => request.kind)).toEqual(['workflows']);
     // The popup closed itself and handed the Home its request; the key that made it is the popup's `[r]`, at this moment.
     refused.at(PRESSED_AT);
-    refused.popups[0]?.port.workflows?.run('nightly', 'nightly.yaml');
+    refused.popups[0]?.port.workflows?.run('nightly', 'nightly.yaml', 'detail');
     expect(refused.chordHistory.openedBy).toEqual({ input: 'r', at: PRESSED_AT });
-    expect(refused.open).toHaveBeenCalledWith('nightly', 'nightly.yaml', {
-      opener: { origin: 'workflows' },
-    });
+    expect(refused.open).toHaveBeenCalledWith(
+      'nightly',
+      'nightly.yaml',
+      expect.objectContaining({ opener: { origin: 'workflows' } }),
+    );
   });
 });
 

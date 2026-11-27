@@ -1736,7 +1736,7 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     expect(approval.nav.join('\n'), 'and not in the legend').not.toContain('[b]');
 
     const details = fullChrome({ ...base, kind: 'details', title: 'Details', keys: undefined });
-    expect(details.note).toBe('[b] back to the list · viewing never executes a tool · Esc close');
+    expect(details.note).toBe('[b] back to the list · viewing never executes a tool · Esc back');
     expect(details.note).toBe(DETAILS_CLOSE_NOTE);
     expect(details.answers).toEqual([]);
     expect(details.note, 'the way back sits with the close note').toContain('[b] back to the list');

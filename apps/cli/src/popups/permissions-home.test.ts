@@ -13,7 +13,12 @@ import type {
   PermissionsSnapshot,
   WithdrawAnswer,
 } from '../permissions/chat-permissions.js';
-import { PERMISSIONS_STEP, WITHDRAW_CONTROL } from './permissions-popup.js';
+import type { RepoAllowlist } from '../permissions/chat-permissions.js';
+import { displayWidth } from '../render/tui/viewport.js';
+import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
+import type { PopupContent } from './frame-model.js';
+import { legend } from '../render/tui/legend.js';
+import { PERMISSIONS_STEP, WITHDRAW_CONTROL, homePermissionsContent } from './permissions-popup.js';
 import { currentStep, popupLegend, visibleRows } from './popup-reducer.js';
 import { openSettingsPopup } from './settings-session.js';
 import { DOWN, ENTER, ESC, settingsRig } from './settings.test-support.js';
@@ -147,23 +152,64 @@ describe('what the Home’s popup lists', () => {
     if (frame === undefined) throw new Error('open');
     expect(currentStep(frame).spec.controls).toEqual([WITHDRAW_CONTROL]);
   });
+});
 
-  it('a command named like a heading, a key or an escape is drawn as text, in the list and on the line', () => {
-    const esc = String.fromCharCode(27);
+describe('R1-M proposed: what is stored cannot forge the page', () => {
+  /** Every string the list step draws, raw (never JSON-escaped: an escape character must be seen as the character it is). */
+  const drawn = (p: ReturnType<typeof opened>): string => {
+    const content = p.content();
+    if (content?.kind !== 'list') throw new Error('a list');
+    return content.rows.map((row) => `${row.label}\n${row.detail ?? ''}`).join('\n');
+  };
+  const ESCAPE = String.fromCharCode(27);
+  const BIDI = String.fromCharCode(0x202e);
+
+  it('a remembered command and a repository allowlist entry carrying an escape, a bidi override, a fake marker or a fake key are drawn as text', () => {
     const hostile: PermissionsSnapshot = {
       project: {
         ok: true,
         rows: [
-          { id: 'h', label: `${esc}[31mred ▼ 9 more [Enter] x`, remembered: '2026-11-20 09:12Z' },
+          {
+            id: 'h',
+            label: `${ESCAPE}[31mred ▼ 9 more [Enter] x`,
+            remembered: '2026-11-20 09:12Z',
+          },
         ],
       },
       session: undefined,
+      allowlist: {
+        ok: true,
+        commands: [`${ESCAPE}[31mgit ${BIDI}status ▼ 9 more [Enter]`],
+        globs: [`a${BIDI}b${ESCAPE}]0;title`],
+        omitted: 0,
+      },
     };
-    const { port } = fakeProjectPort(hostile);
-    const p = opened(port);
-    expect(p.words().includes(esc)).toBe(false);
-    p.arm();
-    expect(p.words().includes(esc)).toBe(false);
+    const p = opened(fakeProjectPort(hostile).port);
+    const text = drawn(p);
+    expect(text).toContain('This repository · allowlist, read-only');
+    expect(text.includes(ESCAPE), 'no escape character reaches the terminal').toBe(false);
+    expect(text.includes(BIDI), 'no bidi override').toBe(false);
+  });
+});
+
+describe('R1-M proposed: the repository’s allowlist is bounded', () => {
+  it('draws at most four entry rows, the last of them the count of the rest, and counts what the snapshot left out too', () => {
+    const many: PermissionsSnapshot = {
+      ...ROWS,
+      allowlist: {
+        ok: true,
+        commands: ['c1', 'c2', 'c3', 'c4', 'c5'],
+        globs: ['g1', 'g2'],
+        omitted: 3,
+      },
+    };
+    const p = opened(fakeProjectPort(many).port);
+    const content = p.content();
+    if (content?.kind !== 'list') throw new Error('a list');
+    const entries = content.rows.filter((row) => row.id.startsWith('allowlist-entry:'));
+    expect(entries).toHaveLength(3);
+    const more = content.rows.find((row) => row.id === 'allowlist-more');
+    expect(more?.label).toBe('… 7 more in the config');
   });
 });
 
@@ -304,6 +350,50 @@ describe('a withdrawal on the Home: [d], then Enter through the host’s guard',
   });
 });
 
+describe('the withdrawal line says `(wait)` while its dwell holds (review round 1, O-7)', () => {
+  /** The legend the slot would draw for the frame on screen, judged with the host's lock now. */
+  const legendNow = (p: ReturnType<typeof opened>): string => {
+    const frame = p.host.getSnapshot().frame;
+    if (frame === undefined) throw new Error('open');
+    const { items, exit } = popupLegend(frame, 17, 66, p.host.lock.read());
+    return legend(items, exit);
+  };
+
+  it('`(wait)` marks the answer from the frame’s acknowledgement for 800 ms, and the mark goes when the answer counts', () => {
+    const { port, withdraw } = fakeProjectPort();
+    const p = opened(port);
+    p.arm();
+    expect(p.host.lock.read(), 'locked from the acknowledged frame').toBe(true);
+    expect(legendNow(p)).toContain('Enter withdraw (wait)');
+    p.clock.advance(799);
+    expect(p.host.lock.read()).toBe(true);
+    p.clock.advance(2);
+    expect(p.host.lock.read(), 'the dwell has passed').toBe(false);
+    expect(legendNow(p)).not.toContain('(wait)');
+    expect(legendNow(p)).toContain('Enter withdraw');
+    p.press('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+  });
+
+  it('a press inside the mark withdraws nothing, and the popup says it was too soon: what the legend said', () => {
+    const { port, withdraw } = fakeProjectPort();
+    const p = opened(port);
+    p.arm();
+    p.clock.advance(400);
+    expect(legendNow(p)).toContain('(wait)');
+    p.press('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(p.notice()).toBe('Nothing withdrawn: too soon. [d] asks again.');
+  });
+
+  it('the list step is never marked: only the line that is answered by `Enter` holds its answer', () => {
+    const { port } = fakeProjectPort();
+    const p = opened(port);
+    expect(p.host.lock.read()).toBe(false);
+    expect(legendNow(p)).not.toContain('(wait)');
+  });
+});
+
 describe('closing', () => {
   it('tells the Home however the popup closed (a bare `relavium permissions` ends with it), once', () => {
     const { port } = fakeProjectPort();
@@ -316,3 +406,191 @@ describe('closing', () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 });
+
+/** Every string a step draws, raw: `JSON.stringify` would show an escape character as the text `\u001b`, which no assertion on the character could see. */
+const rawText = (content: PopupContent | undefined): string => {
+  if (content === undefined) return '';
+  if (content.kind === 'list')
+    return content.rows
+      .map((row) => `${row.label}\n${row.detail ?? ''}\n${row.effect ?? ''}`)
+      .join('\n');
+  return content.kind === 'report' ? content.lines.join('\n') : '';
+};
+
+describe('what is stored is drawn as the Home draws every stored word (review round 1, P-5/X-3/M-4)', () => {
+  const ESC = String.fromCharCode(27);
+  const hostileProject = (
+    over: Partial<{ label: string; remembered: string }>,
+  ): PermissionsSnapshot => ({
+    project: {
+      ok: true,
+      rows: [{ id: 'h', label: 'npm, 1 argument', remembered: '2026-11-20 09:12Z', ...over }],
+    },
+    session: undefined,
+  });
+
+  it('a remembered command named like an escape, a marker or a key is plain text in the list and on the withdrawal line, and in the announcement', () => {
+    const label = `${ESC}[31mred ▼ 9 more ▲ 3 more [Enter] x`;
+    const p = opened(fakeProjectPort(hostileProject({ label })).port);
+    const listed = rawText(p.content());
+    expect(listed.includes(ESC), 'no escape character in the list').toBe(false);
+    expect(listed).not.toMatch(/[▲▼]/u);
+    expect(listed).not.toContain('[Enter]');
+    p.arm();
+    const line = rawText(p.content());
+    expect(line.includes(ESC), 'no escape character on the line').toBe(false);
+    expect(line).not.toMatch(/[▲▼]/u);
+    expect(line).not.toContain('[Enter]');
+    p.clock.advance(900);
+    p.press('', ENTER);
+    expect(p.announced.join('\n')).not.toMatch(/[▲▼]/u);
+    expect(p.announced.join('\n')).not.toContain('[Enter]');
+  });
+
+  it('a date the store wrote is a stored word too: it cannot forge a marker in the row’s detail, or on the line', () => {
+    const p = opened(fakeProjectPort(hostileProject({ remembered: '▼ 9 more [Enter]' })).port);
+    const content = p.content();
+    if (content?.kind !== 'list') throw new Error('a list');
+    const row = content.rows.find((entry) => entry.id === 'entry:0');
+    expect(row?.detail).not.toMatch(/[▲▼]/u);
+    expect(row?.detail).not.toContain('[Enter]');
+    p.arm();
+    expect(rawText(p.content())).not.toMatch(/[▲▼]/u);
+    expect(rawText(p.content())).not.toContain('[Enter]');
+  });
+
+  it('an allowlist entry that forges a marker or a key hint is plain text', () => {
+    const snapshot: PermissionsSnapshot = {
+      ...ROWS,
+      allowlist: {
+        ok: true,
+        commands: ['▼ 9 more', '[Enter] details'],
+        globs: ['▲ 3 more *'],
+        omitted: 0,
+      },
+    };
+    const text = rawText(opened(fakeProjectPort(snapshot).port).content());
+    const entries = text.split('\n').filter((line) => /^(command|pattern) /u.test(line));
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) {
+      expect(entry).not.toMatch(/[▲▼]/u);
+      expect(entry).not.toContain('[Enter]');
+    }
+  });
+});
+
+describe('the repository’s allowlist, read-only under the list (the tab’s tests, ported)', () => {
+  /** The allowlist section as drawn lines: the Home's content of a snapshot whose project list is `count` remembered commands. */
+  const sectionOf = (allowlist: RepoAllowlist | undefined, count = 1): string[] => {
+    const rows = Array.from({ length: count }, (_, at) => ({
+      id: `g${String(at)}`,
+      label: `tool${String(at)}, 1 argument`,
+      remembered: '2026-11-20 09:12Z',
+    }));
+    const snapshot: PermissionsSnapshot = {
+      project: { ok: true, rows },
+      session: undefined,
+      ...(allowlist === undefined ? {} : { allowlist }),
+    };
+    return rawText(homePermissionsContent(snapshot)).split('\n');
+  };
+
+  it('is absent where the surface lists none (a snapshot without it draws nothing of it)', () => {
+    expect(sectionOf(undefined).join('\n')).not.toContain('allowlist');
+  });
+
+  it('lists the entries and the patterns, each under its own word, with the counts, and says what the list is worth', () => {
+    const lines = sectionOf({
+      ok: true,
+      commands: ['git status', 'npm test'],
+      globs: ['git *'],
+      omitted: 0,
+    });
+    expect(lines).toContain('This repository · allowlist, read-only (2 commands, 1 pattern)');
+    expect(lines).toContain('A listed command still asks in a chat; its card only says so.');
+    expect(lines).toContain('command git status');
+    expect(lines).toContain('command npm test');
+    expect(lines).toContain('pattern git *');
+    expect(lines.some((line) => line.includes('more in the config'))).toBe(false);
+  });
+
+  it('masks an entry that is shaped like a key, command and pattern alike: the repository’s file can hold a pasted token', () => {
+    const secret = `sk-ant-api03-${'K'.repeat(40)}`;
+    const text = sectionOf({
+      ok: true,
+      commands: [`deploy --token ${secret}`],
+      globs: [`curl -H "x-api-key: ${secret}" *`],
+      omitted: 0,
+    }).join('\n');
+    expect(text).not.toContain('sk-ant-api03');
+    expect(text).not.toContain('KKKKKKKK');
+    expect(text).toContain('command deploy --token ');
+    // The Home's row scrub folds a bracketed word to parentheses (a `[Enter]` is no key hint here), and the mask is bracketed too.
+    expect(text).toContain('(REDACTED)');
+  });
+
+  it('says nothing is listed for an empty allowlist, and says so for one that could not be read', () => {
+    const empty = sectionOf({ ok: true, commands: [], globs: [], omitted: 0 });
+    expect(empty).toContain('This repository · allowlist, read-only (0 commands, 0 patterns)');
+    expect(empty).toContain('Nothing is listed in the repository’s [chat] config.');
+    const unreadable = sectionOf({
+      ok: false,
+      text: 'The repository’s [chat] allowlist could not be read.',
+    });
+    expect(unreadable).toContain('This repository · allowlist, read-only');
+    expect(unreadable).toContain('The repository’s [chat] allowlist could not be read.');
+  });
+
+  it('draws at most four entry rows, the last of them the count of the rest, and counts what the snapshot left out too', () => {
+    const lines = sectionOf({
+      ok: true,
+      commands: ['a', 'b', 'c', 'd', 'e'],
+      globs: ['g1'],
+      omitted: 7,
+    });
+    expect(lines.filter((line) => /^(command|pattern) /u.test(line))).toEqual([
+      'command a',
+      'command b',
+      'command c',
+    ]);
+    expect(lines).toContain('… 10 more in the config');
+  });
+
+  it('shows a control or an override character as a visible token, never as the character: the entries are the repository’s words', () => {
+    const joined = sectionOf({
+      ok: true,
+      commands: [`git${String.fromCharCode(0x202e)}push`, `rm${String.fromCharCode(9)}x`],
+      globs: [],
+      omitted: 0,
+    }).join('\n');
+    expect(joined).not.toContain(String.fromCharCode(0x202e));
+    expect(joined).not.toContain(String.fromCharCode(9));
+    expect(joined).toContain('<U+202E>');
+    expect(joined).toContain('<TAB>');
+  });
+
+  it('clips a long entry to the popup’s width instead of wrapping it', () => {
+    const snapshot: PermissionsSnapshot = {
+      ...ROWS,
+      allowlist: { ok: true, commands: ['x'.repeat(500)], globs: [], omitted: 0 },
+    };
+    const frame = onTheHome(snapshot);
+    const drawn = popupBoxOf(frame, {
+      renderer: 'alt',
+      color: false,
+      size: { cols: 80, rows: 24 },
+    });
+    const entry = drawn.rows.find((row) => row.trim().startsWith('command x'));
+    expect(entry).toBeDefined();
+    expect(entry?.trim().endsWith('…') || entry?.trim().endsWith('...')).toBe(true);
+    for (const row of drawn.rows) expect(displayWidth(row)).toBeLessThanOrEqual(drawn.width);
+  });
+});
+
+/** The popup frame the Home opens over `snapshot` (its first step landed), for what is drawn rather than what is modelled. */
+function onTheHome(snapshot: PermissionsSnapshot) {
+  const p = opened(fakeProjectPort(snapshot).port);
+  const frame = p.host.getSnapshot().frame;
+  if (frame === undefined) throw new Error('the popup is open');
+  return frame;
+}

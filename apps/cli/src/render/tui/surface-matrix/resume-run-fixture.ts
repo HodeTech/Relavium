@@ -124,7 +124,7 @@ async function openResumeRestore(m: HomeMount): Promise<void> {
 
 // ---- /run ---------------------------------------------------------------------------------------------------------------------------
 
-/** A workflow with no input whose agent can write files: the confirmation is the first prompt (the Defined tab's `r`), with the host's passage. */
+/** A workflow with no input whose agent can write files: the confirmation is the first prompt (the `/workflows` popup's `[r]`), with the host's passage. */
 const RELEASE = `schema_version: '1.0'
 workflow:
   id: release-notes
@@ -183,15 +183,18 @@ const CATALOG: LaunchCatalog = {
   }),
 };
 
-/** The `/run` popup opened at a workflow (the Defined tab's `r`), over a host that is never asked: the matrix answers nothing. */
-function openRun(m: HomeMount, slug: string): void {
+/**
+ * The `/run` popup opened at a workflow, over a host that is never asked: the matrix answers nothing. With `stacked` it is opened the way the
+ * `/workflows` popup's `[r]` opens it (`opener: workflows`): the frame then says it came from `/workflows` and `Esc` at its first step goes back there.
+ */
+function openRun(m: HomeMount, slug: string, stacked = false): void {
   recordBaseline(m);
   const launch = createRunLaunch({
     flow: channelOf(m).flow,
     host: { start: () => Promise.reject(new Error('the matrix starts no run')) },
     catalog: CATALOG,
   });
-  leaveOpen(launch.open(slug));
+  leaveOpen(launch.open(slug, undefined, stacked ? { opener: { origin: 'workflows' } } : {}));
 }
 
 /** The pasted key the secret surface's resize clears (it never reaches a frame: the field is drawn as bullets, then emptied). */
@@ -246,9 +249,30 @@ export const RESUME_RUN_SURFACES: readonly HomeSurface[] = [
     popup: liveBox,
     setup: NATIVE,
     notes:
-      'the body behind the popup: the empty, keyed landing; the launch is opened at its workflow, as the Defined tab’s r opens it',
+      'the body behind the popup: the empty, keyed landing; the launch is opened at its workflow, as the `/workflows` popup’s `[r]` opens it',
     open: async (m) => {
       openRun(m, 'release-notes');
+      await settled(m, (snapshot) => snapshot.kind === 'chord');
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.run-launch-stacked',
+    title: 'The /run popup started from /workflows: its confirmation says where it came from',
+    exitKey: 'Esc',
+    landmark: 'from /workflows',
+    legendRow: [
+      '[Ctrl+Y] Start it (wait) · Esc back · [Ctrl+C] denies',
+      '[Ctrl+Y] Start it (wait) · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies',
+      '[Ctrl+Y] Start it · [Ctrl+N] Cancel · Esc back · [Ctrl+C] denies',
+    ],
+    belowFloor: /too small for this popup/iu,
+    popup: liveBox,
+    setup: NATIVE,
+    notes:
+      'the body behind the popup: the empty, keyed landing; the launch is opened as the `/workflows` popup’s `[r]` opens it (`opener: workflows`), so its frame names `/workflows` as where it came from',
+    open: async (m) => {
+      openRun(m, 'release-notes', true);
       await settled(m, (snapshot) => snapshot.kind === 'chord');
     },
   },

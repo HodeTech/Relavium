@@ -16,6 +16,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -121,7 +122,7 @@ function mount() {
       timer.run();
     }
   };
-  return { store, input, frame, open, answers, advance };
+  return { store, input, frame, open, answers, advance, output };
 }
 
 describe('the approval card says (wait) while the lockout holds its grants', () => {
@@ -238,5 +239,144 @@ describe('the fit rule: the marks never push a row past its width', () => {
     expect(cardKeyLegend({ ...command, locked: true, columns: 120 })[0].text).toBe(
       '[Ctrl+Y] Allow once (wait) · [Ctrl+G] Allow this session (wait) · [Ctrl+O] Allow + remember (wait)',
     );
+  });
+});
+
+describe('R1-M proposed: the host hands the fit rule the card’s own width', () => {
+  it('a command card with every grant, held by the lockout, at 80 columns: Remember is dropped from the grants row and no row is cut', async () => {
+    const m = mount();
+    await pause(40);
+    m.open('a');
+    await vi.waitFor(() => expect(m.frame()).toContain('[Ctrl+Y] Allow · [Ctrl+G]'));
+    await pause(60);
+    m.advance(1_000);
+    m.input.push(CTRL_Y);
+    await vi.waitFor(() => expect(m.answers).toHaveLength(1));
+    const argv = ['git', 'status'];
+    const facts: CommandCardFacts = {
+      standing: 'not-pre-approved',
+      runsCode: false,
+      protectedPath: false,
+      cwd: '/work/project',
+      offers: { session: true, remember: true },
+    };
+    void m.store
+      .requestApproval(
+        {
+          toolId: 'run_command',
+          action: 'process',
+          preview: { command: 'git status' },
+          unredactedPreview: { command: 'git status' },
+          argv,
+          commandAdmitted: false,
+        },
+        true,
+        undefined,
+        {
+          callId: 'cmd',
+          preview: {
+            kind: 'operation',
+            target: 'git status',
+            fields: argv.map((value) => ({ name: '', value })),
+          },
+        },
+        facts,
+      )
+      .catch(() => undefined);
+    await vi.waitFor(() => expect(m.frame()).toContain('Allow once (wait)'));
+    const grants =
+      m
+        .frame()
+        .split('\n')
+        .find((row) => row.includes('Allow once (wait)')) ?? '';
+    expect(grants.trimEnd()).toBe(
+      '[Ctrl+Y] Allow once (wait) · [Ctrl+G] Allow this session (wait)',
+    );
+    expect(m.frame()).not.toContain('Allow + remember');
+  });
+});
+
+describe('R1-M proposed: the inspection popup’s grants row says (wait) too', () => {
+  it('a full view opened while the lockout holds says `[Ctrl+Y] Allow (wait)` and flips with the card', async () => {
+    const m = mount();
+    await pause(40);
+    m.open('a');
+    await vi.waitFor(() => expect(m.frame()).toContain('[Ctrl+Y] Allow · [Ctrl+G]'));
+    await pause(60);
+    m.advance(1_000);
+    m.input.push(CTRL_Y);
+    await vi.waitFor(() => expect(m.answers).toHaveLength(1));
+    m.open('b');
+    await vi.waitFor(() => expect(m.frame()).toContain('[Ctrl+Y] Allow (wait)'));
+    await pause(60);
+    m.input.push('v');
+    const popup = (): string =>
+      m.output.frames
+        .map((chunk) => chunk.replace(CONTROL, ''))
+        .filter((f) => f.includes('Full diff'))
+        .at(-1) ?? '';
+    await vi.waitFor(() => expect(popup()).toContain('Full diff'));
+    await pause(60);
+    expect(popup()).toContain('[Ctrl+Y] Allow (wait)');
+    m.advance(APPROVAL_LOCKOUT_MS);
+    await vi.waitFor(() => expect(popup()).not.toContain('(wait)'));
+  });
+});
+
+describe('the inspection popup hands the fit rule its own width (unit 8 fix wave, M-7: B14)', () => {
+  it('the full view of a command card held by the lockout, at 80 columns: Remember gives way in its grants row too, and no row is cut', async () => {
+    const m = mount();
+    await pause(40);
+    m.open('a');
+    await vi.waitFor(() => expect(m.frame()).toContain('[Ctrl+Y] Allow · [Ctrl+G]'));
+    await pause(60);
+    m.advance(1_000);
+    m.input.push(CTRL_Y);
+    await vi.waitFor(() => expect(m.answers).toHaveLength(1));
+    const argv = ['git', 'status'];
+    void m.store
+      .requestApproval(
+        {
+          toolId: 'run_command',
+          action: 'process',
+          preview: { command: 'git status' },
+          unredactedPreview: { command: 'git status' },
+          argv,
+          commandAdmitted: false,
+        },
+        true,
+        undefined,
+        {
+          callId: 'cmd',
+          preview: {
+            kind: 'operation',
+            target: 'git status',
+            fields: argv.map((value) => ({ name: '', value })),
+          },
+        },
+        {
+          standing: 'not-pre-approved',
+          runsCode: false,
+          protectedPath: false,
+          cwd: '/work/project',
+          offers: { session: true, remember: true },
+        },
+      )
+      .catch(() => undefined);
+    await vi.waitFor(() => expect(m.frame()).toContain('Allow once (wait)'));
+    await pause(60);
+    m.input.push('v');
+    const popup = (): readonly string[] =>
+      (
+        m.output.frames
+          .map((chunk) => chunk.replace(CONTROL, ''))
+          .filter((f) => f.includes('Full view'))
+          .at(-1) ?? ''
+      ).split('\n');
+    await vi.waitFor(() => expect(popup().join('\n')).toContain('Allow once (wait)'));
+    const grants = popup().find((row) => row.includes('Allow once (wait)')) ?? '';
+    expect(grants.trim()).toBe('[Ctrl+Y] Allow once (wait) · [Ctrl+G] Allow this session (wait)');
+    expect(popup().join('\n')).not.toContain('Allow + remember');
+    expect(popup().join('\n')).not.toContain('…');
   });
 });

@@ -8,6 +8,7 @@ import { CARDS_RECORDERS } from './recorders/cards.js';
 import { CHAT_MISC_RECORDERS } from './recorders/chat-misc.js';
 import { HOME_HOST_RECORDERS } from './recorders/home-host.js';
 import { HOME_RUN_RECORDERS } from './recorders/home-run.js';
+import { HOME_POPUPS_RECORDERS } from './recorders/home-popups.js';
 import { INPUT_RECORDERS } from './recorders/inputs.js';
 import { PROMPTS_RECORDERS } from './recorders/prompts.js';
 import { SHEETS_RECORDERS } from './recorders/sheets.js';
@@ -29,6 +30,7 @@ export const RECORDERS: Readonly<Record<string, Recorder>> = {
   ...PROMPTS_RECORDERS,
   ...HOME_HOST_RECORDERS,
   ...POPUP_RECORDERS,
+  ...HOME_POPUPS_RECORDERS,
   ...RESUME_RUN_RECORDERS,
   ...PROJECT_FLOWS_RECORDERS,
   ...PROVIDERS_FLOW_RECORDERS,

@@ -616,7 +616,7 @@ function workflowLabel(name: string | undefined, id: string): string {
  * Text a project, a file or a person wrote, as the popup may draw it: the full scrub of a Home flow (`flowText`: secrets scrubbed, control,
  * bidirectional and invisible characters removed, compatibility forms folded, host glyphs blanked, an answer chord replaced, key tokens and the
  * legend separator made inert), its line and paragraph separators folded to a space (the popup's body folds them as it draws, and a word that
- * reaches a notification or the Defined tab's row is one row too), then cut to `limit`.
+ * reaches a notification or a row of the `/workflows` popup is one row too), then cut to `limit`.
  */
 function bounded(text: string, limit: number): string {
   return cut(flowLine(text), limit);
@@ -1030,6 +1030,11 @@ export interface LaunchOpener {
 /** What a caller may say about how a launch is opened. */
 export interface LaunchOptions {
   readonly opener?: LaunchOpener | undefined;
+  /**
+   * Told once when the person leaves the flow with `Ctrl+C` (or the flow is aborted from outside): the whole stack closes then, the popup this
+   * launch came from with it. A No (`Ctrl+N`), a step back (`Esc`) and a refusal do not call it: the popup it came from comes back for them.
+   */
+  readonly onLeave?: (() => void) | undefined;
 }
 
 export interface RunLaunch {
@@ -1038,7 +1043,7 @@ export interface RunLaunch {
    * found before the popup opened), or `''` when the popup has already said it (a start that failed after it opened is told on the popup's last
    * step, which the person has closed by then). A second call while one is open joins it. It rejects only for a fault no refusal describes.
    *
-   * With a `slug` the picker is skipped once and the form starts for that workflow (the Defined tab's `r`), through the same
+   * With a `slug` the picker is skipped once and the form starts for that workflow (the `/workflows` popup's `[r]`), through the same
    * machine, validation, confirmation (`Ctrl+Y`) and single-start latch. The slug is only COMPARED with the slugs of the valid
    * catalog entries: it is never a path, never read from disk, and one that matches no entry opens nothing ({@link launchNotOffered}).
    * `Esc` at the first field steps back to the picker, which then opens on that workflow. With the catalog `path` the row was listed
@@ -1063,13 +1068,22 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
     : `A run is already executing (${shortRunId(runId)}). ${keyToken('Enter')} on its row in the strip opens it.`;
 }
 
+/** What the notification of a run that started begins with: the launch's own word, never a refusal's (`Not started. …`). */
+export const LAUNCH_STARTED = 'Started ';
+
+/** Whether `notice` is the one a run that started says ({@link startedNotice}): the run exists, whether it is still executing or not. */
+export const launchSaysStarted = (notice: string): boolean => notice.startsWith(LAUNCH_STARTED);
+
 /**
  * What a started run says in its one notification: the workflow and the run's first characters, within 54 columns (a long name gives way to
  * the run alone). The run view opens on it at the same time, so it says nothing of where the run is.
  */
 export function startedNotice(label: string, runId: string): string {
   const run = shortRunId(flowLine(runId));
-  return fitted(`Started ${bounded(label, LABEL_LIMIT)} · run ${run}`, `Started run ${run}`);
+  return fitted(
+    `${LAUNCH_STARTED}${bounded(label, LABEL_LIMIT)} · run ${run}`,
+    `${LAUNCH_STARTED}run ${run}`,
+  );
 }
 
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {
@@ -1170,18 +1184,22 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
 
     const signal = flow.begin();
     const hold = createSecretHold();
+    // The line about the files the picker did not offer belongs to the picker: a launch that names its workflow skips it, and a warning about other
+    // files above the first question would be noise (review round 1, O-8).
+    const pickerNote = slug === undefined ? skipped : undefined;
     const running = runSession({
       flow,
       deps,
       hold,
       signal,
       preselect: slug,
-      skipped,
+      skipped: pickerNote,
       ...(from === undefined ? {} : { opener: from }),
+      ...(options.onLeave === undefined ? {} : { onLeave: options.onLeave }),
     });
     current = { session: running.session, done: running.done };
     try {
-      if (skipped !== undefined) flow.note(skipped, 'Run workflow');
+      if (pickerNote !== undefined) flow.note(pickerNote, 'Run workflow');
       running.session.dispatch({ kind: 'opened', choices });
       const notice = await running.done;
       if (running.fault !== undefined) throw running.fault.cause;
@@ -1201,14 +1219,14 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
 
 /**
  * A leg already running: the popup cannot open now. The typed `/run` says it in one notification (its first sentence, which names the run);
- * `r` says it whole on the Defined tab's own row.
+ * `[r]` in the `/workflows` popup says it whole in one notification.
  */
 function refusedBusy(busy: string, slug: string | undefined): string {
   return slug === undefined ? fitted(busy, firstSentence(busy)) : busy;
 }
 
 /**
- * A launch the catalog refused before anything was asked. `r` says it whole on the Defined tab's own row and opens nothing. The typed `/run`
+ * A launch the catalog refused before anything was asked. `[r]` in the `/workflows` popup says it whole in one notification and opens nothing. The typed `/run`
  * says it in the popup, whole, with the files it did not offer and why, on its first step: nothing to run (the empty state) or a catalog that
  * could not be read (the error state; ADR-0148 §5). There is nothing to pick, and the popup has said it all (`''`).
  */
@@ -1271,8 +1289,10 @@ function runSession(options: {
   readonly skipped?: string | undefined;
   /** The popup this launch was started from: `Esc` at the first thing asked leaves to it ({@link LaunchOpener}). */
   readonly opener?: LaunchOpener | undefined;
+  /** Told once when the person leaves with `Ctrl+C` ({@link LaunchOptions.onLeave}). */
+  readonly onLeave?: (() => void) | undefined;
 }): SessionRun {
-  const { flow, deps, hold, signal, preselect, skipped, opener } = options;
+  const { flow, deps, hold, signal, preselect, skipped, opener, onLeave } = options;
   const { host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
   /** The workflow the person chose last: the list a step back returns to opens on it, not on its first row. */
@@ -1306,7 +1326,18 @@ function runSession(options: {
     else dispatch({ kind: 'stop', notice });
   }
 
+  /** A stop with no word of its own, or the cancel's, is the person leaving (`Ctrl+C`, an abort); a refusal's stop carries its own sentence. */
+  let left = false;
   function dispatch(event: LaunchEvent): void {
+    if (
+      event.kind === 'stop' &&
+      !left &&
+      state.kind !== 'closed' &&
+      (event.notice === undefined || event.notice === LAUNCH_CANCELLED)
+    ) {
+      left = true;
+      onLeave?.();
+    }
     const step = reduceLaunch(state, event, { toOpener: opener !== undefined });
     if (step.state !== state) {
       state = step.state;
@@ -1362,7 +1393,7 @@ function runSession(options: {
     const at = wanted === undefined ? -1 : effect.choices.findIndex((c) => c.slug === wanted);
     let answer: string | symbol;
     if (preselected && at >= 0) {
-      // The Defined tab asked for this workflow: the picker is skipped this once, and everything after it is the ordinary flow.
+      // The `/workflows` popup asked for this workflow: the picker is skipped this once, and everything after it is the ordinary flow.
       preselected = false;
       answer = String(at);
     } else {

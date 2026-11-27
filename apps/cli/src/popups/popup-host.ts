@@ -104,8 +104,9 @@
  *
 
  * **The `Enter` that reached a guarded form is not its answer, however long it is held.** A form is `guarded` when applying it widens authority
- * or sends data elsewhere (`PopupForm.guarded`: `/mode` for `accept-edits` and `auto`, `/models` when the provider changes); the other forms
- * (`plan`, `ask`, a model within the default's provider) have the settle and the quiet gap alone, and a held `Enter` does apply them, which
+ * or sends data elsewhere (`PopupForm.guarded`: today only `/models` when the provider changes; `/mode`'s `accept-edits` and `auto` form retired with
+ * its second screen in MVP-11 unit 8, OD-25, and survives only as the test fixture `guarded-form.test-support.ts`); the other forms
+ * (a model within the default's provider) have the settle and the quiet gap alone, and a held `Enter` does apply them, which
  * is harmless by construction (nothing is approved or sent that was not already). The quiet gap cannot tell a held key's FIRST repeat from a
  * slow second press: the terminal's initial repeat delay (225 ms to 1.8 s on macOS, 250 ms to 1 s on Windows, 660 ms on X11) is longer than the
  * gap and, on a form reached by an `Enter`, longer than the settle too, and a slow repeat RATE (400 ms to 1.8 s, an accessibility setting) is
@@ -126,7 +127,6 @@ import {
   type ChordHistory,
   type ChordStamp,
 } from '../render/tui/chord-guard.js';
-import { SHEET_CONFIRM_WINDOW_MS } from '../render/tui/permissions-sheet.js';
 import { clipLine } from '../render/tui/sheet-frame.js';
 import {
   APPROVAL_CONFIRM_MIN_MS,
@@ -191,11 +191,11 @@ export const CHORD_STEP_GUARD: ApprovalGuard = Object.freeze({
 });
 
 /**
- * How long after its frame was acknowledged a confirmation line can still be answered: the window of the `[d]`-arms family (ADR-0137's
- * withdrawal question, `SHEET_CONFIRM_WINDOW_MS`, 10 s), long enough to read a line that names several origins. Each new acknowledged frame
- * of the line restarts it; when it runs out the host disarms the line and says so.
+ * How long after its frame was acknowledged a confirmation line can still be answered: ten seconds, the window of the `[d]`-arms family
+ * (ADR-0137's withdrawal question), long enough to read a line that names several origins. Each new acknowledged frame of the line restarts
+ * it; when it runs out the host disarms the line and says so. `popup-line-refusals.test.ts` pins the number.
  */
-export const CHORD_STEP_WINDOW_MS = SHEET_CONFIRM_WINDOW_MS;
+export const CHORD_STEP_WINDOW_MS = 10_000;
 
 /**
  * Why a `Ctrl+Y` on a confirmation line did not count, or why the line went away unanswered: its frame was not seen, or the line was still being
@@ -717,9 +717,14 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       if (record === undefined || disposed) return Number.NEGATIVE_INFINITY;
       if (onGuardedForm(record.frame)) return chord.lockedUntil();
       const arming = record.chord;
-      return arming === undefined
-        ? Number.NEGATIVE_INFINITY
-        : arming.guard.lockedUntil({ lastResolvedAt: arming.lastResolvedAt });
+      if (arming === undefined) return Number.NEGATIVE_INFINITY;
+      const lockout = arming.guard.lockedUntil({ lastResolvedAt: arming.lastResolvedAt });
+      // A line answered by `Enter` (the withdrawal) also holds its answer for the dwell, counted from the acknowledged frame: its legend says
+      // `(wait)` while it holds, so a key inside it is no surprise (the line's own guard refuses it as `early` all the same).
+      const shownAt = arming.guard.shownAt();
+      return shownAt !== undefined && lineAnswerKeyOf(currentStep(record.frame).spec) === 'enter'
+        ? Math.max(lockout, shownAt + CHORD_STEP_GUARD.settleMs)
+        : lockout;
     },
   });
 
@@ -1336,6 +1341,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       // Every NEW acknowledged frame of a confirmation line is its dwell origin and the start of its window (the acknowledgement tells only a
       // new frame).
       arming.guard.shown();
+      lock.sync();
       startExpiry(record);
       // The page this frame is drawn on decides whether the line offers its answer, and so whether the channel is held.
       syncHold();

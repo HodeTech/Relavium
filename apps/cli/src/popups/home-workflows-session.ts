@@ -4,7 +4,7 @@
  * again: `[r]` and `[x]` start flows that exist, `[p]` writes a mark, and nothing here starts a run or writes a file.
  *
  * **Reading.** The catalogue is read once when the popup opens, in work the popup starts after the first frame (`startPopupWork`: the owner keeps the
- * database open until it settles), through the Defined tab's own port. `Enter` reads the one workflow's detail the same way (its description, inputs and
+ * database open until it settles), through the `/workflows` popup's own port. `Enter` reads the one workflow's detail the same way (its description, inputs and
  * nodes through the catalog's hardened read, its last three runs for this directory through the history reader), behind a `loading` state; a read that is
  * answered after the person went back, or after the popup closed, lands nowhere (the popup's own context carries the run, this module's token the
  * detail). A fault is a state in the popup, in words; the catalogue's own sentences are scrubbed as every stored word is.
@@ -16,9 +16,11 @@
  * the rows again, the highlight following the workflow. **`[h]`** and `Enter` on a last run close the popup and open the Runs screen (on that run's
  * detail): the work moves to a screen.
  *
- * **A held key answers nothing here.** `Enter` and every control letter sit behind the popup host's opening guard (a key before the first frame is
- * dropped, nothing answers for half a second after it appeared, and an answer needs a key that arrived after it did), and `[r]`'s flow drops the
- * auto-repeats of the key that opened it. Nothing here starts a run: the run is the flow's `Ctrl+Y`.
+ * **A held or doubled key goes no further than the step it was asked to reach.** `Enter` and every control letter sit behind the popup host's opening
+ * guard (a key before the first frame is dropped, nothing answers for half a second after it appeared, and an answer needs a key that arrived after it
+ * did). The detail an `Enter` reaches opens at its title with no last run in front, so the next `Enter` of a double tap or of a held key's repeats
+ * answers nothing there: a last run has to be walked onto (`↓`) before an `Enter` opens it. `[r]`'s flow drops the auto-repeats of the key that
+ * opened it. Nothing here starts a run: the run is the flow's `Ctrl+Y`.
  */
 
 import type { DefinedRead, DefinedRow } from '../history/defined-model.js';
@@ -28,9 +30,13 @@ import type { PinPort, PinToggle } from '../render/tui/tab-host-pin.js';
 import { toggleWorkflowPin } from '../render/tui/tab-host-pin.js';
 import type { PopupContent } from './frame-model.js';
 import { stored } from './home-text.js';
-import type { HomePopupOpenRequest, HomeWorkflowRun, HomeWorkflowsPort } from './home-port.js';
+import type {
+  HomePopupOpenRequest,
+  HomeWorkflowRun,
+  HomeWorkflowsPort,
+  WorkflowsStep,
+} from './home-port.js';
 import {
-  DETAIL_ENTER,
   DETAIL_LOADING_CONTENT,
   LAST_RUNS,
   LIST_CONTROLS,
@@ -101,13 +107,26 @@ function readDetail(
   }
 }
 
-/** The row of `next` that stands for `row`: a pin of the catalogue by its entry, any other by its pin's row. */
-function sameRow(next: DefinedRead, row: DefinedRow): DefinedRow | undefined {
-  return next.model.rows.find((candidate) =>
+/**
+ * The row of `next` that stands for `row` of `previous`: a pin of the catalogue by its entry, any other by its pin's row. An entry is the same only
+ * when the file at that index is still the one that was listed (its slug AND its path): a workflow file added or removed between the two reads moves
+ * the indices, and the row at the old index would then be another workflow.
+ */
+function sameRow(
+  previous: DefinedRead | undefined,
+  next: DefinedRead,
+  row: DefinedRow,
+): DefinedRow | undefined {
+  const found = next.model.rows.find((candidate) =>
     row.entryIndex === undefined
       ? candidate.entryIndex === undefined && candidate.pinRowid === row.pinRowid
       : candidate.entryIndex === row.entryIndex,
   );
+  if (found?.entryIndex === undefined || row.entryIndex === undefined) return found;
+  const same =
+    previous?.slugOf(row.entryIndex) === next.slugOf(found.entryIndex) &&
+    previous?.pathOf(row.entryIndex) === next.pathOf(found.entryIndex);
+  return same ? found : undefined;
 }
 
 /** What a pin the store did not refuse says on the channel: its own sentence, or the short form that fits 54 columns. */
@@ -154,10 +173,12 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
       context.notify(request);
       return;
     }
-    // The popup is closed first: the flow takes the keyboard, and the host puts this popup back when the flow ends without a run.
+    // The popup is closed first: the flow takes the keyboard, and the host puts this popup back, on the step the key was pressed on, when the flow
+    // ends without a run.
+    const from: WorkflowsStep = context.stepIndex() === WORKFLOWS_STEP.detail ? 'detail' : 'list';
     context.close();
-    if (verb === 'run') workflows.run(request.slug, request.path);
-    else workflows.export(request.slug);
+    if (verb === 'run') workflows.run(request.slug, request.path, from);
+    else workflows.export(request.slug, from);
   };
 
   const leaveForRuns = (context: PopupContext, runId?: string): void => {
@@ -169,12 +190,7 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
   const showDetail = (context: PopupContext): void => {
     if (view === undefined) return;
     const content = workflowDetailContent(view, workflows.now());
-    context.setContent(
-      WORKFLOWS_STEP.detail,
-      content,
-      detailControls(view.row),
-      content.kind === 'list' && view.runs.length > 0 ? DETAIL_ENTER : false,
-    );
+    context.setContent(WORKFLOWS_STEP.detail, content, detailControls(view.row), false);
   };
 
   const openDetail = (context: PopupContext, row: DefinedRow | undefined): void => {
@@ -256,10 +272,11 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
       context.notify(fitNotice(`${toggled.message} The list could not be read again.`, note));
       return;
     }
+    const previous = read;
     read = next;
     land(context, next);
     if (context.stepIndex() === WORKFLOWS_STEP.detail) {
-      const after = sameRow(next, row);
+      const after = sameRow(previous, next, row);
       if (after === undefined || view === undefined) context.goToStep(WORKFLOWS_STEP.list);
       else {
         view = { ...view, row: after };
@@ -322,7 +339,7 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
         return;
       }
       if (!live()) return;
-      // Reopened on a workflow (a flow handed it back): the highlight is on it and its detail is open.
+      // Reopened on a workflow (a flow handed it back): the highlight is on it, and its detail is open when the flow was started from the detail.
       const at = request.at?.slug;
       const back =
         at === undefined
@@ -331,7 +348,7 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
               (row) => row.entryIndex !== undefined && read?.slugOf(row.entryIndex) === at,
             );
       land(context, read, back === undefined ? undefined : workflowRowId(back));
-      if (back !== undefined) openDetail(context, back);
+      if (back !== undefined && request.at?.step === 'detail') openDetail(context, back);
     },
     () => {
       if (live()) landed(workflowsUnreadableContent());

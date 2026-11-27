@@ -90,8 +90,10 @@ export function wrapHanging(text: string, columns = POPUP_TEXT_COLUMNS, hang = 4
   const indent = ' '.repeat(hang);
   return [
     head,
+    // `wrapWords` keeps the white space it breaks at: a line that ended just before a space would start the next one with it, and the hang would
+    // be one column deeper than the others (review round 1, found on the real binary: ` step-12 → out` under a chain). Every line starts at the hang.
     ...wrapWithoutLoneSlashStart(rest, Math.max(1, columns - hang)).map(
-      (line) => `${indent}${line.trimEnd()}`,
+      (line) => `${indent}${line.trim()}`,
     ),
   ];
 }

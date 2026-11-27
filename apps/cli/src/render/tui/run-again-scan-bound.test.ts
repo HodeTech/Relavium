@@ -1,7 +1,7 @@
 /**
  * The scan of the catalog for `r` on a run's detail is bounded at 1,024 entries exactly (MVP-11 unit 7, round 2; `ENTRY_SCAN_MAX` of
  * `run-again.ts`): a catalog is read by index until an index names none, and the bound is only for a port that never says so. A bound that moved
- * by one finds an entry that is past the Defined tab's reach, or misses the last one inside it.
+ * by one finds an entry that is past the `/workflows` popup's reach, or misses the last one inside it.
  */
 import { describe, expect, it, vi } from 'vitest';
 

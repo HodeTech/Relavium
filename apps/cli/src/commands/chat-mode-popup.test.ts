@@ -237,7 +237,7 @@ function nativeCard(ctx: ChatDriveContext) {
       await vi.waitFor(() => {
         const snapshot = prompt.ui.getSnapshot();
         expect(snapshot.kind).toBe('chord');
-        expect(snapshot.message).toContain(question);
+        expect([snapshot.message, ...snapshot.details].join('\n')).toContain(question);
       });
       prompt.ui.shown(prompt.ui.getSnapshot());
       if (!guarded) skipped += GUARDS_PASSED_MS;
@@ -431,7 +431,8 @@ describe('the startup default, through [s]: the hand-off to the startup-default 
       popup.press(END, 's'); // auto highlighted, then the startup default
       expect(popup.host.getSnapshot().open).toBe(false);
       const question = await card.asking('Save auto as your startup default?');
-      expect(question.message).toBe(`${MODE_EFFECT.auto.full} Save auto as your startup default?`);
+      expect(question.message).toBe(MODE_EFFECT.auto.full);
+      expect(question.details.slice(0, 2)).toEqual(['', 'Save auto as your startup default?']);
       expect(question.options.map((option) => option.label)).toEqual(['Save it', 'Save nothing']);
       // no config file exists yet in this operator home: saving creates it, and says so (it would say it rewrites an existing one)
       expect(question.details).toContain(CONFIRM_CREATES_LINE);
@@ -495,7 +496,7 @@ describe('the startup default, through [s]: the hand-off to the startup-default 
     });
   });
 
-  it('`Esc` on the confirmation steps back: the list opens again on the mode chosen, nothing is written, and `Esc` there closes it', async () => {
+  it('`Esc` on the confirmation steps back: the list opens again on the mode IN FORCE (not the one asked for), nothing is written, and `Esc` there closes it', async () => {
     await interactiveChat(async (ctx) => {
       const card = nativeCard(ctx);
       const popup = modePopupOver(ctx);
@@ -504,7 +505,7 @@ describe('the startup default, through [s]: the hand-off to the startup-default 
       await card.asking('Save plan as your startup default?');
       card.key({ escape: true });
       await vi.waitFor(() => expect(popup.host.getSnapshot().open).toBe(true));
-      expect(popup.highlighted()).toBe('plan');
+      expect(popup.highlighted()).toBe('ask');
       popup.settle();
       popup.press({ escape: true });
       expect(popup.host.getSnapshot().open).toBe(false);

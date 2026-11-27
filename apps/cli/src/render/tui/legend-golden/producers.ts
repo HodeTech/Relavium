@@ -4,6 +4,7 @@ import { CARDS_PRODUCERS } from './recorders/cards.js';
 import { CHAT_MISC_PRODUCERS } from './recorders/chat-misc.js';
 import { HOME_HOST_PRODUCERS } from './recorders/home-host.js';
 import { HOME_RUN_PRODUCERS } from './recorders/home-run.js';
+import { HOME_POPUPS_PRODUCERS } from './recorders/home-popups.js';
 import { INPUT_PRODUCERS } from './recorders/inputs.js';
 import { PROMPTS_PRODUCERS } from './recorders/prompts.js';
 import { SHEETS_PRODUCERS } from './recorders/sheets.js';
@@ -30,6 +31,7 @@ export const PRODUCERS: readonly Producer[] = [
   ...PROMPTS_PRODUCERS,
   ...HOME_HOST_PRODUCERS,
   ...POPUP_PRODUCERS,
+  ...HOME_POPUPS_PRODUCERS,
   ...RESUME_RUN_PRODUCERS,
   ...PROJECT_FLOWS_PRODUCERS,
   ...PROVIDERS_FLOW_PRODUCERS,

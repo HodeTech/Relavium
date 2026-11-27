@@ -112,7 +112,9 @@ function useInThisChat(
  * - the bare Home: `Enter` on the saved startup default says so in one notification and closes; on any other mode it saves it as the startup default.
  * Saving is the ONE second screen: the startup-default writer's own flow, framed as `Mode · Confirm · Done` (`mode-confirm.ts`), started on the
  * port's owner once the list has closed. What it came to ({@link StartupDefaultOutcome}) is its Done step, one notification, nothing, or a step
- * back: `Esc` on the confirmation opens the list again on the mode chosen.
+ * back: `Esc` on the confirmation opens the list again, on the mode IN FORCE (a chat) or the saved startup default (the Home), exactly as it opens
+ * the first time, so a bare `Enter` then keeps and changes nothing (W1 X-2: it used to reopen on the mode asked for, and a widening one `Enter` later
+ * applied it).
  */
 function openMode(request: SettingsOpenRequest): PopupOpenResult {
   const { host, port, origin } = request;
@@ -120,9 +122,9 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
   if (member === undefined) return MISSING;
 
   /** What a finished hand-off asks of the host: a notification (the flow's, a refusal) or the list again; nothing else. */
-  const settle = (outcome: StartupDefaultOutcome, picked: ChatMode): void => {
+  const settle = (outcome: StartupDefaultOutcome): void => {
     if (outcome.kind === 'notice') port.announce(outcome.text);
-    else if (outcome.kind === 'back') void present(picked);
+    else if (outcome.kind === 'back') present();
   };
 
   /** The startup-default writer's flow for `picked`, started as work once the key that asked has been handled to its end (its first card is a frame of its own). */
@@ -131,7 +133,7 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
       port.workOwner,
       async () => {
         await macrotask();
-        settle(await member.saveStartupDefault(picked), picked);
+        settle(await member.saveStartupDefault(picked));
       },
       () => {
         // A fault of the hand-off itself (an owner that no longer admits work: the flow never ran) is the owner's (`startPopupWork` reports it),
@@ -141,8 +143,8 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
     );
   };
 
-  /** Open the list, on `initial` where a step back returns to it. */
-  const present = (initial?: ChatMode): PopupOpenResult => {
+  /** Open the list on the mode in force (a chat) or the saved startup default (the Home): the first open and a step back alike. */
+  const present = (): PopupOpenResult => {
     const facts = modeFacts(member);
     if (facts === undefined) {
       port.announce(MODE_NOT_COMPLETED);
@@ -156,7 +158,7 @@ function openMode(request: SettingsOpenRequest): PopupOpenResult {
         port.announce(startupAlreadyAnnouncement(picked), 'mode');
       else handOff(picked);
     };
-    return host.openForUser(modeSpec(origin, facts, initial), {
+    return host.openForUser(modeSpec(origin, facts), {
       enter: (context, row) => {
         const picked = modeOfRow(row?.id);
         if (picked !== undefined) answered(context, picked, false);

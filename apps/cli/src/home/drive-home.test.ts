@@ -57,7 +57,7 @@ import {
   type CommandGrantStore,
 } from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
-import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
+import { APPROVAL_CONFIRM_MIN_MS, APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
@@ -67,7 +67,6 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
-import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
@@ -2314,6 +2313,94 @@ workflow:
       await leaveHome(props, drivePromise);
     });
 
+    it('R1-M proposed: a detail lists only the runs of THAT workflow, the newest three, though the directory holds other workflows’ runs and older ones', async () => {
+      project();
+      const root = realpathSync.native(cwd);
+      const set = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+      const alpha: string[] = [];
+      for (let n = 1; n <= 4; n += 1) {
+        const id = `0a1b2c3d-0000-4000-8000-0000000000b${String(n)}`;
+        alpha.push(
+          await seedRun(client.db, {
+            slug: 'alpha',
+            runId: id,
+            state: 'completed',
+            atMs: 1_750_000_000_000 - (10 - n) * 60_000,
+          }),
+        );
+      }
+      const beta = await seedRun(client.db, {
+        slug: 'beta',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000c1',
+        state: 'failed',
+        atMs: 1_750_000_000_000 - 1_000,
+      });
+      for (const id of [...alpha, beta]) set.run(root, id);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((row) => row.id.startsWith('run:')) : [];
+      expect(
+        runs.map((row) => row.detail),
+        'only alpha’s, newest first, three of the four',
+      ).toEqual(
+        alpha
+          .slice(1)
+          .reverse()
+          .map((id) => id.slice(0, 8)),
+      );
+      expect(runs.map((row) => row.statusWord)).toEqual(['done', 'done', 'done']);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    });
+
+    it('a workflow whose last runs are older than the 200 newest runs of the project still lists them: the detail resolves the workflow itself, not a page of everyone’s runs (review round 1, P-1)', async () => {
+      // The probe of the review: ONE `alpha` run and 205 newer runs of another workflow. A read that scans the project's newest page for the slug
+      // finds none, and the detail says "No run of this workflow" under a catalogue row that says `✓ done`.
+      project();
+      const root = realpathSync.native(cwd);
+      const old = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000d0',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 500_000_000,
+      });
+      for (let n = 0; n < 205; n += 1) {
+        await seedRun(client.db, {
+          slug: 'beta',
+          runId: `0a1b2c3d-0000-4000-8000-${String(1000 + n).padStart(12, '0')}`,
+          state: 'completed',
+          atMs: 1_750_000_000_000 - 100_000_000 + n * 1_000,
+        });
+      }
+      client.sqlite.prepare('UPDATE runs SET project_root = ?').run(root);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      const row = catalogueRows(popups).find((candidate) => candidate.label.trim() === 'alpha');
+      expect(row?.tail?.words, 'the catalogue row has a last run').toContain('done');
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((entry) => entry.id.startsWith('run:')) : [];
+      expect(runs.map((entry) => entry.detail)).toEqual([old.slice(0, 8)]);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    }, 60_000);
+
     it('[x] on a detail opens the export confirmation over the real prepare, naming the destination in this directory; a No writes nothing and the popup comes back on the workflow', async () => {
       project();
       let captured: RootAppProps | undefined;
@@ -3266,7 +3353,7 @@ workflow:
       expect(popups.getSnapshot().frame?.stepIndex, '[d] arms the withdrawal line').toBe(1);
       popups.shown(popups.getSnapshot());
       await new Promise((resolve) =>
-        setTimeout(resolve, SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS),
+        setTimeout(resolve, APPROVAL_CONFIRM_MIN_MS + SETTLE_MARGIN_MS),
       );
       popups.input('', ENTER);
       expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });

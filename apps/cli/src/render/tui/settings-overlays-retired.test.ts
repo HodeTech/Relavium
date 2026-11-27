@@ -9,9 +9,10 @@
  * - **model-picker-retired**: `/models` is a settings popup (`popups/models-popup.ts`, `popups/models-session.ts`) in both chats and on the bare
  *   Home; the picker's fold, its view and the tier list only its effort sub-step drew are gone, with the residue it wrote and the stale
  *   non-interactive sentence that named the project layer.
- * - **chat-sheet-retired**: in a chat `/permissions` is a settings popup; the chat has no sheet slot at all. What must stay: the bare Home's
- *   Home's `/permissions` popup over the same pure model (`permissions-sheet.ts`; MVP-11 unit 8: the tab is retired), the registry's
- *   placements as a popup, and the text a plain, `--json` or one-shot chat prints, byte for byte.
+ * - **chat-sheet-retired**: in a chat `/permissions` is a settings popup; the chat has no sheet slot at all. The sheet's model, its port and its
+ *   view are deleted (review round 1 of MVP-11 unit 8, D-3): the popup (`popups/permissions-popup.ts`) is the one implementation. What must
+ *   stay: the bare Home's `/permissions` popup (MVP-11 unit 8: the tab is retired), the registry's placements as a popup, and the text a plain,
+ *   `--json` or one-shot chat prints, byte for byte.
  *
  * Each block fails on: a symbol of the overlay written again, a module of it that comes back or is imported, a flag of it in the record of what
  * owns the keyboard or in the paste gate, a golden producer or a matrix surface of it, and the popup's surfaces missing from a host.
@@ -264,11 +265,20 @@ describe('model-picker-retired: what is particular to it', () => {
 });
 
 describe('chat-sheet-retired: what stays', () => {
-  it('the bare Home’s Permissions popup, over the same pure model; the tab that drew it is gone', () => {
+  it('the bare Home’s Permissions popup is the one implementation of the lists: the sheet, its port and its view are gone (review round 1, D-3)', () => {
     const popup =
       PRODUCTION.find((entry) => entry.file === 'popups/permissions-popup.ts')?.text ?? '';
-    expect(popup).toContain("from '../render/tui/permissions-sheet.js'");
-    expect(existsSync(join(SRC, 'render/tui/permissions-sheet.ts'))).toBe(true);
+    expect(popup).toContain('export function permissionEntries(');
+    for (const gone of [
+      'render/tui/permissions-sheet.ts',
+      'render/tui/permissions-sheet-port.ts',
+      'render/tui/permissions-sheet-view.tsx',
+    ])
+      expect(existsSync(join(SRC, gone)), `${gone} is deleted`).toBe(false);
+    for (const entry of PRODUCTION)
+      expect(entry.text, `${entry.file} imports no permissions sheet`).not.toMatch(
+        /from '[^']*permissions-sheet(?:-port|-view)?\.js'/u,
+      );
     const tabHost = PRODUCTION.find((entry) => entry.file === 'render/tui/tab-host.ts')?.text ?? '';
     expect(tabHost, 'the tab host no longer draws the sheet').not.toContain('permissions-sheet');
     expect(ROWS).toContain('home.permissions-popup');

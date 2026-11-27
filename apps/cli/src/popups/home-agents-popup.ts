@@ -18,6 +18,7 @@
  */
 
 import { agentToolsText, type AgentRow } from '../history/agents-model.js';
+import { displayWidth, padTo } from '../render/tui/viewport.js';
 import {
   HOME_EXIT_VERB,
   type PopupContent,
@@ -76,9 +77,6 @@ export function entryIndexOfAgentRow(row: PopupListRow | undefined): number | un
   return match === null ? undefined : Number(match[1]);
 }
 
-const padTo = (text: string, width: number): string =>
-  text + ' '.repeat(Math.max(0, width - [...text].length));
-
 /** `row`'s title when it is not its slug: what the list shows beside the slug. */
 function titleOf(row: AgentRow): string {
   return row.name !== undefined && row.name !== row.slug ? stored(row.name, NAME_COLUMNS) : '';
@@ -89,8 +87,8 @@ export function agentsListContent(rows: readonly AgentRow[]): PopupContent {
   if (rows.length === 0) return AGENTS_EMPTY_CONTENT;
   const slugs = rows.map((row) => stored(row.slug, SLUG_COLUMNS, '?'));
   const titles = rows.map(titleOf);
-  const slugWidth = Math.max(...slugs.map((slug) => [...slug].length));
-  const titleWidth = Math.max(...titles.map((title) => [...title].length));
+  const slugWidth = Math.max(...slugs.map(displayWidth));
+  const titleWidth = Math.max(...titles.map(displayWidth));
   const list: PopupListRow[] = [
     {
       id: 'head',
@@ -138,6 +136,17 @@ function boundedRows(lines: readonly string[], rows: number): string[] {
   return kept;
 }
 
+/**
+ * The head of a prompt cut at a word: the model cuts it after a fixed number of characters (and ends it with `…`), which can fall inside a word
+ * (`INP…`); the last word that was cut is dropped, so what is drawn ends on a whole one.
+ */
+export function wordCut(head: string): string {
+  if (!head.endsWith('…')) return head;
+  const body = head.slice(0, -1);
+  const at = body.search(/\s\S*$/u);
+  return `${at > 0 ? body.slice(0, at).trimEnd() : body}…`;
+}
+
 /** What the detail says of an agent it has no definition for (a file that did not parse has none): never reached from a ready row. */
 export function agentDetailContent(row: AgentRow): PopupContent {
   const detail = row.detail;
@@ -148,11 +157,12 @@ export function agentDetailContent(row: AgentRow): PopupContent {
     field('Tools', stored(agentToolsText(detail), POPUP_TEXT_COLUMNS * TOOL_ROWS)),
     TOOL_ROWS,
   );
-  const head = storedParagraph(detail.promptHead, POPUP_TEXT_COLUMNS - 2, PROMPT_ROWS).map(
+  const head = storedParagraph(wordCut(detail.promptHead), POPUP_TEXT_COLUMNS - 2, PROMPT_ROWS).map(
     (line) => `  ${line}`,
   );
   return {
     kind: 'report',
+    page: true,
     lines: [
       name === '' ? slug : `${slug} · ${name}`,
       '',

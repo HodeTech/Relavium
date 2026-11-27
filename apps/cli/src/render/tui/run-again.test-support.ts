@@ -25,7 +25,7 @@ export const CATALOG: readonly DefinedEntry[] = [
   { slug: 'broken', name: undefined, path: 'broken.yaml', valid: false, error: 'PARSE-ERROR-TEXT' },
 ];
 
-/** The Defined tab's port over `list`, with its read counted. */
+/** The `/workflows` popup's port over `list`, with its read counted. */
 export function definedPortOver(list: readonly DefinedEntry[] = CATALOG) {
   const read = vi.fn(() => ({
     model: buildDefinedModel({ entries: list, pins: [] }),

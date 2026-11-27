@@ -533,14 +533,37 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   {
     host: 'home',
     id: 'home.tab-history',
-    title: 'The History tab (finished runs)',
+    title: 'The History tab (finished runs, every directory: `[a] here`)',
     exitKey: 'Esc',
     landmark: 'ship-it',
+    // `[f] filter` is named where the legend fits it (100 columns) and is the first key to go at 80 (review round 1, D-2); the way out names where it
+    // goes, with the chord where it fits.
+    legendRow: [
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] here · Esc back to Home',
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] here · [f] filter · Esc / [Ctrl+C] back to Home',
+    ],
     setup: historySetup,
     open: async (m) => {
       await openTab('history')(m);
       m.key('a'); // every directory: the fixture runs carry no project root of this one
       await settleOn(m, 'ship-it');
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.tab-history-here',
+    title:
+      'The History tab at its first scope (this directory: none of the fixture’s runs is here), `[a] all`',
+    exitKey: 'Esc',
+    landmark: 'No finished run in this project yet.',
+    legendRow: [
+      '←/→ tab · [a] all · Esc back to Home',
+      '←/→ tab · [a] all · [f] filter · Esc / [Ctrl+C] back to Home',
+    ],
+    setup: historySetup,
+    open: async (m) => {
+      await openTab('history')(m);
+      await settleOn(m, 'No finished run in this project yet.');
     },
   },
   {
@@ -691,7 +714,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   ),
   // The bare Home's `/mode`, as the popup it is (ADR-0148 §1, §3, §6): the choice, the Ctrl+Y confirmation and the Done step.
   ...MODE_HOME_SURFACES,
-  // `/init`, `/import`, the Defined tab's export and `/pricing`, as the popups they are (MVP-11 unit 6, 6.3).
+  // `/init`, `/import`, the `/workflows` popup's export and `/pricing`, as the popups they are (MVP-11 unit 6, 6.3).
   ...PROJECT_FLOW_SURFACES,
   // The steps of those flows no other cell draws: the Done steps in both tones, `/init`'s refusal, `/import`'s path field and `/pricing`'s rates.
   ...FLOW_STEP_SURFACES,

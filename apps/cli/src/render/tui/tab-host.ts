@@ -472,12 +472,17 @@ export function disarmTabHost(state: TabHostState): TabHostState {
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-/** The terminal width the legend must fit: the Home's 80-column floor. */
+/** The terminal width a legend is fitted to when none is named: the Home's 80-column floor, which every legend must fit. */
 const LEGEND_FLOOR_COLUMNS = 80;
 
-/** Whether a legend of `width` columns fits the floor: a legend exactly as wide as the usable columns fits (`<=`, never `<`). */
+/** Whether a legend of `width` columns fits a terminal of `columns`: a legend exactly as wide as the usable columns fits (`<=`, never `<`). */
+export function legendFits(width: number, columns: number): boolean {
+  return width <= usableColumns(columns);
+}
+
+/** Whether a legend of `width` columns fits the floor: {@link legendFits} at 80 columns. */
 export function legendFitsTheFloor(width: number): boolean {
-  return width <= usableColumns(LEGEND_FLOOR_COLUMNS);
+  return legendFits(width, LEGEND_FLOOR_COLUMNS);
 }
 
 /**
@@ -498,46 +503,63 @@ export interface TabHostLegend {
 
 /**
  * The legend: the tab's with the chord named where it fits. On a tab's list `Esc` and `Ctrl+C` do the same (they close the screen and change nothing),
- * so they are one item, `Esc / [Ctrl+C] back to Home`, where the legend still fits the floor, and `Esc back to Home` alone where it does not (the way
+ * so they are one item, `Esc / [Ctrl+C] back to Home`, where the legend still fits the terminal, and `Esc back to Home` alone where it does not (the way
  * out is never cut, and `←/→ tab` is the last of the keys to go: {@link fitLegend}). On a detail the effects differ (`Esc` steps back, `Ctrl+C` closes),
- * so the chord is a second item, as before, where the keys leave it room.
+ * so the chord is a second item, as before, where the keys leave it room. It is fitted to `columns`, the width the screen is drawn at (the screen
+ * passes its own: a legend that fits 100 columns names the History list's `[f] filter` there, though at 80 it is the first key to go); without
+ * one it is fitted to the 80-column floor, which is the narrowest it is ever drawn at (review round 1, D-2).
  */
-export function tabHostLegend(state: TabHostState): TabHostLegend {
+export function tabHostLegend(
+  state: TabHostState,
+  columns: number = LEGEND_FLOOR_COLUMNS,
+): TabHostLegend {
   const exit = tabExit(state);
-  const items = tabLegendItems(state, exit);
+  const items = tabLegendItems(state, exit, columns);
   if (exit === TAB_HOST_KEYS.close) {
-    const both = legendFitsTheFloor(displayWidth(legend(items, TAB_HOST_CLOSE_EITHER)));
+    const both = legendFits(displayWidth(legend(items, TAB_HOST_CLOSE_EITHER)), columns);
     return { items, exit: both ? TAB_HOST_CLOSE_EITHER : exit };
   }
-  return { items: withInterruptItem(items, exit), exit };
+  return { items: withInterruptItem(items, exit, columns), exit };
 }
 
 /**
- * `items` with `Ctrl+C close` just before the way out, when the whole legend still fits the 80-column floor. `Ctrl+C` closes the screen from any
+ * `items` with `Ctrl+C close` just before the way out, when the whole legend still fits `columns`. `Ctrl+C` closes the screen from any
  * depth (ADR-0140 §1), so a person who has gone down a level reads that there is a way out of all of them; where the keys of a screen already fill
  * the floor (the History list's), it is left out for room, and the way out stays last and whole ({@link fitLegend}: the one fit rule of ADR-0145 §3).
  */
-function withInterruptItem(items: readonly LegendItem[], exit: LegendExit): readonly LegendItem[] {
+function withInterruptItem(
+  items: readonly LegendItem[],
+  exit: LegendExit,
+  columns: number,
+): readonly LegendItem[] {
   return fitLegend(
     items,
     [{ item: TAB_HOST_KEYS.interrupt, priority: 1 }],
     exit,
-    usableColumns(LEGEND_FLOOR_COLUMNS),
+    usableColumns(columns),
     displayWidth,
   );
 }
 
-/** The legend as text, as the screen draws it before it is clipped. */
-export function tabHostLegendText(state: TabHostState): string {
-  const { items, exit } = tabHostLegend(state);
+/** The legend as text, as the screen draws it before it is clipped, at `columns` (the 80-column floor when none is named). */
+export function tabHostLegendText(
+  state: TabHostState,
+  columns: number = LEGEND_FLOOR_COLUMNS,
+): string {
+  const { items, exit } = tabHostLegend(state, columns);
   return legend(items, exit);
 }
 
-function tabLegendItems(state: TabHostState, exit: LegendExit): readonly LegendItem[] {
+function tabLegendItems(
+  state: TabHostState,
+  exit: LegendExit,
+  columns: number,
+): readonly LegendItem[] {
   // `Tab` is a key of the screen but not an item of its legend: with two tabs `←/→ tab` says it, and the room goes to the keys of the tab.
   const tabItems: readonly LegendItem[] = [TAB_HOST_KEYS.tab];
   if (state.active !== undefined) return activeLegendItems(state.active, tabItems);
-  if (state.history !== undefined) return historyLegendItems(state.history, tabItems, exit);
+  if (state.history !== undefined)
+    return historyLegendItems(state.history, tabItems, exit, columns);
   return tabItems;
 }
 
@@ -633,7 +655,7 @@ export function tabHostLines(state: TabHostState, geometry: SheetGeometry): read
   const width = usableColumns(geometry.columns);
   const budget = Math.min(TAB_HOST_ROWS, geometry.terminalRows - 1);
   const head = [tabStrip(state.tab, width), rule(width)];
-  const { items, exit } = tabHostLegend(state);
+  const { items, exit } = tabHostLegend(state, geometry.columns);
   const foot = legendLine(items, exit, width);
   const room = budget - head.length - 1;
   if (state.active !== undefined) return [...head, ...activeBody(state.active, width, room), foot];

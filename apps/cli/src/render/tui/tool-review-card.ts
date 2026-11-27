@@ -80,6 +80,15 @@ export function cardRowBudget(terminalRows: number): number {
   );
 }
 
+/**
+ * The rows the conversation keeps above the largest sheet on a terminal of `terminalRows` (nine at 80×24 and at 100×30): what the frame leaves
+ * once its own rows ({@link cardFrameRows}) and the sheet's budget are taken. The in-flight turn drawn above a docked sheet is bounded by it, so
+ * the sheet keeps its rows whatever the turn has drawn.
+ */
+export function sheetTranscriptRows(terminalRows: number): number {
+  return Math.max(0, terminalRows - cardFrameRows(terminalRows) - cardRowBudget(terminalRows));
+}
+
 /** Every word the card's title can open with, so the room it takes is derived from the words, not assumed. */
 export const CARD_VERBS = [
   'Create',

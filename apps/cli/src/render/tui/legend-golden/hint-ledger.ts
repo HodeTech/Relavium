@@ -10,10 +10,9 @@
 
 /** Production files that write hint-shaped strings by hand, and how many such strings each writes (`apps/cli/src`, `/` separators). */
 export const HINT_LITERAL_FILES: Readonly<Record<string, number>> = {
+  'render/tui/tab-host-history.ts': 1,
   // `Any other key cancels`: a sentence that says what every key but the listed ones does. It names no key to bracket, so it stays prose
   // beside the legend (ADR-0145 §3: free text between the keys); the handler is the one `any other key` branch of the card it sits on.
-  'render/tui/permissions-sheet.ts': 1,
-  'render/tui/tab-host-history.ts': 1,
   'render/tui/tool-review-card.ts': 2,
   'render/tui/tool-review-screen.ts': 2,
 };

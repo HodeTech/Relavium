@@ -355,10 +355,13 @@ export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or p
 /** A command card's full view says the opposite of that sentence: a command is not held to the file tools' path rules. */
 export const FULL_COMMAND_NOTE =
   'Approving runs exactly this command; file-tool path rules do not limit it.';
-/** The one line a details screen ends on: the way back to the list, what viewing does, and the key that closes. */
+/**
+ * The one line a details screen ends on: the way back to the list, what viewing does, and its way out, which steps back to the list too
+ * (ADR-0148 §7: `Esc` on a call's view steps back to the list, and the list closes).
+ */
 export const DETAILS_CLOSE_LEGEND: LegendRender = exitRow(
   [{ keys: 'b', verb: 'back to the list' }, { text: 'viewing never executes a tool' }],
-  exitKey.close(),
+  exitKey.step(),
 );
 export const DETAILS_CLOSE_NOTE = DETAILS_CLOSE_LEGEND.text;
 
@@ -511,8 +514,9 @@ export function inspectionOrigin(kind: ScreenKind): string {
 }
 
 /**
- * The inspection popup's top edge, `width` columns: ` ─ <title> ───── <origin> ─ `, a blank cell at each end (the frame's side margin), the
- * title clipped first. Host text only: the title and the origin are product constants.
+ * The inspection popup's top edge, `width` columns: `─ <title> ───── <origin> ─`, across the box's whole width as the screen it frames is (the
+ * screen has no side margin inside the box, so neither have its edges: they start and end at the screen's columns), the title clipped first. Host
+ * text only: the title and the origin are product constants.
  */
 export function inspectionTopEdge(
   title: string,
@@ -520,11 +524,11 @@ export function inspectionTopEdge(
   width: number,
 ): { readonly lead: string; readonly title: string; readonly rest: string } {
   const rule = glyph('thinRule');
-  const inner = Math.max(1, width - 2);
-  const room = Math.max(1, inner - displayWidth(origin) - 7);
+  // `─ ` + title + ` ` + at least one rule glyph + ` <origin> ─`
+  const room = Math.max(1, width - displayWidth(origin) - 7);
   const shown = displayWidth(title) <= room ? title : `${[...title].slice(0, room - 1).join('')}…`;
-  const lead = ` ${rule} `;
-  const tail = ` ${origin} ${rule} `;
+  const lead = `${rule} `;
+  const tail = ` ${origin} ${rule}`;
   const between = Math.max(
     1,
     width - displayWidth(lead) - displayWidth(shown) - 1 - displayWidth(tail),
@@ -532,9 +536,9 @@ export function inspectionTopEdge(
   return { lead, title: shown, rest: ` ${rule.repeat(between)}${tail}` };
 }
 
-/** The inspection popup's bottom edge, `width` columns: the rule over the inner width, a blank cell at each end. */
+/** The inspection popup's bottom edge, `width` columns: the rule across the box's whole width, as the top edge. */
 export function inspectionBottomEdge(width: number): string {
-  return ` ${glyph('thinRule').repeat(Math.max(1, width - 2))} `;
+  return glyph('thinRule').repeat(Math.max(1, width));
 }
 
 /** The most rows a page of the full view ever holds, however tall the terminal (a page consumes at most 200 display rows). */

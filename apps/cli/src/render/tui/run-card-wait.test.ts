@@ -74,9 +74,9 @@ function rig(gates: readonly RunCardGate[] = [APPROVAL]) {
     }
     now = at;
   };
-  const legend = (): string =>
+  const legend = (columns = 80): string =>
     projectRunCard(card.getSnapshot(), {
-      columns: 80,
+      columns,
       rows: 24,
       nowMs: 0,
       locked: card.lock.read(),
@@ -142,6 +142,39 @@ describe('the card says (wait) while its lockout holds a key', () => {
   });
 });
 
+describe('the (wait) marks keep the way back (unit 8 fix wave, S-2; ADR-0145 §2: the exit is always written whole)', () => {
+  const SECOND: RunGate = { ...APPROVAL, gateId: 'g2', nodeId: 'publish' };
+
+  it('two gates at 80 columns: `↑/↓ choose a gate` gives way while the keys wait, and comes back when the lock opens', () => {
+    const r = rig([APPROVAL, SECOND]);
+    expect(r.card.lock.read()).toBe(true);
+    expect(r.legend(80), 'the exit whole, nothing cut').toBe(
+      '[Ctrl+Y] Approve (wait) · [Ctrl+N] Reject (wait) · Esc leaves it pending',
+    );
+    r.advanceTo(OPENED_AT + APPROVAL_LOCKOUT_MS);
+    expect(r.legend(80), 'the unlocked legend fits whole at 80: nothing gives way').toBe(
+      '↑/↓ choose a gate · [Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
+    );
+  });
+
+  it('two gates where the whole legend fits: nothing gives way', () => {
+    const r = rig([APPROVAL, SECOND]);
+    expect(r.legend(100)).toBe(
+      '↑/↓ choose a gate · [Ctrl+Y] Approve (wait) · [Ctrl+N] Reject (wait) · Esc leaves it pending',
+    );
+  });
+});
+
+describe('R1-M proposed: an answer that comes while the lockout holds clears the display at once', () => {
+  it('a budget Abort is never delayed: pressed inside the lockout it answers, and the card holds no key from then on', () => {
+    const r = rig([BUDGET]);
+    expect(r.card.lock.read(), 'the card has just appeared').toBe(true);
+    expect(r.card.input('n', { ctrl: true }).kind).toBe('answered');
+    expect(r.card.lock.read(), 'an answered card holds no key').toBe(false);
+    expect(r.live(), 'and its timer is gone').toBe(0);
+  });
+});
+
 describe('the card wears the sheet’s heavy rule, its wait clock on the right while it waits (ADR-0147 §1, §2)', () => {
   const snapshotOf = (phase: 'open' | 'answered') => ({
     runId: RUN,
@@ -176,5 +209,52 @@ describe('the card wears the sheet’s heavy rule, its wait clock on the right w
       clock: 'waiting 0:41',
     }).rows[0];
     expect(rule?.text).toMatch(/^━━ Run gate ━+$/u);
+  });
+});
+
+describe('the waiting card says "waiting" once in its rule and once in its clock, and names the workflow in its title (unit 8 fix wave, S-11)', () => {
+  const titleOf = (workflow: string | undefined, gates: readonly RunCardGate[] = [APPROVAL]) => {
+    const card = createRunCard({
+      runId: RUN,
+      ...(workflow === undefined ? {} : { workflow }),
+      gates,
+      resume: vi.fn(() => Promise.resolve(STARTED)),
+      now: () => OPENED_AT,
+      history: createChordHistory(),
+    });
+    const rows = projectRunCard(card.getSnapshot(), {
+      columns: 80,
+      rows: 24,
+      nowMs: 0,
+      clock: 'waiting 0:41',
+    }).rows;
+    card.dispose();
+    return rows;
+  };
+
+  it('the title is the workflow’s name beside the glyph, the run beside it; the rule and the clock carry the waiting', () => {
+    const rows = titleOf('release-notes');
+    expect(rows[0]?.text).toMatch(/^━━ Waiting for you ━+ waiting 0:41 ━━$/u);
+    expect(rows[1]?.text).toBe('‖ release-notes  ·  run run-0001');
+    expect(
+      rows
+        .map((row) => row.text)
+        .join('\n')
+        .match(/waiting/giu),
+    ).toHaveLength(2);
+    const second: RunGate = { ...APPROVAL, gateId: 'g2', nodeId: 'publish' };
+    expect(titleOf('release-notes', [APPROVAL, second])[1]?.text).toBe(
+      '‖ release-notes  ·  gate 1 of 2  ·  run run-0001',
+    );
+  });
+
+  it('a host that does not know the workflow keeps the state’s word', () => {
+    expect(titleOf(undefined)[1]?.text).toBe('‖ waiting for you  ·  run run-0001');
+  });
+
+  it('a workflow id is drawn as plain text', () => {
+    expect(titleOf(`wf${String.fromCharCode(27)}[31m`)[1]?.text).not.toContain(
+      String.fromCharCode(27),
+    );
   });
 });

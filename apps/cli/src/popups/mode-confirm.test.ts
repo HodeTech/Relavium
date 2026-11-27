@@ -21,15 +21,17 @@ import type { Key } from 'ink';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MODE_EFFECT } from '../chat/mode-effects.js';
-import type { ModeSettingsOptions } from '../chat/mode-settings.js';
+import { startupDefaultResultOf, type ModeSettingsOptions } from '../chat/mode-settings.js';
 import { createStartingModeRuntime } from '../chat/starting-mode.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
+import { pinnedNativePopupBox } from '../render/tui/surface-matrix/native-popup-recorder.js';
 import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import {
   CONFIRM_AUTO_LINE,
   CONFIRM_CREATES_LINE,
   CONFIRM_REWRITE_LINE,
+  confirmCard,
   confirmChatStaysLine,
   confirmDetails,
   confirmFileLine,
@@ -102,6 +104,12 @@ interface RigOptions {
   readonly endThrows?: boolean;
   /** The persistent last step cannot be drawn: the flow's `select` with a `final` rejects. */
   readonly doneThrows?: boolean;
+  /** A headless runtime (`interactive: false`): the writer refuses and the popup is never offered there. */
+  readonly interactive?: boolean;
+  /** The writer's preparation of the config write (a test makes it throw). */
+  readonly prepare?: ModeSettingsOptions['prepare'];
+  /** The host's admission check, asked by the writer before and after its steps (a test makes the host stop admitting). */
+  readonly assertAdmitting?: () => void;
 }
 
 /** An operator home whose global default is `initial`, the real runtime over it, and the flow running on the real channel. */
@@ -161,12 +169,13 @@ function rig(options: RigOptions = {}) {
   const common = {
     runtime,
     cwd,
-    interactive: true,
+    interactive: options.interactive ?? true,
     flow,
     target: TARGET,
-    assertAdmitting: () => {},
+    assertAdmitting: options.assertAdmitting ?? (() => {}),
     publish,
     failure,
+    ...(options.prepare === undefined ? {} : { prepare: options.prepare }),
   };
   const mode = options.mode ?? 'plan';
   const result =
@@ -230,6 +239,15 @@ describe('the words of the confirmation: one set for both surfaces', () => {
       confirmFileLine(TARGET),
       CONFIRM_CREATES_LINE,
     ]);
+    // auto with the writer's message understood and no override: the extra line, and the chat's “stays” line last
+    expect(confirmDetails({ ...base, mode: 'auto', inChat: 'ask' })).toEqual([
+      confirmWritesLine('auto'),
+      CONFIRM_AUTO_LINE,
+      confirmFileLine(TARGET),
+      CONFIRM_REWRITE_LINE,
+      confirmChatStaysLine('ask'),
+    ]);
+    // auto with an override named: the extra line says the opposite of the override, so it is NOT drawn (W1 X-6)
     expect(
       confirmDetails({
         ...base,
@@ -239,12 +257,46 @@ describe('the words of the confirmation: one set for both surfaces', () => {
       }),
     ).toEqual([
       confirmWritesLine('auto'),
-      CONFIRM_AUTO_LINE,
       confirmFileLine(TARGET),
       CONFIRM_REWRITE_LINE,
       'Project override.',
       confirmChatStaysLine('ask'),
     ]);
+    // auto whose message was not understood (an override may be inside it): never claimed
+    expect(confirmDetails({ ...base, mode: 'auto', parts: undefined })).not.toContain(
+      CONFIRM_AUTO_LINE,
+    );
+  });
+
+  it('the card: the question is its own line, after the risk text and a blank row for `auto`, the card’s message for every other mode, and a message of unknown shape is drawn whole', () => {
+    const base = { target: TARGET, exists: true } as const;
+    const auto = confirmCard(`${MODE_EFFECT.auto.full} Save auto as the global startup default?`, {
+      ...base,
+      mode: 'auto',
+      parts: { risk: MODE_EFFECT.auto.full },
+    });
+    expect(auto.message).toBe(MODE_EFFECT.auto.full);
+    expect(auto.details.slice(0, 3)).toEqual([
+      '',
+      confirmQuestion('auto'),
+      confirmWritesLine('auto'),
+    ]);
+    for (const mode of ['ask', 'plan', 'accept-edits'] as const) {
+      const card = confirmCard(`Save ${mode} as the global startup default?`, {
+        ...base,
+        mode,
+        parts: {},
+      });
+      expect(card.message, mode).toBe(confirmQuestion(mode));
+      expect(card.details[0], mode).toBe(confirmWritesLine(mode));
+    }
+    const whole = confirmCard('Something else entirely', {
+      ...base,
+      mode: 'plan',
+      parts: undefined,
+    });
+    expect(whole.message).toBe('Something else entirely');
+    expect(whole.details[0]).toBe(confirmWritesLine('plan'));
   });
 
   it('the writer’s message is split into its risk, its question and the override it names; a message in any other shape is left whole', () => {
@@ -331,7 +383,9 @@ describe('Confirm: the chord card', () => {
     const admit = vi.spyOn(r.runtime.authority, 'admitConfirmedAutoDefault');
     await r.stepUp('chord');
     const step = r.snapshot();
-    expect(step.message).toBe(`${MODE_EFFECT.auto.full} Save auto as your startup default?`);
+    // the risk text is the card's message; the question is its OWN line after a blank row (W1 X-6/O-10), not wrapped into the risk's paragraph
+    expect(step.message).toBe(MODE_EFFECT.auto.full);
+    expect(step.details.slice(0, 2)).toEqual(['', 'Save auto as your startup default?']);
     expect(step.details).toContain(CONFIRM_AUTO_LINE);
     expect(admit).not.toHaveBeenCalled();
     r.press('y', CTRL);
@@ -441,6 +495,201 @@ describe('Confirm: the chord card', () => {
   });
 });
 
+/**
+ * Every path of the writer's flow, through the real flow and the real writer, ends in the sentence the Done step (or the one notification) says.
+ * These are the behaviour assertions the retired hand-off wrapper's test (`mode-settings-handoff.test.ts`, deleted with `saveStartupDefaultForPopup`,
+ * W1 D-9/P-6) held, now pinned where the product reads them: a sentence the writer adds or rewords turns a case red (`startupDefaultResultOf`
+ * reads the flow's own words).
+ */
+describe('every path of the writer’s flow: what the person is told', () => {
+  /** Confirm the card and read the persistent last step. */
+  async function confirmed(options: RigOptions) {
+    const r = rig(options);
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    r.press('', ENTER);
+    expect(await r.result).toEqual({ kind: 'said' });
+    return { r, done };
+  }
+
+  it.each(['plan', 'ask', 'accept-edits', 'auto'] as const)(
+    'a confirmed %s is saved, confirmed, and applies to new chats',
+    async (mode) => {
+      const { r, done } = await confirmed({ mode, initial: mode === 'ask' ? 'plan' : 'ask' });
+      expect(done.final).toBe('ok');
+      expect(done.message).toBe(`Startup default: ${mode} · applies to new chats`);
+      expect(r.config()).toContain(`default_mode = "${mode}"`);
+      expect(r.failure).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a write whose durability could not be confirmed says so, and gives the flow’s sentence under it', async () => {
+    const { r, done } = await confirmed({
+      publish: (prepared, assertAdmitting) => ({
+        ...prepared.publish(assertAdmitting),
+        durability: 'unconfirmed',
+      }),
+    });
+    expect(done.final).toBe('ok');
+    expect(done.message).toBe('Startup default saved; durability unconfirmed');
+    expect(done.details).toEqual([
+      TARGET,
+      'Global startup default saved: plan. Published, but durability could not be confirmed.',
+    ]);
+    expect(r.config()).toContain('default_mode = "plan"');
+  });
+
+  it('a project setting that selects another mode where the chat started: saved, and said to be overridden by the project', async () => {
+    const { done } = await confirmed({ mode: 'accept-edits', projectMode: 'plan' });
+    expect(done.message).toBe('Startup default saved; this project overrides it');
+    expect(done.details?.[1]).toContain('project override selects plan');
+  });
+
+  it('auto saved while a newer narrower observation revoked startup auto: saved, but auto applies after a restart (the stale-auto refusal)', async () => {
+    const holder: { revoke?: () => void } = {};
+    const r = rig({
+      mode: 'auto',
+      publish: (prepared, assertAdmitting) => {
+        // A config read elsewhere observed a narrower mode after the confirmation: the admission must refuse.
+        holder.revoke?.();
+        return prepared.publish(assertAdmitting);
+      },
+    });
+    holder.revoke = () => r.runtime.authority.revoke();
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    expect(done.final).toBe('ok');
+    expect(done.message).toBe('Startup default saved; auto applies after a restart');
+    expect(r.config()).toContain('default_mode = "auto"');
+    r.press('', ENTER);
+    expect(await r.result).toEqual({ kind: 'said' });
+  });
+
+  it('auto published, then the host stopped admitting before its admission: saved, and auto applies after a restart', async () => {
+    let closing = false;
+    const { r, done } = await confirmed({
+      mode: 'auto',
+      assertAdmitting: () => {
+        if (closing) throw new Error('the chat is closing');
+      },
+      publish: (prepared, assertAdmitting) => {
+        const written = prepared.publish(assertAdmitting);
+        closing = true;
+        return written;
+      },
+    });
+    expect(done.message).toBe('Startup default saved; auto applies after a restart');
+    expect(r.config()).toContain('default_mode = "auto"');
+  });
+
+  it('a confirmed narrowing that could not be prepared: refused, startup auto stays revoked, and nothing is written', async () => {
+    const r = rig({
+      initial: 'auto',
+      mode: 'plan',
+      prepare: () => {
+        throw new Error('PRIVATE prepare failure');
+      },
+    });
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    expect(done.final).toBe('failed');
+    expect(done.message).toBe('Startup default not saved; startup auto stays revoked');
+    expect(JSON.stringify(done)).not.toContain('PRIVATE');
+    expect(r.config()).toBe(r.unchanged);
+    r.press('', ENTER);
+    await r.result;
+  });
+
+  it('auto that could not be published: refused with the flow’s own sentence, nothing revoked by it, nothing written', async () => {
+    const r = rig({
+      mode: 'auto',
+      publish: () => {
+        throw new Error('PRIVATE publish failure');
+      },
+    });
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    expect(done.final).toBe('failed');
+    expect(done.message).toBe('The startup default could not be saved');
+    expect(done.details).toEqual([
+      TARGET,
+      'Mode settings could not be completed. Startup default unchanged.',
+    ]);
+    expect(JSON.stringify(done)).not.toContain('PRIVATE');
+    expect(r.config()).toBe(r.unchanged);
+    r.press('', ENTER);
+    await r.result;
+  });
+
+  it('a headless runtime saves nothing and says why in one notification (the popup never offers it there): no card is asked', async () => {
+    const r = rig({ interactive: false });
+    expect(await r.result).toEqual({
+      kind: 'notice',
+      text: 'Mode settings require an interactive chat. Non-interactive chat stays in ask.',
+    });
+    expect(r.snapshot().active).toBe(false);
+    expect(r.config()).toBe(r.unchanged);
+  });
+
+  it('a fault before the flow said anything is the host’s too, and a declined card is still the one notification (nothing is said to be saved)', async () => {
+    const r = rig({ endThrows: true });
+    await r.stepUp('chord');
+    r.press('n', CTRL);
+    expect(await r.result).toEqual({ kind: 'notice', text: STARTUP_UNCHANGED });
+    expect(r.failure).toHaveBeenCalledOnce();
+    expect(r.config()).toBe(r.unchanged);
+  });
+
+  it('a flow cancelled under the card (the host stopped admitting) is the one notification, not a failure, and writes nothing', async () => {
+    let admitting = true;
+    const r = rig({
+      assertAdmitting: () => {
+        if (!admitting) throw new Error('the chat is closing');
+      },
+    });
+    await r.stepUp('chord');
+    admitting = false;
+    r.press('n', CTRL);
+    const outcome = await r.result;
+    expect(outcome.kind).toBe('notice');
+    expect(r.config()).toBe(r.unchanged);
+    expect(r.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('the flow’s sentence read back (`startupDefaultResultOf`)', () => {
+  it('the published-but-unfinished sentence is saved, unfinished', () => {
+    expect(
+      startupDefaultResultOf('Startup default was published; mode settings could not finish.'),
+    ).toEqual({ kind: 'saved', durability: 'unknown', autoAfterRestart: false, unfinished: true });
+  });
+
+  it('a workspace override is read as the workspace', () => {
+    expect(
+      startupDefaultResultOf(
+        'Global startup default saved: plan. workspace override selects ask; saving globally will not change this effective start.',
+      ),
+    ).toEqual({
+      kind: 'saved',
+      durability: 'confirmed',
+      overriddenBy: 'workspace',
+      autoAfterRestart: false,
+      unfinished: false,
+    });
+  });
+
+  it('a sentence it does not know is read as nothing saved, never as saved', () => {
+    expect(startupDefaultResultOf('Something else entirely.')).toEqual({
+      kind: 'refused',
+      autoRevoked: false,
+    });
+  });
+});
+
 describe('Done: persistent, naming the file', () => {
   it('a narrowing written: the file holds it, startup auto is revoked, and the step closes with Enter', async () => {
     const r = rig({ initial: 'auto' });
@@ -533,5 +782,78 @@ describe('a fault is the host’s, and never an unhandled rejection', () => {
     expect(await r.result).toEqual({ kind: 'said' });
     expect(r.failure).toHaveBeenCalledOnce();
     expect(r.config()).toContain('default_mode = "plan"');
+  });
+});
+
+describe('what the card draws: the question is its own line (W1 X-6, O-10)', () => {
+  const VARIANTS = [
+    { cols: 80, rows: 24 },
+    { cols: 100, rows: 30 },
+  ] as const;
+
+  /** The rows of the framed card as the slot draws them in `variant`, trailing spaces trimmed. */
+  async function drawn(
+    mode: ChatMode,
+    variant: { cols: number; rows: number },
+    renderer: 'alt' | 'inline',
+    color: boolean,
+    projectMode?: ChatMode,
+  ): Promise<string[]> {
+    const r = rig(projectMode === undefined ? { mode } : { mode, projectMode });
+    await r.stepUp('chord');
+    const rows = pinnedNativePopupBox(r.channel, r.snapshot(), {
+      renderer,
+      color,
+      size: variant,
+    }).rows.map((row) => row.trimEnd());
+    r.press('n', CTRL);
+    await r.result;
+    return rows;
+  }
+
+  it.each(VARIANTS)(
+    '`auto` at $cols×$rows, in both renderers and both colour forms: the risk text, a blank row, then the question alone on its row',
+    async (variant) => {
+      for (const renderer of ['alt', 'inline'] as const)
+        for (const color of [true, false]) {
+          const rows = await drawn('auto', variant, renderer, color);
+          const question = rows.findIndex(
+            (row) => row.trim() === 'Save auto as your startup default?',
+          );
+          expect(
+            question,
+            `${renderer} ${String(color)}: the question is a row of its own`,
+          ).toBeGreaterThan(0);
+          expect(
+            rows[question - 1]?.trim(),
+            'a blank row between the risk text and the question',
+          ).toBe('');
+          // the risk text is above it and ends its own paragraph (its last words are on the row before the blank one)
+          expect(rows[question - 2]).toMatch(/protected-path rules still apply\.$/u);
+          expect(rows.some((row) => row.includes('still apply. Save'))).toBe(false);
+          expect(rows.some((row) => row.includes(CONFIRM_AUTO_LINE))).toBe(true);
+        }
+    },
+  );
+
+  it.each(VARIANTS)(
+    '`accept-edits` at $cols×$rows: no risk text, the question is the first row of the body',
+    async (variant) => {
+      for (const renderer of ['alt', 'inline'] as const)
+        for (const color of [true, false]) {
+          const rows = await drawn('accept-edits', variant, renderer, color);
+          const question = rows.findIndex(
+            (row) => row.trim() === 'Save accept-edits as your startup default?',
+          );
+          expect(question, `${renderer} ${String(color)}`).toBeGreaterThan(0);
+          expect(rows.some((row) => row.includes('still apply'))).toBe(false);
+        }
+    },
+  );
+
+  it('`auto` with a project override named: its own sentence is on the card and the extra line (which says the opposite) is not', async () => {
+    const rows = await drawn('auto', { cols: 100, rows: 30 }, 'alt', true, 'plan');
+    expect(rows.some((row) => row.includes('override selects plan'))).toBe(true);
+    expect(rows.some((row) => row.includes(CONFIRM_AUTO_LINE))).toBe(false);
   });
 });

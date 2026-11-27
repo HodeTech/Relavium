@@ -30,6 +30,7 @@ import {
   exitKey,
   fitLegend,
   keyToken,
+  legend,
   type LegendExit,
   type LegendItem,
   type LegendKey,
@@ -95,7 +96,7 @@ import { displayWidth } from './viewport.js';
  *   now through {@link HistoryPort.loadNode}); `n` puts the cursor on the first node whose LAST attempt failed; `p` pins or unpins the run by
  *   the list's own toggle and reads the list again behind the detail; `r` runs the run's workflow again (below); a sentence a key leaves is
  *   dropped by the next.
- * - **`r` on the detail runs the workflow again** (MVP-11 unit 7). It changes no run: it asks the host for the Defined tab's own `run` request
+ * - **`r` on the detail runs the workflow again** (MVP-11 unit 7). It changes no run: it asks the host for the `run` request the `/workflows` popup makes
  *   (the catalog's slug and the path it was listed from), and the host opens the launch flow, whose form asks the inputs AGAIN (a run's inputs
  *   are never kept for reuse, ADR-0113, and this module never reads them), whose `Ctrl+Y` is the only start. It is a key of the ready detail
  *   alone (not a list row, not the node page, not a detail that is loading or missing); the decision and its refusal lines are `run-again.ts`'s,
@@ -126,7 +127,7 @@ export interface HistoryPort extends HistorySource {
 export interface HistoryContext {
   readonly history: HistoryPort;
   readonly pins: PinPort | undefined;
-  /** The catalog `r` on a detail looks the run's workflow up in (the Defined tab's own port); none, and `r` says the workflows cannot be listed. */
+  /** The catalog `r` on a detail looks the run's workflow up in (the `/workflows` popup's own catalog port); none, and `r` says the workflows cannot be listed. */
   readonly defined?: DefinedPort | undefined;
 }
 
@@ -179,7 +180,7 @@ export interface HistoryTabState {
 
 /**
  * What a key does on the tab: become another state, ask the host to load one run's detail, or ask it to run the detail's workflow again (the
- * Defined tab's own `run` request: the catalog entry's slug and the path it was listed from, see `run-again.ts`).
+ * `/workflows` popup's own `run` request: the catalog entry's slug and the path it was listed from, see `run-again.ts`).
  */
 export type HistoryStep =
   | { readonly kind: 'state'; readonly state: HistoryTabState }
@@ -273,8 +274,6 @@ export const HISTORY_LIST_ENTRIES_MAX = HISTORY_BODY_ROOM_MAX - LIST_CHROME_ROWS
 export const HISTORY_COST_REACH = HISTORY_LIST_ENTRIES_MAX;
 /** How far `PgUp` and `PgDn` move. */
 export const HISTORY_PAGE_STEP = 8;
-/** The terminal width the legend must fit: the Home's 80-column floor. */
-const LEGEND_FLOOR_COLUMNS = 80;
 /** The widest the cost column is drawn inside a row; the whole text is on the line under the list. */
 const COST_COLUMN = 18;
 
@@ -459,7 +458,7 @@ export function withHistoryNotice(state: HistoryTabState, message: string): Hist
 
 /**
  * The detail the host loaded, handed in. It lands only on the detail it was asked for and still waits for (a result for a run the person
- * has left, or already answered, changes nothing): the same object then. `defined` is the catalog the Defined tab lists: it is read once, here,
+ * has left, or already answered, changes nothing): the same object then. `defined` is the catalog the `/workflows` popup lists: it is read once, here,
  * for a run of this directory, to know whether `r` will be offered ({@link HistoryDetailState.runAgain}); none, and it is not.
  */
 export function withHistoryDetail(
@@ -1027,7 +1026,7 @@ function emptyText(read: HistoryRead): string {
   if (read.hasNext) return HISTORY_EMPTY_PAGE;
   if (status !== undefined) return `No ${status} run here. ${keyToken('f')} changes the filter.`;
   return scope === 'project'
-    ? 'No finished run in this project yet. Run a workflow from the Defined tab.'
+    ? 'No finished run in this project yet. Start one with /run or from /workflows.'
     : 'No finished run yet.';
 }
 
@@ -1329,14 +1328,17 @@ type NamedLegend = (...rest: readonly LegendItem[]) => readonly LegendItem[];
 /**
  * The detail's legend: the node page's own, nothing but the way back while the detail is not ready, or the scroll, open, first-failed and pin
  * keys. Where `r` answers it is named last before the way out, and `Enter open`, the detail's primary verb, is kept: with every item the legend
- * is 89 columns and the 80-column floor has 78 (the way out is never cut), so ONE item goes, the one that has the least to say. On a run where
- * a node ended failed that is `↑/↓ scroll` (the arrows scroll without being told; 76 columns), on a run where none did it is `[n] first failed`
- * (a key with no node to go to; 70 columns). Where `r` is not offered nothing goes: the whole legend is 73 columns.
+ * is 89 columns, and where the terminal holds that (100 columns have 98) every item is named. At the 80-column floor, which has 78 (the way out is
+ * never cut), ONE item goes, the one that has the least to say. On a run where a node ended failed that is `↑/↓ scroll` (the arrows scroll without
+ * being told; 76 columns), on a run where none did it is `[n] first failed` (a key with no node to go to; 70 columns). Where `r` is not offered
+ * nothing goes: the whole legend is 73 columns.
  */
 function detailLegendItems(
   detail: HistoryDetailState,
   named: NamedLegend,
   tabItem: LegendItem,
+  exit: LegendExit,
+  columns: number,
 ): readonly LegendItem[] {
   if (detail.node !== undefined) {
     const [, ...rest] = nodeLegendItems(detail.node, tabItem);
@@ -1344,13 +1346,28 @@ function detailLegendItems(
   }
   // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
   if (detail.phase !== 'ready') return named();
-  if (detail.runAgain === true) {
-    const failed = detail.read?.model.firstFailedNodeId !== undefined;
-    return failed
-      ? named(HISTORY_KEYS.open, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin, HISTORY_KEYS.run)
-      : named(HISTORY_KEYS.scroll, HISTORY_KEYS.open, HISTORY_KEYS.pin, HISTORY_KEYS.run);
-  }
+  if (detail.runAgain === true) return runAgainLegendItems(detail, named, exit, columns);
   return named(HISTORY_KEYS.scroll, HISTORY_KEYS.open, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin);
+}
+
+/** The detail's legend where `r` answers: every item where `columns` holds them, else the one with the least to say gives way (see {@link detailLegendItems}). */
+function runAgainLegendItems(
+  detail: HistoryDetailState,
+  named: NamedLegend,
+  exit: LegendExit,
+  columns: number,
+): readonly LegendItem[] {
+  const whole = named(
+    HISTORY_KEYS.scroll,
+    HISTORY_KEYS.open,
+    HISTORY_KEYS.firstFailed,
+    HISTORY_KEYS.pin,
+    HISTORY_KEYS.run,
+  );
+  if (displayWidth(legend(whole, exit)) <= usableColumns(columns)) return whole;
+  return detail.read?.model.firstFailedNodeId !== undefined
+    ? named(HISTORY_KEYS.open, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin, HISTORY_KEYS.run)
+    : named(HISTORY_KEYS.scroll, HISTORY_KEYS.open, HISTORY_KEYS.pin, HISTORY_KEYS.run);
 }
 
 /** The list's legend; a page with no run still names the move keys while another page lies past it or before it. */
@@ -1374,17 +1391,20 @@ function listLegendItems(read: HistoryRead | undefined, named: NamedLegend): rea
 /**
  * The legend's items: the detail's, or the list's (the Runs screen's tab item first). The key that leaves is the host's `exit`, which the
  * fit needs to measure: `Esc back to Home` on the list, {@link HISTORY_KEYS.back} or the node page's on a detail. A tab that could not be read
- * names the tab key alone. The list's `[f] filter` is named where the legend still fits the 80-column floor with it ({@link fitLegend}).
+ * names the tab key alone. The list's `[f] filter` is named where the legend still fits the terminal's `columns` with it ({@link fitLegend}):
+ * at 100 columns it is, at the 80-column floor it is the first key to go.
  */
 export function historyLegendItems(
   state: HistoryTabState,
   tabItems: readonly LegendItem[],
   exit: LegendExit,
+  columns: number,
 ): readonly LegendItem[] {
   const [tabItem] = tabItems;
   if (state.phase !== 'ready' || tabItem === undefined) return tabItems;
   const named: NamedLegend = (...rest) => [tabItem, ...rest];
-  if (state.detail !== undefined) return detailLegendItems(state.detail, named, tabItem);
+  if (state.detail !== undefined)
+    return detailLegendItems(state.detail, named, tabItem, exit, columns);
   const items = listLegendItems(state.read, named);
   // The list's `[f] filter` is the one optional item (MVP-11 unit 8, the Runs screen): its way out names where it goes (`Esc back to Home`), which
   // is seven columns longer than `Esc close` was, so at the 80-column floor the filter key is the first to go, and the way out is never cut.
@@ -1394,7 +1414,7 @@ export function historyLegendItems(
     items.slice(0, -1),
     [{ item: last, priority: 1 }],
     exit,
-    usableColumns(LEGEND_FLOOR_COLUMNS),
+    usableColumns(columns),
     displayWidth,
   );
 }

@@ -17,15 +17,8 @@ import type { NodeDetailLoad, NodeDetailRead } from '../../../../history/node-de
 import { buildNodeDetailModel } from '../../../../history/node-detail-model.js';
 import { buildRunDetailModel } from '../../../../history/run-detail-model.js';
 import type { RunDetailLoad, RunDetailRead } from '../../../../history/run-detail-source.js';
-import type { PermissionsSnapshot } from '../../../../permissions/chat-permissions.js';
 import type { ChatKey } from '../../chat-input.js';
 import { keyLabel, legend, type LegendItem } from '../../legend.js';
-import {
-  initialPermissionsSheetState,
-  SHEET_SETTLE_MS,
-  type PermissionsSheetState,
-} from '../../permissions-sheet.js';
-import { PermissionsSheetView } from '../../permissions-sheet-view.js';
 import type { SheetGeometry, SheetLine } from '../../sheet-frame.js';
 import { usableColumns } from '../../sheet-frame.js';
 import { ACTIVE_KEYS, ACTIVE_FOCUS_LEFT, ACTIVE_SELECT_FIRST } from '../../tab-host-active.js';
@@ -87,9 +80,8 @@ import {
 
 const T0 = Date.parse('2026-11-23T10:00:00.000Z');
 const NOW = T0 + 3 * 3_600_000;
-/** The monotonic clock a tab is entered at, and the one a key is pressed at (the sheet has settled by then). */
+/** The monotonic clock a tab is entered at. */
 const OPENED = 10_000;
-const SETTLED = OPENED + SHEET_SETTLE_MS + 600;
 
 const DOWN: ChatKey = { downArrow: true };
 const ENTER: ChatKey = { return: true };
@@ -147,19 +139,6 @@ function legendLineOf(
   geometry: SheetGeometry = GEOMETRIES[0].geometry,
 ): SheetLine | undefined {
   return lineOfKind(tabHostLines(state, geometry), 'legend');
-}
-
-// ---- The Permissions tab ----------------------------------------------------------------------------------------------------
-
-function grants(count: number): PermissionsSnapshot['project'] {
-  return {
-    ok: true,
-    rows: Array.from({ length: count }, (_, index) => ({
-      id: `g${String(index)}`,
-      label: `tool${String(index)}, 1 argument`,
-      remembered: '2026-11-19 12:00Z',
-    })),
-  };
 }
 
 // ---- The Active tab ---------------------------------------------------------------------------------------------------------
@@ -746,35 +725,6 @@ const viewRecorder: Recorder = () => {
   return out;
 };
 
-/** The `/permissions` sheet drawn by its view, with colour off and on: the chip and the hint key take their role on the rows. */
-const permissionsSheetViewRecorder: Recorder = () => {
-  const out: Record<string, readonly string[]> = {};
-  const snapshot: PermissionsSnapshot = {
-    project: grants(2),
-    session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: true }],
-  };
-  const idle = initialPermissionsSheetState(snapshot, 'chat', 'ask', OPENED);
-  const states: readonly (readonly [string, PermissionsSheetState])[] = [
-    ['state=idle row=project', idle],
-    ['state=idle row=session', { ...idle, cursor: 2 }],
-    ['state=armed row=project', { ...idle, armed: true, armedAt: SETTLED }],
-    [
-      'state=empty',
-      initialPermissionsSheetState({ project: grants(0), session: [] }, 'chat', 'ask', OPENED),
-    ],
-  ];
-  for (const [name, state] of states)
-    Object.assign(
-      out,
-      coloured(
-        name,
-        (color) => <PermissionsSheetView state={state} color={color} columns={80} rows={24} />,
-        80,
-      ),
-    );
-  return out;
-};
-
 const activeRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
     'constant=ACTIVE_FOCUS_LEFT': ACTIVE_FOCUS_LEFT,
@@ -866,12 +816,6 @@ export const TAB_HOST_PRODUCERS: readonly Producer[] = [
       'The Runs screen drawn by its view with colour off and on: the legend and hint rows with the style each key takes (History list and detail, Active).',
   },
   {
-    id: 'permissions-sheet-view',
-    file: 'render/tui/permissions-sheet-view.tsx',
-    describe:
-      'The /permissions sheet drawn by its view with colour off and on: the chip `[d] withdraw` / `[Enter] withdraw`, the hint under the selected row and the legend, with the style each key takes (idle, armed, empty).',
-  },
-  {
     id: 'tab-host-active',
     file: 'render/tui/tab-host-active.ts',
     describe:
@@ -902,7 +846,6 @@ export const TAB_HOST_RECORDERS = {
   'tab-host-interrupt': interruptRecorder,
   'tab-host-too-small': tooSmallRecorder,
   'tab-host-view': viewRecorder,
-  'permissions-sheet-view': permissionsSheetViewRecorder,
   'tab-host-active': activeRecorder,
   'tab-host-history': historyRecorder,
   'tab-host-node': nodeRecorder,

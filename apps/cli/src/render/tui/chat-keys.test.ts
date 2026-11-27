@@ -4,7 +4,7 @@ import './force-color.js';
 /**
  * The keys `/help` lists for a chat ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
  * §10, MVP-11 step 4b): every one is PRESSED on a mounted chat and must do what its verb says, in the stand-alone chat and in the chat the Home
- * hosts, as the Home's help sheet presses each key of the landing (`home-help-sheet.test.ts`). A help that names a key cannot name one the chat
+ * hosts, as the Home's `/help` popup is held to the landing (`home-landing-words.test.ts` presses each key of the landing). A help that names a key cannot name one the chat
  * does not have, or say it does something else, and a key added to the chat's own handler has to be listed here to be documented.
  */
 import { describe, expect, it, vi } from 'vitest';

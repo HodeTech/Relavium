@@ -188,6 +188,7 @@ import { GLYPHS, glyphOf, withGlyphForm } from './glyphs.js';
 import { chatStatusLine } from './chat-status.js';
 import { emphasize } from './emphasis.js';
 import {
+  dockedTurnRows,
   formatBusyLine,
   formatReasoningPanel,
   formatToolCall,
@@ -198,7 +199,10 @@ import {
   stripTerminalControls,
   wrapTranscript,
   liveAnswerRowBudget,
+  type DockedTurnRow,
+  type ReasoningPanel,
 } from './chat-projection.js';
+import { sheetTranscriptRows } from './tool-review-card.js';
 import { exitKey, legend, type LegendExit } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
 import { wrapWords } from './viewport.js';
@@ -951,6 +955,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
   // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
   const viewport = props.viewport;
+  const host = props.surface ?? 'standalone-chat';
   // Alt-screen only: flatten + width-wrap the transcript to display lines, MEMOIZED on (transcript, cols) so a
   // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
   // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
@@ -1008,7 +1013,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           hung tool) would otherwise show nothing at all. At an idle prompt the hint row below carries the same words. */}
       {props.interruptArmed === true && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {legend([{ text: 'Interrupting' }], leavesAgain(props.surface ?? 'standalone-chat'))}
+          {legend([{ text: 'Interrupting' }], leavesAgain(host))}
         </Text>
       )}
     </Box>
@@ -1061,13 +1066,26 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
 
       {/* The prompt block (ADR-0146 §4): a blank row, the prompt, a thin rule, the status line, the hint. While a turn runs the in-flight turn
-          stands where the prompt would (below), and the rule, the status line and the hint stay. A docked sheet takes the whole block's place
-          (ADR-0147 §1), so none of it is drawn while one is open. */}
-      {props.cardDocked !== true && (
+          stands where the prompt would (below), and the rule, the status line and the hint stay. A docked sheet takes the block's place
+          (ADR-0147 §1): the prompt, its rule, the status line and the hint are not drawn, and the in-flight turn stays above the sheet. */}
+      {props.cardDocked === true ? (
+        <DockedTurn
+          state={state}
+          color={color}
+          running={running}
+          toolDisplays={props.toolDisplays}
+          reasoning={reasoningPanel}
+          interruptArmed={props.interruptArmed === true}
+          host={host}
+          columns={rowWidth}
+          viewportRows={viewport?.rows}
+          terminalRows={props.terminalRows}
+        />
+      ) : (
         <PromptBlock
           state={state}
           color={color}
-          host={props.surface ?? 'standalone-chat'}
+          host={host}
           mode={mode}
           reasoningEffort={reasoningEffort}
           provider={props.provider}
@@ -1088,6 +1106,68 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     </Box>
   );
 }
+
+/** The colour of a row of the in-flight turn above a docked sheet: the prompt block's own for the same row (warnings and tool lines amber). */
+function dockedTone(tone: DockedTurnRow['tone'], color: boolean): Record<string, unknown> {
+  return tone === 'warning' || tone === 'tool' ? colorProps(color, 'yellow') : dimProps(color);
+}
+
+/**
+ * The in-flight turn while a sheet is docked ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings, and while the turn runs its tool-call lines with their outcomes,
+ * the reasoning panel and the interrupt note ({@link dockedTurnRows}), never the busy line. Bounded by the rows the conversation keeps above the
+ * largest sheet ({@link sheetTranscriptRows}), the newest kept, so the sheet keeps its rows; in the full-screen frame it stands at the bottom of
+ * the conversation's flex region, and the transcript above it takes what is left.
+ */
+function DockedTurn(
+  props: Readonly<{
+    state: SessionViewState;
+    color: boolean;
+    running: boolean;
+    toolDisplays: ChatViewProps['toolDisplays'];
+    reasoning: ReasoningPanel | undefined;
+    interruptArmed: boolean;
+    host: ChatHost;
+    columns: number;
+    /** The alternate screen's viewport rows (the terminal's less the one its frame keeps free), absent inline. */
+    viewportRows: number | undefined;
+    /** The terminal's rows as the host reports them (inline), absent when it does not. */
+    terminalRows: number | undefined;
+  }>,
+): ReactElement | null {
+  const { state, running } = props;
+  const terminalRows =
+    props.viewportRows === undefined ? props.terminalRows : props.viewportRows + 1;
+  const calls = running
+    ? state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved)
+    : [];
+  const rows = withGlyphForm(!props.color, () =>
+    dockedTurnRows({
+      warnings: state.warnings,
+      toolLines: calls.map((call) => formatToolCall(call, props.toolDisplays?.get(call.id))),
+      reasoning: running ? props.reasoning : undefined,
+      interrupt:
+        running && props.interruptArmed
+          ? legend([{ text: 'Interrupting' }], leavesAgain(props.host))
+          : undefined,
+      columns: props.columns,
+      maxRows: sheetTranscriptRows(terminalRows ?? DOCKED_FALLBACK_ROWS),
+    }),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {rows.map((row, index) => (
+        <Text key={index} wrap="truncate-end" {...dockedTone(row.tone, props.color)}>
+          {row.text}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+/** The terminal height the docked turn is bounded for when a host does not say (the product's floor). */
+const DOCKED_FALLBACK_ROWS = 24;
 
 /** Preserve explicit native widths that Ink's fallback would normalize to 80. */
 function useRawTerminalColumns(): number | undefined {

@@ -4,6 +4,11 @@
  * changes (once a second for the first minute, then once a minute), cleared when the sheet closes and when the host unmounts. Inline there is
  * no timer at all.
  *
+ * What this file counts: the RENDERS of a probe component that uses the hook, and the hook's timers. It does not count what reaches the terminal:
+ * the ADR's byte count is `sheet-frame-grid.test.tsx` ("what a pending sheet writes while it waits"), which mounts the chat host with a docked
+ * approval on a terminal double and counts the bytes and frames written over the frame loop's ticks (none inline; in the alternate screen at
+ * most one frame a second, each differing from the last in the clock's text alone).
+ *
  * Only the interval and the wall clock are faked: React and Ink keep their own scheduling.
  */
 import { Text } from 'ink';
@@ -11,7 +16,12 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { settleFrames } from './harness-util.js';
-import { useWaitClock, WAIT_CLOCK_TICK_MS, type WaitClockForm } from './wait-clock.js';
+import {
+  useWaitClock,
+  WAIT_CLOCK_TICK_MS,
+  waitClockForm,
+  type WaitClockForm,
+} from './wait-clock.js';
 
 const START = Date.parse('2026-11-27T09:00:00.000Z');
 beforeEach(() => {
@@ -90,5 +100,13 @@ describe('useWaitClock', () => {
     await settleFrames(2);
     expect(view.lastFrame()).toBe('waiting 0:00');
     expect(vi.getTimerCount(), 'still one timer').toBe(1);
+  });
+});
+
+describe('R1-M proposed: waitClockForm', () => {
+  it('ticks only in the alternate screen: a host that does not say is inline and static', () => {
+    expect(waitClockForm(true)).toBe('ticking');
+    expect(waitClockForm(false)).toBe('static');
+    expect(waitClockForm(undefined)).toBe('static');
   });
 });

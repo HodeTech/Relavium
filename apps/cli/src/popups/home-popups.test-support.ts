@@ -9,7 +9,12 @@ import type { RunStatus } from '@relavium/shared';
 import { vi } from 'vitest';
 
 import { buildAgentsModel, type AgentsModelItem } from '../history/agents-model.js';
-import { buildDefinedModel, type DefinedPin, type DefinedRead } from '../history/defined-model.js';
+import {
+  buildDefinedModel,
+  type DefinedOtherPin,
+  type DefinedPin,
+  type DefinedRead,
+} from '../history/defined-model.js';
 import type { AgentsRead } from '../home/agents-port.js';
 import type { WorkflowDetail } from '../home/workflow-detail.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
@@ -20,6 +25,7 @@ import type { PopupContent } from './frame-model.js';
 import type {
   HomeAgentsPort,
   HomePopupKind,
+  WorkflowsAt,
   HomePopupsPort,
   HomeWorkflowRun,
   HomeWorkflowsPort,
@@ -72,14 +78,16 @@ export function definedRead(
   entries: readonly CatalogEntry[],
   options: {
     readonly pins?: readonly DefinedPin[];
+    /** Workflow pins of OTHER projects: rows the popup lists and can only unpin. */
+    readonly otherPins?: readonly DefinedOtherPin[];
     readonly lastRuns?: ReadonlyMap<string, RunStatus>;
     readonly lastRunTimes?: ReadonlyMap<string, string>;
-    readonly stored?: { readonly total: number; readonly elsewhere: number };
   } = {},
 ): DefinedRead {
   const model = buildDefinedModel({
     entries,
     pins: options.pins ?? [],
+    ...(options.otherPins === undefined ? {} : { otherPins: options.otherPins }),
     ...(options.lastRuns === undefined ? {} : { lastRuns: options.lastRuns }),
     ...(options.lastRunTimes === undefined ? {} : { lastRunTimes: options.lastRunTimes }),
   });
@@ -87,7 +95,6 @@ export function definedRead(
     model,
     slugOf: (index) => entries[index]?.slug,
     pathOf: (index) => entries[index]?.path,
-    ...(options.stored === undefined ? {} : { stored: options.stored }),
   };
 }
 
@@ -153,6 +160,8 @@ export function fakeWorkflows(
     readonly describe?: (path: string) => WorkflowDetail;
     readonly pinned?: readonly string[];
     readonly full?: boolean;
+    /** Workflow pins of other projects, by their ref and their project's root. */
+    readonly otherPins?: readonly { readonly ref: string; readonly projectRoot: string }[];
   } = {},
 ): WorkflowsFakes {
   const list = [...entries];
@@ -175,7 +184,15 @@ export function fakeWorkflows(
       lastRuns.set(slug, latest.status);
       times.set(slug, latest.at);
     }
-    return definedRead(list, { pins: pinList, lastRuns, lastRunTimes: times });
+    // A snapshot, as the real read's: the entries are held by the read, so a file added later is not seen through an older read.
+    const otherPins: DefinedOtherPin[] = (options.otherPins ?? []).map((pin, at) => ({
+      kind: 'workflow',
+      ref: pin.ref,
+      rowid: 1000 + at,
+      oversized: false,
+      projectRoot: pin.projectRoot,
+    }));
+    return definedRead([...list], { pins: pinList, otherPins, lastRuns, lastRunTimes: times });
   });
   const describe = vi.fn(options.describe ?? ((): WorkflowDetail => detailOf()));
   const lastRuns = vi.fn((slug: string, limit: number): readonly HomeWorkflowRun[] =>
@@ -187,11 +204,11 @@ export function fakeWorkflows(
     lastRuns,
     pins: pins.port,
     now: () => fakes.now,
-    run: (slug, path) => {
-      asked.push(`run ${slug} ${path}`);
+    run: (slug, path, from) => {
+      asked.push(`run ${slug} ${path} from ${from}`);
     },
-    export: (slug) => {
-      asked.push(`export ${slug}`);
+    export: (slug, from) => {
+      asked.push(`export ${slug} from ${from}`);
     },
     openRuns: (runId) => {
       asked.push(runId === undefined ? 'runs' : `runs ${runId}`);
@@ -295,7 +312,7 @@ export function homeRig() {
   const open = (
     kind: HomePopupKind,
     port: Partial<HomePopupsPort>,
-    at?: { readonly slug: string },
+    at?: WorkflowsAt,
   ): PopupOpenResult =>
     openHomePopupNow({
       host,

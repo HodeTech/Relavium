@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { createStartingModeRuntime } from '../../../chat/starting-mode.js';
 import { loadResolvedConfig } from '../../../config/load.js';
+import { saveChatStartupDefault } from '../../../popups/mode-confirm.js';
 import { saveHomeStartupDefault } from '../../../popups/mode-home.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import { KEYS, type HomeMount, type NativePromptChannel } from './home-host.js';
@@ -26,7 +27,15 @@ import type { Variant } from './variants.js';
 /** The channel of the cell that is open now: the popup box is computed from what it shows (cells run one after another). */
 let current: NativePromptChannel | undefined;
 
-function channelOf(m: HomeMount): NativePromptChannel {
+/** What the confirmation's cells need of the host they run on: the channel, a place to close what a cell opened, the wait and the keys. Both hosts have it. */
+export interface SaveMount {
+  readonly channel: NativePromptChannel | undefined;
+  readonly defer: (cleanup: () => void) => void;
+  readonly until: (predicate: () => boolean, maxFlushes?: number) => Promise<boolean>;
+  readonly key: (bytes: string) => void;
+}
+
+function channelOf(m: SaveMount): NativePromptChannel {
   if (m.channel === undefined) throw new Error('the surface needs a native prompt channel');
   current = m.channel;
   recordNativePopups(m.channel);
@@ -44,7 +53,7 @@ function shownOn(channel: NativePromptChannel): boolean {
 }
 
 /** Where the framed prompt the channel shows now is drawn in a cell, and its rows: the slot's own geometry and frame lines over it. */
-function liveModeBox(variant: Variant): PopupBox {
+export function liveModeBox(variant: Variant): PopupBox {
   if (current === undefined) throw new Error('no flow is open');
   return pinnedNativePopupBox(current, current.ui.getSnapshot(), variant);
 }
@@ -53,7 +62,7 @@ function liveModeBox(variant: Variant): PopupBox {
 const GUARDS_PASSED_MS = 2600;
 let clockSkipped = 0;
 let clockInstalled: (() => number) | undefined;
-function skipClock(m: HomeMount): void {
+function skipClock(m: SaveMount): void {
   if (clockInstalled === undefined) {
     const real = performance.now.bind(performance);
     clockInstalled = real;
@@ -67,8 +76,15 @@ function skipClock(m: HomeMount): void {
   clockSkipped += GUARDS_PASSED_MS;
 }
 
-/** The popup as far as `upTo`, over a temporary operator home (global default `ask`) removed when the cell ends. */
-async function openModeTo(m: HomeMount, upTo: 'confirm' | 'done'): Promise<void> {
+/**
+ * The confirmation as far as `upTo`, over a temporary operator home (global default `ask`) removed when the cell ends, as the Home's `Enter` on `plan`
+ * or a chat's `[s]` on `plan` hands it over (`origin`): the same flow, framed from where it was opened.
+ */
+export async function openModeTo(
+  m: SaveMount,
+  upTo: 'confirm' | 'done',
+  origin: 'home' | 'chat' = 'home',
+): Promise<void> {
   const channel = channelOf(m);
   const root = mkdtempSync(join(tmpdir(), 'relavium-matrix-mode-'));
   m.defer(() => {
@@ -80,17 +96,21 @@ async function openModeTo(m: HomeMount, upTo: 'confirm' | 'done'): Promise<void>
   mkdirSync(cwd, { recursive: true });
   writeFileSync(join(home, '.relavium', 'config.toml'), '[preferences]\ndefault_mode = "ask"\n');
   // The flow the list hands the chosen mode to (`plan`): the confirmation is its first prompt.
-  saveHomeStartupDefault(
-    {
-      runtime: createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true),
-      cwd,
-      interactive: true,
-      flow: channel.flow,
-      target: '~/.relavium/config.toml',
-      assertAdmitting: () => {},
-      publish: (prepared, assertAdmitting) => prepared.publish(assertAdmitting),
-    },
-    'plan',
+  const deps = {
+    runtime: createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true),
+    cwd,
+    interactive: true,
+    flow: channel.flow,
+    target: '~/.relavium/config.toml',
+    assertAdmitting: () => {},
+    publish: (
+      prepared: Parameters<Parameters<typeof saveChatStartupDefault>[0]['publish']>[0],
+      assertAdmitting: () => void,
+    ) => prepared.publish(assertAdmitting),
+  };
+  (origin === 'chat'
+    ? saveChatStartupDefault(deps, 'plan', 'ask')
+    : saveHomeStartupDefault(deps, 'plan')
   ).catch(() => undefined);
   const shownKind = (kind: string): Promise<boolean> =>
     m.until(() => channel.ui.getSnapshot().kind === kind && shownOn(channel));

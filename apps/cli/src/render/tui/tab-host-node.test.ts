@@ -180,7 +180,11 @@ function rig(options: RigOptions = {}) {
     const at = rows.findIndex((entry) => entry.kind === 'run' && entry.row.id === runId);
     if (at < 0) throw new Error(`the run is not listed: ${runId}`);
     const pinned = state.history?.read?.pinned.length ?? 0;
-    while ((state.history?.cursor ?? 0) < pinned + at) press('', DOWN);
+    // A bounded walk: a list that never moves fails with the run it was looking for instead of looping (review round 1, D08/D09).
+    for (let step = 0; (state.history?.cursor ?? 0) < pinned + at; step += 1) {
+      if (step >= 200) throw new Error(`the cursor never reached the run ${runId}`);
+      press('', DOWN);
+    }
     const step = press('', ENTER);
     if (step.kind !== 'open-detail') throw new Error(`Enter did not open the run: ${step.kind}`);
     state = withHistoryLoad(state, runId, await history.loadDetail(runId));
@@ -703,7 +707,7 @@ describe('p on the run detail pins the run', () => {
     const full = rig();
     await full.openFromList(FIXTURE_RUN_IDS.failed);
     full.press('p');
-    // The store holds fifty run pins and no workflow pin: the sentence names both counts, as the Defined tab's does.
+    // The store holds fifty run pins and no workflow pin: the sentence names both counts, as the `/workflows` popup's does.
     expect(full.state.history?.detail?.message).toBe(
       `Cannot pin 11111111: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, 0 of them workflows.`,
     );

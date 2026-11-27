@@ -1,6 +1,6 @@
 /**
  * `r` on a run's detail, in the History tab's pure model ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §6, MVP-11 unit 7, W4c): the key asks the host to run the run's workflow again through the Defined tab's own request (`kind: 'run'` with the
+ * §6, MVP-11 unit 7, W4c): the key asks the host to run the run's workflow again through the `/workflows` popup's own request (`kind: 'run'` with the
  * catalog's slug and path), or says on the tab's own message row why it cannot; it is named in the legend only where it is available; and it
  * is a key of the DETAIL alone: no list row, no loading or missing detail and no node page answers it. The model holds no port call but the
  * catalog's read, so the run's stored inputs can never be asked for on this path. The controller's side (the form, the single start, the
@@ -122,7 +122,7 @@ function rig(options: Options = {}) {
   };
 }
 
-describe('r on a run’s detail asks the host to run its workflow again, through the Defined tab’s own request', () => {
+describe('r on a run’s detail asks the host to run its workflow again, through the `/workflows` popup’s own request', () => {
   it('answers a `run` step with the catalog’s slug and the path it was listed from, and keeps the detail as it is', () => {
     const r = rig();
     r.onDetail();
@@ -410,6 +410,12 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
   const COMPLETED_OFFERED =
     '←/→ tab · ↑/↓ scroll · Enter open · [p] pin · [r] run again · Esc back';
   const WHOLE = '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back';
+  /** Every item, which 100 columns hold (89 of 98): nothing gives way there, and the chord does not fit beside it. */
+  const EVERY_ITEM =
+    '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · [r] run again · Esc back';
+  /** Where `r` is not offered the legend is 73 columns, and 100 columns leave room for the chord beside it (review round 1, D-2). */
+  const WHOLE_WIDE =
+    '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · [Ctrl+C] close · Esc back';
   const FLOOR = usableColumns(80);
 
   const cases = [
@@ -417,6 +423,7 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
       name: 'a failed run of this directory with `r` offered',
       detail: () => detailRead(),
       legend: FAILED_OFFERED,
+      wide: EVERY_ITEM,
       gives: '↑/↓ scroll',
     },
     {
@@ -424,12 +431,14 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
       detail: () =>
         detailRead({ directory: 'here', workflowSlug: 'nightly', nodeStatus: 'completed' }),
       legend: COMPLETED_OFFERED,
+      wide: EVERY_ITEM,
       gives: '[n] first failed',
     },
     {
       name: 'a failed run with `r` not offered (another directory)',
       detail: () => detailRead({ directory: 'elsewhere', workflowSlug: 'nightly' }),
       legend: WHOLE,
+      wide: WHOLE_WIDE,
       gives: undefined,
     },
     {
@@ -437,11 +446,13 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
       detail: () =>
         detailRead({ directory: 'elsewhere', workflowSlug: 'nightly', nodeStatus: 'completed' }),
       legend: WHOLE,
+      wide: WHOLE_WIDE,
       gives: undefined,
     },
   ] as const;
 
-  // 78 is the usable width of the 80-column floor (`FLOOR`, below): a terminal narrower than the floor draws no tab host at all.
+  // 78 is the usable width of the 80-column floor (`FLOOR`, below): a terminal narrower than the floor draws no tab host at all. At 80 one item
+  // gives way; at 100 and 120 (98 and 100 usable) every item is named, since the width holds them (review round 1, D-2).
   for (const columns of [80, 100, 120]) {
     for (const one of cases) {
       it(`${one.name}, at ${String(columns)} columns: the whole of it on the legend row, the way out last`, () => {
@@ -451,10 +462,12 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
         const drawn = lines.at(-1);
         expect(drawn?.kind).toBe('legend');
         expect(drawn?.text, 'not one item was cut with an ellipsis').not.toContain('…');
-        expect(drawn?.text).toBe(one.legend);
-        expect(displayWidth(drawn?.text ?? ''), 'fits the floor').toBeLessThanOrEqual(FLOOR);
+        expect(drawn?.text).toBe(columns === 80 ? one.legend : one.wide);
+        expect(displayWidth(drawn?.text ?? ''), 'fits the width').toBeLessThanOrEqual(
+          columns === 80 ? FLOOR : usableColumns(columns),
+        );
         expect(drawn?.text).toMatch(/Esc back$/u);
-        if (one.gives !== undefined) expect(drawn?.text).not.toContain(one.gives);
+        if (one.gives !== undefined && columns === 80) expect(drawn?.text).not.toContain(one.gives);
       });
     }
   }

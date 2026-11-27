@@ -383,7 +383,8 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
     REVIEW_ANSWER_ROWS - (state.hint === undefined ? 0 : 1),
   );
   const rows: QuestionCardRow[] = [
-    { text: head(`Review your answers  ${tabs(state)}`, width), tone: 'header' },
+    // The same title line as the question pages (ADR-0147 §1): behind the gutter, the strip flush right.
+    { text: headerRow(state, 'Review your answers', width), tone: 'header' },
     ...answers.flatMap((answer, index) =>
       answerRows(answer.lines, allowed[index] ?? 1, width).map(
         (text): QuestionCardRow => ({ text, tone: answer.tone }),

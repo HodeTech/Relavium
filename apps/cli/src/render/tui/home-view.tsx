@@ -136,13 +136,13 @@ interface HomeViewProps {
 const NO_PARKED: readonly ParkedRunRow[] = [];
 const NOTHING_TO_COUNT: WorkCounts = { attention: 0, sessions: 0, runs: 0 };
 
+/** What the exit guard's rule says it is (ADR-0147 §1): fixed host text. */
+export const EXIT_GUARD_RULE_LABEL = 'Leaving the Home';
+
 /**
  * The exit-guard card (ADR-0139 §6): a title line, what leaving does and the keys, each in words so it reads with colour off. It is
  * the same card on both pages, in the loading echo and in the below-minimum degrade.
  */
-/** What the exit guard's rule says it is (ADR-0147 §1): fixed host text. */
-export const EXIT_GUARD_RULE_LABEL = 'Leaving the Home';
-
 export function ExitGuardCard(
   props: Readonly<{
     phase: ExitGuardPhase;
@@ -154,19 +154,19 @@ export function ExitGuardCard(
     locked?: boolean | undefined;
   }>,
 ): ReactElement {
+  // The sheet's heavy rule (ADR-0147 §1): the exit guard takes the prompt block's place and wears the frame the other sheets wear. Its lines
+  // are fitted to the rule's width, so no row runs past the rule's end (unit 8 fix wave, S-11).
+  const width = Math.max(1, (props.columns ?? 80) - 2);
   const lines = withGlyphForm(!props.color, () =>
     exitGuardLines(
       props.phase,
       props.hostedRun,
       HOSTED_RUN_EXIT_BOUND_MS / 1000,
       props.locked === true,
+      width,
     ),
   );
-  // The sheet's heavy rule (ADR-0147 §1): the exit guard takes the prompt block's place and wears the frame the other sheets wear.
-  const rule = withGlyphForm(
-    !props.color,
-    () => sheetRule(EXIT_GUARD_RULE_LABEL, '', Math.max(1, (props.columns ?? 80) - 2)).text,
-  );
+  const rule = withGlyphForm(!props.color, () => sheetRule(EXIT_GUARD_RULE_LABEL, '', width).text);
   return (
     <Box flexDirection="column">
       <Text {...colorProps(props.color, 'yellow')} wrap="truncate-end">

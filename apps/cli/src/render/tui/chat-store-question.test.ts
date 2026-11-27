@@ -24,9 +24,10 @@ const REQUEST: AskUserRequest = {
   ],
 };
 
-// Choosing keys count only once a question has been on screen for QUESTION_SETTLE_MS; the clock is the only thing faked.
+// Choosing keys count only once a question has been on screen for QUESTION_SETTLE_MS; the clocks are the only thing faked (the settle runs on
+// the monotonic clock, `performance.now`, since unit 8's fix wave, S-5; the transcript's times on the wall clock).
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.useFakeTimers({ toFake: ['Date', 'performance'] });
 });
 afterEach(() => {
   vi.useRealTimers();

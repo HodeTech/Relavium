@@ -107,6 +107,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/popups/export-popup.ts',
   'apps/cli/src/popups/unreadable-run-card.ts',
   'apps/cli/src/popups/unreadable-run-port.ts',
+  'apps/cli/src/popups/home-port.ts',
   'apps/cli/src/home/framed-flow.ts',
   'apps/cli/src/render/tui/flow-text.ts',
   'apps/cli/src/render/tui/home-layout.ts',

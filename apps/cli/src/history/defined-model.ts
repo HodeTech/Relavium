@@ -6,7 +6,7 @@ import { RUN_STATUS_GLYPH, storedPlace } from './history-model.js';
 import { scrubbedBounded } from './run-detail-model.js';
 
 /**
- * The pure view model of the Home's Defined tab (ADR-0140 §2, "Defined"; MVP-8 step 4): the workflows the project
+ * The pure view model of the Home's `/workflows` popup (ADR-0140 §2, "Defined"; MVP-8 step 4): the workflows the project
  * declares on disk, with the pins the operator made on them. Nothing is read or written here. The caller reads the
  * catalog (`discoverCatalog`), the project's workflow pins (`listPins({ kind: 'workflow', projectRoot })`, which
  * the store keys by the project's real path) and the latest run per workflow, and hands them in; every free-form
@@ -231,7 +231,7 @@ function otherProjectRow(pin: DefinedOtherPin, paths: DisplayPathRoots | undefin
 }
 
 /**
- * The Defined tab: the catalog's rows with their pins, a row for each pin the catalog no longer carries and for each pin of
+ * The `/workflows` popup: the catalog's rows with their pins, a row for each pin the catalog no longer carries and for each pin of
  * another project, pinned first, bounded at {@link DEFINED_ROWS_MAX}.
  */
 export function buildDefinedModel(input: DefinedModelInput): DefinedModel {

@@ -152,3 +152,193 @@ ${nodes}
     expect(detail.nodesMore).toBe(8); // the start node and the 31 others, less the 24 shown
   });
 });
+
+// ---- the order of the chain on a document the author wrote (review round 1, X-1) ------------------------------------------------
+
+/** The old algorithm, as it was before the heap: the oracle the new order is held to on every small graph (quadratic, and fine for a dozen nodes). */
+function referenceOrder(
+  ids: readonly string[],
+  edges: readonly { readonly from: string; readonly to: string }[],
+): string[] {
+  const known = new Set(ids);
+  const waiting = new Map<string, number>(ids.map((id) => [id, 0]));
+  const following = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!known.has(edge.from) || !known.has(edge.to)) continue;
+    waiting.set(edge.to, (waiting.get(edge.to) ?? 0) + 1);
+    following.set(edge.from, [...(following.get(edge.from) ?? []), edge.to]);
+  }
+  const order: string[] = [];
+  let ready = ids.filter((id) => waiting.get(id) === 0);
+  for (let next = ready.shift(); next !== undefined; next = ready.shift()) {
+    order.push(next);
+    for (const after of following.get(next) ?? []) {
+      const left = (waiting.get(after) ?? 0) - 1;
+      waiting.set(after, left);
+      if (left === 0) ready = [...ready, after].sort((a, b) => ids.indexOf(a) - ids.indexOf(b));
+    }
+  }
+  const placed = new Set(order);
+  return [...order, ...ids.filter((id) => !placed.has(id))];
+}
+
+/** A definition over these node ids and edges, built without the parser (which is not what is measured). */
+function definitionOver(
+  ids: readonly string[],
+  edges: readonly { readonly from: string; readonly to: string }[],
+): WorkflowDefinition {
+  const base = parse(`schema_version: '1.0'
+workflow:
+  id: graph
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`);
+  return {
+    ...base,
+    workflow: {
+      ...base.workflow,
+      nodes: ids.map((id) => ({ id, type: 'output' as const })),
+      edges: [...edges],
+    },
+  };
+}
+
+const idsOf = (count: number): string[] =>
+  Array.from({ length: count }, (_, at) => `n${String(at)}`);
+const shown = (definition: WorkflowDefinition): string[] =>
+  buildWorkflowDetail(definition).nodes.map((node) => node.id);
+
+describe('the order of the chain is the same on every small graph, and cheap on a huge one', () => {
+  it.each([
+    [
+      'a chain declared backwards',
+      ['d', 'c', 'b', 'a'],
+      [
+        ['a', 'b'],
+        ['b', 'c'],
+        ['c', 'd'],
+      ],
+      ['a', 'b', 'c', 'd'],
+    ],
+    [
+      'a diamond',
+      ['join', 'left', 'right', 'top'],
+      [
+        ['top', 'left'],
+        ['top', 'right'],
+        ['left', 'join'],
+        ['right', 'join'],
+      ],
+      ['top', 'left', 'right', 'join'],
+    ],
+    [
+      'two starts, ties by declared order',
+      ['y', 'x', 'z'],
+      [
+        ['x', 'z'],
+        ['y', 'z'],
+      ],
+      ['y', 'x', 'z'],
+    ],
+    [
+      'a cycle behind a start',
+      ['s', 'a', 'b'],
+      [
+        ['s', 'a'],
+        ['a', 'b'],
+        ['b', 'a'],
+      ],
+      ['s', 'a', 'b'],
+    ],
+    [
+      'an edge to a node nobody declared',
+      ['a', 'b'],
+      [
+        ['a', 'ghost'],
+        ['ghost', 'b'],
+      ],
+      ['a', 'b'],
+    ],
+    [
+      'a self-loop',
+      ['a', 'b'],
+      [
+        ['a', 'a'],
+        ['a', 'b'],
+      ],
+      ['a', 'b'],
+    ],
+    [
+      'a repeated edge',
+      ['a', 'b', 'c'],
+      [
+        ['a', 'b'],
+        ['a', 'b'],
+        ['b', 'c'],
+      ],
+      ['a', 'b', 'c'],
+    ],
+  ] as const)('%s', (_name, ids, edges, expected) => {
+    const pairs = edges.map(([from, to]) => ({ from, to }));
+    expect(shown(definitionOver(ids, pairs))).toEqual(expected);
+    expect(referenceOrder(ids, pairs), 'the old algorithm says the same').toEqual(expected);
+  });
+
+  it('gives the old algorithm’s order on 400 seeded random graphs of up to 12 nodes (cycles, repeated and dangling edges included)', () => {
+    let seed = 20_261_127;
+    const next = (bound: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % bound;
+    };
+    for (let round = 0; round < 400; round += 1) {
+      const count = 1 + next(12);
+      const ids = idsOf(count);
+      const edges = Array.from({ length: next(2 * count + 1) }, () => ({
+        from: next(count + 1) === count ? 'ghost' : (ids[next(count)] ?? 'ghost'),
+        to: ids[next(count)] ?? 'ghost',
+      }));
+      const expected = referenceOrder(ids, edges).slice(0, WORKFLOW_DETAIL_ITEMS_MAX);
+      expect(shown(definitionOver(ids, edges)), `round ${String(round)}`).toEqual(expected);
+    }
+  });
+
+  it('counts the nodes it leaves out whatever their order: 30 nodes show 24 and say 6 more', () => {
+    const ids = idsOf(30);
+    const detail = buildWorkflowDetail(definitionOver(ids, []));
+    expect(detail.nodes).toHaveLength(WORKFLOW_DETAIL_ITEMS_MAX);
+    expect(detail.nodesMore).toBe(6);
+  });
+
+  it.each([
+    ['a star of 8,000 nodes (one root, every other node behind it)', 8_000],
+    ['a chain of 8,000 nodes', 8_000],
+    ['a dense layered graph of 3,000 nodes (every node leads to the next ten)', 3_000],
+  ] as const)(
+    '%s costs the popup well under a second, not minutes (the UI thread is stuck while it runs)',
+    (name, count) => {
+      const ids = idsOf(count);
+      const edges: { from: string; to: string }[] = [];
+      for (let at = 0; at < count; at += 1) {
+        if (name.startsWith('a star')) {
+          if (at > 0) edges.push({ from: 'n0', to: `n${String(at)}` });
+        } else if (name.startsWith('a chain')) {
+          if (at > 0) edges.push({ from: `n${String(at - 1)}`, to: `n${String(at)}` });
+        } else {
+          for (let ahead = 1; ahead <= 10 && at + ahead < count; ahead += 1)
+            edges.push({ from: `n${String(at)}`, to: `n${String(at + ahead)}` });
+        }
+      }
+      const definition = definitionOver(ids, edges);
+      const started = performance.now();
+      const detail = buildWorkflowDetail(definition);
+      const took = performance.now() - started;
+      expect(took, `${name} took ${String(Math.round(took))} ms`).toBeLessThan(500);
+      expect(detail.nodes.map((node) => node.id).slice(0, 3)).toEqual(['n0', 'n1', 'n2']);
+      expect(detail.nodes).toHaveLength(WORKFLOW_DETAIL_ITEMS_MAX);
+      expect(detail.nodesMore).toBe(count - WORKFLOW_DETAIL_ITEMS_MAX);
+    },
+  );
+});

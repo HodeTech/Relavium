@@ -57,6 +57,10 @@ export const UNREADABLE_RUN_SURFACES: readonly HomeSurface[] = [
     notes:
       'the body behind the popup: the work page with the unreadable run’s row focused (a popup cannot open over a tab screen); the card is opened by Enter on that row',
     open: async (m) => {
+      // The card's code is loaded on the first `Enter` (`unreadable-run-port.ts`): a cold dynamic import can outlast the wait for its frame when the
+      // whole suite loads the machine, and the cell would then find no popup. A cell measures the card, not the first load of its code, so it is
+      // loaded here, as it already is in every later cell of a real session (the Home's management popups warm theirs the same way).
+      await import('../../../popups/unreadable-run-card.js');
       // The controller's own keys, as the bare Home's `/models` and `/doctor` surfaces drive theirs: below the floor the host delivers only the
       // way out, and the popup host's own notice is what the cell is checked on.
       await m.until(() => m.homePainted());

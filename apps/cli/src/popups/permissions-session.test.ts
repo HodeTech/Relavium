@@ -15,7 +15,7 @@ import type {
   WithdrawAnswer,
 } from '../permissions/chat-permissions.js';
 import { CliError } from '../process/errors.js';
-import { PERMISSIONS_STEP, WITHDRAW_CONTROL } from './permissions-popup.js';
+import { permissionEntries, PERMISSIONS_STEP, WITHDRAW_CONTROL } from './permissions-popup.js';
 import { currentStep, visibleRows } from './popup-reducer.js';
 import { DOWN, ENTER, ESC, settingsRig } from './settings.test-support.js';
 
@@ -255,6 +255,182 @@ describe('a withdrawal: [d], then Enter through the host’s guard', () => {
       expect(withdraw, `${String(pace)} ms a key`).not.toHaveBeenCalled();
       expect(p.step()).toBe(PERMISSIONS_STEP.list);
     }
+  });
+});
+
+describe('the floor the sheet’s tests held, kept for the popup that replaced it (review round 1, D-3)', () => {
+  it('a `d` with Ctrl or Meta held arms nothing, and a Delete with either held is an edit, not the control', () => {
+    const { port, withdraw } = fakePort();
+    const p = opened(port);
+    for (const key of [{ ctrl: true }, { meta: true }] as const) {
+      p.press('d', key);
+      expect(p.step(), JSON.stringify(key)).toBe(PERMISSIONS_STEP.list);
+      p.press('', { ...key, delete: true });
+      expect(p.step(), `Delete with ${JSON.stringify(key)}`).toBe(PERMISSIONS_STEP.list);
+    }
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('a paste over the line withdraws nothing and says a key was typed; `[d]` then arms nothing until an arrow key', () => {
+    const { port, withdraw } = fakePort();
+    const p = opened(port);
+    p.arm();
+    p.clock.advance(900);
+    p.host.paste('run the build');
+    p.press('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(p.step()).toBe(PERMISSIONS_STEP.list);
+    p.clock.advance(2100);
+    p.press('d');
+    expect(p.step(), 'a paste is typing: [d] arms nothing').toBe(PERMISSIONS_STEP.list);
+    p.press('', DOWN);
+    p.arm();
+    expect(p.step(), 'after an arrow key it arms again').toBe(PERMISSIONS_STEP.withdraw);
+  });
+
+  it('an arrow key moves nothing on the line (the sheet dropped its question on one; the popup keeps the line, ADR-0148 §3): a patient Enter withdraws the row the line named, an Enter 100 ms after the arrow key (the quiet gap) withdraws nothing', () => {
+    const quick = fakePort();
+    const hasty = opened(quick.port);
+    hasty.arm();
+    hasty.clock.advance(900);
+    hasty.press('', DOWN);
+    hasty.clock.advance(100);
+    hasty.press('', ENTER);
+    expect(quick.withdraw).not.toHaveBeenCalled();
+    expect(hasty.step()).toBe(PERMISSIONS_STEP.list);
+    const slow = fakePort();
+    const patient = opened(slow.port);
+    patient.arm();
+    patient.clock.advance(900);
+    patient.press('', DOWN);
+    patient.clock.advance(400);
+    patient.press('', ENTER);
+    expect(slow.withdraw).toHaveBeenCalledTimes(1);
+    expect(slow.withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
+  });
+
+  it('a terminal that shrinks below the floor while the line is up closes the popup: the Enter that follows withdraws nothing', () => {
+    const { port, withdraw } = fakePort();
+    const p = opened(port);
+    p.arm();
+    p.clock.advance(900);
+    p.host.resized(79, 24);
+    expect(p.host.getSnapshot().open).toBe(false);
+    expect(p.notice()).toContain('nothing was answered');
+    p.press('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(p.announced).toEqual([]);
+  });
+
+  /** A seeded stream, so a failure names the run that reproduces it. */
+  function stream(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state = (state * 1664525 + 1013904223) % 4294967296;
+      return state / 4294967296;
+    };
+  }
+
+  const ALPHABET: readonly (readonly [string, string, import('./popup-reducer.js').PopupKey])[] = [
+    ['a', 'a', {}],
+    ['x', 'x', {}],
+    [' ', ' ', {}],
+    ['d', 'd', {}],
+    ['d', 'd', {}],
+    ['Del', '', { delete: true }],
+    ['Backspace', '', { backspace: true }],
+    ['down', '', DOWN],
+    ['up', '', { upArrow: true }],
+    ['pageDown', '', { pageDown: true }],
+    ['home', '', { home: true }],
+    ['Enter', '', ENTER],
+    ['Enter', '', ENTER],
+  ];
+  const ARMING = new Set(['d', 'Del', 'Backspace']);
+  const NAVIGATION = new Set(['down', 'up', 'pageDown', 'home']);
+
+  it('SECURITY: over hundreds of random streams of letters, arrows, [d], Del and Enter at any pace, a withdrawal happens only for the line a [d] armed with nothing typed before it, and only for an Enter pressed alone, 800 ms to ten seconds after it, with nothing but arrow keys between', () => {
+    const next = stream(7654321);
+    let withdrawals = 0;
+    let armedThenRefused = 0;
+    for (let run = 0; run < 700; run += 1) {
+      const { port, withdraw, load } = fakePort();
+      const p = opened(port);
+      /** Typing, in the oracle's own words (weaker than the host's: it never counts a refused `[d]`): a letter, a space or an Enter that answered nothing. */
+      let typed = false;
+      /** The line, while it is up by the oracle's count: when it was armed, what it names, whether anything was typed before it, and the keys since. */
+      let line:
+        | {
+            at: number;
+            entry: PermissionEntry | undefined;
+            typedBefore: boolean;
+            since: { name: string; at: number }[];
+          }
+        | undefined;
+      const pace = [5, 40, 110, 250, 700, 900, 2_000][Math.floor(next() * 7)] ?? 110;
+      const length = 2 + Math.floor(next() * 12);
+      for (let index = 0; index < length; index += 1) {
+        const [name, input, key] = ALPHABET[Math.floor(next() * ALPHABET.length)] ??
+          ALPHABET[0] ?? ['a', 'a', {}];
+        p.clock.advance(Math.floor(pace * (0.5 + next())));
+        const before = withdraw.mock.calls.length;
+        const stepBefore = p.step();
+        const highlighted = p.highlighted();
+        const entries = permissionEntries(load());
+        const at = p.clock.now();
+        p.press(input, key);
+        p.host.shown(p.host.getSnapshot());
+        const label = `run ${String(run)} key ${String(index)} ${name}`;
+        const withdrew = withdraw.mock.calls.length > before;
+        if (withdrew) {
+          withdrawals += 1;
+          expect(line, `${label}: a line was armed`).toBeDefined();
+          if (line === undefined) return;
+          expect(key, `${label}: an Enter pressed alone`).toEqual(ENTER);
+          expect(line.typedBefore, `${label}: nothing was typed before that [d]`).toBe(false);
+          expect(at - line.at, `${label}: not before the dwell`).toBeGreaterThanOrEqual(800);
+          expect(at - line.at, `${label}: not after the window`).toBeLessThanOrEqual(10_000);
+          for (const seen of line.since)
+            expect(
+              NAVIGATION.has(seen.name),
+              `${label}: ${seen.name} was typed over the line`,
+            ).toBe(true);
+          const last = line.since.at(-1);
+          if (last !== undefined)
+            expect(
+              at - last.at,
+              `${label}: the quiet gap after an arrow key`,
+            ).toBeGreaterThanOrEqual(300);
+          expect(
+            withdraw.mock.calls.at(-1)?.[0],
+            `${label}: exactly the row the line named`,
+          ).toEqual(line.entry);
+        }
+        if (withdrew) line = undefined;
+        else if (
+          ARMING.has(name) &&
+          stepBefore === PERMISSIONS_STEP.list &&
+          p.step() === PERMISSIONS_STEP.withdraw
+        )
+          line = {
+            at,
+            entry: entries[Number(/^entry:(\d+)$/u.exec(highlighted ?? '')?.[1])],
+            typedBefore: typed,
+            since: [],
+          };
+        else {
+          if (ARMING.has(name) && stepBefore === PERMISSIONS_STEP.list) armedThenRefused += 1;
+          if (line !== undefined && p.step() === PERMISSIONS_STEP.withdraw)
+            line.since.push({ name, at });
+          else line = undefined;
+        }
+        if (NAVIGATION.has(name)) typed = false;
+        else if (!ARMING.has(name) && !withdrew) typed = true;
+      }
+    }
+    // The streams really reached both outcomes: the host answered some, and refused many `[d]` that the oracle would not have.
+    expect(withdrawals).toBeGreaterThan(10);
+    expect(armedThenRefused).toBeGreaterThan(100);
   });
 });
 

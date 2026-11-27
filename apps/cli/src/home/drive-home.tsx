@@ -36,7 +36,6 @@ import {
   createRunHistoryReader,
   createRunPinStore,
   loadRunSnapshot,
-  MAX_RUN_SUMMARY_PAGE,
 } from '@relavium/db';
 import {
   RUN_LEASE_TTL_MS,
@@ -222,8 +221,8 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
-  /** Open the tab host on its Permissions tab as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
-   *  ADR-0140 §1): the Home ends with success when the screen is closed. Absent ⇒ the ordinary Home. */
+  /** Open the `/permissions` popup as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   *  ADR-0140 §1): the Home ends with success when the popup is closed. Absent ⇒ the ordinary Home. */
   readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
@@ -365,7 +364,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   // "This directory", ONCE (MVP-11 unit 7, round 2): the canonical spelling of the directory the Home was opened in, the very root a run
   // records (`projectRootOf`) and the `working_dir` a chat records. Every reader that asks whether a run is this directory's (the lists,
-  // the parked rows and their cards, the History, Active and Defined tabs, `r`, the run host's resume) compares a run's root with this
+  // the parked rows and their cards, the History and Active tabs, the popups' catalogue, `r`, the run host's resume) compares a run's root with this
   // text, never with `deps.global.cwd` as it was typed (`.`, `work/`, a symlink, a case variant).
   const here = fsPolicyWorkspace(fsPolicy);
   // One chord history for every card the Home shows (ADR-0139 §4): the MCP consent card (this channel), the gate and budget cards and the
@@ -623,7 +622,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       sessions: opened.store,
       runs: runReader,
       // The Home lists THIS directory only (MVP-11 unit 7): its runs by the root a run records and its sessions by the workspace a chat
-      // records, one canonical value (`here`), the directory `/resume` calls "this directory" and the root the parked rows, the Defined
+      // records, one canonical value (`here`), the directory `/resume` calls "this directory" and the root the parked rows, the `/workflows` popup's catalogue
       // and the History tabs use. Another directory's work stays in `/resume` (Tab) and `/history`.
       projectRoot: here,
       workingDir: here,
@@ -1974,7 +1973,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         catalog: launchCatalog,
         assertAdmitting: assertHomeAdmitting,
       });
-      // The Defined tab (ADR-0140 §2, MVP-8 step 4): the very catalog `/run` offers, and the project's workflow pins, read every time the
+      // The `/workflows` popup's catalogue (ADR-0140 §2, MVP-11 unit 8): the very catalog `/run` offers, and the project's workflow pins, read every time the
       // tab is entered. The pins are keyed by the project's real path; the project is found afresh, as the catalog's is.
       const definedPins = createRunPinStore(opened.db);
       // The directory a workflow pin is keyed by, found afresh for every read and every toggle (a `/init` in this Home is seen at once).
@@ -1987,21 +1986,23 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         return commandGrantRoot(deps.global.cwd, configDir);
       };
+      /** The latest run of each workflow in this directory, by slug, by the canonical root the runs recorded (`here`). */
+      const latestRunPerWorkflow = () =>
+        runReader
+          .loadLatestRunPerWorkflowInProject(here)
+          .map((summary) => [summary.slug, summary.lastRun] as const);
       const defined = createDefinedPort({
         catalog: launchCatalog,
-        // The latest run of each workflow in this directory, by the canonical root the runs recorded (`here`).
-        lastRuns: () =>
+        // The latest run of each workflow in this directory: its status and when it was last written (the age the catalogue draws beside it), from
+        // ONE read.
+        latestRuns: () =>
           new Map(
-            runReader
-              .loadLatestRunPerWorkflowInProject(here)
-              .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
-          ),
-        // ... and when each was last written, for the age the catalogue draws beside its status.
-        lastRunTimes: () =>
-          new Map(
-            runReader
-              .loadLatestRunPerWorkflowInProject(here)
-              .map((summary): [string, string] => [summary.slug, summary.lastRun.updatedAt]),
+            latestRunPerWorkflow().map(
+              ([slug, run]): [string, { status: RunStatus; at: string }] => [
+                slug,
+                { status: run.status, at: run.updatedAt },
+              ],
+            ),
           ),
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
         // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
@@ -2009,7 +2010,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // Another project's root is shortened against this Home's directory and the operator's home (never an absolute path inside either).
         paths: displayRoots(deps.global.cwd, homeDir),
       });
-      // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
+      // `[p]` in the `/workflows` popup or a History row: the pin store behind both toggles. The keys are the store's (a workflow under
       // its project root and slug, a run under its full id); nothing is written until the key is pressed.
       const pins = createPinPort({ store: definedPins, workflowRoot: workflowPinRoot, now });
       // The History tab (ADR-0140 §2, MVP-8 step 4): finished runs a page at a time over the Home's own connection, the pinned runs, and one
@@ -2051,7 +2052,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           ownership?.surface.work.failure(cause);
         });
       };
-      // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
+      // `[x]` in the `/workflows` popup: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
       // `/import` (ADR-0140 §9): the import card over `relavium import`'s own prepare and commit, on the same native flow.
       const importPort = createImportPort({ global: deps.global, homeDir });
@@ -2166,18 +2167,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         workflowReads: {
           describe: launchCatalog.describe,
           lastRuns: (slug, limit) => {
-            // A run holds its workflow's UUID, never the slug, and the summaries index has no page per slug: the project's newest page is read
-            // and the runs whose workflow carries this slug are kept (so a workflow whose last runs are all older than that page shows none).
-            const page = runReader.listRunSummaries({
-              projectRoot: here,
-              limit: MAX_RUN_SUMMARY_PAGE,
-            });
-            const slugs = runReader.loadWorkflowSlugs([
-              ...new Set(page.map((run) => run.workflowId)),
-            ]);
-            return page
-              .filter((run) => slugs.get(run.workflowId) === slug)
-              .slice(0, limit)
+            // A run holds its workflow's UUID, never the slug: the UUID is the one the catalogue's own latest-run read gives for this slug (a
+            // workflow that has no run here has none to list), and the summaries index then pages that workflow's runs, whatever other
+            // workflows ran since.
+            const workflowId = latestRunPerWorkflow().find(([name]) => name === slug)?.[1]
+              .workflowId;
+            if (workflowId === undefined) return [];
+            return runReader
+              .listRunSummaries({ projectRoot: here, workflowId, limit })
               .map((run) => ({ runId: run.id, status: run.status, at: run.updatedAt }));
           },
         },
@@ -2226,10 +2223,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             { host: hostedRuns, flow: promptFlow, assertAdmitting: assertHomeAdmitting },
             runId,
           ),
-        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): the Permissions tab of the tab host. The project's remembered commands,
+        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): its popup. The project's remembered commands,
         // over the very store a chat and `relavium permissions` read, and the repository's `[chat]` allowlist as a chat started now would
-        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the tab is entered,
-        // and it is read again every time it is.
+        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the popup opens,
+        // and it is read again every time it does.
         permissions: createPermissionsPort(
           {
             allowlist: () => {

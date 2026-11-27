@@ -148,7 +148,7 @@ describe('p on a History row pins the run under its canonical key', () => {
     const readsBefore = r.read.mock.calls.length;
     const before = r.state.history?.read;
     r.press('p');
-    // The sentence the Defined tab gives, with the store's own counts: the total, and how many of them this list does not hold.
+    // The sentence the `/workflows` popup gives, with the store's own counts: the total, and how many of them this list does not hold.
     expect(r.message()).toBe(
       `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS)} of them workflows.`,
     );

@@ -10,7 +10,8 @@ import { waitClockText, waitSinceText } from './sheet-frame.js';
  * - **One timer, owned by the sheet's host.** In the alternate screen one unref'd one-second timer re-renders the host, and only when the
  *   quantised text changed: once a second for the first minute, then once a minute. It is cleared when the sheet closes (its origin goes) and
  *   when the host unmounts, and a tick that arrives after either does nothing.
- * - **Inline nothing ticks.** The inline form is the static `waiting since HH:MM`; no timer is started at all.
+ * - **Inline nothing ticks.** The inline form is the static `waiting since HH:MM` (with the day when the wait began on an earlier one); no
+ *   timer is started at all.
  *
  * The host re-renders its own state, so no store is flushed for the clock and no snapshot changes: the measured-frame acknowledgement compares
  * the card's own state by reference, and a tick leaves it the same object.
@@ -34,7 +35,7 @@ export function waitClockFor(
   nowMs: number,
 ): string {
   if (sinceMs === undefined) return '';
-  return form === 'static' ? waitSinceText(sinceMs) : waitClockText(nowMs - sinceMs);
+  return form === 'static' ? waitSinceText(sinceMs, nowMs) : waitClockText(nowMs - sinceMs);
 }
 
 /**

@@ -5,6 +5,7 @@
  * announces it on the HOST's channel (it outlives the popup), and writes nothing else; `Esc` closes and changes nothing; the answer waits for
  * the opening guard like every answer.
  */
+import type { ReasoningEffort } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { withGlyphForm } from '../render/tui/glyphs.js';
@@ -60,17 +61,64 @@ describe('what the popup lists', () => {
     expect(effortInitialRow(BUDGET, ['off', 'medium'], 'high')).toBe('medium');
   });
 
-  it('the spec: one step named Effort under `/effort`, `Enter apply`, its legend `↑/↓ select · Enter apply · Esc close`', () => {
+  /** The legend of the popup opened on `initialRow` with the highlight moved to `row` (the arrows, one press each). */
+  function legendOn(
+    model: string,
+    tiers: readonly ReasoningEffort[],
+    current: ReasoningEffort | undefined,
+    row: string,
+  ) {
+    const spec = effortSpec(
+      'chat',
+      effortContent(model, tiers, current),
+      effortInitialRow(model, tiers, current),
+    );
+    const opened = openFrame(spec, 1);
+    const rows = tiers.map((tier) => tier as string);
+    const frame = {
+      ...opened,
+      steps: opened.steps.map((step) => ({ ...step, selected: rows.indexOf(row) })),
+    };
+    return withGlyphForm(false, () => popupLegend(frame));
+  }
+
+  it('the spec: one step named Effort under `/effort`, opened on the tier in force', () => {
     const spec = effortSpec('chat', effortContent(GRADED, ALL, 'low'), 'low');
     expect(spec).toMatchObject({ id: 'effort', title: '/effort', origin: 'chat' });
     expect(spec.steps).toHaveLength(1);
     expect(spec.steps[0]).toMatchObject({ name: 'Effort', enter: 'apply', initialRow: 'low' });
-    const legend = withGlyphForm(false, () => popupLegend(openFrame(spec, 1)));
-    expect(legend.items).toEqual([
+  });
+
+  it('the legend says what `Enter` does to the row it is on, as `/mode` says it: `Enter keep` on the tier in force, `Enter apply` on any other (W1 O-15)', () => {
+    const inForce = legendOn(GRADED, ALL, 'low', 'low');
+    expect(inForce.items).toEqual([
+      { keys: '↑/↓', verb: 'select' },
+      { keys: 'Enter', verb: 'keep' },
+    ]);
+    expect(inForce.exit).toMatchObject({ class: 'close', keys: 'Esc', verb: 'close' });
+    const other = legendOn(GRADED, ALL, 'low', 'high');
+    expect(other.items).toEqual([
       { keys: '↑/↓', verb: 'select' },
       { keys: 'Enter', verb: 'apply' },
     ]);
-    expect(legend.exit).toMatchObject({ class: 'close', keys: 'Esc', verb: 'close' });
+    // with no tier in force (the provider's default) nothing is "kept": every row applies, the opening `medium` included
+    for (const tier of ALL)
+      expect(legendOn(GRADED, ALL, undefined, tier).items[1]).toEqual({
+        keys: 'Enter',
+        verb: 'apply',
+      });
+  });
+
+  it('the row that REPRESENTS the tier in force (a deduped or collapsed one) says `apply` where `Enter` really applies it: the popup compares the row with the tier in force', () => {
+    // DeepSeek's `low` sends `high`: the marked row is `high`, but `Enter` on it applies an explicit `high` (it is not the tier in force)
+    expect(legendOn(DEEPSEEK, ['off', 'high', 'max'], 'low', 'high').items[1]).toEqual({
+      keys: 'Enter',
+      verb: 'apply',
+    });
+    expect(legendOn(DEEPSEEK, ['off', 'high', 'max'], 'high', 'high').items[1]).toEqual({
+      keys: 'Enter',
+      verb: 'keep',
+    });
   });
 });
 

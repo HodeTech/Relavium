@@ -12,6 +12,7 @@
 import { foldKeyLookalikes } from '../render/tui/home-attention.js';
 import { workRowText } from '../render/tui/home-projection.js';
 import { clipLine } from '../render/tui/sheet-frame.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { wrapPopupText } from './popup-text.js';
 
 /** The code points of a stored value read before the scrub, so a megabyte of text costs what a short one does. */
@@ -39,6 +40,13 @@ export function storedParagraph(text: string, columns: number, rows: number): st
   const lines = wrapPopupText(storedLine(text), columns).filter((line) => line !== '');
   if (lines.length <= rows) return lines;
   const kept = lines.slice(0, rows);
-  kept[rows - 1] = clipLine(`${kept[rows - 1] ?? ''}…`, columns);
+  kept[rows - 1] = endedWithEllipsis(kept[rows - 1] ?? '', columns);
   return kept;
+}
+
+/** `line` and `…` in `columns`: words are dropped from its end until the mark fits, so the cut falls between words, not inside one. */
+export function endedWithEllipsis(line: string, columns: number): string {
+  const words = line.trimEnd().split(' ');
+  while (words.length > 1 && displayWidth(`${words.join(' ')}…`) > columns) words.pop();
+  return clipLine(`${words.join(' ')}…`, columns);
 }

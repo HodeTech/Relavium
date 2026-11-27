@@ -235,7 +235,10 @@ export interface ChatStoreController extends ChatStore {
    *  stripped (newlines kept for multi-line output), flushes immediately. `hostLead` names the one glyph of the speaker marker's set that the
    *  host's own sentence leads its logical lines with (the model-switch notice's `⇄`); every other glyph of the set is blanked from the rows. */
   notice: (text: string, hostLead?: 'yourTurn' | 'modelSwitch') => void;
-  /** Advance the spinner tick; repaint if there is pending (dirty) state or a turn is in flight. */
+  /**
+   * The frame loop: advance the spinner tick and repaint when there is coalesced (dirty) state, when a turn is in flight and not blocked on the
+   * person, or while the confirmation of a wider grant is shown. A card that waits is not repainted by it (ADR-0147 §2).
+   */
   tick: () => void;
   /** Force a repaint (used on finalize to paint the last frame). */
   flush: () => void;
@@ -364,14 +367,16 @@ export function createChatStore(
     | undefined;
   let questionVisible: (() => boolean) | undefined;
   let questionFrame: object | undefined;
+  // When the current question frame was minted, on the MONOTONIC clock like every other guard: a wall clock stepped back would refuse every
+  // choosing key for as long as it was stepped, one stepped forward would skip the settle (ADR-0147 §2; unit 8 fix wave, S-5).
   let questionFrameAt = 0;
   const mintQuestionFrame = (): void => {
     questionFrame = {};
-    questionFrameAt = Date.now();
+    questionFrameAt = performance.now();
   };
   // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
   const questionAcceptsKeys = (): boolean =>
-    questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
+    questionVisible?.() === true && performance.now() - questionFrameAt >= QUESTION_SETTLE_MS;
   // The open continue-checkpoint card and the settle pair of its pending promise (ADR-0136).
   let checkpoint: CheckpointCardState | undefined;
   let pendingCheckpoint:
@@ -409,7 +414,7 @@ export function createChatStore(
   let refusalNoted = false;
   // When the inspection popup (the full view) last stepped back to the card, on the monotonic clock (ADR-0148 §7): an `Esc` that arrives
   // inside the settle after it is a mashed key, not a decision, and is ignored instead of rejecting the call and stopping the turn. It only
-  // ever suppresses a rejection; `Ctrl+C` still stops, and an approval keeps every guard of its own.
+  // ever suppresses a rejection; `Ctrl+C` still stops, and an approval keeps every guard of its own. Reset when the card settles.
   let steppedBackAt = Number.NEGATIVE_INFINITY;
   const noteStepBack = (previous: ToolReviewState, next: ToolReviewState, now: number): void => {
     if (previous.kind === 'approval' && previous.screen !== 'card' && next.screen === 'card')
@@ -706,9 +711,9 @@ export function createChatStore(
     },
     acknowledgeReviewFrame: (expected, page) => {
       if (review !== expected) return;
-      // The host acknowledges the same review again on every re-render (a spinner tick flushes the store); only a
-      // DIFFERENT review — a new card, a resize, a screen change, any state change — is a new frame the person must be
-      // given time to read, so only that restarts the dwell.
+      // The host acknowledges the same review again on every re-render (its wait clock's second, a flush for coalesced state, the lapsing
+      // confirmation's tick); only a DIFFERENT review — a new card, a resize, a screen change, any state change — is a new frame the person
+      // must be given time to read, so only that restarts the dwell.
       if (acknowledgedReview !== expected) {
         acknowledgedReview = expected;
         acknowledgedAt = performance.now();
@@ -1130,6 +1135,8 @@ export function createChatStore(
           alwaysAsk = undefined;
           settleApproval = undefined;
           cancelPendingApproval = undefined;
+          // The settle after a step back belongs to the card that stepped back: the next card's first `Esc` is a decision (S-4).
+          steppedBackAt = Number.NEGATIVE_INFINITY;
           state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
         };
