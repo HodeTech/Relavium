@@ -365,7 +365,11 @@ describe('a mounted chat: the streamed words in the live region stand in the con
           row.includes('forged'),
         );
         expect(rows.length).toBeGreaterThanOrEqual(3); // the words are drawn: the test is not vacuous
-        for (const row of rows) expect(row.slice(0, MARGIN_80).trim(), row).toBe('');
+        // inline, the stream's first row carries the reply's own word, as the finished reply's first row does (review round 2, S2-3)
+        for (const row of rows)
+          expect(row.slice(0, MARGIN_80).trim(), row).toBe(
+            !alternateScreen && row === rows[0] ? 'agent' : '',
+          );
       });
     }
   }

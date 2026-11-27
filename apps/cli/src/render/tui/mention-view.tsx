@@ -8,6 +8,7 @@ import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
+import { screenText } from './screen-text.js';
 import { SelectableText, selectedTone, selectionMarker } from './selectable-text.js';
 import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js';
 
@@ -65,9 +66,16 @@ export function mentionListLines(state: MentionState, size: number = MENTION_WIN
   return count === 0 ? 1 : Math.min(count, Math.max(1, size));
 }
 
+/**
+ * How the chat draws a stored name (a candidate, the browsed directory, the filter's echo): the inline sanitiser, then the screen's filter (unit 9,
+ * review round 2, S2-5). A file name is the repository's, and a row of fillers a terminal draws wider than the layout counts would wrap at the right
+ * edge and start the rest of the name at column 0.
+ */
+const screenName = (stored: string): string => screenText(sanitizeInline(stored));
+
 export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const { state, color } = props;
-  const text = props.text ?? sanitizeInline;
+  const text = props.text ?? screenName;
   const framed = props.framed !== false;
   const visible = visibleMentions(state);
   // Clamp the highlighted index for display — an async listing can land after the filter narrowed the set, leaving
@@ -124,7 +132,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
     <Box flexDirection="column" flexShrink={0} marginTop={framed ? 1 : 0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {`@ ${where}`}
-        <Emph kinds="bold">{sanitizeInline(state.filter)}</Emph>
+        <Emph kinds="bold">{screenName(state.filter)}</Emph>
       </Text>
       {renderBody()}
       {framed && (

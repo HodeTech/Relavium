@@ -19,7 +19,7 @@ import type {
 } from './session-view-model.js';
 import { exitKey, keyToken, legend } from './legend.js';
 import type { ScrollGeometry } from './scroll.js';
-import { wrapText, type DisplayLine, type LineStyle } from './viewport.js';
+import { expandTabs, wrapText, type DisplayLine, type LineStyle } from './viewport.js';
 import { clipLine } from './sheet-frame.js';
 
 /**
@@ -407,8 +407,9 @@ function entryRows(
       hangingRows(line.text, 'notice', cols, line.margin),
     );
   // A reply with no words of its own (a turn stopped or failed before its first token, a restored empty final) draws no body row: its summary is
-  // its first row, and an entry with neither draws nothing (review round 1, C-2).
-  const rows = screenText(first).trim() === '' ? [] : replyBodyRows(entry, first, cols, color);
+  // its first row, and an entry with neither draws nothing (review round 1, C-2). Judged on the text as drawn: a reply of only the host's marker
+  // glyphs, which the row blanks, is empty too (review round 2, M2-2).
+  const rows = screenModelText(first).trim() === '' ? [] : replyBodyRows(entry, first, cols, color);
   for (const line of source.slice(1))
     rows.push(...hangingRows(contentOfLine(line), line.style, cols));
   const head = rows[0];
@@ -565,10 +566,25 @@ function* walkTranscript(
   let before = previous;
   for (const entry of transcript) {
     const rows = cachedEntryRows(entry, cols, color, displays);
-    // An entry that draws no row (a reply with neither words nor a summary) has no separator either (review round 1, C-2).
+    // An entry that draws no row (a reply with neither words nor a summary) has no separator either (review round 1, C-2), and it is not what the
+    // next entry follows: a turn after it at the top of the transcript gets no separator above it (review round 2, C2-4).
     yield { gap: rows.length > 0 && entryGap(before, entry), rows };
-    before = entry;
+    if (rows.length > 0) before = entry;
   }
+}
+
+/**
+ * Whether `entry` draws a row on `grid` (a reply with neither words nor a summary, or a tool entry with no call, draws none): the inline renderer
+ * prints one entry at a time and skips such an entry when it looks for the one its next entry follows, as {@link transcriptRows} does.
+ */
+export function entryDrawsRows(
+  entry: TranscriptEntry,
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): boolean {
+  if (!Number.isFinite(grid.content) || grid.content < 1) return false;
+  return cachedEntryRows(entry, grid.content, color, displays).length > 0;
 }
 
 /**
@@ -764,7 +780,8 @@ export function formatBusyLine(input: {
   // blank. It goes through the screen's filter and its marker glyphs are blanked, as a finished reply's rows are ({@link screenModelText}): the
   // margin is exact in the layout, not on a terminal that measures a character wider (ADR-0145 §6, OQ4 as revised after review round 1). The
   // filter and the blank change no measured width, so the tail's row estimate below is the one it was.
-  const sanitized = screenModelText(stripTerminalControls(input.liveTokens));
+  // Tabs expanded here, before the row math: a terminal moves a tab to its next stop, which the layout counts as 0 columns (review round 2, S2-1).
+  const sanitized = expandTabs(screenModelText(stripTerminalControls(input.liveTokens)));
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
@@ -1018,7 +1035,7 @@ export function formatReasoningPanel(input: {
   }
   // The reasoning is the model's words in the live region, drawn in the content column like the streamed answer, and filtered and blanked as it is.
   const { body, tailed } = tailToRenderedRows(
-    screenModelText(stripTerminalControls(input.liveReasoning)),
+    expandTabs(screenModelText(stripTerminalControls(input.liveReasoning))),
     input.columns,
   );
   const elided = input.liveReasoningTruncated || tailed;

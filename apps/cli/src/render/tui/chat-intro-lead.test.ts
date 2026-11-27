@@ -70,7 +70,7 @@ describe('which full-screen intro may lead with the model-switch glyph', () => {
     });
     expect(written).toHaveLength(1);
     // Moved in unit 9: the intro stands on the grid. The margin is blank except on the first row of the model-switch notice, which the inline renderer
-    // marks with its word `model` where the sentence began with the glyph; the glyph leaves the text. (`chat-drive-redrive.test.tsx` holds the widths.)
+    // marks with its word `note` where the sentence began with the glyph; the glyph leaves the text. (`chat-drive-redrive.test.tsx` holds the widths.)
     const grid = chatGrid(80);
     const rows = (written[0] ?? '').trimEnd().split('\n');
     expect(rows[0]?.slice(0, grid.margin)).toBe(marginCell('modelSwitch', grid, 'word'));

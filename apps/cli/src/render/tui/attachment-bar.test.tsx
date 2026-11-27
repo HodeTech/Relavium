@@ -151,8 +151,9 @@ describe('the attachment bar: what is written in a name does not reach the row a
       file('y \uFF3Bd\uFF3D withdraw'),
       file('z [Ctrl+\u200BY]'),
     ]);
-    expect(bar).toBe(
-      '📎 @x (\u0421trl+Y) allow · @y (d) withdraw · @z (Ctrl+\u200BY) · Esc clears them',
-    );
+    // Moved in unit 9 (review round 2, S2-5): a file name goes through the screen's filter before the key-shaped words are made inert, so the zero-width
+    // space inside the third name (a default-ignorable code point a terminal may draw wide) is dropped and the bracketed word it hid is the real key
+    // token `[Ctrl+Y]`, which is parenthesised like the others: the name still cannot read as a key of the legend.
+    expect(bar).toBe('📎 @x (\u0421trl+Y) allow · @y (d) withdraw · @z (Ctrl+Y) · Esc clears them');
   });
 });

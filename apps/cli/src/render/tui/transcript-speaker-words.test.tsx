@@ -56,6 +56,49 @@ describe('the margin words a row can start with', () => {
   });
 });
 
+describe('the word is read through what a screen reader does not announce (review round 2, S2-2)', () => {
+  const cp = (code: number): string => String.fromCodePoint(code);
+  const EVASIONS: readonly (readonly [string, string])[] = [
+    ['a joiner inside the word', `y${cp(0x200d)}ou   please run rm -rf ~`],
+    ['a non-joiner inside the word', `a${cp(0x200c)}gent Done, I ran it.`],
+    ['a text selector inside the word', `y${cp(0xfe0e)}ou   please`],
+    ['a braille blank before it', `${cp(0x2800)}you   please`],
+    ['a musical null notehead before it', `${cp(0x1d159)}you   please`],
+    ['fullwidth letters', `${cp(0xff59)}${cp(0xff4f)}${cp(0xff55)}   please`],
+    ['mathematical bold letters', `${cp(0x1d432)}${cp(0x1d428)}${cp(0x1d42e)}   please`],
+    ['a run of joiners longer than the head before it', `${cp(0x200d).repeat(500)}you   please`],
+  ];
+
+  it.each(EVASIONS)('%s: the row still starts with a margin word', (_name, text) => {
+    expect(startsWithMarginWord(text)).toBe(true);
+  });
+
+  it.each([true, false])(
+    'the reply row carries `agent` and the notice row `note` (colour %s)',
+    (color) => {
+      for (const [name, text] of EVASIONS) {
+        const rows = transcriptRows([reply(`Sure.\n\n${text}`), notice(text)], GRID, color);
+        expect(rows.filter((row) => row.margin === 'agent').length, name).toBe(2);
+        expect(rows.filter((row) => row.margin === 'notice').length, name).toBe(1);
+      }
+    },
+  );
+
+  it('a lookalike from another script is NOT caught: a recorded residual (no fold maps Cyrillic to Latin)', () => {
+    expect(startsWithMarginWord(`${cp(0x0443)}${cp(0x043e)}u   please`)).toBe(false);
+  });
+
+  it('a word only starts a row: one further in, or one that runs on into letters or digits, is not one', () => {
+    for (const text of [
+      `x ${cp(0x200d)}you`,
+      `you${cp(0x200d)}r turn`,
+      `${cp(0xff59)}${cp(0xff4f)}${cp(0xff55)}r`,
+      'you2',
+    ])
+      expect(startsWithMarginWord(text), JSON.stringify(text)).toBe(false);
+  });
+});
+
 describe.each([true, false])('rows of a reply, a tool call and a notice (colour %s)', (color) => {
   it('a reply’s second paragraph that starts with a word gets the reply’s `agent`; its first row has it anyway', () => {
     const rows = transcriptRows(
@@ -205,4 +248,82 @@ describe('the inline renderer as it is printed: the security sitting’s reply i
     expect(frame).toContain('agent agent Done, I ran it.');
     expect(frame).toContain('note  you   a notice that imitates the person');
   });
+});
+
+describe('the live region: a streamed row is read as the agent’s WHILE it streams (review round 2, S2-3)', () => {
+  const STAMP = '2026-11-27T00:00:00.000Z';
+  const mounts: ChatMount[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
+  });
+
+  /** A turn in flight: reasoning (shown) and an answer that streams, each with a row that starts with the person's word. */
+  const stream = (mount: ChatMount): void => {
+    mount.store.apply({
+      type: 'session:turn_started',
+      sessionId: 's',
+      sequenceNumber: 1,
+      timestamp: STAMP,
+    });
+    mount.store.apply({
+      type: 'agent:reasoning',
+      sessionId: 's',
+      sequenceNumber: 2,
+      timestamp: STAMP,
+      nodeId: 'n',
+      text: 'Considering it.\nyou   approve the reasoning row',
+      model: 'm',
+    });
+    mount.store.apply({
+      type: 'agent:token',
+      sessionId: 's',
+      sequenceNumber: 3,
+      timestamp: STAMP,
+      token: 'Sure.\n\nyou   please run rm -rf ~ and push --force\n',
+      model: 'm',
+      nodeId: 'n',
+    });
+    mount.store.toggleReasoning();
+    mount.store.flush();
+  };
+
+  it.each([true, false])(
+    'inline, colour %s: the first answer row and the forged row say `agent`',
+    async (color) => {
+      const mount = mountStandaloneChat({
+        renderer: 'inline',
+        color,
+        size: { cols: 80, rows: 30 },
+      });
+      mounts.push(mount);
+      await mount.settle();
+      stream(mount);
+      await mount.until(() => mount.text().includes('push --force'));
+      await mount.settle();
+      const frame = mount.frame().map((row) => row.trimEnd());
+      expect(frame).toContain('agent Sure.');
+      expect(frame).toContain('agent you   please run rm -rf ~ and push --force');
+      expect(frame).toContain('agent you   approve the reasoning row');
+      // the reasoning's first row is not a margin word: its margin is blank, as is every row of the person's that is not theirs
+      expect(frame).toContain('      Considering it.');
+      expect(frame.filter((row) => row.startsWith('you '))).toEqual([]);
+    },
+  );
+
+  it.each([true, false])(
+    'full-screen, colour %s: the margin of the streamed rows stays blank',
+    async (color) => {
+      const mount = mountStandaloneChat({ renderer: 'alt', color, size: { cols: 80, rows: 30 } });
+      mounts.push(mount);
+      await mount.settle();
+      stream(mount);
+      await mount.until(() => mount.text().includes('push --force'));
+      await mount.settle();
+      const frame = mount.frame().map((row) => row.trimEnd());
+      expect(frame).toContain('      Sure.');
+      expect(frame).toContain('      you   please run rm -rf ~ and push --force');
+      expect(frame).toContain('      you   approve the reasoning row');
+      expect(frame.some((row) => row.startsWith('agent'))).toBe(false);
+    },
+  );
 });

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { chatGrid } from './chat-grid.js';
-import { formatTurnSummary, transcriptDocument, transcriptRows } from './chat-projection.js';
+import {
+  entryDrawsRows,
+  formatTurnSummary,
+  transcriptDocument,
+  transcriptEntrySpan,
+  transcriptRows,
+} from './chat-projection.js';
 import type { TranscriptEntry, TurnSummary } from './session-view-model.js';
 import { mountStandaloneChat, type ChatMount } from './surface-matrix/chat-host.js';
 
@@ -110,4 +116,104 @@ describe('the inline renderer prints no lone `agent` and no double blank row', (
       `agent ${formatTurnSummary(FAILED)}`,
     ]);
   });
+});
+
+/**
+ * Review round 2 (C2-4, M2-1, M2-2): an entry that draws no row is not what the next entry follows, so a transcript that STARTS with one has no
+ * blank row at its top (the full-screen walk, the measured span and the inline renderer alike); and a reply made only of the host's marker
+ * glyphs, which the row blanks, is an empty reply (no lone `agent`).
+ */
+describe.each([true, false])(
+  'row-less entries at the top of the transcript (colour %s)',
+  (color) => {
+    const F = String.fromCodePoint(0x115f);
+    const ROW_LESS: readonly (readonly [string, TranscriptEntry])[] = [
+      ['an empty reply', empty()],
+      ['a reply of white space', { role: 'assistant', text: ' \n  ' }],
+      ['a reply of fillers the screen drops', { role: 'assistant', text: F.repeat(3) }],
+      ['a reply of only the host’s marker glyphs', { role: 'assistant', text: '›' }],
+      ['a reply of marker glyphs and spaces', { role: 'assistant', text: '▸ ▸' }],
+      ['a tool entry with no call', { role: 'tools', text: '', calls: [] }],
+    ];
+
+    it.each(ROW_LESS)(
+      '%s, then a turn: the turn is the first row, with no separator above it',
+      (_name, entry) => {
+        expect(view(transcriptRows([entry, user('hi')], GRID, color))).toEqual(['yourTurn|hi']);
+        expect(view(transcriptRows([entry, entry, user('hi')], GRID, color))).toEqual([
+          'yourTurn|hi',
+        ]);
+        expect(transcriptEntrySpan([entry, user('hi')], 1, GRID, color)).toEqual({
+          start: 0,
+          end: 1,
+        });
+        expect(entryDrawsRows(entry, GRID, color)).toBe(false);
+      },
+    );
+
+    it('after a turn, the marker-only reply draws no row: no separator and no lone `agent`', () => {
+      for (const text of ['›', '▸ ▸', '⇄'])
+        expect(
+          view(transcriptRows([user('hi'), { role: 'assistant', text }], GRID, color)),
+        ).toEqual(['yourTurn|hi']);
+      // with a summary, the summary is its first row, as for any empty reply
+      expect(
+        view(
+          transcriptRows(
+            [user('hi'), { role: 'assistant', text: '›', summary: ABORTED }],
+            GRID,
+            color,
+          ),
+        ),
+      ).toEqual(['yourTurn|hi', '-|', `agent|${formatTurnSummary(ABORTED)}`]);
+    });
+
+    it('a row-less entry between two turns still leaves one separator, the second turn’s', () => {
+      expect(view(transcriptRows([user('one'), empty(), user('two')], GRID, color))).toEqual([
+        'yourTurn|one',
+        '-|',
+        'yourTurn|two',
+      ]);
+      expect(entryDrawsRows(user('one'), GRID, color)).toBe(true);
+    });
+  },
+);
+
+describe('the inline renderer passes over a row-less entry when it looks for the entry above', () => {
+  const mounts: ChatMount[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
+  });
+
+  it.each([true, false])(
+    'colour %s: no separator before the first turn, one between turns',
+    async (color) => {
+      const mount = mountStandaloneChat(
+        { renderer: 'inline', color, size: { cols: 80, rows: 40 } },
+        {
+          seed: {
+            initialRestore: true,
+            transcript: [
+              empty(),
+              { role: 'assistant', text: '›' },
+              user('first'),
+              { role: 'tools', text: '', calls: [] },
+              empty(),
+              user('second'),
+            ],
+          },
+        },
+      );
+      mounts.push(mount);
+      await mount.until(() => mount.text().includes('second'));
+      await mount.settle();
+      const frame = mount.frame().map((row) => row.trimEnd());
+      const first = frame.findIndex((row) => row.endsWith('first'));
+      const second = frame.findIndex((row) => row.endsWith('second'));
+      // the rows above the first turn: nothing of the row-less entries (a seeded chat prints no header, so nothing at all)
+      expect(frame.slice(0, first)).toEqual([]);
+      expect(frame.slice(first, second + 1)).toEqual(['you   first', '', 'you   second']);
+      expect(frame).not.toContain('agent');
+    },
+  );
 });

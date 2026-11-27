@@ -3,6 +3,7 @@ import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from '../sanitize.js';
+import { screenText } from './screen-text.js';
 import { Emph } from './emphasis-view.js';
 import { reverseSearchMatchText, type ReverseSearchState } from './input-history.js';
 import { exitKey, legend } from './legend.js';
@@ -16,6 +17,12 @@ const SEARCH_LEGEND = legend(
   ],
   exitKey.close(),
 );
+
+/**
+ * A stored line (the query and the recalled history line) as the screen draws it: the inline sanitiser, then the screen's filter (unit 9, review round
+ * 2, S2-5): a recalled line is stored text, and a filler a terminal draws wider than the layout counts would wrap the row into the margin.
+ */
+const screenName = (stored: string): string => screenText(sanitizeInline(stored));
 
 /**
  * The `Ctrl+R` reverse-incremental-search line (2.5.D step 3) — a readline-style search prompt that replaces the
@@ -34,8 +41,8 @@ export function ReverseSearchView(
     <Box flexDirection="column" flexShrink={0} marginTop={1}>
       <Text {...colorProps(color, failed ? 'yellow' : 'cyan')} wrap="truncate-end">
         {failed ? '(failed reverse-i-search) ' : '(reverse-i-search) '}
-        <Emph kinds="bold">{sanitizeInline(state.query)}</Emph>
-        {match !== undefined && <Text {...dimProps(color)}>{` → ${sanitizeInline(match)}`}</Text>}
+        <Emph kinds="bold">{screenName(state.query)}</Emph>
+        {match !== undefined && <Text {...dimProps(color)}>{` → ${screenName(match)}`}</Text>}
       </Text>
       <Text {...dimProps(color)} wrap="truncate-end">
         {SEARCH_LEGEND}

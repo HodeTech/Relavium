@@ -6,7 +6,13 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { modelSwitchNotice } from '../../chat/repl-info.js';
-import { chatGrid, marginCell, MARGIN_WORDS, type ChatGrid } from './chat-grid.js';
+import {
+  chatGrid,
+  marginCell,
+  MARGIN_WORDS,
+  startsWithMarginWord,
+  type ChatGrid,
+} from './chat-grid.js';
 import { ChatView, ChromeColumn, chromeGridFor, emitIntro } from './chat-ink.js';
 import { transcriptRows } from './chat-projection.js';
 import { createChatStore } from './chat-store.js';
@@ -229,13 +235,17 @@ describe.each(HOSTS)('the margin of the chat is the host’s, in the %s host', (
         const shown = frame.map((row, index) => `${String(index)}|${row}`).join('\n');
         expect(m.text(), shown).toContain('write_file');
         const marked = markedRows(frame, grid);
+        // inline, the streamed answer's first row carries the reply's own word (review round 2, S2-3): the host's word from the closed list, after
+        // the calls' rows; full-screen the reply's margin is blank
+        const answer = variant.renderer === 'inline' ? [marginCell('agent', grid, 'word')] : [];
         expect(
           marked.map((row) => row.cell),
           `only the tool calls' rows are marked, each with the table's mark in the margin\n${shown}`,
-        ).toEqual(tools.map(() => toolCell));
+        ).toEqual([...tools.map(() => toolCell), ...answer]);
         // the call's words stand in the content column, right after the mark's cell, and a glyph the model named was blanked from them
-        for (const { row } of marked)
-          expect(row.slice(grid.margin), shown).toMatch(/^\s*(?:read_file|write_file)\b/u);
+        for (const { row, cell } of marked)
+          if (cell === toolCell)
+            expect(row.slice(grid.margin), shown).toMatch(/^\s*(?:read_file|write_file)\b/u);
         // every other row: nothing but spaces in the margin, whatever the row says
         for (const row of frame)
           if (!marked.some((mark) => mark.row === row))
@@ -337,9 +347,16 @@ describe.each(HOSTS)('the live region of the chat, in the %s host', (host) => {
           /Reasoning|word|Esc stops|Interrupting|thinking/u.test(row) ? [index] : [],
         );
         expect(live.length, shown).toBeGreaterThan(3);
+        const firstAnswer = frame.findIndex((row) => row.includes('word'));
         for (const index of live) {
           const row = frame[index] ?? '';
-          expect(row.slice(0, grid.margin).trim(), `${row}\n${shown}`).toBe('');
+          // inline, the streamed answer's first row and a live row that starts with a margin word carry the reply's word (review round 2, S2-3)
+          const word =
+            variant.renderer === 'inline' &&
+            (index === firstAnswer || startsWithMarginWord(row.slice(grid.margin)))
+              ? 'agent'
+              : '';
+          expect(row.slice(0, grid.margin).trim(), `${row}\n${shown}`).toBe(word);
           expect(displayWidth(row) - grid.margin, `${row}\n${shown}`).toBeLessThanOrEqual(
             grid.content,
           );

@@ -13,6 +13,7 @@ import {
   type LegendItem,
 } from './legend.js';
 import { dimProps } from './projection.js';
+import { screenText } from './screen-text.js';
 import { displayWidth } from './viewport.js';
 
 /** `Esc` at an idle prompt discards the queued attachments: something is cancelled, so the effect is stated (ADR-0145 §2, the decide class). */
@@ -40,9 +41,10 @@ export function attachmentLegend(
   columns: number,
 ): string {
   // The chips are joined by the legend's own separator and sit beside its keys, so a name that holds ` · ` or a `[Ctrl+Y]` is made inert first
-  // (a file called `a · Esc keeps them` must not read as an item of this legend).
+  // (a file called `a · Esc keeps them` must not read as an item of this legend), and a file name is the repository's: the screen's filter drops the
+  // fillers a terminal draws wider than the layout counts (unit 9, review round 2, S2-5).
   const chips = attachments
-    .map((a) => inertLegendText(sanitizeInline(attachmentChip(a))))
+    .map((a) => inertLegendText(screenText(sanitizeInline(attachmentChip(a)))))
     .join(LEGEND_SEPARATOR);
   const fit = (text: string): readonly LegendItem[] =>
     fitLegend([], [{ item: { text }, priority: 1 }], CLEAR_THEM, columns, displayWidth);

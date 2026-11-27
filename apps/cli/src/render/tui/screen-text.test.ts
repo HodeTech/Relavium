@@ -12,28 +12,41 @@ import { terminalWidth } from './terminal-wrap.test-support.js';
 
 const c = (code: number): string => String.fromCodePoint(code);
 
-/** The fillers the security sitting named and the default-ignorable classes around them (a sample of each block, not a table). */
-const FILLERS: readonly number[] = [
-  0x00ad, // soft hyphen (tmux: 1 column)
-  0x034f, // combining grapheme joiner
-  0x115f, // Hangul choseong filler (tmux: 2 columns)
-  0x1160, // Hangul jungseong filler
-  0x17b4, // Khmer vowel inherent AQ
-  0x17b5, // Khmer vowel inherent AA
-  0x180b, // Mongolian free variation selector one
-  0x180e, // Mongolian vowel separator
-  0x180f, // Mongolian free variation selector four
-  0x200b, // zero width space
-  0x2060, // word joiner
-  0x2064, // invisible plus
-  0x3164, // Hangul filler
-  0xfe00, // variation selector one
-  0xfeff, // byte order mark
-  0xffa0, // halfwidth Hangul filler (tmux: 1 column)
-  0x1bca0, // shorthand format letter overlap
-  0x1d173, // musical symbol begin beam
-  0xe0001, // language tag
-  0xe0100, // variation selector seventeen
+/**
+ * The fillers the security sitting named and the default-ignorable and format classes around them (a sample of each block, not a table), with
+ * the columns tmux 3.7b DREW for each in review round 2's measurements (`terminal-widths.test.ts`; M2-4 corrected the first version's claim that
+ * U+3164 is two columns: tmux draws it none). Every one is dropped, whatever a terminal draws: the layout counts none of them.
+ */
+const FILLERS: readonly (readonly [number, number])[] = [
+  [0x00ad, 1], // soft hyphen
+  [0x034f, 0], // combining grapheme joiner
+  [0x115f, 2], // Hangul choseong filler
+  [0x1160, 0], // Hangul jungseong filler
+  [0x17b4, 0], // Khmer vowel inherent AQ
+  [0x17b5, 0], // Khmer vowel inherent AA
+  [0x180b, 0], // Mongolian free variation selector one
+  [0x180e, 0], // Mongolian vowel separator
+  [0x180f, 0], // Mongolian free variation selector four
+  [0x200b, 0], // zero width space
+  [0x2060, 0], // word joiner
+  [0x2064, 0], // invisible plus
+  [0x3164, 0], // Hangul filler
+  [0xfe00, 0], // variation selector one
+  [0xfeff, 0], // byte order mark
+  [0xffa0, 1], // halfwidth Hangul filler
+  [0x1bca0, 0], // shorthand format letter overlap
+  [0x1d173, 0], // musical symbol begin beam
+  [0xe0001, 0], // language tag
+  [0xe0100, 0], // variation selector seventeen
+  // M2-3: the format characters that are not default-ignorable (tmux draws them none; a terminal that drew them one would reopen the path)
+  [0x0600, 0], // Arabic number sign
+  [0x06dd, 0], // Arabic end of ayah
+  [0x070f, 0], // Syriac abbreviation mark
+  [0x0890, 0], // Arabic pound mark above
+  [0x08e2, 0], // Arabic disputed end of ayah
+  [0xfff9, 0], // interlinear annotation anchor
+  [0x110bd, 0], // Kaithi number sign
+  [0x13430, 0], // Egyptian hieroglyph vertical joiner
 ];
 
 const ZWJ = c(0x200d);
@@ -50,12 +63,12 @@ const COMBINING_X = c(0x0350);
 const ENCLOSING_CIRCLE = c(0x20dd);
 
 describe('the fillers are dropped', () => {
-  it.each(FILLERS.map((code) => [code.toString(16), code] as const))(
+  it.each(FILLERS.map(([code, drawn]) => [code.toString(16), code, drawn] as const))(
     'U+%s: the layout measures it 0 columns, and the screen never receives it',
-    (_name, code) => {
+    (_name, code, drawn) => {
       const filler = c(code);
       expect(stringWidth(filler)).toBe(0);
-      expect(terminalWidth(filler), 'the simulated terminal draws it').toBeGreaterThan(0);
+      expect(terminalWidth(filler), 'the simulated terminal draws what tmux drew').toBe(drawn);
       expect(dropScreenFillers(`a${filler}b${filler.repeat(3)}`)).toBe('ab');
       expect(screenText(`${filler.repeat(37)}   please`)).toBe('   please');
     },
@@ -144,5 +157,63 @@ describe('the same filter over the styled pieces of a row', () => {
   it('returns the very same array when nothing changed (no copy per streamed frame)', () => {
     const pieces = [{ text: 'plain ' }, { text: 'words', strong: true }];
     expect(screenPieces(pieces)).toBe(pieces);
+  });
+});
+
+describe('the classes the layout measures narrower than tmux draws (review round 2, S2-1)', () => {
+  const RI_A = c(0x1f1e6);
+  const RI_B = c(0x1f1e7);
+  const US = `${c(0x1f1fa)}${c(0x1f1f8)}`;
+  const TONE = c(0x1f3fd);
+  const THUMB = c(0x1f44d);
+
+  it('a presentation selector is dropped where it would not make an emoji the layout draws wide', () => {
+    expect(screenText(`a${VS16}b`)).toBe('ab');
+    expect(screenText(` ${VS16}>${VS16}`)).toBe(' >');
+    expect(screenText(`1${VS16}2`)).toBe('12'); // a digit: an emoji code point, but `1️` alone is not an emoji
+    expect(screenText(`a${VS16}${VS16}${VS16}`)).toBe('a');
+    for (const emoji of [
+      `${c(0x2764)}${VS16}`,
+      `${c(0x2122)}${VS16}`,
+      `${c(0x00a9)}${VS16}`,
+      `1${VS16}${KEYCAP}`,
+    ])
+      expect(screenText(`x ${emoji} y`), JSON.stringify(emoji)).toBe(`x ${emoji} y`);
+  });
+
+  it('a skin tone is dropped unless it is on a base that takes one', () => {
+    expect(screenText(`x${TONE.repeat(5)}`)).toBe('x');
+    expect(screenText(`ok ${TONE}`)).toBe('ok ');
+    expect(screenText(`${THUMB}${TONE}`)).toBe(`${THUMB}${TONE}`);
+    expect(screenText(`${THUMB}${TONE}${TONE}`)).toBe(`${THUMB}${TONE}`);
+  });
+
+  it('a lone surrogate is dropped (Node writes it as U+FFFD: one column the layout does not count)', () => {
+    expect(screenText(`a${String.fromCharCode(0xd800)}b${String.fromCharCode(0xdc00)}`)).toBe('ab');
+  });
+
+  it('the Thai and Lao AM are written in their decomposition (the same glyphs; both measures count it alike)', () => {
+    expect(screenText(`${c(0x0e01)}${c(0x0e33)}`)).toBe(`${c(0x0e01)}${c(0x0e4d)}${c(0x0e32)}`);
+    expect(screenText(`${c(0x0e81)}${c(0x0eb3)}`)).toBe(`${c(0x0e81)}${c(0x0ecd)}${c(0x0eb2)}`);
+    // the documents keep the AM: only the screen's row is rewritten
+    expect(stringWidth(screenText(`${c(0x0e01)}${c(0x0e33)}`.repeat(10)))).toBe(20);
+  });
+
+  it('an AM that starts a line has nothing to sit on: its mark (NIKHAHIT) goes, its spacing vowel stays', () => {
+    expect(
+      screenText(`${c(0x0e33)}x
+${c(0x0eb3)}y`),
+    ).toBe(`${c(0x0e32)}x
+${c(0x0eb2)}y`);
+  });
+
+  it('a pair of regional indicators that is not a flag is set apart; a flag stays one', () => {
+    expect(screenText(`${RI_A}${RI_B}`)).toBe(`${RI_A}${ZWNJ}${RI_B}`);
+    expect(screenText(US)).toBe(US);
+    expect(screenText(`${RI_A}${RI_B}${c(0x1f1e8)}`)).toBe(
+      `${RI_A}${ZWNJ}${RI_B}${ZWNJ}${c(0x1f1e8)}`,
+    );
+    expect(screenText(`${US}${US}`)).toBe(`${US}${ZWNJ}${US}`);
+    expect(stringWidth(screenText(`${RI_A}${RI_B}`.repeat(5)))).toBe(10);
   });
 });

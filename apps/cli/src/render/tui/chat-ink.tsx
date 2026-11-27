@@ -172,7 +172,13 @@ import {
   headerRow,
 } from './chat-layout.js';
 import { WORDMARK, thinRule } from './home-layout.js';
-import { chatGrid, marginCell, type ChatGrid, type MarginForm } from './chat-grid.js';
+import {
+  chatGrid,
+  marginCell,
+  startsWithMarginWord,
+  type ChatGrid,
+  type MarginForm,
+} from './chat-grid.js';
 import { screenText } from './screen-text.js';
 import { MarginRow, marginFormFor } from './margin-row.js';
 import type { Surface } from '../surface.js';
@@ -193,6 +199,7 @@ import { chatStatusLine } from './chat-status.js';
 import { emphasize } from './emphasis.js';
 import {
   dockedTurnRows,
+  entryDrawsRows,
   formatBusyLine,
   formatReasoningPanel,
   toolCallText,
@@ -211,7 +218,7 @@ import {
 import { sheetTranscriptRows } from './tool-review-card.js';
 import { exitKey, legend, type LegendExit } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
-import { wrapWords } from './viewport.js';
+import { wrapText, wrapWords } from './viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
@@ -692,15 +699,21 @@ const PRINTED_ABOVE: TranscriptEntry = { role: 'notice', text: 'printed above' }
 /**
  * The transcript entry printed just before `items[index]` (`<Static>` passes the absolute index), or none: the first entry, or after the header (the
  * header's own blank row is its gap). `printedAbove` says the first entry follows rows written before the chat mounted ({@link ChatViewProps.printedAbove}).
+ * An entry that printed no row (`draws` says no: a reply with neither words nor a summary) is passed over, as the full-screen transcript passes over
+ * it, so the entry after it gets the separator of what is really above it (review round 2, C2-4).
  */
 function entryBefore(
   items: readonly ScrollbackItem[],
   index: number,
   printedAbove: boolean,
+  draws: (entry: TranscriptEntry) => boolean,
 ): TranscriptEntry | undefined {
-  const before = items[index - 1];
-  if (before === undefined) return printedAbove ? PRINTED_ABOVE : undefined;
-  return before.role === 'introduction' ? undefined : before;
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const before = items[at];
+    if (before === undefined || before.role === 'introduction') return undefined;
+    if (draws(before)) return before;
+  }
+  return printedAbove ? PRINTED_ABOVE : undefined;
 }
 
 /**
@@ -721,6 +734,9 @@ function InlineScrollback(
   const items: readonly ScrollbackItem[] = props.introduction
     ? [{ role: 'introduction' }, ...props.entries]
     : props.entries;
+  const grid = chatGrid(props.columns ?? 80);
+  const draws = (entry: TranscriptEntry): boolean =>
+    entryDrawsRows(entry, grid, props.color, props.displays);
   return (
     <Static items={[...items]}>
       {(item, index) =>
@@ -736,7 +752,7 @@ function InlineScrollback(
           <TranscriptLine
             key={index}
             entry={item}
-            previous={entryBefore(items, index, props.printedAbove)}
+            previous={entryBefore(items, index, props.printedAbove, draws)}
             displays={props.displays}
             color={props.color}
             columns={props.columns}
@@ -994,9 +1010,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const renderBusyLine = (): ReactElement => {
     if (props.displaySuspended)
       return (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {legend([{ text: 'Display paused for an oversized control sequence' }], STOP_THE_TURN)}
-        </Text>
+        <ContentColumn grid={chromeGrid} budget="content">
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {legend([{ text: 'Display paused for an oversized control sequence' }], STOP_THE_TURN)}
+          </Text>
+        </ContentColumn>
       );
     if (
       props.markdown !== undefined &&
@@ -1016,20 +1034,32 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           ? props.markdown.tail(answerColumns, answerRows)
           : props.markdown.plainTail(answerColumns, answerRows)
       ).map(screenStreamRow);
+      // Each row stands on the grid with the reply's own role: `agent` on the first row of the stream and on a row that starts with a margin
+      // word, drawn only as the inline renderer's word (the full-screen margin of a reply is blank), so a streamed `you   …` row is read as the
+      // agent's WHILE it streams, as the finished reply's row will be (review round 2, S2-3).
       return (
         <Box flexDirection="column">
           {lines.map((line, index) => (
-            <Text key={index}>
-              <MarkdownText
-                spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
-                color={color}
-              />
-            </Text>
+            <MarginRow
+              key={index}
+              role={index === 0 || startsWithMarginWord(line.text) ? 'agent' : undefined}
+              grid={chromeGrid}
+              form={marginForm}
+            >
+              <Text>
+                <MarkdownText
+                  spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
+                  color={color}
+                />
+              </Text>
+            </MarginRow>
           ))}
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
-            {legend([], STOP_THE_TURN)}
-          </Text>
+          <ContentColumn grid={chromeGrid} budget="content">
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
+              {legend([], STOP_THE_TURN)}
+            </Text>
+          </ContentColumn>
         </Box>
       );
     }
@@ -1053,7 +1083,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
     const abortHint = streamingAbortHint(line);
     return (
-      <Box flexDirection="column">
+      <ContentColumn grid={chromeGrid} budget="content">
         {line.dim ? (
           <Text {...dimProps(color)} wrap="truncate-end">
             {line.text}
@@ -1066,7 +1096,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             {abortHint}
           </Text>
         )}
-      </Box>
+      </ContentColumn>
     );
   };
   // The full-screen alt-screen renderer (ADR-0068 §c, 2.6.F Step 4b) renders the transcript through the scroll
@@ -1214,10 +1244,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 
 /**
  * The in-flight turn of a chat that is not waiting on a sheet, on the grid (unit 9): a tool call's row through {@link MarginRow} (the host's mark in the
- * margin, the call's words in the content column), then the content column's own rows: the collapsible "thinking" panel (2.5.H, a dim header with the
- * Ctrl+T toggle hint and the reasoning body only when expanded), the busy line or the streamed answer (`busyLine`, drawn by the view that owns the
- * timer), and the interrupt note: the first Ctrl+C on a running turn interrupts it and arms, and a turn that is slow to stop (a hung tool) would
- * otherwise show nothing at all (at an idle prompt the hint row carries the same words).
+ * margin, the call's words in the content column), then the collapsible "thinking" panel (2.5.H, a dim header with the Ctrl+T toggle hint and the
+ * reasoning body only when expanded: {@link ReasoningRows}), the busy line or the streamed answer (`busyLine`, drawn by the view that owns the timer;
+ * it places its own rows on the grid, a streamed row with its margin), and the interrupt note in the content column: the first Ctrl+C on a running
+ * turn interrupts it and arms, and a turn that is slow to stop (a hung tool) would otherwise show nothing at all (at an idle prompt the hint row
+ * carries the same words).
  */
 function LiveTurn(
   props: Readonly<{
@@ -1251,22 +1282,60 @@ function LiveTurn(
           </Text>
         </MarginRow>
       ))}
-      <ContentColumn grid={props.grid} budget="content">
-        {reasoning !== undefined && (
-          <Box flexDirection="column">
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {reasoning.header}
-            </Text>
-            {reasoning.body !== undefined && <Text {...dimProps(color)}>{reasoning.body}</Text>}
-          </Box>
-        )}
-        {props.busyLine}
-        {props.interruptArmed && (
+      {reasoning !== undefined && (
+        <ReasoningRows
+          reasoning={reasoning}
+          grid={props.grid}
+          form={props.marginForm}
+          color={color}
+        />
+      )}
+      {/* The busy line places itself on the grid: the streamed answer's rows each with their margin, a status line in the content column. */}
+      {props.busyLine}
+      {props.interruptArmed && (
+        <ContentColumn grid={props.grid} budget="content">
           <Text {...dimProps(color)} wrap="truncate-end">
             {legend([{ text: 'Interrupting' }], leavesAgain(props.host))}
           </Text>
-        )}
-      </ContentColumn>
+        </ContentColumn>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * The live reasoning panel on the grid: its header in the content column, and its body there too, one Ink-wrapped text, full-screen. In the
+ * inline renderer (the margin's WORD form) the body is laid out in rows at the content column's width so that a row that starts with a margin word
+ * carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does.
+ */
+function ReasoningRows(
+  props: Readonly<{ reasoning: ReasoningPanel; grid: ChatGrid; form: MarginForm; color: boolean }>,
+): ReactElement {
+  const { reasoning, grid, color } = props;
+  const header = (
+    <ContentColumn grid={grid} budget="content">
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {reasoning.header}
+      </Text>
+      {reasoning.body !== undefined && props.form !== 'word' && (
+        <Text {...dimProps(color)}>{reasoning.body}</Text>
+      )}
+    </ContentColumn>
+  );
+  if (reasoning.body === undefined || props.form !== 'word') return header;
+  return (
+    <Box flexDirection="column">
+      {header}
+      {wrapText(reasoning.body, Math.max(1, grid.content), true).map((row, index) => (
+        <MarginRow
+          key={index}
+          role={startsWithMarginWord(row) ? 'agent' : undefined}
+          grid={grid}
+          form={props.form}
+        >
+          <Text {...dimProps(color)}>{row === '' ? ' ' : row}</Text>
+        </MarginRow>
+      ))}
     </Box>
   );
 }
@@ -2877,11 +2946,16 @@ function modelSwitchLeadLength(intro: string): number {
  * of the first row. It is written straight to the terminal before Ink mounts, so nothing wraps it but the terminal, which cuts a long sentence wherever
  * the row ends (`…to continue it, star|t Relavium…`); the transcript's own notices are word-wrapped by the transcript layout, and so is this. Explicit
  * newlines of the intro are kept. The margin is the grid's (unit 9): blank, except on the first row of the model-switch notice, which the inline
- * renderer marks with the host's role word `model` as it marks the same notice in the transcript (the word is drawn from the closed list and the
+ * renderer marks with the host's role word `note` as it marks the same notice in the transcript (the word is drawn from the closed list and the
  * glyph that led the sentence leaves it; with no room for the word the glyph stays where it was).
  */
-function wrapIntro(intro: string, columns: number | undefined): string {
+function wrapIntro(sentence: string, columns: number | undefined): string {
   const grid = preMountGrid(columns);
+  // The intro carries stored strings (a session id, the directory a session was started in, a model id) and it is written straight to the terminal,
+  // so it goes through the screen's filter HERE, where it is drawn: the fillers a terminal draws wider than `wrapWords` counts would wrap a row at
+  // the right edge, and the rest of it would start at column 0, in the margin (unit 9, review round 2, S2-5). The banner module keeps its own
+  // scrub (`sanitizeInline` and the blanked glyphs); the filter is the drawing site's.
+  const intro = screenText(sentence);
   const lead = modelSwitchLeadLength(intro);
   const word = lead === 0 ? '' : marginCell('modelSwitch', grid, 'word');
   const marked = word.trim() !== '';

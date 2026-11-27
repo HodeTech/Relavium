@@ -64,6 +64,7 @@ import { homeFitsTerminal, tooSmallMessage } from './home-floor.js';
 import { exitKey, legend, waitMark, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
+import { screenText } from './screen-text.js';
 import { clipLine, sheetRule } from './sheet-frame.js';
 import { displayWidth, wrapText } from './viewport.js';
 
@@ -706,11 +707,15 @@ function foldAuthorText(text: string): string {
   return text.normalize('NFKC').replace(INVISIBLE_CHARS, '');
 }
 
-/** One line of author text, safe to put behind the gutter: untrusted-text floor, folded, no host glyph, no answer chord. */
+/**
+ * One line of author text, safe to put behind the gutter: untrusted-text floor, folded, the screen's filter (what a terminal draws wider than the
+ * card measures, a skin tone on a letter or indicators that are not a flag, would wrap the card's row: MVP-11 unit 9, review round 2, S2-4), no
+ * host glyph, no answer chord.
+ */
 export function authorLine(text: string): string {
   // Host glyphs and card-drawing characters, none of which an author's text may carry: the core's refusal set, the box-drawing block and
   // every glyph of the table, so a gate's message cannot draw a status, a marker or a rule of the host's own (ADR-0145 §5, "Host glyphs").
-  return blankHostGlyphs(foldAuthorText(sanitizeUntrustedInline(text))).replace(
+  return blankHostGlyphs(screenText(foldAuthorText(sanitizeUntrustedInline(text)))).replace(
     CHORD_TOKENS,
     '[chord]',
   );

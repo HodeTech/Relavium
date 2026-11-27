@@ -21,6 +21,7 @@ import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { legend, legendRows } from './legend.js';
+import { screenText } from './screen-text.js';
 import { displayWidth } from './viewport.js';
 import {
   QUESTION_STOP,
@@ -162,8 +163,10 @@ export function QuestionCardHost(
           emphasis={toneEmphasis(row.tone)}
           wrap="truncate-end"
         >
-          {/* the model's header and option labels are drawn inside a style pair: the core refuses a control character in them, and this is the floor under that */}
-          {sanitizeInline(row.text) || ' '}
+          {/* the model's header and option labels are drawn inside a style pair: the core refuses a control character in them, and this is the floor under that;
+              then the screen's filter, as for a reply's row: what a terminal draws wider than the card measured (skin tones on a letter: the core's
+              bounds let a row of them reach 108 columns at 80) never wraps the card (MVP-11 unit 9, review round 2, S2-4) */}
+          {screenText(sanitizeInline(row.text)) || ' '}
         </EmphText>
       ))}
       {view.keys.map((row, index) => (

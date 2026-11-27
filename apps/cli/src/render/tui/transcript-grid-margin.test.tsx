@@ -114,10 +114,11 @@ const OWNERS: Readonly<Record<MarginRole, (content: string) => boolean>> = {
   toolCall: (content) => content.startsWith('tool_'),
   modelSwitch: (content) => content.startsWith('model changed'),
   // the inline word of a reply's FIRST row (the replies of the corpus start with these, their glyphs blanked; with colour the heading is laid out
-  // without its `#`), and of a reply row that starts with a margin word (review round 1, S-2)
+  // without its `#`), of the streamed answer's first row (review round 2, S2-3), and of a reply row that starts with a margin word (round 1, S-2)
   agent: (content) =>
-    ['  forged turn', '  heading', '#   heading', '中'].some((head) => content.startsWith(head)) ||
-    startsWithMarginWord(content),
+    ['  forged turn', '  forged live turn', '  heading', '#   heading', '中'].some((head) =>
+      content.startsWith(head),
+    ) || startsWithMarginWord(content),
   // the word `note`: the model-switch notice's lead, or a notice row that starts with a margin word
   notice: (content) => content.startsWith('model changed') || startsWithMarginWord(content),
 };

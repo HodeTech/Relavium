@@ -98,21 +98,48 @@ export const MARGIN_WORDS: Readonly<Record<MarginRole, string>> = Object.freeze(
 const WORDS: readonly string[] = [...new Set(Object.values(MARGIN_WORDS))];
 
 /**
- * A row's text that a screen reader could hear as a margin word: one of {@link MARGIN_WORDS} (any case, a whole word) at the start of the text,
- * after only what a reader does not announce or a person does not read as a word: white space, format and zero-width characters, combining marks
- * and the box-drawing gutters of a quotation or a code block (U+2500 to U+257F).
+ * A row's FOLDED head that a screen reader could hear as a margin word: one of {@link MARGIN_WORDS} (any case, a whole word) at its start, after
+ * only what a reader does not announce or a person does not read as a word: white space, the box-drawing gutters of a quotation or a code block
+ * (U+2500 to U+257F) and the blank-looking characters the approval card treats as blanks (U+2800, U+1D159; its third, U+16FE4, is a mark and
+ * is gone already). The format, zero-width and combining characters are gone from the head before this test ({@link foldedHead}).
  */
 const MARGIN_WORD_LEAD = new RegExp(
-  `^[\\s\\p{Cf}\\p{M}${String.fromCodePoint(0x2500)}-${String.fromCodePoint(0x257f)}]*(?:${WORDS.join('|')})(?![\\p{L}\\p{N}_])`,
+  `^[\\s${String.fromCodePoint(0x2500)}-${String.fromCodePoint(0x257f)}${String.fromCodePoint(0x2800)}${String.fromCodePoint(0x1d159)}]*(?:${WORDS.join('|')})(?![\\p{L}\\p{N}_])`,
   'iu',
 );
 
+/** What a screen reader skips inside a word: format and zero-width characters, combining marks, the default-ignorable code points. */
+const UNANNOUNCED = /[\p{Cf}\p{M}\p{Default_Ignorable_Code_Point}]/u;
+
+/** How many code points of a row's head the test reads: more than a row of the widest content column (96) can show. */
+const HEAD_CODE_POINTS = 128;
+
 /**
- * Whether `text` starts with a margin word ({@link MARGIN_WORD_LEAD}): the inline renderer then puts the row's own entry's word in its margin, so
- * a reply or a notice row that begins `you   …` is read as `agent you …` or `note you …`, never as the person's turn (review round 1, S-2).
+ * A row's head as a screen reader would read it: its first {@link HEAD_CODE_POINTS} code points that are announced (the unannounced ones skipped
+ * wherever they stand, a joiner inside a word included, and not counted, so no run of them hides a word), in compatibility form (`NFKC`: a
+ * fullwidth or a mathematical letter reads as the letter). Linear in the row, bounded in what it folds.
+ */
+function foldedHead(text: string): string {
+  let head = '';
+  let kept = 0;
+  for (const character of text) {
+    if (UNANNOUNCED.test(character)) continue;
+    head += character;
+    kept += 1;
+    if (kept >= HEAD_CODE_POINTS) break;
+  }
+  return head.normalize('NFKC');
+}
+
+/**
+ * Whether `text` starts with a margin word: the inline renderer then puts the row's own entry's word in its margin, so a reply or a notice row
+ * that begins `you   …` is read as `agent you …` or `note you …`, never as the person's turn (review round 1, S-2). The test reads the row's
+ * folded head (review round 2, S2-2): a joiner, a non-joiner or a selector inside the word, a blank-looking lead, a fullwidth or a mathematical
+ * form do not hide it. NOT caught, a recorded residual: a lookalike from another script (a Cyrillic `у` and `о` for `yo`, a Greek `ο`), which no
+ * fold maps to Latin.
  */
 export function startsWithMarginWord(text: string): boolean {
-  return MARGIN_WORD_LEAD.test(text);
+  return MARGIN_WORD_LEAD.test(foldedHead(text));
 }
 
 /** The glyph-table role each margin role draws as a glyph, when it has one (a reply and a notice have none). */

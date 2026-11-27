@@ -191,7 +191,7 @@ const SWITCH = String.fromCodePoint(0x21c4);
 /**
  * The rows of the intro as the terminal shows them, from the row that holds its first word to the blank row after it: the raw rows, and their
  * content (the row without its margin). The intro is written in the content column of the grid (unit 9): the margin is blank, except on the first
- * row of the model-switch notice, where the inline renderer's word `model` stands in place of the glyph that led the sentence.
+ * row of the model-switch notice, where the inline renderer's word `note` stands in place of the glyph that led the sentence.
  */
 function introRowsOf(
   lines: readonly string[],

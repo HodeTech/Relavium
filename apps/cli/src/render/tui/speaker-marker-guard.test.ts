@@ -7,6 +7,7 @@ import {
   formatBusyLine,
   formatReasoningPanel,
   formatToolCall,
+  screenModelText,
   toolCallText,
   transcriptDocument,
   wrapTranscript,
@@ -236,6 +237,7 @@ describe('a reply is laid out in the content column as it was written: no row of
       '中› 中▸中 ⇄中 and 😀›😀',
       '**› bold** and `▸ code` and\n\n- › item\n- ▸ item\n\n> ⇄ quote',
       `${'›'.repeat(40)} ${'▸'.repeat(40)}`,
+      `${'›'.repeat(40)} ${'▸'.repeat(40)} end`,
       '| › | ▸ |\n| - | - |\n| ⇄ | x |',
     ];
     for (const source of sources) {
@@ -243,6 +245,11 @@ describe('a reply is laid out in the content column as it was written: no row of
         for (const cols of [3, 8, 20, 80]) {
           const label = `${JSON.stringify(source)} @ ${cols} ${color ? 'colour' : 'plain'}`;
           const rows = wrapTranscript([assistant(source)], cols, color);
+          // a reply of only the host's glyphs (and spaces) is drawn blank: it is an empty reply and draws no row (review round 2, M2-2)
+          if (screenModelText(source).trim() === '') {
+            expect(rows, label).toEqual([]);
+            continue;
+          }
           const standIn = wrapTranscript([assistant(source.replace(SWAP, STAND_IN))], cols, color);
           expect(rows.length, label).toBe(standIn.length);
           expect(
@@ -340,7 +347,8 @@ describe('a reply is laid out in the content column as it was written: no row of
       expectNoMarkerGlyph(rows, label);
       for (const row of rows) expect(displayWidth(row.text), label).toBeLessThanOrEqual(cols);
       const standIn = wrapTranscript([assistant(source.replace(SWAP, STAND_IN))], cols, color);
-      expect(rows.length, label).toBe(standIn.length);
+      // a reply drawn blank (only the host's glyphs, spaces and what the screen drops) is an empty reply: no row (review round 2, M2-2)
+      expect(rows.length, label).toBe(screenModelText(source).trim() === '' ? 0 : standIn.length);
     }
   });
 
