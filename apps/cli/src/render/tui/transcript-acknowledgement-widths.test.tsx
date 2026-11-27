@@ -25,7 +25,16 @@ const RI_PAIR = `${String.fromCodePoint(0x1f1e6)}${String.fromCodePoint(0x1f1e7)
 const FLAGS = `${String.fromCodePoint(0x1f1fa, 0x1f1f8)}${String.fromCodePoint(0x1f1f9, 0x1f1f7)}`;
 const FILL = Array.from({ length: 12 }, (_, i) => `plain line ${String(i)}`).join('\n');
 
+const HINDI =
+  'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत राज्य सरकारें प्रशिक्षित स्वास्थ्यकर्मियों की नियुक्ति सुनिश्चित करेंगी। ';
+const KHMER =
+  'ព្រះរាជាណាចក្រកម្ពុជា គឺជាប្រទេសមួយនៅអាស៊ីអាគ្នេយ៍។ ក្រសួងអប់រំបានប្រកាសកម្មវិធីសិក្សាថ្មី ';
+
 const BODIES: readonly (readonly [string, string])[] = [
+  // review round 4 (R4-S-1): an ordinary Hindi reply moved the full-screen header off and its newest rows out of the frame
+  ['Hindi paragraphs', Array.from({ length: 6 }, () => HINDI.repeat(2)).join('\n\n')],
+  ['Khmer paragraphs', Array.from({ length: 6 }, () => KHMER.repeat(2)).join('\n\n')],
+  ['one row ending in a conjunct chain', `${FILL}\n${'a'.repeat(60)}${'क्'.repeat(9)}क`],
   [
     'Thai paragraphs',
     Array.from({ length: 6 }, (_, i) => `ย่อหน้า ${String(i)} ${THAI.repeat(4)}`).join('\n\n'),
@@ -101,6 +110,8 @@ describe.each([true, false])(
       for (const row of transcriptRows(mount.store.getSnapshot().state.transcript, grid, color))
         expect(displayWidth(row.text), row.text).toBeLessThanOrEqual(grid.content);
       expect(physicalRows(frame, 80)).toHaveLength(frame.length);
+      // the header stays on the first row (the sitting's reproduction: it scrolled off)
+      expect(frame[0]?.trim().startsWith('R  E  L  A  V  I  U  M'), frame.join('\n')).toBe(true);
     });
   },
 );

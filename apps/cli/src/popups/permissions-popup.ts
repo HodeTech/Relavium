@@ -33,7 +33,7 @@ import type {
 } from '../permissions/chat-permissions.js';
 import { keyToken } from '../render/tui/legend.js';
 import { clipLine } from '../render/tui/sheet-frame.js';
-import { escapeReviewCharacter } from '../render/tui/tool-review-projection.js';
+import { escapeReviewText } from '../render/tui/tool-review-projection.js';
 import { displayWidth, padTo } from '../render/tui/viewport.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import {
@@ -86,7 +86,7 @@ const MAX_LABEL_PAD = 32;
  * character is made visible, not removed. Every sink of the popup draws a stored word through it, before its own scrub.
  */
 export function escaped(text: string): string {
-  return [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+  return escapeReviewText(text).join('');
 }
 
 /** A command string as the popup draws it: escaped as the card shows it, then the popups' one scrub. */

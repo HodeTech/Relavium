@@ -34,7 +34,7 @@ import {
 import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
 import { escapeScreenText, screenText } from './screen-text.js';
 import { sheetRule } from './sheet-frame.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
 export const QUESTION_CARD_MAX_BODY_ROWS = 9;
@@ -97,29 +97,70 @@ export function questionRule(columns: number, clock = ''): string {
 }
 
 /**
- * What the person decides on, the labels of a question's options or the headers of a call's questions, as the card draws them (MVP-11 unit 9,
- * review round 3, R3S-4): through the screen's filter before the card lays them out, and the host's marks blanked. The filter drops what a
- * terminal draws wider than the layout counts (a skin tone among them), so two labels the core admits as different can draw alike (`Ok` and `Ok🏽`);
- * when ANY two of the set would, every one of them is written with what the filter drops ESCAPED as `<U+XXXX>` instead ({@link escapeScreenText},
- * which is one-to-one), so no two draw alike. A set with no such pair draws as every other row does: an escape only where it decides something.
+ * The columns an option row spends before its label: the cursor, its number, the radio or the box (three columns in every form), and the spaces
+ * between (`› 1 (•) `). One digit: a question has at most four options (`ASK_USER_BOUNDS.optionsPerQuestion`).
  */
-function decisionTexts(texts: readonly string[]): readonly string[] {
-  const screened = texts.map((text) => blankHostMarks(screenText(text)));
-  const alike = screened.some(
-    (drawn, index) =>
-      screened.indexOf(drawn) !== index && texts.indexOf(texts[index] ?? '') === index,
-  );
-  return alike ? texts.map((text) => blankHostMarks(escapeScreenText(text))) : screened;
+const OPTION_PREFIX_COLUMNS = 8;
+
+/**
+ * The ASCII characters of the card's own shapes (the radio's parentheses, the plain form's `>`; what `blankHostShapes` in `glyphs.ts` would blank): written
+ * as tokens where labels are escaped. The host's glyphs need no entry: none is a letter, a digit or ASCII in either form, so
+ * {@link escapeScreenText} writes every one of them as a token already (a test scans every code point for it).
+ */
+const isHostMark = (character: string): boolean =>
+  character === '(' || character === ')' || character === '>';
+
+/** `text` cut to `room` columns keeping its start AND its end (`…` between): where two cut forms are alike at the start, they differ at the end. */
+function middleCut(text: string, room: number): string {
+  if (displayWidth(text) <= room) return text;
+  const left = Math.max(0, Math.floor((room - 1) / 2));
+  const right = Math.max(0, room - 1 - left);
+  const total = displayWidth(text);
+  return `${sliceDisplayColumns(text, 0, left)}…${sliceDisplayColumns(text, total - right, total)}`;
 }
 
-/** The drawn labels of `question`'s options ({@link decisionTexts}). */
-const drawnLabels = (question: {
-  readonly options: readonly { readonly label: string }[];
-}): readonly string[] => decisionTexts(question.options.map((option) => option.label));
+/**
+ * What the person decides on, the labels of a question's options or the headers of a call's questions, as the card draws them (MVP-11 unit 9,
+ * review rounds 3 and 4, R3S-4, R4-S-3): through the screen's filter before the card lays them out, and the host's marks blanked. The filter drops
+ * and rewrites, the blanking turns the card's own glyphs and shapes into spaces, and the row cuts a long label at `room` columns, so two labels the
+ * core admits as different can DRAW alike (`Ok` and `Ok🏽`, `A●B` and `A B`, `☝` and `☝️`, two labels alike up to the cut); a label can draw
+ * empty (`🏽`). Judged on the form as DRAWN AND CUT: when any two of the set would draw alike, or one would draw empty, every one of them is
+ * written ONE-TO-ONE instead ({@link escapeScreenText} with the card's glyphs and shapes as tokens too), and if two of those are still alike at the
+ * cut they are cut in the middle, keeping their ends. A set with no such pair draws as every other row does: an escape only where it decides
+ * something. What holds: no two labels of the set draw alike at the start or at the end of what the row shows; two long labels that differ
+ * only in a middle the row cannot show are not told apart (a residual, recorded).
+ */
+function decisionTexts(texts: readonly string[], room: number): readonly string[] {
+  const alike = (forms: readonly string[]): boolean =>
+    forms.some((form, index) => {
+      const first = forms.indexOf(form);
+      return first !== index && texts[first] !== texts[index];
+    });
+  const drawn = texts.map((text) => blankHostMarks(screenText(text)));
+  if (!alike(drawn.map((text) => head(text, room))) && drawn.every((text) => text.trim() !== ''))
+    return drawn;
+  const escaped = texts.map((text) => escapeScreenText(text, isHostMark));
+  return alike(escaped.map((text) => head(text, room)))
+    ? escaped.map((text) => middleCut(text, room))
+    : escaped;
+}
 
-/** The drawn headers of a call's questions ({@link decisionTexts}). */
-const drawnHeaders = (state: QuestionCardState): readonly string[] =>
-  decisionTexts(state.request.questions.map((question) => question.header));
+/** The drawn labels of `question`'s options in a card `width` wide ({@link decisionTexts}; the room an option row leaves its label). */
+const drawnLabels = (
+  question: { readonly options: readonly { readonly label: string }[] },
+  width: number,
+): readonly string[] =>
+  decisionTexts(
+    question.options.map((option) => option.label),
+    Math.max(1, width - OPTION_PREFIX_COLUMNS),
+  );
+
+/** The drawn headers of a call's questions in a card `width` wide ({@link decisionTexts}; the room the header row leaves). */
+const drawnHeaders = (state: QuestionCardState, width: number): readonly string[] =>
+  decisionTexts(
+    state.request.questions.map((question) => question.header),
+    Math.max(1, width - displayWidth(GUTTER)),
+  );
 
 /** The question and a description (prose): through the screen's filter before the card lays it out (review round 3, R3S-1); the host's marks blanked. */
 const proseText = (text: string): string => blankHostMarks(screenText(text));
@@ -214,7 +255,7 @@ function optionRow(
   const chosen = entry.ticked.includes(index);
   const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
-  const label = option === undefined ? '' : (drawnLabels(question)[index] ?? '');
+  const label = option === undefined ? '' : (drawnLabels(question, width)[index] ?? '');
   // one row: a label the escapes made wider than the row is cut with an ellipsis, never silently
   const text = head(`${prefix}${label}`, width);
   return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
@@ -246,14 +287,14 @@ function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): 
 }
 
 /** What a question's answer reads as on the Review tab: the chosen labels, then the person's own text in quotes. */
-function summaryOf(state: QuestionCardState, index: number): string {
+function summaryOf(state: QuestionCardState, index: number, width: number): string {
   const question = state.request.questions[index];
   const entry = state.entries[index];
   if (question === undefined || entry === undefined) return '';
   const labels = [...entry.ticked]
     .sort((a, b) => a - b)
     .flatMap((optionIndex) => {
-      const label = drawnLabels(question)[optionIndex];
+      const label = drawnLabels(question, width)[optionIndex];
       return label === undefined ? [] : [label];
     });
   return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
@@ -403,7 +444,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   const rest = Math.max(1, width - REVIEW_INDENT.length);
   const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
-    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${drawnHeaders(state)[index] ?? ''} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${drawnHeaders(state, width)[index] ?? ''} → ${answered ? summaryOf(state, index, width) : 'not answered yet'}`;
     return {
       tone: answered ? ('chosen' as const) : ('pending' as const),
       lines: wrapRows(line, width, rest),
@@ -456,7 +497,10 @@ export function projectQuestionCard(
   const question = currentQuestion(state);
   const entry = currentEntry(state);
   const body: QuestionCardRow[] = [
-    { text: headerRow(state, drawnHeaders(state)[state.index] ?? '', width), tone: 'header' },
+    {
+      text: headerRow(state, drawnHeaders(state, width)[state.index] ?? '', width),
+      tone: 'header',
+    },
     ...hardWrap(proseText(question.question), width - gutterWidth).map(
       (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),

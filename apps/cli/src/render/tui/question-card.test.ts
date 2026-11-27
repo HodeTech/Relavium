@@ -1,7 +1,7 @@
 import { ASK_USER_BOUNDS, plainTextRefusal, type AskUserRequest } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
-import { withGlyphForm } from './glyphs.js';
+import { blankHostGlyphs, withGlyphForm } from './glyphs.js';
 import { cardRowBudget, CARD_KEY_ROWS, CARD_RULE_ROWS } from './tool-review-card.js';
 import {
   initialQuestionCard,
@@ -315,15 +315,21 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           expect(cutsInsideClusters(questionRows.map((row) => row.slice(2)))).toEqual([]);
         }
         const text = view.body.map((row) => row.text);
-        // a label as the card draws it: filtered, or escaped where two of them would draw alike (review round 3, R3S-4)
-        for (const option of question.options)
-          expect(
-            text.some((row) =>
-              [screenText(option.label), escapeScreenText(option.label)].some((drawn) =>
-                row.endsWith(drawn),
-              ),
-            ),
-          ).toBe(true);
+        // every option row draws a label (never an empty one), and the rows of two labels that differ differ (review round 4, R4-S-3: the
+        // earlier `row.endsWith(screenText(label))` passed for a label that drew EMPTY; this oracle does not use the filter)
+        const options = view.body
+          .filter((row) => /^. \d [[(]/u.test(row.text))
+          .map((row) => row.text);
+        expect(options).toHaveLength(question.options.length);
+        for (const row of options) expect(row.slice(8).trim(), row).not.toBe('');
+        const labels = question.options.map((option) => option.label);
+        options.forEach((row, index) => {
+          for (let other = index + 1; other < options.length; other += 1)
+            if (labels[other] !== labels[index])
+              expect(row.slice(8), `${String(index)} and ${String(other)}`).not.toBe(
+                (options[other] ?? '').slice(8),
+              );
+        });
         const entry = state.entries[state.index];
         const highlighted = question.options[entry?.highlight ?? -1];
         if (highlighted !== undefined && state.hint === undefined)
@@ -1176,5 +1182,94 @@ describe('the current dot of the tab strip is not a key token without colour (ro
       () => projectQuestionCard({ ...state, index: 2 }, COLUMNS).body[0]?.text,
     );
     expect(review).not.toMatch(/\[[a-z+]\]/u);
+  });
+});
+
+describe('labels that would draw alike are written one-to-one (review round 4, R4-S-3; literal oracles, not the filter)', () => {
+  const c = (code: number): string => String.fromCodePoint(code);
+  const TONE = c(0x1f3fd);
+  /** The label part of each option row of a one-question card at 80 columns (the eight-column prefix `› 1 ( ) ` taken off). */
+  function drawn(labels: readonly string[], plain = false, columns = COLUMNS): string[] {
+    const request: AskUserRequest = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which one?',
+          multiSelect: false,
+          options: labels.map((label) => ({ label, description: 'An option' })),
+        },
+      ],
+    };
+    return withGlyphForm(plain, () => projectQuestionCard(initialQuestionCard(request), columns))
+      .body.filter((row) => /^. \d [[(]/u.test(row.text))
+      .map((row) => row.text.slice(8));
+  }
+
+  it.each([
+    ['a host glyph the card blanks', ['A●B', 'A B'], ['A<U+25CF>B', 'A B']],
+    ['a tick the card blanks', ['Keep ✓ all', 'Keep   all'], ['Keep <U+2713> all', 'Keep   all']],
+    [
+      'a narrow emoji base and its selector',
+      [c(0x261d), `${c(0x261d)}${c(0xfe0f)}`],
+      ['<U+261D>', '<U+261D><U+FE0F>'],
+    ],
+    ['the Thai AM and its decomposition', ['ทำ', 'ทํา'], ['ท<U+0E33>', 'ท<U+0E4D>า']],
+    ['the Lao AM and its decomposition', ['ທຳ', 'ທໍາ'], ['ທ<U+0EB3>', 'ທ<U+0ECD>າ']],
+    ['a tone the filter drops', ['Ok', `Ok${TONE}`], ['Ok', 'Ok<U+1F3FD>']],
+    // the chat's tool-call triangle is a host glyph the card blanks, so the two would draw alike: written one-to-one
+    ['the tool-call triangle the card blanks', ['A▸B', 'A B'], ['A<U+25B8>B', 'A B']],
+    // a triangle the host does not draw is ordinary text to the card (it blanks only its own glyphs and shapes): the two draw apart as they are
+    ['a triangle the host does not draw, not blanked', ['A▹B', 'A B'], ['A▹B', 'A B']],
+  ] as const)('%s', (_name, labels, expected) => {
+    expect(drawn(labels)).toEqual(expected);
+  });
+
+  it('the plain form’s radio shape: `A(*)B` and `A * B`', () => {
+    expect(drawn(['A(*)B', 'A * B'], true)).toEqual(['A<U+0028>*<U+0029>B', 'A * B']);
+  });
+
+  it('a label that draws empty is written, never an empty row', () => {
+    expect(drawn([TONE, 'Other'])).toEqual(['<U+1F3FD>', 'Other']);
+    expect(drawn([c(0x302e), 'Other'])).toEqual(['<U+302E>', 'Other']);
+  });
+
+  it('two labels alike up to the row’s cut: cut in the middle, so their ends tell them apart', () => {
+    const a = `Ok${`a${TONE}${TONE}${TONE}`.repeat(3)}a${TONE}${TONE}${c(0x1f3fb)}`;
+    const b = `Ok${`a${TONE}${TONE}${TONE}`.repeat(4)}`;
+    const [first, second] = drawn([a, b]);
+    expect(first).not.toBe(second);
+    expect(first?.endsWith('<U+1F3FB>')).toBe(true);
+    expect(second?.endsWith('<U+1F3FD>')).toBe(true);
+    expect(first?.startsWith('Oka<U+1F3FD>')).toBe(true);
+  });
+
+  it('a set with no two alike draws as every row does: filtered, no token', () => {
+    expect(drawn([`Yes${TONE}`, 'No'])).toEqual(['Yes', 'No']);
+  });
+
+  it('two labels that differ only past the row’s cut are judged as cut, not whole: cut in the middle (a 40-column card)', () => {
+    // a 60-byte label is at most 40 columns, so at 80 columns only an escaped form reaches the cut: a narrower card shows the rule
+    const [first, second] = drawn([`${'a'.repeat(35)}1`, `${'a'.repeat(35)}2`], false, 40);
+    expect(first).not.toBe(second);
+    expect(first?.endsWith('a1')).toBe(true);
+    expect(second?.endsWith('a2')).toBe(true);
+  });
+
+  it('every glyph the host draws, in either form, is written as a token by the escape itself (so the card names only its ASCII shapes)', () => {
+    for (const plain of [false, true]) {
+      let glyphs = 0;
+      withGlyphForm(plain, () => {
+        for (let code = 0; code <= 0x10ffff; code += 1) {
+          if (code >= 0xd800 && code <= 0xdfff) continue;
+          const character = c(code);
+          if (blankHostGlyphs(character) === character) continue;
+          glyphs += 1;
+          expect(escapeScreenText(character), character).toBe(
+            `<U+${code.toString(16).toUpperCase().padStart(4, '0')}>`,
+          );
+        }
+      });
+      expect(glyphs).toBeGreaterThan(100);
+    }
   });
 });

@@ -15,6 +15,7 @@ import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { inkSafe } from './viewport.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
@@ -77,7 +78,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           <Text {...dimProps(color)}>thinking · {sanitizeInline(activeNode.nodeId)}</Text>
           {reasoningLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {stripTerminalControls(line)}
+              {inkSafe(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -94,7 +95,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
               narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}
           {activeLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {stripTerminalControls(line)}
+              {inkSafe(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -105,7 +106,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.toolLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {sanitizeInline(line)}
+              {inkSafe(sanitizeInline(line))}
             </Text>
           ))}
         </Box>
@@ -128,7 +129,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
             <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              {glyphOf('warning', !color)} {sanitizeInline(w)}
+              {glyphOf('warning', !color)} {inkSafe(sanitizeInline(w))}
             </Text>
           ))}
         </Box>

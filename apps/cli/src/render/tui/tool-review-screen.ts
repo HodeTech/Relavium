@@ -20,7 +20,7 @@ import {
   type CardKeyInput,
 } from './tool-review-card.js';
 import {
-  escapeReviewCharacter,
+  escapeReviewText,
   ROW_TOKENS_PER_COLUMN,
   type ReviewDocument,
   type ReviewPage,
@@ -562,7 +562,7 @@ export function escapedFit(
   keep: 'start' | 'middle' = 'start',
 ): string {
   if (width <= 0) return '';
-  const tokens = [...text].map((char) => escapeReviewCharacter(char, false));
+  const tokens = escapeReviewText(text);
   const whole = tokens.join('');
   if (displayWidth(whole) <= width) return whole;
   const cap = Math.max(16, ROW_TOKENS_PER_COLUMN * width);

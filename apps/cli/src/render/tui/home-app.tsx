@@ -25,7 +25,7 @@ import {
   createNativePromptAcknowledgement,
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, inkSafe } from './viewport.js';
 import { Box, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
 import { BackdropDim, Text } from './text.js';
 import {
@@ -1202,7 +1202,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
               {'> '}
-              {sanitizeInline(state.pendingMessage)}
+              {inkSafe(sanitizeInline(state.pendingMessage))}
             </Text>
           )}
           {!homeFitsTerminal(size.cols, size.rows) && (

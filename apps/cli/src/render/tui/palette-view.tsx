@@ -11,7 +11,7 @@ import { paletteGapCount, paletteLines, paletteRowBudget } from './palette-windo
 import { colorProps, dimProps } from './projection.js';
 import { SelectableNote, SelectableText, selectionMarker } from './selectable-text.js';
 import { keepStart } from './status-line.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, inkSafe } from './viewport.js';
 
 /**
  * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the palette's rows ({@link PaletteList.rows}), the very list
@@ -130,7 +130,7 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
   const rows = list.rows;
   const query = (
     <Text key="query" {...dimProps(color)} wrap="truncate-end">
-      {`/${sanitizeInline(state.query)}`}
+      {`/${inkSafe(sanitizeInline(state.query))}`}
     </Text>
   );
   const legendLine = (

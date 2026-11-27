@@ -357,22 +357,41 @@ describe('the classes round 3 measured (review round 3: R3S-2 and the sweep of e
   });
 });
 
-describe('the decision surfaces: what the filter drops, escaped (review round 3, R3S-4)', () => {
+describe('the decision surfaces: written one-to-one (review rounds 3 and 4, R3S-4, R4-S-3)', () => {
   const TONE = c(0x1f3fd);
+  const US = `${c(0x1f1fa)}${c(0x1f1f8)}`;
 
-  it('a dropped code point is written as its token; a rewrite is as on every row', () => {
+  it('a letter, a digit, printable ASCII and a flag as themselves; every other code point as its token, `<` included', () => {
     expect(escapeScreenText(`Ok${TONE}`)).toBe('Ok<U+1F3FD>');
     expect(escapeScreenText(`a${VS16}`)).toBe('a<U+FE0F>');
     expect(escapeScreenText(`x${c(0x302e)}`)).toBe('x<U+302E>');
-    expect(escapeScreenText(`${c(0x0e01)}${c(0x0e33)}`)).toBe(
-      screenText(`${c(0x0e01)}${c(0x0e33)}`),
+    expect(escapeScreenText(`${c(0x0e17)}${c(0x0e33)}`)).toBe(`${c(0x0e17)}<U+0E33>`);
+    expect(escapeScreenText(`${c(0x0e17)}${c(0x0e4d)}${c(0x0e32)}`)).toBe(
+      `${c(0x0e17)}<U+0E4D>${c(0x0e32)}`,
     );
     expect(escapeScreenText(`${COMBINING_ACUTE}a`)).toBe('<U+0301>a');
+    expect(escapeScreenText('a<b')).toBe('a<U+003C>b');
+    expect(escapeScreenText(c(0x261d))).toBe('<U+261D>');
+    expect(escapeScreenText(`${c(0x261d)}${VS16}`)).toBe('<U+261D><U+FE0F>');
+    // a flag stays readable, a lone indicator is a token, and nothing the pass would insert appears (R4-S-3 item 4)
+    expect(escapeScreenText(`${US}x`)).toBe(`${US}x`);
+    expect(escapeScreenText(`${c(0x1f1e6)}${c(0x1f1e7)}`)).toBe('<U+1F1E6><U+1F1E7>');
+    expect(escapeScreenText(`${US}${c(0x1f1e6)}`)).toBe(`${US}<U+1F1E6>`);
+    expect(escapeScreenText('क्ष')).toBe('क<U+094D>ष');
+    expect(escapeScreenText('a(b)', (ch) => ch === '(' || ch === ')')).toBe('a<U+0028>b<U+0029>');
   });
 
-  it('one-to-one: labels the core admits as different never draw alike, a literal token included', () => {
-    const labels = ['Ok', `Ok${TONE}`, 'Ok<U+1F3FD>', `Ok${TONE}${TONE}`, `Ok${VS16}`];
-    const drawn = labels.map(escapeScreenText);
+  it('one-to-one: strings the core admits as different never write alike, a literal token included', () => {
+    const labels = [
+      'Ok',
+      `Ok${TONE}`,
+      'Ok<U+1F3FD>',
+      `Ok${TONE}${TONE}`,
+      `Ok${VS16}`,
+      US,
+      `${c(0x1f1fa)}<U+1F1F8>`,
+    ];
+    const drawn = labels.map((label) => escapeScreenText(label));
     expect(new Set(drawn).size).toBe(labels.length);
     expect(drawn[2]).toBe('Ok<U+003C>U+1F3FD>');
   });

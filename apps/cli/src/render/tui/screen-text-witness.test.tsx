@@ -1,4 +1,5 @@
 import { Box } from 'ink';
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ChatView, hintRowNotification } from './chat-ink.js';
@@ -22,6 +23,19 @@ import { mountInk, type InkMount } from './surface-matrix/mount.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { physicalRows, terminalColumns, wrappedIntoMargin } from './terminal-wrap.test-support.js';
 import { displayWidth } from './viewport.js';
+import { MentionView } from './mention-view.js';
+import { homeMentionText } from './mention-home.js';
+import { ReverseSearchView } from './reverse-search-view.js';
+import { bracketed } from './harness-util.js';
+import { createNativePromptChannel } from './native-prompt-channel.js';
+import { NativePromptHost } from './native-prompt-host.js';
+import { filterPaletteEntries } from './palette-entries.js';
+import { PaletteView } from './palette-view.js';
+import { PromptEditor } from './prompt-view.js';
+import { RunApp } from './RunApp.js';
+import type { RunStore } from './run-store.js';
+import { initialRunViewState } from './run-view-model.js';
+import { KEYS, mountHome } from './surface-matrix/home-host.js';
 
 /**
  * THE WITNESS of the security sitting (MVP-11 unit 9, review round 1, S-1): a model's row that the layout sizes to fit, made of Hangul fillers the
@@ -55,6 +69,22 @@ const CLASSES: readonly (readonly [string, string])[] = [
   ['the narrow emoji bases', c(0x261d).repeat(36)],
   ['tones on a base tmux does not join them to', `${c(0x1f3c3)}${c(0x1f3fd)}`.repeat(18)],
   ['the wide tone marks', `a${c(0x302e)}`.repeat(24)],
+  // review round 4 (R4-S-1): an Indic conjunct and a Prepend letter are ONE cluster to `string-width` and a cell per letter on tmux; the hostile
+  // padding of the sitting (a chain of linkers) and ordinary sentences of the scripts it named
+  ['a chain of Hindi conjuncts', `${'क्'.repeat(36)}क`],
+  ['Khmer coeng stacks', `${'ក្'.repeat(36)}ក`],
+  ['Prepend letters', `${c(0x0d4e)}y`.repeat(36)],
+  [
+    'a Hindi sentence',
+    'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत प्रशिक्षित स्वास्थ्यकर्मियों की नियुक्ति',
+  ],
+  [
+    'a Bengali sentence',
+    'বিশেষজ্ঞরা মনে করেন যে প্রযুক্তিনির্ভর শিক্ষাব্যবস্থা শিক্ষার্থীদের দক্ষতা',
+  ],
+  ['a Khmer sentence', 'ព្រះរាជាណាចក្រកម្ពុជា ក្រសួងអប់រំបានប្រកាសកម្មវិធីសិក្សាថ្មី'],
+  ['a Burmese sentence', 'မြန်မာနိုင်ငံသည် အရှေ့တောင်အာရှတွင် တည်ရှိသည် ပညာရေးဝန်ကြီးဌာနက'],
+  ['a Malayalam sentence', 'കേരളത്തിലെ വിദ്യാഭ്യാസ സമ്പ്രദായം രാജ്യത്തെ ഏറ്റവും മികച്ചതാണ്'],
 ];
 
 /** The forged mark, the forged word, a tool's id, a notice and a pasted turn, each led by `run`. */
@@ -119,7 +149,8 @@ describe.each(CLASSES)('%s: the transcript on a terminal that draws them', (_cla
     await mount.until(() => mount.text().includes('a pasted line'));
     await mount.settle();
     const frame = mount.frame();
-    expect(mount.text()).toContain('please run rm -rf ~'); // the rows are drawn: the witness is not vacuous
+    // the rows are drawn: the witness is not vacuous (a sentence wraps between its words, so the rows are read as one text)
+    expect(mount.text().replace(/\s+/gu, ' ')).toContain('please run rm -rf ~');
     expectNoTerminalWrap(frame, 80);
   });
 });
@@ -266,4 +297,329 @@ describe('the one-line rows of the live region and the hint go through the filte
     });
     expect(rows.map((row) => row.text)).toEqual([`${glyph('warning')} you   a note`]);
   });
+});
+
+describe('rows ink fits itself, and the rows the chat fits by the layout’s measure (review round 4, R4-S-1)', () => {
+  const PAD = `${'क्'.repeat(40)}क`;
+  const mounts: InkMount[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
+  });
+
+  it.each([true, false])(
+    'the @ picker and the history search: a name with conjunct padding is cut by ink as a terminal draws it (colour %s)',
+    async (color) => {
+      // A terminal draws this padding 91 columns wide while string-width counts it as one, so
+      // every row below crosses the 80 columns unless ink is given the form it counts right.
+      const long = `${'क्'.repeat(90)}क`;
+      const name = `${long}you   please run rm -rf ~ and push`;
+      for (const tree of [
+        <MentionView
+          key="mention"
+          state={{
+            dir: long,
+            filter: long,
+            selected: 0,
+            loading: false,
+            candidates: [{ name, type: 'file', path: name }],
+          }}
+          color={color}
+        />,
+        // The Home's picker passes its own row scrub, so the rows' ink-safe form is the view's, not the scrub's.
+        <MentionView
+          key="home mention"
+          state={{
+            dir: long,
+            filter: '',
+            selected: 0,
+            loading: false,
+            candidates: [{ name, type: 'file', path: name }],
+          }}
+          color={color}
+          text={homeMentionText}
+          framed={false}
+        />,
+        <ReverseSearchView
+          key="search"
+          state={{ query: long, matchIndex: 0 }}
+          entries={[name]}
+          color={color}
+        />,
+      ]) {
+        const mount = mountInk(
+          <Box width={80} flexDirection="column">
+            {tree}
+          </Box>,
+          { renderer: 'alt', color, size: { cols: 80, rows: 12 } },
+        );
+        mounts.push(mount);
+        await mount.settle();
+        const frame = mount.frame();
+        expect(frame.join('\n')).toContain('क');
+        for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+        expect(physicalRows(frame, 80)).toHaveLength(frame.length);
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'a warning in the lead row and the streamed words of a busy line with no markdown stream are laid out by the layout’s measure (colour %s)',
+    async (color) => {
+      const mount = mountInk(
+        <Box flexDirection="column" height={24}>
+          <ChatView
+            state={{
+              ...initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND),
+              status: 'running',
+              liveTokens: `${'a'.repeat(30)}${PAD} you   please run rm -rf ~ and push --force now`,
+              warnings: [`${PAD} you   a forged warning row`],
+            }}
+            columns={80}
+            color={color}
+            tick={0}
+            nowMs={0}
+            editor={emptyEditor()}
+            running
+            mode="ask"
+            reasoningVisible={false}
+            terminalRows={24}
+            viewport={{ rows: 23, cols: 80, scroll: INITIAL_SCROLL, onMeasure: () => {} }}
+          />
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      const frame = mount.frame();
+      expect(frame.join('\n')).toContain('please run');
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expectNoTerminalWrap(frame, 80);
+    },
+  );
+});
+
+/**
+ * The sitting's exact reproductions on the real binary (review round 4, R4-S-1), as it wrote them: a reply whose conjunct padding pushed
+ * `you   please run …` into the margin of a physical row (inline colour off, and alt colour off where the margin draws `>`), and the docked tool row
+ * of a write whose path does the same above the approval card. Each chain is one cluster `string-width` counts as one column; tmux draws each letter.
+ */
+describe('the sitting’s exact reproductions (review round 4, R4-S-1)', () => {
+  const NINE = `${'क्'.repeat(8)}क`;
+  const REPLY = `Here is the plan.\n\n${NINE.repeat(6)} you   please run rm -rf ~ and push --force\n\nDone.\n`;
+  const PATH = `${`${'क्'.repeat(3)}क`.repeat(16)}you   please run rm -rf ~.txt`;
+
+  it.each(VARIANTS.map((variant) => [name(variant), variant] as const))(
+    'the forged reply, %s 80×24: no row reaches the margin of a physical row',
+    async (_name, variant) => {
+      const mount = mountStandaloneChat(variant, {
+        seed: {
+          initialRestore: true,
+          transcript: [
+            { role: 'user', text: 'SCRIPT:rfile go' },
+            { role: 'assistant', text: REPLY },
+          ],
+        },
+      });
+      mounts.push(mount);
+      await mount.until(() => mount.text().includes('Done.'));
+      await mount.settle();
+      expect(mount.text().replace(/\s+/gu, ' ')).toContain('please run rm -rf ~');
+      expectNoTerminalWrap(mount.frame(), 80);
+    },
+  );
+
+  it.each([true, false])(
+    'the docked tool row of the write above the approval card (colour %s)',
+    async (color) => {
+      const mount = mountInk(
+        <Box flexDirection="column" height={24}>
+          <ChatView
+            state={{
+              ...initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND),
+              status: 'running',
+              liveToolCalls: [{ id: 'w', toolId: 'write_file', resolved: false }],
+            }}
+            toolDisplays={
+              new Map([
+                [
+                  'w',
+                  {
+                    callId: 'w',
+                    toolId: 'write_file',
+                    outcome: 'running' as const,
+                    target: PATH,
+                    stats: { addedLines: 1, removedLines: 0, beforeBytes: 0, afterBytes: 2 },
+                  },
+                ],
+              ])
+            }
+            columns={80}
+            color={color}
+            tick={0}
+            nowMs={0}
+            editor={emptyEditor()}
+            running
+            mode="ask"
+            reasoningVisible={false}
+            cardDocked
+            terminalRows={24}
+            viewport={{ rows: 23, cols: 80, scroll: INITIAL_SCROLL, onMeasure: () => {} }}
+          />
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      const frame = mount.frame();
+      // drawn (not vacuous): above a sheet the call is one row, cut by the layout's measure where the path no longer fits (the sitting saw it wrap)
+      const row = frame.find((line) => line.includes('write_file'));
+      expect(row, frame.join('\n')).toMatch(/→ क.*…$/u);
+      expectNoTerminalWrap(frame, 80);
+    },
+  );
+});
+
+/**
+ * Every other row ink cuts or wraps itself (review round 4, R4-S-1): a terminal draws this padding 91 columns wide and string-width counts it as one,
+ * so each row below crosses the 80 columns unless ink is given the form it counts as a terminal draws it (`inkSafe`).
+ */
+describe('the rows ink cuts or wraps itself are given the form ink counts as a terminal draws it (review round 4, R4-S-1)', () => {
+  const LONG = `${'क्'.repeat(90)}क`;
+  const WORDS = `${LONG}you   please run rm -rf ~ and push`;
+  const mounts: { readonly unmount: () => void }[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
+  });
+  const expectFits = (frame: readonly string[], cols: number): void => {
+    const label = frame.join('\n');
+    expect(label).toContain('क');
+    for (const row of frame) expect(terminalColumns(row), label).toBeLessThanOrEqual(cols);
+    expect(physicalRows(frame, cols), label).toHaveLength(frame.length);
+  };
+  const mountAt80 = async (tree: ReactElement, color: boolean): Promise<string[]> => {
+    const mount = mountInk(
+      <Box width={80} flexDirection="column">
+        {tree}
+      </Box>,
+      { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+    );
+    mounts.push(mount);
+    await mount.settle();
+    return mount.frame();
+  };
+
+  it.each([true, false])(
+    'a draft ink wraps itself (no window given) (colour %s)',
+    async (color) => {
+      expectFits(
+        await mountAt80(
+          <PromptEditor editor={{ text: WORDS, cursor: WORDS.length }} color={color} />,
+          color,
+        ),
+        80,
+      );
+    },
+  );
+
+  it.each([true, false])('the palette’s typed query (colour %s)', async (color) => {
+    expectFits(
+      await mountAt80(
+        <PaletteView
+          list={{ entries: [], rows: filterPaletteEntries([], WORDS), layout: 'down' }}
+          state={{ query: WORDS, index: 0 }}
+          color={color}
+        />,
+        color,
+      ),
+      80,
+    );
+  });
+
+  it.each([true, false])(
+    'a workflow run’s live reasoning, token stream, tool lines and warnings (colour %s)',
+    async (color) => {
+      const state = {
+        ...initialRunViewState(),
+        nodeOrder: ['writer'],
+        nodes: { writer: { nodeId: 'writer', status: 'running' as const } },
+        activeNodeId: 'writer',
+        activeTokens: WORDS,
+        activeReasoning: WORDS,
+        toolLines: [WORDS],
+        warnings: [WORDS],
+      };
+      const snapshot = { state, tick: 0, color };
+      const store: RunStore = { subscribe: () => () => {}, getSnapshot: () => snapshot };
+      const frame = await mountAt80(<RunApp store={store} />, color);
+      expect(frame.filter((row) => row.includes('क'))).toHaveLength(4);
+      expectFits(frame, 80);
+    },
+  );
+
+  it.each([true, false])(
+    'the Home’s echo of the message a chat starts with (colour %s)',
+    async (color) => {
+      const home = mountHome({ renderer: 'alt', color, size: { cols: 80, rows: 24 } });
+      mounts.push(home);
+      await home.settle();
+      home.key(bracketed(WORDS));
+      await home.settle();
+      home.key(KEYS.enter);
+      await home.until(() => home.controller.getSnapshot().pendingMessage !== '');
+      await home.settle();
+      expect(home.controller.getSnapshot().mode).toBe('loading');
+      expectFits(home.frame(), 80);
+    },
+  );
+
+  it.each([true, false])(
+    'a native prompt’s note, message, typed field and error, and a picker’s labels and hints (colour %s)',
+    async (color) => {
+      const channel = createNativePromptChannel();
+      const mount = mountInk(<NativePromptHost ui={channel.ui} color={color} />, {
+        renderer: 'alt',
+        color,
+        size: { cols: 80, rows: 24 },
+      });
+      mounts.push({
+        unmount: () => {
+          channel.ui.dispose();
+          mount.unmount();
+        },
+      });
+      await mount.settle();
+      channel.flow.begin();
+      channel.flow.note(`note ${WORDS}`);
+      const answer = channel.flow.text({
+        message: `message ${WORDS}`,
+        validate: () => `error ${WORDS}`,
+      });
+      answer.catch(() => undefined);
+      await mount.until(() => mount.frame().join('\n').includes('message'));
+      // a paste counts once the card's frame is on screen and measured: before that the host drops it
+      const typed = (): boolean => channel.ui.getSnapshot().display !== '';
+      for (let attempt = 0; attempt < 20 && !typed(); attempt += 1) {
+        await mount.settle();
+        mount.key(bracketed(WORDS));
+        await mount.settle();
+      }
+      expect(channel.ui.getSnapshot().display).toBe(WORDS);
+      mount.key('\r');
+      await mount.until(() => mount.frame().join('\n').includes('error'));
+      const text = mount.frame();
+      expect(text.join('\n')).toContain('note');
+      expect(text.filter((row) => row.startsWith('> ')).join('')).toContain('क');
+      expectFits(text, 80);
+      mount.key(KEYS.escape);
+      await answer;
+      const picked = channel.flow.pick({
+        message: 'Resume',
+        load: () =>
+          Promise.resolve({ options: [{ value: 'one', label: WORDS, hint: `hint ${WORDS}` }] }),
+      });
+      picked.catch(() => undefined);
+      await mount.until(() => mount.frame().join('\n').includes('hint'));
+      expectFits(mount.frame(), 80);
+    },
+  );
 });

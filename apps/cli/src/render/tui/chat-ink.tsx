@@ -218,6 +218,7 @@ import {
 import { sheetTranscriptRows } from './tool-review-card.js';
 import { exitKey, legend, type LegendExit } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import { clipLine } from './sheet-frame.js';
 import { wrapText, wrapWords } from './viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
@@ -777,7 +778,12 @@ const PLACEHOLDER_FIRST = 'type a message';
  * One row whichever it is, so the block never grows (ADR-0146 §4).
  */
 function LeadRow(
-  props: Readonly<{ copied: boolean; warnings: readonly string[]; color: boolean }>,
+  props: Readonly<{
+    copied: boolean;
+    warnings: readonly string[];
+    color: boolean;
+    columns: number;
+  }>,
 ): ReactElement {
   const { color } = props;
   if (props.copied) {
@@ -791,13 +797,17 @@ function LeadRow(
     );
   }
   if (props.warnings.length === 0) return <Text> </Text>;
-  // The newest first: a row too narrow for all of them cuts the oldest, never the one that just happened.
+  // The newest first: a row too narrow for all of them cuts the oldest, never the one that just happened. Cut by the repo's own measure
+  // (`clipLine`), not left to ink's: a warning can quote a name in a script ink counts narrower than a terminal draws (review round 4, R4-S-1).
   return (
     <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-      {[...props.warnings]
-        .reverse()
-        .map((warning) => `${glyphOf('warning', !color)} ${stripTerminalControls(warning)}`)
-        .join('  ')}
+      {clipLine(
+        [...props.warnings]
+          .reverse()
+          .map((warning) => `${glyphOf('warning', !color)} ${stripTerminalControls(warning)}`)
+          .join('  '),
+        props.columns,
+      )}
     </Text>
   );
 }
@@ -900,7 +910,12 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
   return (
     <Box flexDirection="column" flexShrink={0}>
       <ContentColumn grid={grid}>
-        <LeadRow copied={props.copied} warnings={props.state.warnings} color={color} />
+        <LeadRow
+          copied={props.copied}
+          warnings={props.state.warnings}
+          color={color}
+          columns={grid.text}
+        />
       </ContentColumn>
       {props.live}
       <ContentColumn grid={grid}>
@@ -935,7 +950,8 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
           leaves says where it leads; with a draft it is the draft's own keys; while a turn runs it is the key that ends the chat. */}
         {showsHint && (
           <Text {...dimProps(color)} wrap="truncate-end">
-            {hintFor(props)}
+            {/* cut by the repo's measure: a notification can name a path in a script ink counts narrower than a terminal draws (R4-S-1) */}
+            {clipLine(hintFor(props), grid.text)}
           </Text>
         )}
       </ContentColumn>
@@ -1088,10 +1104,17 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       <ContentColumn grid={chromeGrid} budget="content">
         {line.dim ? (
           <Text {...dimProps(color)} wrap="truncate-end">
-            {line.text}
+            {/* a status line (a `!` command the person typed, the pre-token wait): cut by the repo's measure (review round 4, R4-S-1) */}
+            {clipLine(line.text, chromeGrid.content)}
           </Text>
         ) : (
-          <Text>{line.text}</Text>
+          // the streamed words, laid out by the repo's measure in rows of the content column and drawn row by row, so ink never wraps them by
+          // its own (narrower) count of a conjunct (review round 4, R4-S-1)
+          wrapText(line.text, Math.max(1, chromeGrid.content)).map((row, index) => (
+            <Text key={index} wrap="truncate-end">
+              {row === '' ? ' ' : row}
+            </Text>
+          ))
         )}
         {abortHint !== undefined && (
           <Text {...dimProps(color)} wrap="truncate-end">
@@ -1269,21 +1292,29 @@ function LiveTurn(
   const calls = state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved);
   return (
     <Box flexDirection="column">
-      {calls.map((call) => (
-        <MarginRow
-          key={call.id}
-          role="toolCall"
-          grid={props.grid}
-          form={props.marginForm}
-          mark={colorProps(color, 'yellow')}
-        >
-          <Text {...colorProps(color, 'yellow')}>
-            {withGlyphForm(!color, () =>
-              screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
-            )}
-          </Text>
-        </MarginRow>
-      ))}
+      {calls.flatMap((call) =>
+        // laid out by the repo's measure in rows of the content column (ink would wrap a conjunct by its own narrower count: review round 4,
+        // R4-S-1); the call's first row carries the mark, a row after it hangs, and one that starts with a margin word carries the reply's word
+        wrapText(
+          withGlyphForm(!color, () =>
+            screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
+          ),
+          Math.max(1, props.grid.content),
+          true,
+        ).map((row, index) => (
+          <MarginRow
+            key={`${call.id}:${String(index)}`}
+            role={index === 0 ? 'toolCall' : startsWithMarginWord(row) ? 'agent' : undefined}
+            grid={props.grid}
+            form={props.marginForm}
+            mark={colorProps(color, 'yellow')}
+          >
+            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+              {row === '' ? ' ' : row}
+            </Text>
+          </MarginRow>
+        )),
+      )}
       {reasoning !== undefined && (
         <ReasoningRows
           reasoning={reasoning}
@@ -1306,9 +1337,10 @@ function LiveTurn(
 }
 
 /**
- * The live reasoning panel on the grid: its header in the content column, and its body there too, one Ink-wrapped text, full-screen. In the
- * inline renderer (the margin's WORD form) the body is laid out in rows at the content column's width so that a row that starts with a margin word
- * carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does.
+ * The live reasoning panel on the grid: its header in the content column, and its body in rows at the content column's width, laid out by the
+ * repo's own measure in both renderers (review round 4, R4-S-1: ink's wrap counts an Indic conjunct narrower than a terminal draws it). A row that
+ * starts with a margin word carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does: the inline renderer writes
+ * the word, the full-screen margin draws nothing for it.
  */
 function ReasoningRows(
   props: Readonly<{ reasoning: ReasoningPanel; grid: ChatGrid; form: MarginForm; color: boolean }>,
@@ -1319,12 +1351,11 @@ function ReasoningRows(
       <Text {...dimProps(color)} wrap="truncate-end">
         {reasoning.header}
       </Text>
-      {reasoning.body !== undefined && props.form !== 'word' && (
-        <Text {...dimProps(color)}>{reasoning.body}</Text>
-      )}
     </ContentColumn>
   );
-  if (reasoning.body === undefined || props.form !== 'word') return header;
+  // the body is laid out in rows by the repo's measure in both renderers (ink's wrap would count a conjunct narrower than a terminal draws
+  // it: review round 4, R4-S-1); full-screen a row's `agent` draws nothing
+  if (reasoning.body === undefined) return header;
   return (
     <Box flexDirection="column">
       {header}
@@ -1335,7 +1366,9 @@ function ReasoningRows(
           grid={grid}
           form={props.form}
         >
-          <Text {...dimProps(color)}>{row === '' ? ' ' : row}</Text>
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {row === '' ? ' ' : row}
+          </Text>
         </MarginRow>
       ))}
     </Box>

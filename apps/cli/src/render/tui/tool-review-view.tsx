@@ -67,24 +67,23 @@ import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   createReviewDocument,
-  escapeReviewCharacter,
+  escapeReviewText,
   projectReviewPage,
   REVIEW_START,
   type ReviewPage,
 } from './tool-review-projection.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, inkSafe } from './viewport.js';
 
-const escaped = (text: string): string =>
-  [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+const escaped = (text: string): string => escapeReviewText(text).join('');
 
 function inputDisplay(text: string): string {
   let output = '',
     count = 0;
   const chars = [...text];
-  for (const char of chars) {
-    const token = escapeReviewCharacter(char, false);
+  const tokens = escapeReviewText(text);
+  for (const token of tokens) {
     if (output.length + token.length > 40) break;
     output += token;
     count++;
@@ -832,7 +831,7 @@ function ReviewCardBody({
           <Text {...dimProps(color)}>
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
-          <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}${glyphOf('caret', plain)}`}</Text>
+          <Text wrap="truncate-end">{`Reason to deny: ${inkSafe(inputDisplay(review.denial))}${glyphOf('caret', plain)}`}</Text>
           <Text wrap="truncate-end">
             {legend(
               [{ keys: 'Enter', verb: 'deny and continue' }, STOP_KEY],

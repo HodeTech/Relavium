@@ -17,7 +17,7 @@ import {
 } from './native-prompt-acknowledgement.js';
 import { TERMINAL_TOO_SMALL_TEXT } from './measured-frame-acknowledgement.js';
 import { dimProps } from './projection.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, inkSafe } from './viewport.js';
 import {
   nativeFramed,
   nativeLegendParts,
@@ -154,7 +154,7 @@ function FieldRow({
     return (
       <Text>
         {'> '}
-        {snapshot.display}
+        {inkSafe(snapshot.display)}
       </Text>
     );
   if (snapshot.kind !== 'password') return null;
@@ -234,8 +234,9 @@ export function NativePromptView({
     ));
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
-      {snapshot.note !== '' && <Text wrap="wrap">{snapshot.note}</Text>}
-      {snapshot.message !== '' && <Text wrap="wrap">{snapshot.message}</Text>}
+      {/* ink wraps these itself: given in the form ink counts as a terminal draws it (an Indic conjunct, review round 4, R4-S-1) */}
+      {snapshot.note !== '' && <Text wrap="wrap">{inkSafe(snapshot.note)}</Text>}
+      {snapshot.message !== '' && <Text wrap="wrap">{inkSafe(snapshot.message)}</Text>}
       {snapshot.kind === 'picker' && (
         <>
           <Text wrap="truncate-end">
@@ -259,13 +260,13 @@ export function NativePromptView({
               <Text wrap="truncate-end">
                 <SelectableText selected={index === snapshot.selected}>
                   {`${selectionMarker(index === snapshot.selected, color)} `}
-                  {option.label}
+                  {inkSafe(option.label)}
                 </SelectableText>
               </Text>
               {option.hint !== undefined && (
                 <Text {...dimProps(color)} wrap="truncate-end">
                   {'  '}
-                  {option.hint}
+                  {inkSafe(option.hint)}
                 </Text>
               )}
             </Box>
@@ -306,7 +307,7 @@ export function NativePromptView({
               ),
             ))}
       <FieldRow snapshot={snapshot} acknowledgement={acknowledgement} />
-      {snapshot.error !== '' && <Text>{snapshot.error}</Text>}
+      {snapshot.error !== '' && <Text>{inkSafe(snapshot.error)}</Text>}
       <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined, locked)}</Text>
     </Box>
   );

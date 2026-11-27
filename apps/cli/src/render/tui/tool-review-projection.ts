@@ -403,6 +403,21 @@ function buildReviewDocument(
 
 const INVISIBLE = /[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/u;
 const BLANKS = new Set([0x2800, 0x16fe4, 0x1d159]);
+const COMBINING = /\p{M}/u;
+/** The code point of `text` that ends just before `position` (a surrogate pair whole), or `undefined` at the start. */
+export function codePointBefore(text: string, position: number): string | undefined {
+  if (position <= 0) return undefined;
+  const low = text.charCodeAt(position - 1);
+  const start = low >= 0xdc00 && low <= 0xdfff && position >= 2 ? position - 2 : position - 1;
+  return String.fromCodePoint(text.codePointAt(start) ?? 0);
+}
+/** Every code point of `text` as the card draws it ({@link escapeReviewCharacter}, each with the code point before it). */
+export function escapeReviewText(text: string): readonly string[] {
+  const characters = [...text];
+  return characters.map((char, index) =>
+    escapeReviewCharacter(char, false, false, characters[index - 1]),
+  );
+}
 /**
  * One code point of a reviewed string as the card draws it. Escaped as `<U+XXXX>` (never dropped: what the person sees is what they approve): `<`,
  * what draws nothing or blank, and (MVP-11 unit 9, review round 2, S2-4) every code point a terminal may draw WIDER than the card's layout counts
@@ -410,9 +425,16 @@ const BLANKS = new Set([0x2800, 0x16fe4, 0x1d159]);
  * U+FE0F and a lone surrogate are invisible already). Unescaped, a run of them makes a row the card sized to fit wrap on the terminal: the path row
  * of a write once pushed its stats to the next row and shifted the whole frame. Escaped, the row is ASCII where it was at risk, measured as it is
  * drawn. The nine text-default emoji bases a terminal draws two columns ({@link isNarrowEmojiBase}, review round 3) are drawn with U+FE0F after
- * them instead: legible, and two columns to the layout as on the terminal.
+ * them instead, legible, and two columns to the layout as on the terminal ALONE; a mark right after one (`previous`, the code point before
+ * `char` in the source) would make one cluster with it that the layout counts one column and tmux draws two (`☝️́`; review round 4, R4-S-2), so
+ * that mark is escaped: the base keeps its two columns to both, and the mark's token is ASCII.
  */
-export function escapeReviewCharacter(char: string, trailing: boolean, numeric = false): string {
+export function escapeReviewCharacter(
+  char: string,
+  trailing: boolean,
+  numeric = false,
+  previous?: string,
+): string {
   const cp = char.codePointAt(0) ?? 0;
   if (char === '\t') return '<TAB>';
   if (char === ' ' && trailing) return '<SP>';
@@ -423,7 +445,8 @@ export function escapeReviewCharacter(char: string, trailing: boolean, numeric =
     char === '<' ||
     (char !== ' ' && INVISIBLE.test(char)) ||
     BLANKS.has(cp) ||
-    isWidthRiskCodePoint(char)
+    isWidthRiskCodePoint(char) ||
+    (previous !== undefined && isNarrowEmojiBase(previous) && COMBINING.test(char))
   )
     return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`;
   // one of the nine text-default emoji bases a terminal draws two columns: drawn with its presentation selector, so the layout counts two too
@@ -693,6 +716,7 @@ function emitReviewRow(
         char,
         isTrailingCharacter(line, field, position),
         page.numeric,
+        codePointBefore(field.text, position),
       );
       const stop = position + char.length;
       appendVisibleRange(page.visibleSource, line.field, position, stop);
@@ -727,6 +751,7 @@ function tokenAt(
           char,
           isTrailingCharacter(line, field, position),
           page.numeric,
+          codePointBefore(field.text, position),
         ),
         next: position + char.length,
       }

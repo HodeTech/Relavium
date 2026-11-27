@@ -9,6 +9,7 @@ import { visibleMentions, type MentionState } from './mention.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { screenText } from './screen-text.js';
+import { inkSafe } from './viewport.js';
 import { SelectableText, selectedTone, selectionMarker } from './selectable-text.js';
 import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js';
 
@@ -69,9 +70,10 @@ export function mentionListLines(state: MentionState, size: number = MENTION_WIN
 /**
  * How the chat draws a stored name (a candidate, the browsed directory, the filter's echo): the inline sanitiser, then the screen's filter (unit 9,
  * review round 2, S2-5). A file name is the repository's, and a row of fillers a terminal draws wider than the layout counts would wrap at the right
- * edge and start the rest of the name at column 0.
+ * edge and start the rest of the name at column 0. Ink cuts these rows itself, so a name is given in the form ink counts as a terminal draws it
+ * ({@link inkSafe}: an Indic conjunct, review round 4, R4-S-1).
  */
-const screenName = (stored: string): string => screenText(sanitizeInline(stored));
+const screenName = (stored: string): string => inkSafe(screenText(sanitizeInline(stored)));
 
 export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const { state, color } = props;
@@ -82,7 +84,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   // `selected` momentarily past the end until the next keystroke re-clamps it (foldMentionKey clamps on move).
   const selected =
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
-  const where = state.dir.length === 0 ? './' : `${text(state.dir)}/`;
+  const where = state.dir.length === 0 ? './' : `${inkSafe(text(state.dir))}/`;
   const span = mentionWindow(
     visible.length,
     selected,
@@ -122,7 +124,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       return (
         <Text key={candidate.path} {...selectedTone(isSelected, color)} wrap="truncate-end">
           <SelectableText selected={isSelected}>
-            {`${selectionMarker(isSelected, color)} ${text(candidate.name)}${slash}`}
+            {`${selectionMarker(isSelected, color)} ${inkSafe(text(candidate.name))}${slash}`}
           </SelectableText>
         </Text>
       );

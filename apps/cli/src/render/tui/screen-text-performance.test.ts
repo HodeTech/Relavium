@@ -64,6 +64,14 @@ const RUNS: readonly (readonly [string, string])[] = [
   ['toned bases', `${c(0x1f3c3)}${c(0x1f3fd)}`.repeat(N / 4)],
   ['an emoji and a run of selectors', `${c(0x2764)}${c(0xfe0f).repeat(N)}`],
   ['wide tone marks', `a${c(0x302e)}`.repeat(N / 2)],
+  // review round 4: conjuncts and Prepend letters (the measure counts every spacing character of such a cluster), a natural Hindi paragraph
+  ['Hindi conjuncts', `${c(0x0915)}${c(0x094d)}`.repeat(N / 2)],
+  ['Khmer coeng', `${c(0x1780)}${c(0x17d2)}`.repeat(N / 2)],
+  ['Prepend letters', `${c(0x0d4e)}y`.repeat(N / 2)],
+  [
+    'a Hindi paragraph',
+    'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत प्रशिक्षित स्वास्थ्यकर्मियों '.repeat(1100).slice(0, N),
+  ],
   ['spaces', ' '.repeat(N)],
   ['one long word', 'x'.repeat(N)],
 ];
@@ -101,6 +109,28 @@ describe('every screen function is linear on a hostile run (64,000 characters of
       expect(timed(() => screenText(cluster))).toBeLessThan(BOUND_MS);
       expect(timed(() => displayWidth(screenText(cluster)))).toBeLessThan(BOUND_MS);
     }
+  });
+
+  it('the word rule: a million unannounced characters before the word, and the NFKD worst case (U+FDFA expands to 18)', () => {
+    const skipped = `${c(0x200d).repeat(1_000_000)}you`;
+    const ms = timed(() => startsWithMarginWord(skipped));
+    // measured about 20 ms on an idle machine (review round 4 asked for 25); held to the file's bound so a busy machine does not fail it
+    expect(ms, `${ms.toFixed(1)} ms`).toBeLessThan(BOUND_MS);
+    for (const run of [c(0xfdfa).repeat(127), `${c(0xfdfa).repeat(N)}you`]) {
+      const fold = timed(() => startsWithMarginWord(run));
+      expect(fold, `${fold.toFixed(1)} ms`).toBeLessThan(BOUND_MS);
+    }
+  });
+
+  it('a 64,000-character Hindi reply and a Khmer one are laid out on the grid in bounded time (the measure stays linear)', () => {
+    for (const text of [
+      'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत प्रशिक्षित स्वास्थ्यकर्मियों '.repeat(1100).slice(0, N),
+      'ព្រះរាជាណាចក្រកម្ពុជា ក្រសួងអប់រំ '.repeat(2000).slice(0, N),
+    ])
+      for (const color of [true, false]) {
+        const ms = timed(() => transcriptRows([{ role: 'assistant', text }], chatGrid(80), color));
+        expect(ms, `${ms.toFixed(1)} ms`).toBeLessThan(2_000);
+      }
   });
 
   it('a 6,400-character Thai paragraph streamed in chunks of 3: the stream filter costs no more than a bound for the whole stream', () => {

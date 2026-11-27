@@ -1,14 +1,16 @@
 /**
- * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 to 3: S-1, S-3, S2-1, S2-4, C2-1, M2-3, R3S-1 to R3S-5): what
- * untrusted text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
+ * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 to 4: S-1, S-3, S2-1, S2-4, C2-1, M2-3, R3S-1 to R3S-5,
+ * R4-S-3, R4-S-6): what untrusted text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
  *
  * **Why.** The chat lays a row out with the width the layout measures (`string-width`), and the grid's margin guarantee is exact in that layout:
  * a row is at most the content column wide, in a cell that starts at the margin. A terminal measures some characters differently, and a row the
  * layout sized to fit can then reach the right edge on screen: the terminal wraps it, and the rest starts at column 0 of the next physical row,
- * the margin, where the host draws who spoke. The reference terminal is tmux 3.7b, measured code point by code point over the planes text uses
- * and sequence by sequence for every class below (each string written after an `A`, the cursor read back with `ESC[6n`; review rounds 2 and 3);
- * `terminal-widths.test.ts` holds those tables, holds `string-width` of every FILTERED measured string to at least what tmux drew for it, and
- * `terminal-wrap.test-support.ts` draws the witness frames with them.
+ * the margin, where the host draws who spoke. The reference terminal is tmux 3.7b, measured code point by code point over the planes text uses,
+ * sequence by sequence for every class below, and on a SEQUENCE differential of random strings over all of Unicode and natural paragraphs (each
+ * string written after an `A`, the cursor read back with `ESC[6n`; review rounds 2 to 4); `terminal-widths.test.ts` holds those tables and holds
+ * the LAYOUT's measure (`viewport.ts` `displayWidth`: `string-width`, and every spacing character of an Indic conjunct or a Prepend cluster, which
+ * this filter does not touch: review round 4, R4-S-1) of every FILTERED measured string to at least what tmux drew for it; and
+ * `terminal-wrap.test-support.ts` draws the witness frames with them. All of it is tmux 3.7b only.
  *
  * **Where it runs: before the layout.** A rewrite below can change the width the layout measures (a decomposed AM, a selector added), so the
  * filter runs on the text BEFORE anything lays it out: a transcript entry's source (`chat-projection.ts` `entryRows`), the stream before the live
@@ -48,8 +50,9 @@
  * on the cell before the row: the margin's last column. It is dropped at the start of each line.
  *
  * **The decision surfaces** never drop what is decided on: the approval card escapes every code point of the risky classes as `<U+XXXX>`
- * ({@link isWidthRiskCodePoint}, `tool-review-projection.ts`); the question card escapes what this filter would drop from an option's label or a
- * header ({@link escapeScreenText}), so two labels the core admits as different never draw alike.
+ * ({@link isWidthRiskCodePoint}, `tool-review-projection.ts`); the question card draws its labels and headers through this filter, and when two
+ * of a set would draw alike at the row's cut (or one would draw empty) writes all of them one-to-one ({@link escapeScreenText}, `question-card.ts`
+ * `decisionTexts`).
  *
  * **Linear.** Every pattern here is forward and bounded (review round 2, C2-1): `screen-text-performance.test.ts` holds each function to a bound on
  * a 64,000-character hostile run of every class.
@@ -123,36 +126,18 @@ const WIDTH_RISK = new RegExp(
   'u',
 );
 
-/** How the pass treats what it removes: drops it (the screen's rows) or writes each removed code point as `<U+XXXX>` (a decision surface). */
-type Removal = 'drop' | 'escape';
-
-/** One code point as the visible token a decision surface writes for it. */
+/** One code point as the visible token a decision surface writes for it ({@link escapeScreenText}). */
 function codePointToken(character: string): string {
   return `<U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`;
-}
-
-/** `text`, removed: nothing, or each of its code points as its token. */
-function removed(text: string, removal: Removal): string {
-  if (removal === 'drop' || text === '') return '';
-  let out = '';
-  for (const character of text) out += codePointToken(character);
-  return out;
 }
 
 /**
  * What follows an emoji the layout draws wide only as a whole (a flag, `❤️`, a keycap, `☝️`, a zero-width-joiner sequence): removed, except that
  * a Thai or Lao AM keeps its spacing vowel (its mark would join onto the emoji; drawn alone, the vowel is one column to both).
  */
-function wideTail(tail: string, removal: Removal): string {
-  if (tail === '') return '';
+function wideTail(tail: string): string {
   let out = '';
-  for (const character of tail) {
-    const decomposed = DECOMPOSED_AM[character];
-    out +=
-      decomposed === undefined || removal === 'escape'
-        ? removed(character, removal)
-        : decomposed.slice(1);
-  }
+  for (const character of tail) out += DECOMPOSED_AM[character]?.slice(1) ?? '';
   return out;
 }
 
@@ -175,12 +160,11 @@ function regionalRun(run: string): string {
 }
 
 /** One member of a zero-width-joiner sequence as the screen draws it: no tone; a narrow base with its presentation selector (and no other). */
-function sequenceElement(element: string, removal: Removal): string {
+function sequenceElement(element: string): string {
   const base = String.fromCodePoint(element.codePointAt(0) ?? 0);
   const rest = element.slice(base.length);
-  if (NARROW_BASE_ONLY.test(base))
-    return `${base}${VS16}${removed(rest.replaceAll(VS16, ''), removal)}`;
-  return `${base}${rest.replace(TONES, '')}${removed([...rest.matchAll(TONES)].join(''), removal)}`;
+  if (NARROW_BASE_ONLY.test(base)) return `${base}${VS16}`;
+  return `${base}${rest.replace(TONES, '')}`;
 }
 
 /**
@@ -188,31 +172,26 @@ function sequenceElement(element: string, removal: Removal): string {
  * (the layout draws it two columns, as tmux does), else written as its members, each through the pass on its own (tmux draws a long chain as
  * more than one cluster: review round 3).
  */
-function zwjSequence(sequence: string, removal: Removal): string {
-  const members = sequence.split(ZWJ).map((element) => sequenceElement(element, removal));
+function zwjSequence(sequence: string): string {
+  const members = sequence.split(ZWJ).map((element) => sequenceElement(element));
   const joined = members.join(ZWJ);
   const plain = members.map((member) => member.replace(/<U\+[0-9A-F]+>/gu, ''));
   if (RGI_EMOJI.test(plain.join(ZWJ))) return joined;
-  return members.map((member) => screenPass(member, removal)).join(removed(ZWJ, removal));
+  return members.map((member) => screenPass(member)).join('');
 }
 
 /**
  * What one emoji with its presentation selector or keycap becomes, with what follows it (`trailing`): kept, and what follows it removed, when the
  * layout draws it wide; else only its base is kept (the selector or keycap does not belong to it, and what follows it would join onto it).
  */
-function presentedUnit(unit: string, trailing: string, removal: Removal): string {
-  if (RGI_EMOJI.test(unit) || KEYCAP_SEQUENCE.test(unit))
-    return `${unit}${wideTail(trailing, removal)}`;
+function presentedUnit(unit: string, trailing: string): string {
+  if (RGI_EMOJI.test(unit) || KEYCAP_SEQUENCE.test(unit)) return `${unit}${wideTail(trailing)}`;
   const base = String.fromCodePoint(unit.codePointAt(0) ?? 0);
-  return `${base}${wideTail(`${unit.slice(base.length)}${trailing}`, removal)}`;
+  return `${base}${wideTail(`${unit.slice(base.length)}${trailing}`)}`;
 }
 
 /** The pass's callback: the groups of {@link SCREEN_PASS} in order (see the pattern). */
-function passMatch(
-  removal: Removal,
-  match: string,
-  groups: readonly (string | undefined)[],
-): string {
+function passMatch(match: string, groups: readonly (string | undefined)[]): string {
   const [
     tagSequence,
     sequence,
@@ -227,17 +206,15 @@ function passMatch(
     vowel,
   ] = groups;
   if (tagSequence !== undefined || joiner !== undefined) return match;
-  if (sequence !== undefined)
-    return `${zwjSequence(sequence, removal)}${wideTail(sequenceTail ?? '', removal)}`;
-  if (regional !== undefined)
-    return `${regionalRun(regional)}${wideTail(regionalTail ?? '', removal)}`;
+  if (sequence !== undefined) return `${zwjSequence(sequence)}${wideTail(sequenceTail ?? '')}`;
+  if (regional !== undefined) return `${regionalRun(regional)}${wideTail(regionalTail ?? '')}`;
   if (narrow !== undefined) {
     const tail = narrowTail ?? '';
-    return `${narrow}${VS16}${wideTail(tail.startsWith(VS16) ? tail.slice(1) : tail, removal)}`;
+    return `${narrow}${VS16}${wideTail(tail)}`;
   }
-  if (presented !== undefined) return presentedUnit(presented, presentedTail ?? '', removal);
+  if (presented !== undefined) return presentedUnit(presented, presentedTail ?? '');
   if (vowel !== undefined) return DECOMPOSED_AM[vowel] ?? '';
-  return removed(match, removal);
+  return '';
 }
 
 /**
@@ -257,22 +234,20 @@ const DROP_PASS = new RegExp(
   'gu',
 );
 
-function dropPass(text: string, removal: Removal): string {
+function dropPass(text: string): string {
   return text.replace(
     DROP_PASS,
     (match: string, tagSequence: unknown, joiners: unknown, kept: unknown) => {
       if (typeof tagSequence === 'string' || typeof kept === 'string') return match;
-      if (typeof joiners === 'string')
-        return `${joiners}${removed(match.slice(joiners.length), removal)}`;
-      return removed(match, removal);
+      if (typeof joiners === 'string') return joiners;
+      return '';
     },
   );
 }
 
-function onePass(text: string, removal: Removal): string {
-  return dropPass(text, removal).replace(SCREEN_PASS, (match: string, ...rest: unknown[]) =>
+function onePass(text: string): string {
+  return dropPass(text).replace(SCREEN_PASS, (match: string, ...rest: unknown[]) =>
     passMatch(
-      removal,
       match,
       rest.slice(0, 11).map((group) => (typeof group === 'string' ? group : undefined)),
     ),
@@ -287,10 +262,10 @@ const SETTLE_PASSES = 4;
  * removes can put two characters side by side that it judged apart (a selector between a joiner and an emoji, dropped late), and the screen must
  * draw what a second look would (so a row filtered again after its layout does not change). Each pass is linear.
  */
-function screenPass(text: string, removal: Removal): string {
-  let out = onePass(text, removal);
+function screenPass(text: string): string {
+  let out = onePass(text);
   for (let pass = 1; pass < SETTLE_PASSES; pass += 1) {
-    const again = onePass(out, removal);
+    const again = onePass(out);
     if (again === out) break;
     out = again;
   }
@@ -302,7 +277,7 @@ function screenPass(text: string, removal: Removal): string {
  * passes, run until they change nothing. Idempotent.
  */
 export function dropScreenFillers(text: string): string {
-  return screenPass(text, 'drop');
+  return screenPass(text);
 }
 
 /** `text` with the combining marks and joiners that start a line (the text's, and each after a newline) dropped (after {@link dropScreenFillers}). */
@@ -319,15 +294,38 @@ export function screenText(text: string): string {
 }
 
 /**
- * {@link screenText} for a decision surface (the question card's option labels and headers: review round 3, R3S-4): what the filter would DROP is
- * written as `<U+XXXX>` instead, so two strings the core admits as different never draw alike (`Ok` and `Ok🏽`); a literal `<U+` is written
- * `<U+003C>U+`, so a token can only come from a code point. The rewrites (a decomposed AM, a joiner after an indicator, a selector after a narrow
- * base) are as on every row. For a string drawn once: it is not idempotent (a token's own `<U+` is escaped again).
+ * A string written ONE-TO-ONE for a decision surface (the question card's option labels and headers, when two of a set would draw alike: review
+ * rounds 3 and 4, R3S-4, R4-S-3): every code point a row draws as itself stays (a letter or a digit of any script, printable ASCII, a flag's pair
+ * of regional indicators), and every other one is written as its `<U+XXXX>` token: a mark (an accent, a virama), a symbol or an emoji, a format
+ * or default-ignorable code point, the Thai or Lao AM, a lone regional indicator, `<` itself, and whatever `alsoEscape` names (the card's own glyphs
+ * and shapes). Code point by code point, with no pass over the text: nothing is dropped, rewritten or inserted, so two different strings never
+ * write the same, and what is written draws as wide as the layout counts it (no mark joins a letter; no cluster forms but a flag).
  */
-export function escapeScreenText(text: string): string {
-  const literal = text.replace(/<(?=U\+)/gu, codePointToken('<'));
-  return screenPass(literal, 'escape').replace(ORPHAN_LEAD, (lead) => removed(lead, 'escape'));
+export function escapeScreenText(
+  text: string,
+  alsoEscape: (character: string) => boolean = () => false,
+): string {
+  const characters = [...text];
+  let out = '';
+  for (let at = 0; at < characters.length; at += 1) {
+    const character = characters[at] ?? '';
+    const next = characters[at + 1] ?? '';
+    if (REGIONAL.test(character) && REGIONAL.test(next) && RGI_EMOJI.test(`${character}${next}`)) {
+      out += `${character}${next}`;
+      at += 1;
+      continue;
+    }
+    out +=
+      AS_ITSELF.test(character) && !alsoEscape(character) ? character : codePointToken(character);
+  }
+  return out;
 }
+const REGIONAL = /^\p{Regional_Indicator}$/u;
+/** What a decision surface writes as itself (see {@link escapeScreenText}). */
+const AS_ITSELF = new RegExp(
+  `^(?![<${THAI_AM}${LAO_AM}]|\\p{Default_Ignorable_Code_Point})[\\p{L}\\p{N}\\x20-\\x7e]$`,
+  'u',
+);
 
 /** A character after which an emoji the layout draws wide as a whole ends (a flag, a selector, a keycap, a pictograph): see {@link screenPieces}. */
 const WIDE_UNIT_END = new RegExp(

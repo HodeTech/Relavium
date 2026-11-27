@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 
 import { sanitizeInline } from '../sanitize.js';
 import { screenText } from './screen-text.js';
+import { inkSafe } from './viewport.js';
 import { Emph } from './emphasis-view.js';
 import { reverseSearchMatchText, type ReverseSearchState } from './input-history.js';
 import { exitKey, legend } from './legend.js';
@@ -20,9 +21,10 @@ const SEARCH_LEGEND = legend(
 
 /**
  * A stored line (the query and the recalled history line) as the screen draws it: the inline sanitiser, then the screen's filter (unit 9, review round
- * 2, S2-5): a recalled line is stored text, and a filler a terminal draws wider than the layout counts would wrap the row into the margin.
+ * 2, S2-5): a recalled line is stored text, and a filler a terminal draws wider than the layout counts would wrap the row into the margin. Ink cuts
+ * the row itself, so the line is given in the form ink counts as a terminal draws it ({@link inkSafe}: an Indic conjunct, review round 4, R4-S-1).
  */
-const screenName = (stored: string): string => screenText(sanitizeInline(stored));
+const screenName = (stored: string): string => inkSafe(screenText(sanitizeInline(stored)));
 
 /**
  * The `Ctrl+R` reverse-incremental-search line (2.5.D step 3) — a readline-style search prompt that replaces the

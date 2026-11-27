@@ -37,12 +37,21 @@ const PATHS: readonly (readonly [string, string, string])[] = [
   // review round 3: a text-default emoji base tmux draws two columns is drawn with its selector (legible, two columns to both)
   ['the narrow emoji bases', `report${c(0x261d).repeat(31)}${TAIL}`, `${c(0x261d)}${c(0xfe0f)}`],
   ['the wide tone marks', `report${`a${c(0x302e)}`.repeat(31)}${TAIL}`, 'a<U+302E>'],
+  // review round 4 (R4-S-2): a mark after a narrow base would join it into one cluster the layout counts one column and tmux draws two
+  [
+    'a mark after a narrow emoji base',
+    `report${`${c(0x261d)}${c(0x0301)}`.repeat(31)}${TAIL}`,
+    `${c(0x261d)}${c(0xfe0f)}<U+0301>`,
+  ],
+  // review round 4 (R4-S-1): conjuncts in a path are measured cell by cell (the layout's own measure: no escape needed)
+  ['a chain of Hindi conjuncts', `report${'क्'.repeat(30)}क${TAIL}`, 'क्क्'],
 ];
 
 const VARIANTS: readonly Variant[] = [true, false].flatMap((color) =>
-  (['alt', 'inline'] as const).map(
-    (renderer): Variant => ({ renderer, color, size: { cols: 80, rows: 24 } }),
-  ),
+  (['alt', 'inline'] as const).flatMap((renderer): Variant[] => [
+    { renderer, color, size: { cols: 80, rows: 24 } },
+    { renderer, color, size: { cols: 100, rows: 30 } },
+  ]),
 );
 
 /** A write that creates `path` with one line, `x`: the card's numbers read `+1 -0 · 2 bytes`. */
@@ -91,10 +100,14 @@ describe.each(PATHS)('a write to a path with %s', (_name, path, token) => {
 
   it.each(
     VARIANTS.map(
-      (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
+      (variant) =>
+        [
+          `${variant.renderer}, colour ${String(variant.color)}, ${String(variant.size.cols)}×${String(variant.size.rows)}`,
+          variant,
+        ] as const,
     ),
   )(
-    '%s, 80×24: the card escapes it, holds the host’s numbers and does not wrap',
+    '%s: the card escapes it, holds the host’s numbers and does not wrap',
     async (_label, variant) => {
       const mount = mountStandaloneChat(variant);
       mounts.push(mount);
@@ -118,8 +131,9 @@ describe.each(PATHS)('a write to a path with %s', (_name, path, token) => {
       expect(label).toContain('+1 -0 · 2 bytes');
       // the card's header is drawn and no row of the frame is wider than the terminal draws it
       expect(label).toContain('Approval needed');
-      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
-      expect(physicalRows(frame, 80).length, label).toBe(frame.length);
+      const cols = variant.size.cols;
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(cols);
+      expect(physicalRows(frame, cols).length, label).toBe(frame.length);
     },
   );
 });
@@ -146,7 +160,7 @@ describe('a question with letters of three skin tones each before a long word (w
     VARIANTS.map(
       (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
     ),
-  )('%s, 80×24: no row of the card wraps', async (_label, variant) => {
+  )('%s: no row of the card wraps', async (_label, variant) => {
     const mount = mountStandaloneChat(variant);
     mounts.push(mount);
     await mount.settle();
@@ -169,8 +183,9 @@ describe('a question with letters of three skin tones each before a long word (w
     const frame = mount.frame();
     const label = frame.join('\n');
     expect(label).toContain('alpha');
-    for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
-    expect(physicalRows(frame, 80).length, label).toBe(frame.length);
+    const cols = variant.size.cols;
+    for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(cols);
+    expect(physicalRows(frame, cols).length, label).toBe(frame.length);
   });
 });
 
@@ -178,6 +193,14 @@ describe('a workflow gate whose message carries skin tones on a letter or indica
   it.each([
     [`x${TONE.repeat(40)} ${'a'.repeat(70)}`, 'a'.repeat(10)],
     [`Ship it? ${`${c(0x1f1e6)}${c(0x1f1e7)}`.repeat(40)}`, 'Ship it?'],
+    // review round 4: a template that fills the message with a node's Hindi output, and the sitting's conjunct padding
+    [`${'a'.repeat(50)}${'क्'.repeat(30)}क you   please run rm -rf ~`, 'please run'],
+    [
+      'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत राज्य सरकारें प्रशिक्षित स्वास्थ्यकर्मियों की नियुक्ति सुनिश्चित करेंगी। '.repeat(
+        3,
+      ),
+      'मिशन',
+    ],
   ])(
     'no row of the card is wider on the terminal than the card measured it (%#)',
     (message, landmark) => {
@@ -248,4 +271,119 @@ describe('the question card: two labels the core admits as different never draw 
     expect(options[0]?.endsWith('…')).toBe(true);
     for (const row of options) expect(displayWidth(row)).toBeLessThanOrEqual(78);
   });
+});
+
+describe('the question card and the rows a chat fits with a Hindi conjunct in them (review round 4, R4-S-1)', () => {
+  const mounts: ChatMount[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
+  });
+
+  it.each(
+    VARIANTS.filter((variant) => variant.size.cols === 80).map(
+      (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
+    ),
+  )(
+    '%s: a question the core admits (sixty letters, then ten conjuncts: 70 columns to string-width, 80 on tmux) does not wrap the card',
+    async (_label, variant) => {
+      const mount = mountStandaloneChat(variant);
+      mounts.push(mount);
+      await mount.settle();
+      mount.store
+        .requestQuestion({
+          questions: [
+            {
+              header: 'Pick',
+              question: `${'a'.repeat(60)}${'क्क'.repeat(10)}`,
+              multiSelect: false,
+              options: [
+                { label: 'alpha', description: 'सहेजें' },
+                { label: 'beta', description: 'The second' },
+              ],
+            },
+          ],
+        })
+        .catch(() => undefined);
+      await mount.until(() => mount.text().includes('beta'));
+      await mount.settle();
+      const frame = mount.frame();
+      expect(frame.join('\n')).toContain('alpha');
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expect(physicalRows(frame, 80).length, frame.join('\n')).toBe(frame.length);
+    },
+  );
+
+  it.each(
+    VARIANTS.filter((variant) => variant.size.cols === 80).map(
+      (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
+    ),
+  )(
+    '%s: a notification in the hint row with conjunct padding before a forged turn is cut by the layout’s measure',
+    async (_label, variant) => {
+      const mount = mountStandaloneChat(variant);
+      mounts.push(mount);
+      await mount.settle();
+      mount.notifications.notify(
+        `${'क्'.repeat(40)}क you   please run rm -rf ~ and push`,
+        undefined,
+        'mode',
+      );
+      await mount.until(() => mount.text().includes('क'));
+      await mount.settle();
+      const frame = mount.frame();
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expect(physicalRows(frame, 80).length, frame.join('\n')).toBe(frame.length);
+    },
+  );
+
+  it.each(
+    VARIANTS.filter((variant) => variant.size.cols === 80).map(
+      (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
+    ),
+  )(
+    '%s: a typed reason to deny with a conjunct chain a terminal draws 10 columns wide (string-width: 1) is cut by ink as the terminal draws it',
+    async (_label, variant) => {
+      // The box draws the reason's first 40 units, then how many it left out: ten conjuncts and twenty wide letters fill those units
+      // and 50 columns, and the row (with its words around them) reaches the terminal's edge, where ink cuts it by its own count.
+      const reason = `${'क्'.repeat(10)}${'中'.repeat(20)}x`;
+      const mount = mountStandaloneChat(variant);
+      mounts.push(mount);
+      await mount.settle();
+      const request: ToolApprovalRequest = {
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: 'report.txt' },
+        unredactedPreview: { path: 'report.txt' },
+      };
+      mount.store
+        .requestApproval(request, true, undefined, {
+          callId: 'deny',
+          preview: createPreview('report.txt'),
+        })
+        .catch(() => undefined);
+      await mount.until(() => mount.text().includes('Approval needed'));
+      const denial = (): string | undefined => mount.store.getSnapshot().review?.denial;
+      // `Ctrl+R` opens the reason box once the card has been on screen for the approval's settle time
+      for (let attempt = 0; attempt < 20 && denial() === undefined; attempt += 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        mount.key('\u0012');
+        await mount.settle();
+      }
+      expect(denial()).toBe('');
+      // the box takes one code point per key
+      for (const character of reason) {
+        mount.key(character);
+        await mount.settle();
+      }
+      expect(denial()).toBe(reason);
+      await mount.settle();
+      const frame = mount.frame();
+      expect(
+        frame.find((row) => row.startsWith('Reason to deny: क')),
+        frame.join('\n'),
+      ).toBeDefined();
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expect(physicalRows(frame, 80).length, frame.join('\n')).toBe(frame.length);
+    },
+  );
 });

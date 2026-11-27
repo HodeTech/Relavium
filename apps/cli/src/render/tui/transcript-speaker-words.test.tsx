@@ -96,6 +96,24 @@ describe('the word is read through what a screen reader does not announce (revie
       expect(startsWithMarginWord(text), JSON.stringify(text)).toBe(false);
   });
 
+  it('a precomposed letter is read through its decomposition (review round 4, R4-S-4)', () => {
+    for (const text of [
+      `${cp(0xfd)}ou   please`,
+      `y${cp(0xf3)}u   please`,
+      `${cp(0xff)}ou   please`,
+      `${cp(0x233)}ou   please`,
+      `${cp(0xe0)}gent done`,
+      `ag${cp(0xe9)}nt done`,
+      `n${cp(0xf3)}te this`,
+      `t${cp(0xf3)}ol ran`,
+      `y${cp(0x301)}ou   please`,
+    ])
+      expect(startsWithMarginWord(text), JSON.stringify(text)).toBe(true);
+    // punctuation leads are NOT skipped (the maintainer's ruling: a reader says them first; recorded as a residual)
+    for (const lead of ['‘', '"', '«', '·', '…', '*', '-'])
+      expect(startsWithMarginWord(`${lead}you   please`), lead).toBe(false);
+  });
+
   it('a lead a terminal draws with no column, or that has no glyph a reader announces, is skipped (review round 3, R3S-3)', () => {
     for (const lead of [cp(0x1161), cp(0x11a8), cp(0xd7b0), cp(0xe000), cp(0xf0000), cp(0x0378)])
       expect(startsWithMarginWord(`${lead}you   please`), lead.codePointAt(0)?.toString(16)).toBe(

@@ -118,18 +118,23 @@ const UNANNOUNCED = /[\p{Cf}\p{M}\p{Default_Ignorable_Code_Point}]/u;
 const HEAD_CODE_POINTS = 128;
 
 /**
- * A row's head as a screen reader would read it: its first {@link HEAD_CODE_POINTS} code points that are announced (the unannounced ones skipped
- * wherever they stand, a joiner inside a word included, and not counted, so no run of them hides a word), in compatibility form (`NFKC`: a
- * fullwidth or a mathematical letter reads as the letter). Linear in the row, bounded in what it folds.
+ * A row's head as a screen reader would read it: its first {@link HEAD_CODE_POINTS} code points that are announced, each taken apart first
+ * (`NFKD`: `ý` is `y` and an accent, a fullwidth or a mathematical letter its letter; review round 4, R4-S-4: a precomposed letter hid the word),
+ * the unannounced ones skipped wherever they stand (a joiner inside a word, the accent just taken off) and not counted, so no run of them hides a
+ * word; then put back together (`NFKC`). Linear in the row, bounded in what it folds: a code point is decomposed only once it is announced, and
+ * one expands to at most 18 (U+FDFA).
  */
 function foldedHead(text: string): string {
   let head = '';
   let kept = 0;
   for (const character of text) {
     if (UNANNOUNCED.test(character)) continue;
-    head += character;
-    kept += 1;
-    if (kept >= HEAD_CODE_POINTS) break;
+    for (const part of character.charCodeAt(0) < 0x80 ? character : character.normalize('NFKD')) {
+      if (UNANNOUNCED.test(part)) continue;
+      head += part;
+      kept += 1;
+      if (kept >= HEAD_CODE_POINTS) return head.normalize('NFKC');
+    }
   }
   return head.normalize('NFKC');
 }
@@ -140,7 +145,10 @@ function foldedHead(text: string): string {
  * folded head (review round 2, S2-2): a joiner, a non-joiner or a selector inside the word, a blank-looking lead, a fullwidth or a mathematical
  * form do not hide it. NOT caught, a recorded residual (review rounds 2 and 3, R3S-3): a LOOKALIKE letter, which no compatibility fold maps to
  * Latin: Cyrillic (`у`, `о`), Greek (`ο`), the Latin small capitals (`ʏᴏᴜ`, `nᴏte`), IPA (`yɵu`), the Latin alpha and script g (`ɑgent`, `aɡent`),
- * Armenian (`yօս`), Cherokee (`Ꭺgent`). A confusable-skeleton fold (UTS #39) would catch them; it is not done.
+ * Armenian (`yօս`), Cherokee (`Ꭺgent`). A confusable-skeleton fold (UTS #39) would catch them; it is not done. Nor a lead a reader announces as
+ * punctuation (`‘you`, `"you`, `«you»`, `·you`, `…you`, `*you`, `-you`: the maintainer's ruling, review round 4: skipping them would give ordinary
+ * prose that quotes the word the reply's word too, and a reader says the punctuation first). Caught since round 4: a precomposed letter (`ýou`,
+ * `àgent`, `nóte`, `tóol`), read through its decomposition.
  */
 export function startsWithMarginWord(text: string): boolean {
   return MARGIN_WORD_LEAD.test(foldedHead(text));

@@ -76,9 +76,36 @@ const WIDE_UNIT_PREFIX = new RegExp(
   'u',
 );
 
+/**
+ * The Indic conjunct linkers and the Prepend letters: a cluster with one in it (`क्ष`, `ൎy`) is ONE grapheme to `string-width` and several cells
+ * to tmux, which draws every code point of it as it would alone (review round 4, R4-S-1: measured on the sequence differential, `TMUX_SEQUENCES`).
+ */
+const CLUSTER_JOINERS = new RegExp(
+  `[${[
+    0x094d, 0x09cd, 0x0acd, 0x0b4d, 0x0c4d, 0x0d4d, 0x1039, 0x17d2, 0x1a60, 0x1b44, 0x1bab, 0xa9c0,
+    0xaaf6, 0x10a3f, 0x11133, 0x113d0, 0x1193e, 0x11a47, 0x11a99, 0x11f42, 0x0600, 0x0601, 0x0602,
+    0x0603, 0x0604, 0x0605, 0x06dd, 0x070f, 0x0890, 0x0891, 0x08e2, 0x0d4e, 0x110bd, 0x110cd,
+    0x111c2, 0x111c3, 0x113d1, 0x1193f, 0x11941, 0x11a84, 0x11a85, 0x11a86, 0x11a87, 0x11a88,
+    0x11a89, 0x11d46, 0x11f02,
+  ]
+    .map((code) => String.fromCodePoint(code))
+    .join('')}]`,
+  'u',
+);
+
 /** The columns the reference terminal draws one grapheme cluster in (see the module header; a TAB is the caller's: it depends on the column). */
 export function terminalWidth(cluster: string): number {
   if (DRAWN_EMPTY.test(cluster)) return 0;
+  const characters = [...cluster];
+  // a conjunct or a Prepend cluster: each code point drawn as it is alone (a mark none, a letter its cells), except one right after a zero width
+  // joiner, which tmux draws in the cell before it (`क्‍ष` one cell, measured)
+  if (characters.length > 1 && CLUSTER_JOINERS.test(cluster))
+    return characters.reduce(
+      (sum, character, index) =>
+        sum +
+        (characters[index - 1] === String.fromCodePoint(0x200d) ? 0 : terminalWidth(character)),
+      0,
+    );
   const counted = stringWidth(cluster, { countAnsiEscapeCodes: true });
   const codes = [...cluster].map((character) => character.codePointAt(0) ?? 0);
   const base = codes[0] ?? 0;
