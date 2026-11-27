@@ -33,7 +33,8 @@
  *   only as a whole (a flag, `❤️`, a keycap, `☝️`, an emoji zero-width-joiner sequence): a joiner, a combining mark, a selector after it makes the
  *   cluster one the layout no longer recognises and counts one column, tmux two. Among the default-ignorable code points are the Mongolian free
  *   variation selectors U+180B to U+180D and U+180F (U+182D U+180C is drawn as U+182D: the variant form a Mongolian font would pick is not drawn; review round 5,
- *   recorded). A zero width joiner before a pictograph that does not follow an emoji (a letter and its marks before it): tmux glues the pictograph
+ *   recorded); the Mongolian vowel separator U+180E is KEPT (review round 6, I-2: tmux draws it in no column and `string-width` counts none, so dropping
+ *   it would change ordinary Mongolian for nothing). A zero width joiner before a pictograph that does not follow an emoji (a letter and its marks before it): tmux glues the pictograph
  *   into the letter's cell, and a letter with five to seven marks then draws one column wider than its two clusters count (review round 5,
  *   R5-S-5); a joiner before a letter (Indic and Arabic shaping) is kept.
  * - **Rewritten** to a form both measure alike: the Thai and Lao vowel AM (U+0E33, U+0EB3) as its compatibility decomposition (U+0E4D U+0E32,
@@ -74,6 +75,8 @@ const KEYCAP = String.fromCodePoint(0x20e3);
 const BLACK_FLAG = String.fromCodePoint(0x1f3f4);
 const TAG_FIRST = String.fromCodePoint(0xe0020);
 const TAG_LAST = String.fromCodePoint(0xe007f);
+/** The Mongolian vowel separator: a format character tmux draws in no column and `string-width` counts as none; kept (review round 6, I-2). */
+const MVS = String.fromCodePoint(0x180e);
 const THAI_AM = String.fromCodePoint(0x0e33);
 const LAO_AM = String.fromCodePoint(0x0eb3);
 /** The spacing tone marks the layout counts as 0 columns and tmux draws two (Hangul U+302E, U+302F; Vietnamese reading marks U+16FF0, U+16FF1). */
@@ -118,7 +121,7 @@ const SCREEN_PASS = new RegExp(
     `((?!\\p{Emoji_Modifier})\\p{Emoji}(?:${VS16}${KEYCAP}?|${KEYCAP}))(${WIDE_TAIL})`,
     `(${ZWNJ}|${ZWJ}|${VS15})`,
     `(${THAI_AM}|${LAO_AM})`,
-    `[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
+    `(?!${MVS})[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
   ].join('|'),
   'gu',
 );
@@ -233,13 +236,14 @@ const DROP_PASS = new RegExp(
   [
     // a joiner before a pictograph that does not follow an emoji (a letter, its marks): tmux glues the pictograph into the letter's cell, and a
     // letter with five or more marks then draws one column wider than the two clusters count (review round 5, R5-S-5); Indic and Arabic joiners
-    // stand before letters and are kept
-    `(?<![\\p{Extended_Pictographic}\\p{Emoji_Modifier}\\p{Regional_Indicator}${VS15}${VS16}${KEYCAP}${TAG_FIRST}-${TAG_LAST}])(?:${ZWNJ}|${ZWJ})*${ZWJ}(?=[${VS15}${VS16}]*\\p{Extended_Pictographic})`,
+    // stand before letters and are kept. A text selector (U+FE0E) or a keycap mark (U+20E3) after a letter is not an emoji: the joiner after it
+    // goes too (review round 6, R6-S-1: kept, it ended the letter's cluster and tmux glued the next sequence into that cell, one column more)
+    `(?<![\\p{Extended_Pictographic}\\p{Emoji_Modifier}\\p{Regional_Indicator}${VS16}${TAG_FIRST}-${TAG_LAST}])(?:${ZWNJ}|${ZWJ})*${ZWJ}(?=[${VS15}${VS16}]*\\p{Extended_Pictographic})`,
     `(${BLACK_FLAG}[${TAG_FIRST}-${TAG_LAST}]+)`,
     // a run of joiners, whole (one match, whatever follows: linear), and the selectors after it, which select nothing and go
     `((?:${ZWNJ}|${ZWJ})+)(?:${VS15}|${VS16})*`,
     `(${ZWNJ}|${ZWJ}|${VS15}|${VS16})`,
-    `[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
+    `(?!${MVS})[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
   ].join('|'),
   'gu',
 );

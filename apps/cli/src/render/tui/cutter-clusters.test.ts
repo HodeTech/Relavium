@@ -12,6 +12,9 @@ import { projectQuestionCard } from './question-card.js';
 import { keepEnd } from './place-label.js';
 import { clipLine, clipPieces } from './sheet-frame.js';
 import { keepEnds, keepStart } from './status-line.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
+import { terminalColumns } from './terminal-wrap.test-support.js';
+import { commandFactRows } from './tool-review-card.js';
 import { displayWidth, fitColumns } from './viewport.js';
 
 /**
@@ -167,5 +170,54 @@ describe('every cutter family holds its width with a chain across its cut (revie
         expect(chainWholeOrAbsent(row), row).toBe(true);
       }
     }
+  });
+});
+
+describe('the command card’s `Runs in:` row (review round 6, R6-S-2)', () => {
+  const facts = (cwd: string): CommandCardFacts => ({
+    standing: 'not-pre-approved',
+    runsCode: false,
+    protectedPath: false,
+    cwd,
+    offers: { session: true, remember: true },
+    paths: { cwd: '/Users/x/other', home: '/Users/x' },
+  });
+  const c = (...codes: readonly number[]): string => String.fromCodePoint(...codes);
+  // the sitting's directories (each drawn far wider on tmux than the row counted it), and a directory that is ONE long cluster
+  it.each([
+    ['forty narrow emoji bases', `/Users/x/work/${c(0x261d).repeat(40)}`],
+    ['thirty Hangul fillers', `/Users/x/work/a${c(0x115f).repeat(30)}b`],
+    ['twenty wide tone marks', `/Users/x/work/${`a${c(0x302e)}`.repeat(20)}`],
+    [
+      'a joiner and a rainbow flag after a text selector',
+      `/Users/x/work/${`a${c(0x301).repeat(7)}${c(0xfe0e, 0x200d, 0x1f3f3, 0xfe0f, 0x200d, 0x1f308)}`.repeat(6)}`,
+    ],
+    [
+      'one cluster of 90 conjoined consonants',
+      `/Users/x/work/${CHAIN.repeat(1)}${'क्'.repeat(70)}क`,
+    ],
+  ] as const)(
+    '%s: the rows fit the card by the measure and on the terminal, and the directory is escaped, never `?`',
+    (_name, cwd) => {
+      const rows = commandFactRows(facts(cwd), 76);
+      expect(rows.join('\n')).toContain('Runs in');
+      for (const row of rows) {
+        expect(displayWidth(row), row).toBeLessThanOrEqual(76);
+        expect(terminalColumns(row), row).toBeLessThanOrEqual(76);
+        expect(row, row).not.toContain('?');
+      }
+    },
+  );
+
+  it('the fillers and the wide marks are written as tokens, and two directories that differ only inside one long cluster do not look the same', () => {
+    expect(
+      commandFactRows(facts(`/Users/x/work/a${c(0x115f).repeat(30)}b`), 76).join('\n'),
+    ).toContain('<U+115F>');
+    expect(
+      commandFactRows(facts(`/Users/x/work/${`a${c(0x302e)}`.repeat(20)}`), 76).join('\n'),
+    ).toContain('<U+302E>');
+    const one = commandFactRows(facts(`/Users/x/work/${'क्'.repeat(90)}क`), 76).join('\n');
+    const other = commandFactRows(facts(`/Users/x/work/${'क्'.repeat(90)}ख`), 76).join('\n');
+    expect(one).not.toBe(other);
   });
 });

@@ -1,5 +1,5 @@
 import { sanitizeInline } from '../sanitize.js';
-import { displayWidth } from '../tui/viewport.js';
+import { displayWidth, measuredClusters } from '../tui/viewport.js';
 import { highlightCode } from './highlight/index.js';
 import { parseInline } from './inline.js';
 import type { MarkdownBlock, MarkdownDisplayLine, MarkdownSpan } from './types.js';
@@ -7,7 +7,6 @@ import type { MarkdownBlock, MarkdownDisplayLine, MarkdownSpan } from './types.j
 function appendRows(target: MarkdownDisplayLine[], rows: readonly MarkdownDisplayLine[]): void {
   for (const row of rows) target.push(row);
 }
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 function sameStyle(left: MarkdownSpan, right: MarkdownSpan): boolean {
   return (
     Boolean(left.strong) === Boolean(right.strong) &&
@@ -92,7 +91,9 @@ function wrap(
     displayWidth(firstPrefix) +
     (Number.isFinite(tabOffset) ? Math.max(0, Math.trunc(tabOffset)) : 0);
   let spanIndex = 0;
-  for (const item of segmenter.segment(full)) {
+  // each cluster's cells from the one walk the measure shares (a sequence glued after a joiner counts what a terminal draws: review round 6)
+  const cellsOf = new Map<MarkdownSpan, number>();
+  for (const item of measuredClusters(full)) {
     while ((offsets[spanIndex] ?? Infinity) <= item.index) spanIndex++;
     const style = spans[spanIndex] ?? { text: '' };
     if (item.segment === '\n') {
@@ -106,8 +107,10 @@ function wrap(
         logical[logical.length - 1]?.push({ ...style, text: ' ' });
       logicalColumn += spaces;
     } else {
-      logical[logical.length - 1]?.push({ ...style, text: item.segment });
-      logicalColumn += displayWidth(item.segment);
+      const piece = { ...style, text: item.segment };
+      cellsOf.set(piece, item.width);
+      logical[logical.length - 1]?.push(piece);
+      logicalColumn += item.width;
     }
   }
   const result: MarkdownDisplayLine[] = [];
@@ -132,7 +135,7 @@ function wrap(
       while (end < group.length) {
         const item = group[end];
         if (!item) break;
-        const originalWidth = displayWidth(item.text);
+        const originalWidth = cellsOf.get(item) ?? displayWidth(item.text);
         const cellWidth = originalWidth > available ? 1 : originalWidth;
         if (width + cellWidth > available) break;
         width += cellWidth;
@@ -146,7 +149,11 @@ function wrap(
       for (let at = start; at < end; at++) {
         const item = group[at];
         if (!item) continue;
-        pieces.push(displayWidth(item.text) > available ? { ...item, text: '?' } : item);
+        pieces.push(
+          (cellsOf.get(item) ?? displayWidth(item.text)) > available
+            ? { ...item, text: '?' }
+            : item,
+        );
       }
       result.push(line(pieces));
       prefix = continuation;
@@ -166,12 +173,12 @@ function expandCell(spans: readonly MarkdownSpan[], start: number): MarkdownSpan
   let spanIndex = 0;
   let column = start;
   const result: MarkdownSpan[] = [];
-  for (const item of segmenter.segment(text)) {
+  for (const item of measuredClusters(text)) {
     while ((offsets[spanIndex] ?? Infinity) <= item.index) spanIndex++;
     const style = spans[spanIndex] ?? { text: '' };
     const expanded = item.segment === '\t' ? ' '.repeat(8 - (column % 8)) : item.segment;
     result.push({ ...style, text: expanded });
-    column += displayWidth(expanded);
+    column += item.segment === '\t' ? expanded.length : item.width;
   }
   return result;
 }
@@ -321,8 +328,7 @@ function stripTrailingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
 /** The width of the widest grapheme cluster in a cell: a column can never be narrower than one cluster. */
 function widestGrapheme(spans: readonly MarkdownSpan[]): number {
   let widest = 0;
-  for (const { segment } of segmenter.segment(cellText(spans)))
-    widest = Math.max(widest, displayWidth(segment));
+  for (const { width } of measuredClusters(cellText(spans))) widest = Math.max(widest, width);
   return widest;
 }
 

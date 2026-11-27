@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import stringWidth from 'string-width';
 
 import { screenText } from './screen-text.js';
+import { layoutMarkdown } from '../markdown/layout.js';
+import { parseMarkdown } from '../markdown/parser.js';
+import { hardWrap } from './question-card.js';
 import { physicalRows, terminalColumns } from './terminal-wrap.test-support.js';
 import {
   TMUX_FILTERED,
@@ -11,12 +14,14 @@ import {
   TMUX_WIDER_CODE_POINTS,
 } from './tmux-measurements.test-support.js';
 import {
+  inContextStrings,
+  TMUX_IN_CONTEXT_EVIDENCE,
   TMUX_JOINING_WIDER,
   TMUX_WHITELIST_EVIDENCE,
   TMUX_ZERO_AFTER_A_LETTER,
   whitelistStrings,
 } from './tmux-whitelist.test-support.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, fitColumns, measuredClusters, wrapWords } from './viewport.js';
 
 /**
  * The widths the screen's filter is held to (MVP-11 unit 9, review rounds 2 and 3): what tmux 3.7b, the reference terminal, drew, from the
@@ -411,5 +416,104 @@ describe('the round-5 sitting’s reproductions, measured on tmux (review round 
     expect(screenText(couple)).toBe(couple);
     // and after a tag flag (an emoji sequence), the joiner stays: the measure counts the chain as the sum of its pictographs
     expect(screenText(`${TAG_FLAG}${c(0x200d, 0x1fa90)}`)).toBe(`${TAG_FLAG}${c(0x200d, 0x1fa90)}`);
+  });
+});
+
+describe('a recommended sequence after a joiner that ends a cluster (review round 6, R6-S-1)', () => {
+  const c = (...codes: readonly number[]): string => String.fromCodePoint(...codes);
+  const RAINBOW = c(0x1f3f3, 0xfe0f, 0x200d, 0x1f308);
+  const RGI = new RegExp('^\\p{RGI_Emoji}$', 'v');
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  /**
+   * Whether `text` holds a cluster ending in U+200D right before a recommended sequence holding U+FE0F (what tmux glues and widens); with
+   * `pictograph`, only a sequence that starts with a pictograph (what the filter's rule drops the joiner before; a keycap is the measure's).
+   */
+  const keptJoinerBeforeSelectorSequence = (text: string, pictograph = false): boolean => {
+    const parts = Array.from(segmenter.segment(text), ({ segment }) => segment);
+    return parts.some((part, at) => {
+      const next = parts[at + 1] ?? '';
+      return (
+        part.endsWith(c(0x200d)) &&
+        [...next].length > 1 &&
+        next.includes(c(0xfe0f)) &&
+        RGI.test(next) &&
+        (!pictograph || /^\p{Extended_Pictographic}/u.test(next))
+      );
+    });
+  };
+
+  it('every recommended sequence in each of the 44 measured contexts: the count measured, and after the filter no joiner is left to glue a pictograph', () => {
+    const strings = inContextStrings();
+    expect(strings).toHaveLength(TMUX_IN_CONTEXT_EVIDENCE.strings);
+    expect(new Set(strings.map(([name]) => name)).size).toBe(TMUX_IN_CONTEXT_EVIDENCE.contexts);
+    expect(TMUX_IN_CONTEXT_EVIDENCE.exact + TMUX_IN_CONTEXT_EVIDENCE.over).toBe(
+      TMUX_IN_CONTEXT_EVIDENCE.strings,
+    );
+    expect(TMUX_IN_CONTEXT_EVIDENCE.under).toBe(0);
+    for (const [name, text] of strings) {
+      const filtered = screenText(text);
+      // the filter leaves no joiner to glue a pictograph's sequence; one before a keycap is the measure's (its column more, below)
+      expect(
+        keptJoinerBeforeSelectorSequence(filtered, true),
+        `${name} ${JSON.stringify(filtered)}`,
+      ).toBe(false);
+      expect(displayWidth(filtered), `${name} ${JSON.stringify(filtered)}`).toBeGreaterThanOrEqual(
+        terminalColumns(filtered),
+      );
+    }
+  }, 120_000);
+
+  it.each([
+    // measured on tmux with the joiner kept (the filter before this round): two, then four once the letter's cell overflows, then three
+    [0, 2],
+    [5, 2],
+    [7, 4],
+    [13, 3],
+  ] as const)(
+    'the measure alone (no filter): a letter, %i marks, U+FE0E or U+20E3, a joiner and `🏳️‍🌈` count at least what tmux drew (%i)',
+    (marks, drawn) => {
+      for (const selector of [0xfe0e, 0x20e3]) {
+        const text = `a${c(0x301).repeat(marks)}${c(selector, 0x200d)}${RAINBOW}`;
+        expect(keptJoinerBeforeSelectorSequence(text, true)).toBe(true);
+        expect(displayWidth(text)).toBeGreaterThanOrEqual(drawn);
+        expect(displayWidth(text)).toBe(4);
+        // the walks the cutters and the wraps use count it as the measure does: one row of three columns cannot hold it
+        expect([...measuredClusters(text)].reduce((sum, cluster) => sum + cluster.width, 0)).toBe(
+          4,
+        );
+        expect(wrapWords(text, 3).length).toBeGreaterThan(1);
+        expect(displayWidth(fitColumns(text, 3))).toBeLessThanOrEqual(3);
+      }
+    },
+  );
+
+  it('every wrap that measures a row by its clusters counts the sequence after the joiner as the measure does: the markdown layout, the question card', () => {
+    const text = `${`a${c(0x301).repeat(7)}${c(0xfe0e, 0x200d)}${RAINBOW}`.repeat(5)}`;
+    expect(displayWidth(text)).toBe(20);
+    for (const width of [6, 7, 9, 11]) {
+      for (const row of layoutMarkdown(parseMarkdown(text), width))
+        expect(displayWidth(row.text), `${String(width)}: ${row.text}`).toBeLessThanOrEqual(width);
+      for (const row of hardWrap(text, width))
+        expect(displayWidth(row), `${String(width)}: ${row}`).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it('the filter drops the joiner after a text selector or a keycap mark that follows a letter, and keeps the Indic and Arabic ones', () => {
+    for (const selector of [0xfe0e, 0x20e3]) {
+      const raw = `a${c(0x301).repeat(7)}${c(selector, 0x200d)}${RAINBOW}`;
+      expect(screenText(raw)).toBe(`a${c(0x301).repeat(7)}${c(selector)}${RAINBOW}`);
+    }
+    for (const kept of [
+      c(0x915, 0x94d, 0x200d, 0x937),
+      c(0x628, 0x200d, 0x628),
+      c(0xd28, 0xd4d, 0x200d),
+    ])
+      expect(screenText(kept)).toBe(kept);
+  });
+
+  it('the Mongolian vowel separator is kept: tmux draws it in no column, and the layout counts none (review round 6, I-2)', () => {
+    const word = c(0x1820, 0x180e, 0x1820);
+    expect(screenText(word)).toBe(word);
+    expect(displayWidth(word)).toBe(2); // measured on tmux: 2
   });
 });

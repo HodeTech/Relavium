@@ -34,7 +34,7 @@ import {
 import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
 import { escapeScreenText, screenText } from './screen-text.js';
 import { sheetRule } from './sheet-frame.js';
-import { displayWidth, fitColumns } from './viewport.js';
+import { displayWidth, fitColumns, measuredClusters } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
 export const QUESTION_CARD_MAX_BODY_ROWS = 9;
@@ -85,7 +85,6 @@ const GUIDE_NOTE: LegendItem = { text: 'an answer is guidance, not a veto' };
  * text beside it.
  */
 const GUTTER = '│ ';
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const ASCII_LINE = /^[\x20-\x7e]*$/u;
 
 /**
@@ -179,8 +178,7 @@ export function hardWrap(text: string, width: number): string[] {
   const rows: string[] = [];
   let row = '';
   let used = 0;
-  for (const { segment } of segmenter.segment(text)) {
-    const cells = displayWidth(segment);
+  for (const { segment, width: cells } of measuredClusters(text)) {
     if (used + cells > limit && row.length > 0) {
       rows.push(row);
       row = '';

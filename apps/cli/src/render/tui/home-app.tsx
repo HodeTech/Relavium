@@ -27,6 +27,7 @@ import {
 } from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
 import { inkRows } from './sheet-frame.js';
+import { screenText } from './screen-text.js';
 import { Box, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
 import { BackdropDim, Text } from './text.js';
 import {
@@ -1214,7 +1215,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
               {
                 inkRows(
-                  `> ${sanitizeInline(state.pendingMessage)}`,
+                  `> ${screenText(sanitizeInline(state.pendingMessage))}`,
                   layoutColumns(size.cols),
                   'truncate',
                 )[0]

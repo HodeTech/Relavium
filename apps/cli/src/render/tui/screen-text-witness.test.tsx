@@ -721,6 +721,53 @@ describe('the run screen and the Runs screen draw a model’s words through the 
     },
   );
 
+  it.each([true, false])(
+    'a workflow run’s header line with a model id the provider wrote (review round 6, I-4) (colour %s)',
+    async (color) => {
+      const state = {
+        ...initialRunViewState(),
+        nodeOrder: ['writer'],
+        nodes: { writer: { nodeId: 'writer', status: 'running' as const } },
+        activeNodeId: 'writer',
+        activeModel: FILLERS,
+        activeTokens: 'tokens',
+      };
+      const snapshot = { state, tick: 0, color };
+      const store: RunStore = { subscribe: () => () => {}, getSnapshot: () => snapshot };
+      const mount = mountInk(
+        <Box width={80} flexDirection="column">
+          <RunApp store={store} />
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      const frame = mount.frame();
+      expect(frame.some((row) => row.includes('writer · '))).toBe(true);
+      expect(frame.join('\n')).not.toContain(String.fromCodePoint(0x115f));
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expect(physicalRows(frame, 80)).toHaveLength(frame.length);
+    },
+  );
+
+  it.each([true, false])(
+    'the Home’s echo of the message a chat starts with goes through the filter (review round 6) (colour %s)',
+    async (color) => {
+      const home = mountHome({ renderer: 'alt', color, size: { cols: 80, rows: 24 } });
+      mounts.push(home);
+      await home.settle();
+      home.key(bracketed(FILLERS));
+      await home.settle();
+      home.key(KEYS.enter);
+      await home.until(() => home.controller.getSnapshot().pendingMessage !== '');
+      await home.settle();
+      const frame = home.frame();
+      expect(frame.join('\n')).toContain('please run');
+      expect(frame.join('\n')).not.toContain(String.fromCodePoint(0x115f));
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+    },
+  );
+
   it('the Runs screen’s notices and the card’s rows', () => {
     const model = runScreenModel({
       runId: 'run-1',

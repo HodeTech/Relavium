@@ -94,8 +94,10 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {activeNode !== undefined && activeLines.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <Text {...colorProps(color, 'cyan')}>
-            {glyphOf('activeBar', !color)} {sanitizeInline(activeNode.nodeId)}
-            {state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}
+            {/* the model's id is the provider's text: one row, cut by the layout's measure as the rows below it are (review round 6, I-4) */}
+            {modelRow(
+              `${glyphOf('activeBar', !color)} ${sanitizeInline(activeNode.nodeId)}${state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}`,
+            )}
           </Text>
           {/* `truncate-end` bounds each logical line to one terminal row — a newline-free token blast or a
               narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}

@@ -20,8 +20,10 @@ import {
   placeForDisplay,
   placeLabel,
 } from './place-label.js';
-import type { ReviewDocument } from './tool-review-projection.js';
-import { displayWidth } from './viewport.js';
+import { sanitizeInline } from '../sanitize.js';
+import { escapeScreenText } from './screen-text.js';
+import { escapeReviewText, type ReviewDocument } from './tool-review-projection.js';
+import { displayWidth, measuredClusters } from './viewport.js';
 
 /**
  * The docked approval card's wording and arithmetic ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)).
@@ -223,6 +225,22 @@ export function commandStandingRow(facts: CommandCardFacts): string {
  * against `paths` (default: the roots the facts carry) first (ADR-0145 §8: the project's own directory reads `. (project root: <folder>)`, one inside it from the project, one inside the
  * home from `~`, and one outside both stays whole), and only then sent through the one-line sanitizer and bounded to the room, keeping its end.
  */
+/**
+ * A directory as the command card draws it (MVP-11 unit 9, review round 6, R6-S-2): through the card's own one-to-one escape (the classes a terminal
+ * may draw wider than the layout counts written as `<U+XXXX>`, as the approval card writes a path), and a cluster still wider than the row written as
+ * the tokens of its code points, never `?`: two directories that differ only inside one long cluster must not look the same on a consent card.
+ */
+function cardPlace(bound: number): (text: string) => string {
+  return (text) => {
+    let out = '';
+    for (const { segment, width } of measuredClusters(
+      escapeReviewText(sanitizeInline(text)).join(''),
+    ))
+      out += width > bound ? escapeScreenText(segment, () => true) : segment;
+    return out;
+  };
+}
+
 export function commandFactRows(
   facts: CommandCardFacts,
   columns = 76,
@@ -242,8 +260,8 @@ export function commandFactRows(
     const directory = (bound: number): string =>
       keepEnd(
         (inProjectRoot
-          ? namedProjectRoot(paths, bound)
-          : placeForDisplay(facts.cwd, paths, bound)) || '(the workspace)',
+          ? namedProjectRoot(paths, bound, cardPlace(bound))
+          : placeForDisplay(facts.cwd, paths, bound, cardPlace(bound))) || '(the workspace)',
         bound,
       );
     // One row when the directory still has room to say where it is, else two: a row saved is a row of the command.

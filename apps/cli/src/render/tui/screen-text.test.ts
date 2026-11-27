@@ -33,7 +33,8 @@ const FILLERS: readonly (readonly [number, number])[] = [
   [0x17b4, 0], // Khmer vowel inherent AQ
   [0x17b5, 0], // Khmer vowel inherent AA
   [0x180b, 0], // Mongolian free variation selector one
-  [0x180e, 0], // Mongolian vowel separator
+  // U+180E, the Mongolian vowel separator, is no longer here: tmux draws it in no column and the layout counts none, so it is kept (review round 6,
+  // I-2; `terminal-widths.test.ts` holds it)
   [0x180f, 0], // Mongolian free variation selector four
   [0x200b, 0], // zero width space
   [0x2060, 0], // word joiner

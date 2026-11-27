@@ -160,6 +160,48 @@ const MEMO_CLUSTER_UNITS = 16;
 const MEMO_SIZE = 4096;
 const joinedWidths = new Map<string, number>();
 
+/** One grapheme cluster of a text, where it starts in the text, and the cells a terminal draws it in ({@link measuredClusters}). */
+export interface MeasuredCluster {
+  readonly segment: string;
+  readonly index: number;
+  readonly width: number;
+}
+
+const ZWJ_CHAR = String.fromCodePoint(0x200d);
+
+/**
+ * A join tmux performs of several code points that holds U+FE0F (a recommended emoji sequence drawn with its selector: `🏳️‍🌈`, `❤️‍🔥`, a kiss,
+ * a keycap): what tmux glues into a cell a joiner left open AND widens with the selector. A sequence with no selector (a flag, a family, a Hangul
+ * block) glued there adds no column (measured: every one of the 148 in-context undercounts holds U+FE0F after the joiner).
+ */
+function isGluedSequence(cluster: string): boolean {
+  const single =
+    cluster.length === 1 || (cluster.length === 2 && (cluster.codePointAt(0) ?? 0) > 0xffff);
+  return !single && cluster.includes(VS16) && isTmuxJoin(cluster);
+}
+
+/**
+ * Each grapheme cluster of `text` with the cells a terminal draws it in (MVP-11 unit 9, review round 6, R6-S-1): {@link graphemeWidth}, and ONE
+ * more for a join tmux performs of several code points that FOLLOWS a cluster ending in U+200D. tmux glues such a sequence into the cell the joiner
+ * left open, widens that cell with the sequence's selector and, when the cell's buffer is full, draws the sequence again in a cell of its own:
+ * drawn four where the two clusters count three. The screen's filter drops every such joiner it knows of; this holds the measure's claim for any
+ * it does not. The ONE walk the measure, the cutters and the wraps share, so the rule lives in one place. Natural text does not put a recommended
+ * emoji sequence right after a joiner (a Malayalam chillu, a Sinhala yansaya and an Arabic joining form end a cluster in U+200D before a letter or
+ * a space), so it costs natural text nothing.
+ */
+export function* measuredClusters(text: string): Generator<MeasuredCluster> {
+  let afterJoiner = false;
+  for (const { segment, index } of graphemeSegmenter.segment(text)) {
+    const cells = graphemeWidth(segment);
+    yield {
+      segment,
+      index,
+      width: afterJoiner && isGluedSequence(segment) ? cells + 1 : cells,
+    };
+    afterJoiner = segment.endsWith(ZWJ_CHAR);
+  }
+}
+
 /**
  * Terminal display width of a string in cells: the sum of {@link graphemeWidth} over its clusters (review round 5: every cluster of several code
  * points that is not a join tmux performs counts the sum of its code points). A string with no code point that can join another ({@link JOINING})
@@ -170,7 +212,7 @@ const joinedWidths = new Map<string, number>();
 export function displayWidth(str: string): number {
   if (!JOINING.test(str)) return inkCount(str);
   let width = 0;
-  for (const { segment } of graphemeSegmenter.segment(str)) width += graphemeWidth(segment);
+  for (const cluster of measuredClusters(str)) width += cluster.width;
   return width;
 }
 
@@ -238,8 +280,7 @@ function walkDisplayColumns(
   let leading = ''; // zero-width clusters seen before any cell — no cluster to ride yet
   let previous: ColumnPiece | undefined;
 
-  for (const { segment } of graphemeSegmenter.segment(str)) {
-    const width = graphemeWidth(segment);
+  for (const { segment, width } of measuredClusters(str)) {
     if (width === 0) {
       if (previous === undefined) leading += segment;
       else emit(segment, previous);
@@ -289,12 +330,11 @@ export function fitColumns(
   const budget = Math.max(0, Math.trunc(columns));
   if (budget === 0) return '';
   const row = Math.max(budget, Math.trunc(whole));
-  const clusters = Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
+  const clusters = Array.from(measuredClusters(text));
   if (from === 'end') clusters.reverse();
   const kept: string[] = [];
   let used = 0;
-  for (const cluster of clusters) {
-    const cells = graphemeWidth(cluster);
+  for (const { segment: cluster, width: cells } of clusters) {
     const [drawn, width] = cells > row ? ['?', 1] : [cluster, cells];
     if (used + width > budget) break;
     kept.push(drawn);
@@ -351,8 +391,7 @@ export function wrapLogicalLine(line: string, cols: number): string[] {
   const rows: string[] = [];
   let current = '';
   let currentWidth = 0;
-  for (const { segment } of graphemeSegmenter.segment(line)) {
-    const w = graphemeWidth(segment);
+  for (const { segment, width: w } of measuredClusters(line)) {
     if (currentWidth + w > cols && current !== '') {
       rows.push(current);
       current = '';
@@ -370,7 +409,7 @@ export function expandTabs(text: string, startColumn = 0): string {
   if (!text.includes('\t')) return text;
   const parts: string[] = [];
   let column = Math.max(0, Math.trunc(startColumn));
-  for (const { segment } of graphemeSegmenter.segment(text)) {
+  for (const { segment, width } of measuredClusters(text)) {
     if (segment === '\n') {
       column = 0;
       parts.push(segment);
@@ -380,7 +419,7 @@ export function expandTabs(text: string, startColumn = 0): string {
       column += cells;
     } else {
       parts.push(segment);
-      column += graphemeWidth(segment);
+      column += width;
     }
   }
   return parts.join('');
@@ -415,10 +454,9 @@ function wrapAscii(expanded: string, width: number, dropBreakSpace: boolean): st
 
 /** The grapheme path of {@link wrapWords}: clusters measured once, a cluster wider than the row drawn as `?`. */
 function wrapClusters(expanded: string, width: number, dropBreakSpace: boolean): string[] {
-  const clusters = Array.from(graphemeSegmenter.segment(expanded), ({ segment }) => {
-    const cells = graphemeWidth(segment);
-    return cells > width ? { text: '?', cells: 1 } : { text: segment, cells };
-  });
+  const clusters = Array.from(measuredClusters(expanded), ({ segment, width: cells }) =>
+    cells > width ? { text: '?', cells: 1 } : { text: segment, cells },
+  );
   const rows: string[] = [];
   for (let start = 0; start < clusters.length; ) {
     if (dropBreakSpace && start > 0) {

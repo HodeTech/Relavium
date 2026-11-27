@@ -56,10 +56,14 @@ const NAMED_ROOT_FIXED = '. (project root: )'.length;
  * launched from. The name is the last segment of `roots.cwd`, made safe for the terminal and cut at the FRONT so the whole phrase fits `bound`
  * columns; with no usable name, or no room for one, it is {@link PROJECT_ROOT_WORDS}.
  */
-export function namedProjectRoot(roots: DisplayPathRoots | undefined, bound: number): string {
+export function namedProjectRoot(
+  roots: DisplayPathRoots | undefined,
+  bound: number,
+  sanitise: (text: string) => string = sanitizeInline,
+): string {
   if (roots?.cwd === undefined) return PROJECT_ROOT_WORDS;
   const segments = roots.cwd.split(roots.win32 === true ? /[\\/]+/u : /\/+/u);
-  const name = sanitizeInline(segments.findLast((segment) => segment !== '') ?? '').trim();
+  const name = sanitise(segments.findLast((segment) => segment !== '') ?? '').trim();
   const room = bound - NAMED_ROOT_FIXED;
   return name === '' || room < 2 ? PROJECT_ROOT_WORDS : `. (project root: ${keepEnd(name, room)})`;
 }

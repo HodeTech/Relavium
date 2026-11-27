@@ -1,6 +1,12 @@
 import { promptRows, type PromptRow } from './prompt-cursor.js';
 import { windowBody } from './sheet-frame.js';
-import { displayWidth, inkUndercounts, wrapLogicalLine, wrapWords } from './viewport.js';
+import {
+  displayWidth,
+  inkUndercounts,
+  measuredClusters,
+  wrapLogicalLine,
+  wrapWords,
+} from './viewport.js';
 
 /**
  * The window of a long draft that the prompt editor draws when it is given a row budget (OB7-M3, the observation of unit 7's chat half): a 30-line
@@ -63,8 +69,6 @@ export function wrappedRowCount(
   return total;
 }
 
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
 /**
  * `text` as a row of a draft shows it: a cluster wider than the whole row (a chain of conjoined letters), which no row could hold, drawn as `?`
  * (MVP-11 unit 9, review round 5, as every wrap of the chat does); display only, the offsets are the source's.
@@ -72,8 +76,7 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 function shown(text: string, columns: number): string {
   if (displayWidth(text) <= columns) return text;
   let out = '';
-  for (const { segment } of graphemes.segment(text))
-    out += displayWidth(segment) > columns ? '?' : segment;
+  for (const { segment, width } of measuredClusters(text)) out += width > columns ? '?' : segment;
   return out;
 }
 

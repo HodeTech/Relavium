@@ -5,8 +5,9 @@
  * points unless it is one of these joins, so the guarantee rests on this list being right; it is finite, and it was measured exhaustively:
  *
  * - every recommended emoji presentation sequence of this runtime (a code point and U+FE0F: 207), keycap (12), flag (259), subdivision flag
- *   (3, found among 87,880 tag codes tried) and untoned zero-width-joiner sequence (245, found by a search over every pictograph with and without
- *   U+FE0F: pairs, triples over their members, quads over theirs): tmux drew EVERY one of them exactly two columns, as `string-width` counts it;
+ *   (3, found among 87,880 tag codes tried) and untoned zero-width-joiner sequence (248, found by a search over every pictograph with and without
+ *   U+FE0F: pairs, triples over their members, quads over theirs, and every pictograph inserted into every sequence found, which reaches the three
+ *   kisses: review round 6, I-1): tmux drew EVERY one of them exactly two columns, as `string-width` counts it;
  * - every recommended modifier sequence (a base and a tone: 665): NOT a join the measure keeps; tmux drew 315 of them wider than `string-width`
  *   (`☝🏽` four columns), so they count the sum (the screen's filter drops every tone anyway);
  * - Hangul: every precomposed syllable with a final after it (11,172), every LV syllable with a vowel after it (399), the modern leading x vowel x
@@ -382,7 +383,7 @@ export const TMUX_WHITELIST_EVIDENCE = {
   keycap: { strings: 12, exact: 12 },
   flag: { strings: 259, exact: 259 },
   tagFlag: { strings: 3, exact: 3 },
-  zwj: { strings: 245, exact: 245 },
+  zwj: { strings: 248, exact: 248 },
   modifier: { strings: 665, wider: 315 },
   hangul: { strings: 61_697, exact: 49_291, wider: 0 },
 } as const;
@@ -433,6 +434,25 @@ function zwjSequences(): string[] {
         for (const e of fourth)
           if (RGI.test(`${a}${joiner}${b}${joiner}${d}${joiner}${e}`))
             found.add(`${a}${joiner}${b}${joiner}${d}${joiner}${e}`);
+  // review round 6 (I-1): a sequence with a member no smaller sequence holds (a kiss: `💋` inserted into a couple with a heart) is reached by
+  // inserting every pictograph at every place of every sequence found, until nothing new is found (four members at most)
+  let frontier = [...found];
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const sequence of frontier) {
+      const parts = sequence.split(joiner);
+      if (parts.length >= 4) continue;
+      for (let at = 0; at <= parts.length; at += 1)
+        for (const form of pictographs) {
+          const candidate = [...parts.slice(0, at), form, ...parts.slice(at)].join(joiner);
+          if (!found.has(candidate) && RGI.test(candidate)) {
+            found.add(candidate);
+            next.push(candidate);
+          }
+        }
+    }
+    frontier = next;
+  }
   return [...found];
 }
 
@@ -485,8 +505,20 @@ function hangulStrings(): string[] {
   return out;
 }
 
-/** Every string of the whitelist's measurement, by class (see the module header). */
-export function whitelistStrings(): Record<keyof typeof TMUX_WHITELIST_EVIDENCE, string[]> {
+type WhitelistStrings = Readonly<Record<keyof typeof TMUX_WHITELIST_EVIDENCE, readonly string[]>>;
+
+let measured: WhitelistStrings | undefined;
+
+/**
+ * Every string of the whitelist's measurement, by class (see the module header). The search takes seconds, so it runs once per test file and
+ * its strings are shared read-only: two searches in one file kept a worker busy past the test runner's 60-second call timeout under load.
+ */
+export function whitelistStrings(): WhitelistStrings {
+  measured ??= searchWhitelistStrings();
+  return measured;
+}
+
+function searchWhitelistStrings(): WhitelistStrings {
   const presentation: string[] = [];
   const modifier: string[] = [];
   for (let code = 0x20; code <= 0x1ffff; code += 1) {
@@ -511,4 +543,63 @@ export function whitelistStrings(): Record<keyof typeof TMUX_WHITELIST_EVIDENCE,
     modifier,
     hangul: hangulStrings(),
   };
+}
+
+/**
+ * What the measurement of {@link inContextStrings} found, each string through the screen's filter and measured on tmux 3.7b as the other tables were:
+ * no string the layout counts narrower than tmux drew it. Before this round's filter (a joiner after U+FE0E or U+20E3 kept), 148 of them were, every
+ * one in those 28 contexts and every one a sequence holding U+FE0F: one column short each (review round 6, R6-S-1).
+ */
+export const TMUX_IN_CONTEXT_EVIDENCE = {
+  contexts: 44,
+  sequences: 729,
+  strings: 32_076,
+  exact: 24_958,
+  over: 7_118,
+  under: 0,
+} as const;
+
+/**
+ * The joins IN CONTEXT (review round 6, R6-S-1): every recommended sequence the whitelist keeps (presentation, keycap, flag, subdivision flag and
+ * zero-width-joiner sequences: {@link whitelistStrings}) after each of 44 contexts, the measurement's: a letter with 0 to 13 combining marks and then
+ * U+FE0E and a joiner, the same with U+20E3, and a letter, a space, a consonant, a consonant and its virama (and a joiner), an Arabic letter and a
+ * joiner, a flag, a lone regional indicator, a keycap, a Hangul syllable, a leading jamo, an emoji and a joiner, a letter with five marks and a
+ * joiner, and the sequence itself two, five and twenty times. The strings, filtered as the screen filters them, were measured on tmux:
+ * {@link TMUX_IN_CONTEXT_EVIDENCE}.
+ */
+export function inContextStrings(): (readonly [string, string])[] {
+  const w = whitelistStrings();
+  const sequences = [...w.presentation, ...w.keycap, ...w.flag, ...w.tagFlag, ...w.zwj];
+  const marks = (count: number): string => c(0x301).repeat(count);
+  const joiner = c(0x200d);
+  const contexts: (readonly [string, (sequence: string) => string])[] = [];
+  for (let count = 0; count <= 13; count += 1) {
+    contexts.push([`vs15 ${String(count)}`, (q) => `a${marks(count)}${c(0xfe0e)}${joiner}${q}`]);
+    contexts.push([
+      `keycap mark ${String(count)}`,
+      (q) => `a${marks(count)}${c(0x20e3)}${joiner}${q}`,
+    ]);
+  }
+  contexts.push(
+    ['letter', (q) => `a${q}`],
+    ['space', (q) => ` ${q}`],
+    ['consonant', (q) => `${c(0x915)}${q}`],
+    ['consonant virama', (q) => `${c(0x915, 0x94d)}${q}`],
+    ['consonant virama joiner', (q) => `${c(0x915, 0x94d)}${joiner}${q}`],
+    ['Arabic joiner', (q) => `${c(0x628)}${joiner}${q}`],
+    ['flag', (q) => `${c(0x1f1fa, 0x1f1f8)}${q}`],
+    ['regional indicator', (q) => `${c(0x1f1fa)}${q}`],
+    ['keycap', (q) => `#${c(0xfe0f, 0x20e3)}${q}`],
+    ['Hangul syllable', (q) => `${c(0xac01)}${q}`],
+    ['leading jamo', (q) => `${c(0x1100)}${q}`],
+    ['twice', (q) => q.repeat(2)],
+    ['five times', (q) => q.repeat(5)],
+    ['twenty times', (q) => q.repeat(20)],
+    ['emoji joiner', (q) => `${c(0x1f600)}${joiner}${q}`],
+    ['five marks joiner', (q) => `a${marks(5)}${joiner}${q}`],
+  );
+  const out: (readonly [string, string])[] = [];
+  for (const [name, build] of contexts)
+    for (const sequence of sequences) out.push([name, build(sequence)]);
+  return out;
 }

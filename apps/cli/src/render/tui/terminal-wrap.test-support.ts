@@ -198,11 +198,29 @@ export function terminalWidth(cluster: string): number {
   return counted + extra;
 }
 
+/**
+ * Each grapheme cluster of `text` with the columns the reference terminal draws it in (a TAB is the caller's): {@link terminalWidth}, and one more for
+ * a recommended sequence of several code points holding U+FE0F right after a cluster ending in U+200D (review round 6, R6-S-1: tmux glues it into the
+ * cell the joiner left open, widens the cell with the sequence's selector and, the cell's buffer full, draws the sequence in a new two-column cell; measured
+ * four where the two clusters alone are three).
+ */
+function* drawnClusters(
+  text: string,
+): Generator<{ readonly segment: string; readonly width: number }> {
+  let afterJoiner = false;
+  for (const { segment } of SEGMENTER.segment(text)) {
+    const glued =
+      afterJoiner && [...segment].length > 1 && segment.includes(VS16) && RGI_EMOJI.test(segment);
+    yield { segment, width: segment === '\t' ? 0 : terminalWidth(segment) + (glued ? 1 : 0) };
+    afterJoiner = segment.endsWith(ZWJ);
+  }
+}
+
 /** The columns `text` takes on the reference terminal from column `start` (a TAB moves to the next multiple of eight). */
 export function terminalColumns(text: string, start = 0): number {
   let column = start;
-  for (const { segment } of SEGMENTER.segment(text))
-    column = segment === '\t' ? column + 8 - (column % 8) : column + terminalWidth(segment);
+  for (const { segment, width } of drawnClusters(text))
+    column = segment === '\t' ? column + 8 - (column % 8) : column + width;
   return column - start;
 }
 
@@ -212,14 +230,13 @@ export function physicalRows(rows: readonly string[], columns: number): string[]
   for (const row of rows) {
     let current = '';
     let column = 0;
-    for (const { segment } of SEGMENTER.segment(row)) {
+    for (const { segment, width } of drawnClusters(row)) {
       if (segment === '\t') {
         // a TAB moves to the next stop or to the last column, and never wraps by itself (what follows it does)
         column = Math.min(column + 8 - (column % 8), columns - 1);
         current += segment;
         continue;
       }
-      const width = terminalWidth(segment);
       if (column + width > columns && column > 0) {
         out.push(current);
         current = '';
