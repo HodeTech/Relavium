@@ -2,7 +2,7 @@
 
 > Status: **Planned** (2026-11-24). MVP-11's product work was to start when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) was merged to `main`; it was merged on 2026-11-24 as `c17e9763`, so nothing waits on it. **Step 1 (decisions, ADRs and a spike, no product code) is done:** the four ADRs it asks for are written and were **accepted by the maintainer on 2026-11-24** ([ADR-0145](../../decisions/0145-the-cli-has-one-surface-language.md), [ADR-0146](../../decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md), [ADR-0147](../../decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md), [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)), the real-terminal spike and a sandboxed first-run baseline are in [mvp-11/step-1-evidence.md](mvp-11/step-1-evidence.md), and the two open sub-questions of OD-8 and OD-23 are ruled (the spaced wordmark; one starter table of current models, Haiku 5.5 for Anthropic). Nothing in this file is built. **The ADRs refine this plan in places (their refinements are listed in [the evidence file's section E](mvp-11/step-1-evidence.md#e-corrections-owed-to-the-plan-made-in-the-end-of-mvp-documents-pass)); where this file and an ADR differ, the ADR wins until the close-out step brings this file into line.**
 >
-> **Progress (2026-11-27):** units 1 to 7 are built (the log: [mvp-11/implementation-log.md](mvp-11/implementation-log.md)); **unit 8 (Steps 5 and 5b plus the Home's management popups, OD-24, and the `/mode` redesign, OD-25) is planned in [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md)**, the resume point for it. The live status is in [current.md](../current.md); where a sentence above still says nothing is built, the log and that plan are newer.
+> **Progress (2026-11-27):** units 1 to 8 are built (the log: [mvp-11/implementation-log.md](mvp-11/implementation-log.md)); **unit 8 (Steps 5 and 5b plus the Home's management popups, OD-24, and the `/mode` redesign, OD-25) is built and recorded there** (its plan, with the frames, is [mvp-11/unit-8-plan.md](mvp-11/unit-8-plan.md)); **unit 9 (the transcript grid) is next**. The live status is in [current.md](../current.md); where a sentence above still says nothing is built, the log and that plan are newer.
 >
 > Last updated: 2026-11-24
 
@@ -258,7 +258,8 @@ flowchart TD
 
 | Popup and step | Answer | Guards |
 |---|---|---|
-| `/mode`, `/effort`: apply | `Enter` on the last step, after the step states the effect (the risk text of `auto`) | The step's frame was acknowledged; ignored if a non-navigation key arrived since the step opened |
+| `/effort`: apply | `Enter` on the last step, after the step states the effect; on the tier in force it keeps (closes with `Already …`) | The step's frame was acknowledged; ignored if a non-navigation key arrived since the step opened |
+| `/mode` (OD-25, built in unit 8): use or keep; save the startup default | In a chat `Enter` uses the highlighted mode at once (the effect is written under the list before the key) or keeps the mode in force; `[s]` opens the confirmation (`Ctrl+Y`, default No). On the Home `Enter` opens the same confirmation, or says `Startup default is already <mode>` | The opening guard (the frame was seen; 500 ms; plain `Enter` only); the confirmation's own guards are the writer's, unchanged |
 | `/models`: apply | `Enter` on step 2, after the step states where it applies and, when the provider changes, that the conversation goes there | Same; the popup opens on the *current* model, so a bare Enter changes nothing |
 | `/permissions`: withdraw | `[d]` then `Enter`, 0.8–10 s after the `d` | [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) as is |
 | `/providers`: key | A masked field, validation, an explicit *save anyway* | The existing secret rules; the buffer is cleared on close and on resize |
@@ -272,6 +273,8 @@ flowchart TD
 ### 4.4 Reports and settings as popups
 
 ![The /mode popup in a chat: a setting, with its risk text](mvp-11/popup-mode-chat-80x24.png)
+
+*The frame above is the two-step popup that unit 5 built. **OD-25 replaced it in unit 8** with one list and a state-aware legend; the frames are [30 to 35 in `mvp-11/unit-8/`](mvp-11/unit-8/30-mode-chat-keep.png) and the as-built behaviour is in [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)'s implementation note.*
 
 **The residue rule.** A report or settings popup writes **nothing** into the conversation transcript and **nothing** into a Home notice. Confirmations are the status line (which shows the new value) plus a transient notification; errors stay in the popup. Two things follow:
 
@@ -308,7 +311,7 @@ flowchart TD
 | Kind | Commands | Behaviour |
 |---|---|---|
 | **Reports** (no setting changes) | `/doctor`, `/agent`, `/cost` (per-model breakdown; the release of held estimates is a confirmed control), `/workflows` in a chat, `/help` in a chat (the commands and the keys of the surface) | Open, show, `Esc` closes. Nothing is written anywhere |
-| **Settings** | `/mode`, `/effort`, `/models` (two steps: the model, then *Effort & scope*: the reasoning effort, the same control as `/effort`, and where the change applies, this chat or new chats), `/permissions` in a chat (the content of [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): withdraw is two steps) | Apply through the existing writers; close on apply; status line and a notification confirm |
+| **Settings** | `/mode`, `/effort`, `/models` (`/mode` is one list since unit 8, OD-25; `/models` is two steps: the model, then *Effort & scope*: the reasoning effort, the same control as `/effort`, and where the change applies, this chat or new chats), `/permissions` in a chat (the content of [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): withdraw is two steps) | Apply through the existing writers; close on apply; status line and a notification confirm |
 | **Flows** (Home) | `/providers` (masked key field), `/init`, `/import`, `/pricing`, `/resume`, `/run` (Workflow → Inputs → Confirm; nothing runs until the last step) | Steps in the popup; the final write or run step keeps its chord confirmation and ends in a persistent *Done* step; the run itself continues in the run view |
 | **Take away** | `/export` | If [OD-10](#72-decisions-od-1-to-od-23) is accepted, a one-step popup that shows the target path and whether a file would be overwritten and confirms the write; otherwise instant, as today |
 | **Inspection** | `/details` (the call list and a call's details) | The large inspection popup ([§4.5](#45-sheets)) |
@@ -360,7 +363,7 @@ The sheets are the approval card (file edits and commands), the question the age
 | Text width | about 78 | 64 | 74 |
 | Frame, title, origin, legend, way back | its own | the language's | the language's |
 
-A standard popup would give back the reading ADR-0134 won (the body was 9 rows before it, 14–17 after), so the inspection popup is as tall as the terminal allows (`rows − 1`) and two columns narrower than it. At 80×24 it keeps the body at 14 rows by putting the screen's name and origin on the popup's top edge, the identity and counts on one row, the closing note into the legend and the status and message rows as they are. The page is already projected from the geometry it is given (`fullChrome` and the row limit), so the popup changes the numbers, not the model.
+A standard popup would give back the reading ADR-0134 won (the body was 9 rows before it, 14–17 after), so the inspection popup is as tall as the terminal allows (`rows − 1`) and two columns narrower than it. At 80×24 it was planned to keep the body at 14 rows (**as built it is 12**: the target row and the message row of [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) stay, and the moves named here reach 13 at best; see [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)'s implementation note) by putting the screen's name and origin on the popup's top edge, the identity and counts on one row, the closing note into the legend and the status and message rows as they are. The page is already projected from the geometry it is given (`fullChrome` and the row limit), so the popup changes the numbers, not the model.
 
 **Rules**
 

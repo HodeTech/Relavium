@@ -1,6 +1,6 @@
 # MVP-11 unit 8 — sheets, the inspection popup and the Home's management popups: the plan
 
-> Last updated: 2026-11-27. Status: **planned, not started**; units 1–7 are built (see [the implementation log](implementation-log.md)). This file is the **resume point** for unit 8: everything decided about it, with the evidence, is here or linked from here, so that the work can continue from the repository alone. It refines [mvp-11.md](../mvp-11.md) Steps 5 and 5b and adds the scope the maintainer ruled on 2026-11-26 and 27; where this file and the plan differ, this file is newer and the plan gets a dated note (see [what to update](#7-documents-to-write-or-update)).
+> Last updated: 2026-11-27. Status: **built 2026-11-27** (units 1–8 are built; see [the implementation log](implementation-log.md), "Unit 8", for what was built, what differs from this plan and what is owed). This file was the **resume point** for unit 8: everything decided about it, with the evidence, is here or linked from here, so that the work can continue from the repository alone. It refines [mvp-11.md](../mvp-11.md) Steps 5 and 5b and adds the scope the maintainer ruled on 2026-11-26 and 27; where this file and the plan differ, this file is newer and the plan gets a dated note (see [what to update](#7-documents-to-write-or-update)).
 
 ## 1. What unit 8 is
 

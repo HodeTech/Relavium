@@ -125,3 +125,7 @@ The data modules (the registry, the glyph table, the legend builder, the word ta
 - **The ambiguous-width glyphs stay.** A terminal configured for a CJK locale may draw `○ ━ ‖` as two columns. Mitigation: the ASCII form (reached with `--no-color`), the width table and the terminal matrix of the close-out step; not solved here.
 - **The registry rewrite touches every consumer** (the chat dispatch, `/help`, three palettes, the Home's `/help` screen and the palette view). Mitigation: the consumers are enumerated in the plan's step 2, non-interactive output is pinned by `toContain` tests, and the shell manifest's exact-cover test is untouched.
 - **Documents move.** The surface-language reference page becomes the canonical home of the grammar, the table and the classes; until the close-out step lands them, [MVP-11](../roadmap/phases/mvp-11.md) is the map.
+
+### Implementation note — 2026-11-27 (unit 8 built: the surface table's Home rows)
+
+The table row that classes "the tab host, the run view, `/help` on the Home" as **Screen** is amended by unit 8: on the Home `/help`, `/agents`, `/workflows` and `/permissions` are **popups** ([ADR-0148](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)'s note of 2026-11-27); what stays a screen is the **Runs screen** (the tab host narrowed to Active | History) and the run view. The grammar, the legends' fit rule and the `(wait)` display apply to the new popups and sheets unchanged; the popups' legends are pinned in the legend golden (the `home-popups` producer) and the surface matrix.
