@@ -15,6 +15,7 @@ import {
   transcriptRows,
   transcriptScrollGeometry,
   transcriptSelectionText,
+  screenStreamRow,
   wrapTranscript,
 } from './chat-projection.js';
 import { withGlyphForm } from './glyphs.js';
@@ -117,8 +118,30 @@ const drawnTexts = (row: DisplayLine): string[] => [
 ];
 
 describe('the width invariant: margin + content never exceeds the terminal (plan §4, invariant 3)', () => {
-  it('every row of every role, at every width from 1 to 300, with colour on and off, fits its content column', () => {
-    for (let columns = 1; columns <= 300; columns += 1) {
+  // Review round 1 (D-1, C-6, S-5): the sweep ran near vitest's 5 s default under load (64,492 rows, an eager message per assertion). Every width
+  // from 1 to 40 (where the margin degrades), then every tenth to 300, and the plan's list; the message is built only for a failing row.
+  const WIDTHS = [
+    ...new Set([
+      ...Array.from({ length: 40 }, (_, index) => index + 1),
+      ...Array.from({ length: 27 }, (_, index) => 50 + index * 10),
+      1,
+      2,
+      5,
+      10,
+      16,
+      19,
+      20,
+      29,
+      30,
+      40,
+      80,
+      100,
+      120,
+    ]),
+  ];
+
+  it('every row of every role, at every width of the sweep, with colour on and off, fits its content column', () => {
+    for (const columns of WIDTHS) {
       const grid = chatGrid(columns);
       for (const color of [true, false]) {
         const rows = transcriptRows(CORPUS, grid, color, DISPLAYS);
@@ -126,14 +149,12 @@ describe('the width invariant: margin + content never exceeds the terminal (plan
         for (const row of rows)
           for (const text of drawnTexts(row)) {
             const width = displayWidth(text);
-            expect(width, `${columns} ${color} ${JSON.stringify(text)}`).toBeLessThanOrEqual(
-              grid.content,
-            );
-            expect(grid.margin + width, `${columns} ${color}`).toBeLessThanOrEqual(columns);
+            if (width > grid.content || grid.margin + width > columns)
+              expect.fail(`${columns} ${String(color)} ${JSON.stringify(text)}: ${width} columns`);
           }
       }
     }
-  });
+  }, 30_000);
 
   it('the rows are `wrapTranscript` at the content column, and a suspended grid has none', () => {
     for (const columns of [1, 20, 80, 100, 120, 200]) {
@@ -306,13 +327,16 @@ describe('the documents are byte-stable (plan §4, invariant 4)', () => {
 });
 
 describe('the live answer wraps as the finished reply will (plan §4, invariant 5)', () => {
-  // Part B's live region lays the stream out at the content column (`props.markdown.tail(grid.content, …)`): the rows it shows are the rows the
-  // finished reply takes in the transcript, so nothing reflows when the turn completes.
+  // Part B's live region lays the stream out at the content column (`props.markdown.tail(grid.content, …)`) and draws its rows through the screen's
+  // filter (`screenStreamRow`, review round 1): the rows it shows are the rows the finished reply takes in the transcript, so nothing reflows or
+  // changes when the turn completes. The sources carry long prose, so the hanging wrap's dropped break spaces (D-2) are compared too.
   const SOURCES = [
     `A paragraph of words that is long enough to wrap at every width the grid gives, with 中文 and 😀 in it, and › a glyph.`,
     '# Heading\n\n- an item\n- › another item that wraps around the content column of the chat\n\n> a quotation',
     '```ts\nconst token = "' + 'z'.repeat(120) + '";\n```',
     '| a | b |\n| - | - |\n| one | two words in a cell |',
+    `${'w'.repeat(66)} then the words after the break, ${'x'.repeat(30)} and more words that wrap again and again at the width`,
+    `> a quotation ${'q'.repeat(60)} that wraps\n\n- a list item ${'l'.repeat(70)} that wraps under its indent`,
   ];
 
   it.each([80, 100, 120, 40])(
@@ -324,13 +348,13 @@ describe('the live answer wraps as the finished reply will (plan §4, invariant 
         stream.append(source);
         const finished = transcriptRows([{ role: 'assistant', text: source }], grid, true);
         expect(
-          stream.tail(grid.content, 10_000).map((row) => row.text),
+          stream.tail(grid.content, 10_000).map((row) => screenStreamRow(row).text),
           `${columns} ${JSON.stringify(source.slice(0, 30))}`,
         ).toEqual(finished.map((row) => row.text));
         const plain = transcriptRows([{ role: 'assistant', text: source }], grid, false);
-        expect(stream.plainTail(grid.content, 10_000).map((row) => row.text)).toEqual(
-          plain.map((row) => row.text),
-        );
+        expect(
+          stream.plainTail(grid.content, 10_000).map((row) => screenStreamRow(row).text),
+        ).toEqual(plain.map((row) => row.text));
       }
     },
   );

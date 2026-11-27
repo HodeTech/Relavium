@@ -2,6 +2,8 @@ import { Box } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
 import { marginCell, type ChatGrid, type MarginForm, type MarginRole } from './chat-grid.js';
+import type { EmphasisSet } from './emphasis.js';
+import { Emph } from './emphasis-view.js';
 import { Text, type TextProps } from './text.js';
 
 /**
@@ -24,6 +26,8 @@ export function MarginRow(
     form: MarginForm;
     /** The props of the margin cell's `Text` (its colour): the mark is the host's, so it is drawn by the row, not by what the content says. */
     mark?: Partial<TextProps> | undefined;
+    /** The mark's emphasis (the person's own turn is bold), drawn by the one rule for bold (`emphasis-view.tsx`). Absent ⇒ none. */
+    markEmphasis?: EmphasisSet | undefined;
     children?: ReactNode;
   }>,
 ): ReactElement {
@@ -32,7 +36,9 @@ export function MarginRow(
     <Box flexDirection="row" flexShrink={0}>
       {grid.margin > 0 && (
         <Box width={grid.margin} flexShrink={0}>
-          <Text {...props.mark}>{marginCell(props.role, grid, props.form)}</Text>
+          <Text {...props.mark}>
+            <Emph kinds={props.markEmphasis}>{marginCell(props.role, grid, props.form)}</Emph>
+          </Text>
         </Box>
       )}
       <Box width={grid.content} flexShrink={0} flexDirection="column">
@@ -44,7 +50,7 @@ export function MarginRow(
 
 /**
  * The form of the margin a renderer draws: the full-screen renderer draws the table's glyph (its plain ASCII form without colour, ADR-0145 §5), the
- * inline renderer the role word (`tool`, `you`, `agent`, `model`: a screen reader hears the word where it would skip a glyph, and the words read the
+ * inline renderer the role word (`tool`, `you`, `agent`, `note`: a screen reader hears the word where it would skip a glyph, and the words read the
  * same under `LC_ALL=C`).
  */
 export function marginFormFor(alternateScreen: boolean, color: boolean): MarginForm {

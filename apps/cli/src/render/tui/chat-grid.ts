@@ -49,8 +49,10 @@ export const SUSPENDED_GRID: ChatGrid = Object.freeze({
 
 /**
  * The grid for `columns`. The margin is the Home's; on a terminal too narrow to give it and {@link GRID_MIN_CONTENT_COLUMNS} columns of text
- * it shrinks (to 2 below 20 columns and to 0 below 16) so that the text keeps its room before the margin does. A width that is not a finite
- * number of at least 1 is the {@link SUSPENDED_GRID}.
+ * it shrinks to `floor((columns − 16) / 2)`, so that the text keeps its room before the margin does: 0 at 17 columns and fewer, 1 at 18 and 19,
+ * 2 at 20 and 21, 3 at 22 and 23, 4 at 24 and 25, 5 at 26 and 27, the Home's 6 from 28. A glyph needs a margin of 3 (two blank columns
+ * after it), so the marker is drawn from 22 columns; a word needs its length and one blank column. A width that is not a finite number of at
+ * least 1 is the {@link SUSPENDED_GRID}.
  */
 export function chatGrid(columns: number): ChatGrid {
   if (!Number.isFinite(columns) || columns < 1) return SUSPENDED_GRID;
@@ -71,22 +73,49 @@ export function chatGrid(columns: number): ChatGrid {
 /**
  * What the margin of a row can say, closed on purpose: only the host sets one, from a fixed set, so no string of a model or a person can be one.
  * `yourTurn` is the first row of the person's turn (and the host's question record), `toolCall` a row of a tool call, `modelSwitch` the host's
- * model-switch notice, and `agent` the first row of a reply (drawn only as the inline renderer's word: the full-screen reply has no marker).
+ * model-switch notice, `agent` the first row of a reply, and `notice` a row of a notice. `agent` and `notice` have no glyph: they are drawn only
+ * as the inline renderer's word (the full-screen reply and notice have no marker), which is also how a row of a reply or a notice that starts
+ * with one of the words says whose it is there (review round 1, S-2).
  */
-export type MarginRole = 'yourTurn' | 'toolCall' | 'modelSwitch' | 'agent';
+export type MarginRole = 'yourTurn' | 'toolCall' | 'modelSwitch' | 'agent' | 'notice';
 
 /** How a margin cell is drawn: the table's glyph, its plain (ASCII) form, or the inline renderer's role word. */
 export type MarginForm = 'glyph' | 'ascii' | 'word';
 
-/** The inline renderer's words (a screen reader reads them where it would skip a glyph). Closed, ASCII, one per role. */
+/**
+ * The inline renderer's words (a screen reader reads them where it would skip a glyph). Closed and ASCII. A notice and the model-switch notice
+ * share `note` (the switch's sentence starts with `model changed`, so the word `model` read twice; review round 1, D-5).
+ */
 export const MARGIN_WORDS: Readonly<Record<MarginRole, string>> = Object.freeze({
   yourTurn: 'you',
   toolCall: 'tool',
-  modelSwitch: 'model',
+  modelSwitch: 'note',
   agent: 'agent',
+  notice: 'note',
 });
 
-/** The glyph-table role each margin role draws as a glyph, when it has one (a reply has none). */
+/** The words of {@link MARGIN_WORDS}, once each. */
+const WORDS: readonly string[] = [...new Set(Object.values(MARGIN_WORDS))];
+
+/**
+ * A row's text that a screen reader could hear as a margin word: one of {@link MARGIN_WORDS} (any case, a whole word) at the start of the text,
+ * after only what a reader does not announce or a person does not read as a word: white space, format and zero-width characters, combining marks
+ * and the box-drawing gutters of a quotation or a code block (U+2500 to U+257F).
+ */
+const MARGIN_WORD_LEAD = new RegExp(
+  `^[\\s\\p{Cf}\\p{M}${String.fromCodePoint(0x2500)}-${String.fromCodePoint(0x257f)}]*(?:${WORDS.join('|')})(?![\\p{L}\\p{N}_])`,
+  'iu',
+);
+
+/**
+ * Whether `text` starts with a margin word ({@link MARGIN_WORD_LEAD}): the inline renderer then puts the row's own entry's word in its margin, so
+ * a reply or a notice row that begins `you   …` is read as `agent you …` or `note you …`, never as the person's turn (review round 1, S-2).
+ */
+export function startsWithMarginWord(text: string): boolean {
+  return MARGIN_WORD_LEAD.test(text);
+}
+
+/** The glyph-table role each margin role draws as a glyph, when it has one (a reply and a notice have none). */
 const GLYPH_OF_ROLE: Readonly<Partial<Record<MarginRole, GlyphRole>>> = {
   yourTurn: 'yourTurn',
   toolCall: 'toolCall',

@@ -15,11 +15,15 @@ import { runCell, withSurface } from './cells.js';
 import { checkLegendRow, type Observation, type PopupBox } from './properties.js';
 import { observe } from './run-cell.js';
 import type { SurfaceBase } from './registry.js';
+import { chatGrid } from '../chat-grid.js';
 import { CHAT_SURFACES } from './surfaces-chat.js';
 import type { Variant } from './variants.js';
 
 const ALT_80: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
 const ALT_80_COLOUR: Variant = { ...ALT_80, color: true };
+/** 100 columns of the same 24 rows: the popup still covers the prompt block (a 23-row frame, a 21-row popup), but its box is narrower than the content column. */
+const ALT_100: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 24 } };
+const ALT_100_COLOUR: Variant = { ...ALT_100, color: true };
 
 const LEGEND = '↑/↓ scroll · [c] copy · Esc close';
 /** The box of a popup at 80×24 (ADR-0148 §4: `min(columns − 2 × margin, 76)` wide, margin 6): columns 7–74, here five rows from row 3. */
@@ -212,6 +216,57 @@ describe('through the cells of the chat the maintainers saw red: /help and /agen
         checkLegendRow(observation, named),
         'read as a whole row the same frame holds: the box and the content column coincide, so there is no backdrop beside the legend',
       ).toEqual([]);
+      expect(checkLegendRow(observation, named, box)).toEqual([]);
+    },
+  );
+
+  // At 100 columns the popup's box (`min(columns − 2 × margin, 76)`: 76 wide, columns 12–87) is narrower than the chat's content column (84 wide,
+  // columns 8–91), so the prompt row's glyph and the ends of the thin rule stand BESIDE the box again, on the very row of the popup's legend: the
+  // real frame is the witness of the refinement that the 80-column cells (box == content column) no longer are (unit 9, review round 1, D-7). The
+  // frame is 24 rows tall as at 80 columns: a taller terminal (100×30) leaves the legend above the prompt block, with no backdrop on its row.
+  it.each([
+    ['chat.report-help', ALT_100],
+    ['chat.report-help', ALT_100_COLOUR],
+    ['chat.report-agent', ALT_100],
+    ['chat.report-agent', ALT_100_COLOUR],
+  ])(
+    '%s (%j): the box is narrower than the content column, the backdrop is beside it on the legend row, and the legend is alone in the box',
+    async (id, variant) => {
+      const entry = surface(id);
+      const { observation, box, violations } = await withSurface(entry, variant, {}, (mount) => {
+        const result = observe(entry, mount);
+        return {
+          observation: result.observation,
+          violations: result.violations,
+          box: entry.popup?.(variant, mount.popupFrame?.(), false),
+        };
+      });
+      expect(violations).toEqual([]);
+      expect(box?.placement).toBe('overlay');
+      if (box === undefined) throw new Error('no box');
+      expect(box.width, 'the box is narrower than the content column').toBeLessThan(
+        chatGrid(variant.size.cols).content,
+      );
+      const named = legendRows(entry);
+      const inBox = (line: string): string =>
+        Array.from(line)
+          .slice(box.left, box.left + box.width)
+          .join('')
+          .trim();
+      const wholeRow = observation.lines.findIndex((line) => named.includes(line.trim()));
+      const boxRow = observation.lines.findIndex((line) => named.includes(inBox(line)));
+      expect(
+        wholeRow,
+        'no row is the legend and nothing else: the backdrop is beside the box on its row',
+      ).toBe(-1);
+      expect(boxRow, 'the legend is alone in the box on one of its rows').toBeGreaterThanOrEqual(
+        box.top,
+      );
+      expect(boxRow).toBeLessThan(box.top + box.height);
+      expect(
+        checkLegendRow(observation, named),
+        'read as a whole row the same frame fails: the refinement is what turns the cell green',
+      ).toHaveLength(1);
       expect(checkLegendRow(observation, named, box)).toEqual([]);
     },
   );

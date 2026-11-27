@@ -173,6 +173,7 @@ import {
 } from './chat-layout.js';
 import { WORDMARK, thinRule } from './home-layout.js';
 import { chatGrid, marginCell, type ChatGrid, type MarginForm } from './chat-grid.js';
+import { screenText } from './screen-text.js';
 import { MarginRow, marginFormFor } from './margin-row.js';
 import type { Surface } from '../surface.js';
 import { layoutColumns } from './layout-columns.js';
@@ -195,6 +196,7 @@ import {
   formatBusyLine,
   formatReasoningPanel,
   toolCallText,
+  screenStreamRow,
   reasoningLabelActive,
   STOP_THE_TURN,
   streamingAbortHint,
@@ -253,9 +255,10 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
 
 /**
  * One entry of the inline renderer's scrollback, printed once by `<Static>` on the chat's grid (MVP-11 unit 9, §3.3): each row is the margin in
- * its WORD form (`you`, `agent`, `tool`, `model`: the closed set of `MARGIN_WORDS`, which a screen reader reads where it would skip a glyph) and
- * the content, with the same rows as the full-screen viewport ({@link transcriptRows}). `previous` is the entry printed before it, so the blank
- * row between turns is the same here as there.
+ * its WORD form (`you`, `agent`, `tool`, `note`: the closed set of `MARGIN_WORDS`, which a screen reader reads where it would skip a glyph) and
+ * the content, with the same rows as the full-screen viewport ({@link transcriptRows}): a row of a reply or a notice that starts with one of the
+ * words carries its own entry's word, so it is never read as the person's turn. `previous` is the entry printed before it, so the blank row
+ * between turns is the same here as there.
  */
 function TranscriptLine(
   props: Readonly<{
@@ -379,6 +382,11 @@ interface ChatAppProps {
   readonly doctor?: DoctorPort | undefined;
   /** The lowercase provider id of the bound agent, first on the status line (ADR-0146 §2). Absent ⇒ the line starts at the model. */
   readonly provider?: string | undefined;
+  /**
+   * The inline renderer wrote an intro (a resume banner, the `/clear` notice, the model switch) above this chat before it mounted ({@link emitIntro}):
+   * the first entry it prints follows it with the blank row between turns ({@link ChatViewProps.printedAbove}). Absent ⇒ nothing was written.
+   */
+  readonly introPrinted?: boolean | undefined;
 }
 
 interface ChatViewProps {
@@ -432,6 +440,12 @@ interface ChatViewProps {
    * (`driveInk`), once per process. Ignored by the full-screen renderer, whose header is its first child.
    */
   readonly introduction?: boolean | undefined;
+  /**
+   * Inline renderer only: rows were written above this chat before it mounted that are not part of its transcript (the stand-alone chat's intro: a
+   * resume banner, the `/clear` notice, the model switch: {@link emitIntro}), so the first entry it prints is not the first thing on the screen and has
+   * the blank row between turns above it. The header's own blank row is the gap of a chat with no intro, which is why this is not set for one.
+   */
+  readonly printedAbove?: boolean | undefined;
   /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
    *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
   readonly reasoningVisible: boolean;
@@ -606,6 +620,25 @@ export function chatIsBusy(work: ChatWork): boolean {
 }
 
 /**
+ * The grid the chat's chrome (the header, the prompt block, the live region, the rows under the prompt) is drawn on for a host that reports `columns`:
+ * {@link chatGrid} of the width with the 80-column fallback a width that is not usable gets ({@link layoutColumns}: a suspended terminal reports 0, NaN or
+ * Infinity), so the chrome is never asked for a width it cannot draw. The one place the fallback is applied.
+ */
+export function chromeGridFor(columns: number): ChatGrid {
+  return chatGrid(layoutColumns(columns));
+}
+
+/**
+ * A column of the chat's chrome BELOW the prompt block (the history search, the `@` completion list) for a host that reports `columns`: a
+ * {@link ContentColumn} on {@link chromeGridFor} of that width. Both hosts draw them through it, so they stand where the prompt block above them does.
+ */
+export function ChromeColumn(
+  props: Readonly<{ columns: number; children?: ReactNode }>,
+): ReactElement {
+  return <ContentColumn grid={chromeGridFor(props.columns)}>{props.children}</ContentColumn>;
+}
+
+/**
  * The chat's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
  * §4): the wordmark (bold, in the accent when it is the full-screen frame's first row, bold alone inline) with the session title right-aligned to the
  * content column's last column, then one blank row: {@link CHAT_HEADER_ROWS} rows. It stands ON THE GRID (unit 9, {@link chatGrid}): the box starts
@@ -615,7 +648,7 @@ export function chatIsBusy(work: ChatWork): boolean {
 function ChatHeaderView(
   props: Readonly<{ title: string; columns: number; color: boolean; accent: boolean }>,
 ): ReactElement {
-  const grid = chatGrid(layoutColumns(props.columns));
+  const grid = chromeGridFor(props.columns);
   const row = headerRow(props.title, grid.content);
   return (
     <Box
@@ -650,10 +683,24 @@ function ChatHeaderView(
 /** One item of the inline scrollback: a transcript entry, or the header printed once as the introduction of the chat. */
 type ScrollbackItem = TranscriptEntry | { readonly role: 'introduction' };
 
-/** The transcript entry printed just before `items[index]` (`<Static>` passes the absolute index), or none: the first entry, or after the header. */
-function entryBefore(items: readonly ScrollbackItem[], index: number): TranscriptEntry | undefined {
+/**
+ * What stands above the first entry of a chat whose intro was written before it mounted: a notice (it hugs what is above it, a turn or a reply gets
+ * the separator, as after any entry), never drawn itself. The text only has to be a row, so that the entry above is not a row-less one.
+ */
+const PRINTED_ABOVE: TranscriptEntry = { role: 'notice', text: 'printed above' };
+
+/**
+ * The transcript entry printed just before `items[index]` (`<Static>` passes the absolute index), or none: the first entry, or after the header (the
+ * header's own blank row is its gap). `printedAbove` says the first entry follows rows written before the chat mounted ({@link ChatViewProps.printedAbove}).
+ */
+function entryBefore(
+  items: readonly ScrollbackItem[],
+  index: number,
+  printedAbove: boolean,
+): TranscriptEntry | undefined {
   const before = items[index - 1];
-  return before === undefined || before.role === 'introduction' ? undefined : before;
+  if (before === undefined) return printedAbove ? PRINTED_ABOVE : undefined;
+  return before.role === 'introduction' ? undefined : before;
 }
 
 /**
@@ -664,6 +711,7 @@ function InlineScrollback(
   props: Readonly<{
     entries: readonly TranscriptEntry[];
     introduction: boolean;
+    printedAbove: boolean;
     displays: ReadonlyMap<string, ToolDisplay> | undefined;
     color: boolean;
     columns: number | undefined;
@@ -688,7 +736,7 @@ function InlineScrollback(
           <TranscriptLine
             key={index}
             entry={item}
-            previous={entryBefore(items, index)}
+            previous={entryBefore(items, index, props.printedAbove)}
             displays={props.displays}
             color={props.color}
             columns={props.columns}
@@ -743,7 +791,7 @@ function LeadRow(
  * the row budget it is given, `content` (the rail: the transcript's, the editor's, the live stream's) or `text` (what the terminal leaves right of
  * the margin: a one-line row such as the status line or the hint). The margin on its left is blank: nothing a person or a model wrote can stand in it.
  */
-export function ContentColumn(
+function ContentColumn(
   props: Readonly<{ grid: ChatGrid; budget?: 'content' | 'text'; children?: ReactNode }>,
 ): ReactElement {
   const { grid } = props;
@@ -902,10 +950,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // The chat's grid (unit 9, `chat-grid.ts`): a margin the host owns and a content column that holds every word a person or a model wrote. Computed
   // ONCE here and read by every part of the frame, so the transcript, the live region and the prompt block cannot disagree about where the content is.
   // `grid` is the width as the host reports it (a suspended terminal, whose width is not a number, has no grid and so no transcript rows); `chromeGrid`
-  // is the same grid with the 80-column fallback a width that is not usable gets (`layoutColumns`), so the chrome is never asked for a width it cannot draw.
+  // is the same grid with the 80-column fallback a width that is not usable gets ({@link chromeGridFor}), so the chrome is never asked for a width it cannot draw.
   const hostColumns = props.viewport?.cols ?? props.columns ?? 80;
   const grid = chatGrid(hostColumns);
-  const chromeGrid = grid.columns > 0 ? grid : chatGrid(layoutColumns(hostColumns));
+  const chromeGrid = chromeGridFor(hostColumns);
   // The form of the margin a row of the live region is drawn with: the glyph (ASCII without colour) full-screen, the role word inline.
   const marginForm = marginFormFor(props.viewport !== undefined, color);
   // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H). Its body is the model's words in the content column, so its row
@@ -960,12 +1008,14 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
       const answerRows = Math.max(0, maxRows - 1);
       // The live tail is the model's words, laid out in the content column at its width: the finished reply is laid out at the same width
-      // (`transcriptRows`), so the stream never reflows when the turn completes. Drawn in the content column it cannot stand in the margin, whatever
-      // its first characters are (unit 9; the row-level guard of the interim marker retired with the grid, plan section 4).
+      // (`transcriptRows`), so the stream never reflows when the turn completes. Its rows go through the screen's filter and have the marker glyphs
+      // blanked, as the finished reply's do (`screenStreamRow`; ADR-0145 §6, OQ4 as revised after review round 1 of unit 9).
       const answerColumns = chromeGrid.content;
-      const lines = color
-        ? props.markdown.tail(answerColumns, answerRows)
-        : props.markdown.plainTail(answerColumns, answerRows);
+      const lines = (
+        color
+          ? props.markdown.tail(answerColumns, answerRows)
+          : props.markdown.plainTail(answerColumns, answerRows)
+      ).map(screenStreamRow);
       return (
         <Box flexDirection="column">
           {lines.map((line, index) => (
@@ -1091,6 +1141,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         <InlineScrollback
           entries={inlineTranscript}
           introduction={props.introduction === true}
+          printedAbove={props.printedAbove === true}
           displays={props.toolDisplays}
           color={color}
           columns={props.columns}
@@ -1194,7 +1245,9 @@ function LiveTurn(
           mark={colorProps(color, 'yellow')}
         >
           <Text {...colorProps(color, 'yellow')}>
-            {withGlyphForm(!color, () => toolCallText(call, props.toolDisplays?.get(call.id)))}
+            {withGlyphForm(!color, () =>
+              screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
+            )}
           </Text>
         </MarginRow>
       ))}
@@ -1259,7 +1312,9 @@ function DockedTurn(
   const rows = withGlyphForm(!props.color, () =>
     dockedTurnRows({
       warnings: state.warnings,
-      toolLines: calls.map((call) => toolCallText(call, props.toolDisplays?.get(call.id))),
+      toolLines: calls.map((call) =>
+        screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
+      ),
       reasoning: running ? props.reasoning : undefined,
       interrupt:
         running && props.interruptArmed
@@ -1383,7 +1438,10 @@ export function hintRowNotification(
   current: string | undefined,
   drawing: SlotDrawing | undefined,
 ): string | undefined {
-  return drawing?.placement === 'overlay' ? undefined : current;
+  // A notification can name what a person or a project wrote (a path, a name): it goes through the screen's filter like every other row.
+  return drawing?.placement === 'overlay' || current === undefined
+    ? undefined
+    : screenText(current);
 }
 
 /**
@@ -2681,6 +2739,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             markdown={markdown}
             displaySuspended={displaySuspended}
             acknowledgement={acknowledgement}
+            printedAbove={props.introPrinted}
             state={state}
             tick={tick}
             nowMs={Date.now()}
@@ -2751,18 +2810,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           {/* The history search and the `@` completion list are host-drawn rows below the prompt that show stored names (a history line, a file
               name): they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
           {search !== undefined && (
-            <ContentColumn grid={chatGrid(layoutColumns(windowSize.columns))}>
+            <ChromeColumn columns={windowSize.columns}>
               <ReverseSearchView
                 state={search}
                 entries={historyRef.current.entries}
                 color={color}
               />
-            </ContentColumn>
+            </ChromeColumn>
           )}
           {mention !== undefined && (
-            <ContentColumn grid={chatGrid(layoutColumns(windowSize.columns))}>
+            <ChromeColumn columns={windowSize.columns}>
               <MentionView state={mention} color={color} />
-            </ContentColumn>
+            </ChromeColumn>
           )}
         </Box>
       </BackdropDim>
@@ -2870,7 +2929,9 @@ export function emitIntro(
   // the rows of a notice are guarded, and a lead is the one glyph they keep at the start of a line, so it is named for the notice that has it and for
   // no other: the resume banner and the clear notice have no lead and the guard keeps nothing of them.
   if (!alternateScreen) ports.writeOut(`${wrapIntro(intro, ports.columns)}\n`);
-  else if (intro.startsWith(GLYPHS.modelSwitch.glyph)) ports.notice(intro, 'modelSwitch');
+  // The lead is the model switch's in either form of the table: the intro is built in the plain form (`<->`) without colour, and the transcript's own
+  // notice lead (`noticeLines`) reads both, so a colour-off chat marks the switch as a colour-on one does (the inline path above reads both too).
+  else if (modelSwitchLeadLength(intro) > 0) ports.notice(intro, 'modelSwitch');
   else ports.notice(intro);
 }
 
@@ -3152,6 +3213,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           reports: ctx.reports,
           // The bound agent's provider id, first on the status line (ADR-0146 §2): read once per mount, from the same view `/agent` reads.
           provider: ctx.boundAgent?.().detail.provider,
+          // The inline intro written above the live region before this mount (the first entry then has the blank row between turns above it).
+          introPrinted: !alternateScreen && ctx.intro !== undefined,
           // The settings popups (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6), and where their announcements and the typed
           // settings' go: this chat's notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print
           // their text.

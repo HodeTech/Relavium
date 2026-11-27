@@ -65,8 +65,10 @@ async function openPalette(
   return mount;
 }
 
-const isListRow = (row: string): boolean =>
-  /^ +(?:> |\s{2})\/[a-z]+ {2,}\S/u.test(row) || /^\s*[▲▼^v] \d+ more/u.test(row);
+/** A row of the list at `cols` columns: an entry at EXACTLY the content column (its marker or two blanks first), or the `▲ N more` marker set in two columns. */
+const isListRow = (row: string, cols: number): boolean =>
+  at(cols, '(?:> |\\s{2})\\/[a-z]+ {2,}\\S').test(row) ||
+  at(cols, ' {2}[▲▼^v] \\d+ more').test(row);
 
 describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
   describe.each([
@@ -81,10 +83,10 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
         const promptAt = frame.findIndex((row) => at(cols, '> \\/ ?$').test(row));
         expect(promptAt, shown).toBeGreaterThan(0);
         // The list: contiguous list rows from its first row to the row above the prompt.
-        const first = frame.findIndex(isListRow);
+        const first = frame.findIndex((row) => isListRow(row, cols));
         expect(first, shown).toBeGreaterThan(1);
         for (let row = first; row < promptAt; row += 1)
-          expect(isListRow(frame[row] ?? ''), `row ${String(row)} of ${shown}`).toBe(true);
+          expect(isListRow(frame[row] ?? '', cols), `row ${String(row)} of ${shown}`).toBe(true);
         expect(promptAt - first, `the window: ${shown}`).toBe(listLines);
         // Nothing separates the list from the prompt: the row above the prompt is the first entry, highlighted.
         expect(frame[promptAt - 1], shown).toMatch(at(cols, '> \\/models {2,}'));
@@ -113,7 +115,7 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
           'the legend once, as the hint row',
         ).toHaveLength(1);
         // The transcript gives way and keeps the rows the header, the list and the prompt block leave: 23 − 2 − list − 3.
-        const first = frame.findIndex(isListRow);
+        const first = frame.findIndex((row) => isListRow(row, cols));
         expect(first - 2, 'the transcript viewport').toBe(rows - 1 - 2 - listLines - 3);
       } finally {
         m.unmount();
@@ -129,10 +131,10 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
       const shown = frame.join('\n');
       expect(frame.length, shown).toBeLessThanOrEqual(23);
       const promptAt = frame.findIndex((row) => at(80, '> \\/ ?$').test(row));
-      const first = frame.findIndex(isListRow);
+      const first = frame.findIndex((row) => isListRow(row, 80));
       expect(promptAt - first, `a window of 9 list lines: ${shown}`).toBe(9);
       expect(
-        frame.some((row) => /^\s*[▲^] \d+ more/u.test(row)),
+        frame.some((row) => at(80, ' {2}[▲^] \\d+ more').test(row)),
         shown,
       ).toBe(true);
       expect(frame.at(-1)).toBe(indent(80, LEGEND));

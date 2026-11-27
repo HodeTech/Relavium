@@ -761,9 +761,11 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
     const frame = (m.harness.lastFrame() ?? '').split('\n');
-    const firstRow = frame.findIndex((l) => l.trimStart().startsWith('AAAA'));
+    // both rows of the notice stand at EXACTLY the content column (8 columns in at 100): a hanging wrap, no stray indent
+    const atContent = `${' '.repeat(chatGrid(100).margin)}AAAA`;
+    const firstRow = frame.findIndex((l) => l.startsWith(atContent));
     expect(firstRow).toBeGreaterThanOrEqual(0);
-    expect(frame[firstRow + 1]?.trimStart().startsWith('AAAA')).toBe(true); // it really wrapped
+    expect(frame[firstRow + 1]?.startsWith(atContent)).toBe(true); // it really wrapped
 
     // Drag the SECOND visual row only. Terminal rows are 1-based.
     const row = String(firstRow + 2);

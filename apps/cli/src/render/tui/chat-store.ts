@@ -62,6 +62,7 @@ import {
 import { formatSessionFooter } from './chat-projection.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 import { withGlyphForm } from './glyphs.js';
+import { screenText } from './screen-text.js';
 import {
   appendNotice,
   appendUserMessage,
@@ -1065,7 +1066,8 @@ export function createChatStore(
       flush();
     },
     note: (message, lifetime) => {
-      state = appendWarning(state, sanitizeInline(message), lifetime); // sanitized — a config-derived note can't inject ANSI
+      // sanitized — a config-derived note can't inject ANSI — and through the screen's filter, as every drawn row of text that is not the host's own
+      state = appendWarning(state, screenText(sanitizeInline(message)), lifetime);
       flush();
     },
     notice: (text, hostLead) => {

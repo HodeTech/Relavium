@@ -11,6 +11,7 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
+import { chatGrid } from './chat-grid.js';
 import { ChatApp } from './chat-ink.js';
 import { CHAT_HEADER_ROWS, chatFrameRows } from './chat-layout.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -140,8 +141,14 @@ describe('the rows a docked sheet leaves the conversation, from the code’s con
       expect(last - rule + 1, 'the sheet is its whole budget').toBe(sheetRows);
       expect(last + 1, 'the frame is rows − 1').toBe(chatFrameRows(rows));
       // The transcript's rows are the conversation's: the newest message is the row right above the sheet.
-      // (the person's turn marker is in the margin, with the two blank columns of the grid before the words: unit 9)
-      expect(frame[rule - 1]?.trim()).toMatch(/^(?:[›>] +)?message 40$|^$/u);
+      // (the person's turn marker ends at the grid's marker column, with the two blank columns before the words: unit 9; or the separator row above it)
+      const grid = chatGrid(cols);
+      expect(frame[rule - 1]).toMatch(
+        new RegExp(
+          `^ {${String(grid.markerEnd)}}[›>] {${String(grid.margin - grid.markerEnd - 1)}}message 40$|^$`,
+          'u',
+        ),
+      );
       // Nothing of the prompt block is drawn while the sheet is open (its rule stands in the content column, after the margin).
       expect(frame.join('\n')).not.toMatch(/ask mode · \d+ turn|\(twice\)|^ *-{20,}$/mu);
     },
@@ -152,7 +159,10 @@ describe('the rows a docked sheet leaves the conversation, from the code’s con
     await pause(40);
     const before = m.rowsWith('commands');
     expect(
-      before.some((row) => /^-{40,}$/u.test(row.trim())),
+      // the rule is the content column wide, after exactly the margin (6 columns at 80)
+      before.some(
+        (row) => row === `${' '.repeat(chatGrid(80).margin)}${'-'.repeat(chatGrid(80).content)}`,
+      ),
       'the prompt block’s thin rule',
     ).toBe(true);
     m.open();

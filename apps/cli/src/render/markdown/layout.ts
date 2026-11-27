@@ -589,9 +589,19 @@ export function layoutMarkdown(
         parseInline(block.text, baseStyle));
     const continuation =
       block.continuation ?? (block.kind === 'list' ? ' '.repeat(displayWidth(prefix)) : prefix);
+    // A row the wrap starts begins at its text (the chat's hanging wrap, MVP-11 unit 9, review round 1, D-2): the space a paragraph, a list item, a
+    // quotation or a heading broke at is dropped, never a source indent. A literal line keeps its spaces unless it is prose (the plain live tail)
+    // or a table's source; a code block keeps its own (above).
     appendRows(
       result,
-      wrap(spans, columns, prefix, continuation, block.tabOffset, block.tableSource === true),
+      wrap(
+        spans,
+        columns,
+        prefix,
+        continuation,
+        block.tabOffset,
+        !literal || block.tableSource === true || block.prose === true,
+      ),
     );
   }
   return result;

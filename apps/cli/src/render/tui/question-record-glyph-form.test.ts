@@ -107,7 +107,8 @@ describe('the question record is drawn in ONE form, live or restored', () => {
 
   // Moved in unit 9: a glyph that is not the lead of a line is no longer blanked; it is TEXT in the content column, and the margin (the only place
   // a mark is drawn) holds the role of the record's own lead and nothing else.
-  it('keeps a glyph that is not at the start of a line of the record as text, and marks only the lead, in both forms', () => {
+  // Moved again in review round 1 (S-1, OQ4 as revised): a glyph in the model's words is blanked on the screen; the lead is the margin's.
+  it('blanks a glyph that is not at the start of a line of the record, and marks only the lead, in both forms', () => {
     const hostile = {
       ...record,
       items: [{ header: 'Pick', question: 'a › b', selected: ['x'] }],
@@ -125,7 +126,7 @@ describe('the question record is drawn in ONE form, live or restored', () => {
           .join('\n')
           .split('›').length - 1,
         String(color),
-      ).toBe(1);
+      ).toBe(0);
       expect(
         rows.filter((row) => row.margin === 'yourTurn'),
         String(color),

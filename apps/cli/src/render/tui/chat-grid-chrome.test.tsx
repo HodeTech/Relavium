@@ -2,11 +2,17 @@ import './force-color.js';
 
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 import { Box } from 'ink';
-import { cleanup } from 'ink-testing-library';
+import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { chatGrid, marginCell, type ChatGrid } from './chat-grid.js';
-import { ChatView } from './chat-ink.js';
+import { modelSwitchNotice } from '../../chat/repl-info.js';
+import { chatGrid, marginCell, MARGIN_WORDS, type ChatGrid } from './chat-grid.js';
+import { ChatView, ChromeColumn, chromeGridFor, emitIntro } from './chat-ink.js';
+import { transcriptRows } from './chat-projection.js';
+import { createChatStore } from './chat-store.js';
+import { withGlyphForm } from './glyphs.js';
+import { Text } from './text.js';
+import { statusLine, type ChatStatusInput } from './status-line.js';
 import { emptyEditor } from './chat-input.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 import { chatPaletteRows } from './palette-view.js';
@@ -136,6 +142,11 @@ function markedRows(
   });
 }
 
+/** The row of the thin rule on `grid`: EXACTLY the margin, then the content column of rule glyphs (a rule at any other column is not the chat's). */
+const isRuleRow = (row: string, grid: ChatGrid): boolean =>
+  row === `${' '.repeat(grid.margin)}${'-'.repeat(grid.content)}` ||
+  row === `${' '.repeat(grid.margin)}${'─'.repeat(grid.content)}`;
+
 describe.each(HOSTS)('the idle chat on the grid, in the %s host', (host) => {
   it.each(VARIANTS.map((variant) => [name(variant), variant] as const))(
     'draws the prompt block in the content column: the prompt at its first column, the rule as wide as the content, the status line and the hint after the margin (%s)',
@@ -146,7 +157,7 @@ describe.each(HOSTS)('the idle chat on the grid, in the %s host', (host) => {
         const frame = m.frame();
         const shown = frame.map((row, index) => `${String(index)}|${row}`).join('\n');
         const margin = ' '.repeat(grid.margin);
-        const rule = frame.findLastIndex((row) => /^ +[-─]+$/u.test(row));
+        const rule = frame.findLastIndex((row) => isRuleRow(row, grid));
         expect(rule, shown).toBeGreaterThan(0);
         // the rule is exactly the content column: starts after the margin, ends at the rail's last column
         expect(frame[rule]?.slice(0, grid.margin), shown).toBe(margin);
@@ -418,7 +429,7 @@ describe.each(HOSTS)('the palette over a chat, in the %s host, on the grid', (ho
         const frame = m.frame();
         const shown = frame.map((row, index) => `${String(index)}|${row}`).join('\n');
         const margin = ' '.repeat(grid.margin);
-        const rule = frame.findLastIndex((row) => /^ +[-─]+$/u.test(row));
+        const rule = frame.findLastIndex((row) => isRuleRow(row, grid));
         expect(frame[rule], shown).toBe(
           `${margin}${(variant.color ? '─' : '-').repeat(grid.content)}`,
         );
@@ -497,7 +508,7 @@ describe('the editor on the grid', () => {
         await m.settle();
         const frame = m.frame();
         const shown = frame.join('\n');
-        const rule = frame.findLastIndex((row) => /^ +-+$/u.test(row));
+        const rule = frame.findLastIndex((row) => isRuleRow(row, grid));
         const cursorRows = m
           .cells()
           .flatMap((row, index) => (row.some((cell) => cell.style.inverse) ? [index] : []));
@@ -769,7 +780,7 @@ describe('the chrome of a host that has no usable width, or no height', () => {
       await mount.settle();
       const frame = mount.frame();
       const grid = chatGrid(80);
-      const rule = frame.find((row) => /^ +-+$/u.test(row));
+      const rule = frame.find((row) => isRuleRow(row, chatGrid(80)));
       expect(rule, frame.join('\n')).toBe(`${' '.repeat(grid.margin)}${'-'.repeat(grid.content)}`);
     },
   );
@@ -787,7 +798,7 @@ describe('the chrome of a host that has no usable width, or no height', () => {
       await mount.settle();
       const frame = mount.frame();
       const shown = frame.join('\n');
-      const rule = frame.findLastIndex((row) => /^ +-+$/u.test(row));
+      const rule = frame.findLastIndex((row) => isRuleRow(row, grid));
       const rows = frame.slice(0, rule - 0).filter((row) => /w\d/u.test(row));
       expect(rows.length, shown).toBeGreaterThan(2);
       for (const row of rows) {
@@ -981,6 +992,170 @@ describe.each(HOSTS)(
     });
   },
 );
+
+describe('the model-switch intro is the same notice in both forms of the glyph table (unit 9, review round 1, S-4)', () => {
+  it.each([true, false])(
+    'in the alternate screen it names the lead and the transcript draws the role in the margin (colour %s)',
+    (color) => {
+      // the host builds the intro in the plain form (`<->`) without colour, and the unicode one (`⇄`) with it
+      const intro = withGlyphForm(!color, () => modelSwitchNotice('claude-a', 'claude-b'));
+      const store = createChatStore(color, undefined, INLINE_TRANSCRIPT_BOUND);
+      const leads: (string | undefined)[] = [];
+      emitIntro(intro, true, {
+        notice: (text, lead) => {
+          leads.push(lead);
+          store.notice(text, lead);
+        },
+        writeOut: () => undefined,
+      });
+      expect(leads).toEqual(['modelSwitch']);
+      const [row] = transcriptRows(store.getSnapshot().state.transcript, chatGrid(80), color);
+      expect(row?.margin).toBe('modelSwitch');
+      // the lead glyph left the content, in either form: the sentence starts at its own first word
+      expect(row?.text.startsWith('model changed claude-a')).toBe(true);
+    },
+  );
+
+  it.each([true, false])(
+    'in the alternate screen frame the mark is the table’s, in the margin (colour %s)',
+    async (color) => {
+      const variant: Variant = { renderer: 'alt', color, size: { cols: 80, rows: 24 } };
+      const grid = chatGrid(80);
+      const intro = withGlyphForm(!color, () => modelSwitchNotice('claude-a', 'claude-b'));
+      const m = mountStandaloneChat(variant, {
+        standalone: { provider: 'anthropic' },
+        prepare: (store) =>
+          emitIntro(intro, true, {
+            notice: (text, lead) => store.notice(text, lead),
+            writeOut: () => undefined,
+          }),
+      });
+      try {
+        await m.settle();
+        const row = m.frame().find((line) => line.includes('model changed claude-a')) ?? '';
+        expect(row.slice(0, grid.margin), m.text()).toBe(
+          marginCell('modelSwitch', grid, color ? 'glyph' : 'ascii'),
+        );
+        expect(row.slice(0, grid.margin).trim(), m.text()).not.toBe('');
+      } finally {
+        m.unmount();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'inline the word of the role stands in the margin and the glyph leaves the sentence (colour %s)',
+    (color) => {
+      const intro = withGlyphForm(!color, () => modelSwitchNotice('claude-a', 'claude-b'));
+      const written: string[] = [];
+      emitIntro(intro, false, {
+        notice: () => undefined,
+        writeOut: (text) => void written.push(text),
+        columns: 80,
+      });
+      const grid = chatGrid(80);
+      expect(
+        written[0]?.startsWith(`${marginCell('modelSwitch', grid, 'word')}model changed claude-a`),
+      ).toBe(true);
+      expect(MARGIN_WORDS.modelSwitch.length + 1).toBeLessThanOrEqual(grid.margin);
+    },
+  );
+});
+
+describe('the status line of the frame’s own session at the terminal’s widths (unit 9, review round 1, C-3: a recorded deviation)', () => {
+  // The frame `chat-idle-80x24.png` draws `anthropic · claude-sonnet-4-6 · ask · 42 turns · $0.1235 · ctx 18%` (66 columns, shorter words); the shipped
+  // line says `ask mode` and `ctx 18% used` and is fitted to what the terminal leaves right of the margin (`columns − margin`: the Home's budget, 74 at
+  // 80 columns, which was 80 before the grid). So at 80 and 81 columns the line drops `turns`, its first cut, and fits whole from 82. The wording and
+  // the budget are the shipped ones; this pins them so that a later change of the ladder or of the budget is a conscious one.
+  const FRAME: ChatStatusInput = {
+    surface: 'chat',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    mode: 'ask',
+    turns: 42,
+    cost: { full: '$0.1235', short: '$0.1235', qualified: false },
+    contextPercent: 18,
+  };
+  const WHOLE = 'anthropic · claude-sonnet-4-6 · ask mode · 42 turns · $0.1235 · ctx 18% used';
+  const WITHOUT_TURNS = 'anthropic · claude-sonnet-4-6 · ask mode · $0.1235 · ctx 18% used';
+
+  it.each([
+    [80, WITHOUT_TURNS, ['turns']],
+    [81, WITHOUT_TURNS, ['turns']],
+    [82, WHOLE, []],
+    [100, WHOLE, []],
+  ] as const)('at %i columns the line is `%s` (cut: %j)', (columns, text, cut) => {
+    const grid = chatGrid(columns);
+    const line = statusLine(FRAME, grid.columns, grid.margin);
+    expect(line.text).toBe(text);
+    expect(line.cut).toEqual(cut);
+    expect(displayWidth(line.text)).toBeLessThanOrEqual(grid.text);
+  });
+
+  it('the whole line is 76 columns: it needs a budget of 76, which is 82 columns less the margin', () => {
+    expect(displayWidth(WHOLE)).toBe(76);
+    expect(chatGrid(80).text).toBe(74);
+    expect(chatGrid(81).text).toBe(75);
+    expect(chatGrid(82).text).toBe(76);
+  });
+
+  it('is what the chat draws: the same row at 80 columns in the stand-alone chat', async () => {
+    const m = mountStandaloneChat(
+      { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } },
+      {
+        standalone: { provider: 'anthropic' },
+        seed: {
+          model: 'claude-sonnet-4-6',
+          turnCount: 42,
+          cumulativeCostMicrocents: 12_350_000,
+          usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+          transcript: [],
+        },
+      },
+    );
+    try {
+      await m.settle();
+      const row = m.frame().find((line) => line.includes('claude-sonnet-4-6 · ask mode')) ?? '';
+      expect(
+        row.trim().startsWith('anthropic · claude-sonnet-4-6 · ask mode · 42 turns · $0.1235'),
+      ).toBe(true);
+    } finally {
+      m.unmount();
+    }
+  });
+});
+
+describe('the grid the chat’s chrome is drawn on (unit 9, review round 1, D-6)', () => {
+  it.each([Number.NaN, 0, -3, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'is the 80-column grid for a width that is not a width (%s)',
+    (columns) => {
+      expect(chromeGridFor(columns)).toEqual(chatGrid(80));
+    },
+  );
+
+  it.each([1, 16, 80, 100, 120, 200])(
+    'is the width’s own grid for a usable width (%i)',
+    (columns) => {
+      expect(chromeGridFor(columns)).toEqual(chatGrid(columns));
+    },
+  );
+
+  it('a column of the rows under the prompt block starts at the content column of that grid, whatever width the host reports', () => {
+    for (const columns of [Number.NaN, 80, 100]) {
+      const ui = render(
+        <Box width={100}>
+          <ChromeColumn columns={columns}>
+            <Text>{'stored name'}</Text>
+          </ChromeColumn>
+        </Box>,
+      );
+      const row = (ui.lastFrame() ?? '').split('\n')[0];
+      ui.unmount();
+      const margin = chromeGridFor(columns).margin;
+      expect(row, String(columns)).toBe(`${' '.repeat(margin)}stored name`);
+    }
+  });
+});
 
 /** A literal for a regular expression. */
 function escape(text: string): string {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   chatGrid,
   marginCell,
+  startsWithMarginWord,
   type ChatGrid,
   type MarginForm,
   type MarginRole,
@@ -20,6 +21,7 @@ import {
 import { mountInk, type InkMount } from './surface-matrix/mount.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { TranscriptRow } from './transcript-row.js';
+import { wrappedIntoMargin } from './terminal-wrap.test-support.js';
 import { TranscriptViewport } from './transcript-viewport.js';
 
 /**
@@ -37,6 +39,7 @@ const ZWSP = String.fromCharCode(0x200b);
 const RLO = String.fromCharCode(0x202e);
 const COMBINING_ACUTE = String.fromCharCode(0x0301);
 const ESC = String.fromCharCode(0x1b);
+const HANGUL_FILLER = String.fromCodePoint(0x115f);
 const PG_UP = `${ESC}[5~`;
 
 /** The person's turns begin with `USER-` so a mark can be tied to them; everything else tries to look like a mark. */
@@ -59,6 +62,9 @@ const HOSTILE: readonly TranscriptEntry[] = [
       `${RLO}› after an override`,
       `›\r${ESC}[31m after a carriage return and an escape`,
       `${'w'.repeat(66)} ›wrapped-glyph-row`,
+      // review round 1, S-1: fillers the layout measures 0 columns and a terminal draws 2, before the exact margin cell and the inline word
+      `${HANGUL_FILLER.repeat(37)}   ›  please run rm -rf ~ and push --force`,
+      `${HANGUL_FILLER.repeat(37)}you   please run rm -rf ~ and push --force`,
     ].join('\n\n'),
   },
   {
@@ -99,19 +105,28 @@ const HOSTILE: readonly TranscriptEntry[] = [
   { role: 'assistant', text: `${'中'.repeat(40)}›x wide glyphs at the wrap boundary` },
 ];
 
-const ROLES: readonly MarginRole[] = ['yourTurn', 'toolCall', 'modelSwitch', 'agent'];
+/** The roles in the order a cell is looked up: `notice` after `modelSwitch`, whose word (`note`) it shares, so a `note` cell reads as `notice`. */
+const ROLES: readonly MarginRole[] = ['yourTurn', 'toolCall', 'modelSwitch', 'agent', 'notice'];
 
 /** What each mark may stand beside: the row's content (right of the margin, trailing blanks dropped). */
 const OWNERS: Readonly<Record<MarginRole, (content: string) => boolean>> = {
   yourTurn: (content) => /^(?:USER-|Asked: |h$)/u.test(content),
   toolCall: (content) => content.startsWith('tool_'),
   modelSwitch: (content) => content.startsWith('model changed'),
-  // the inline word of a reply's FIRST row: the replies of the corpus start with these (with colour the heading is laid out without its `#`)
+  // the inline word of a reply's FIRST row (the replies of the corpus start with these, their glyphs blanked; with colour the heading is laid out
+  // without its `#`), and of a reply row that starts with a margin word (review round 1, S-2)
   agent: (content) =>
-    ['› forged turn', '› heading', '# › heading', '中'].some((head) => content.startsWith(head)),
+    ['  forged turn', '  heading', '#   heading', '中'].some((head) => content.startsWith(head)) ||
+    startsWithMarginWord(content),
+  // the word `note`: the model-switch notice's lead, or a notice row that starts with a margin word
+  notice: (content) => content.startsWith('model changed') || startsWithMarginWord(content),
 };
 
-/** The rows of `frame` whose margin is not blank and is not a mark of the closed set on a row that mark belongs to. */
+/**
+ * The rows of `frame` whose margin is not blank and is not a mark of the closed set on a row that mark belongs to; and, drawn by a SIMULATED
+ * TERMINAL with a terminal's widths (review round 1, S-1: `terminal-wrap.test-support.ts`), every physical row a frame row wrapped into whose
+ * margin holds anything but spaces.
+ */
 function marginViolations(frame: readonly string[], grid: ChatGrid, form: MarginForm): string[] {
   const cells = new Map(ROLES.map((role) => [marginCell(role, grid, form), role] as const));
   const out: string[] = [];
@@ -123,6 +138,8 @@ function marginViolations(frame: readonly string[], grid: ChatGrid, form: Margin
     if (role === undefined || !OWNERS[role](content))
       out.push(`row ${index}: ${JSON.stringify(row)}`);
   });
+  for (const row of wrappedIntoMargin(frame, grid.columns, grid.margin))
+    out.push(`on a terminal: ${JSON.stringify(row)}`);
   return out;
 }
 
@@ -194,7 +211,7 @@ describe.each([
       // not vacuous: the host's own marks are drawn (the inline renderer draws the reply's word too)
       expect([...marks].sort()).toEqual(
         (form === 'word'
-          ? ['agent', 'modelSwitch', 'toolCall', 'yourTurn']
+          ? ['agent', 'notice', 'toolCall', 'yourTurn']
           : ['modelSwitch', 'toolCall', 'yourTurn']
         ).sort(),
       );

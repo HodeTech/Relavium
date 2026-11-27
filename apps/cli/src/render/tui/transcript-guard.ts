@@ -7,15 +7,16 @@ import { GLYPHS } from './glyphs.js';
  * person or a model wrote is laid out in the CONTENT column to its right (`chat-grid.ts`). A row's mark is a role of the closed `MarginRole` set,
  * carried as data on the row (`DisplayLine.margin`) and drawn by `marginCell`, which takes no text; nothing reads a row's text to decide its mark.
  *
- * **Why the row-level blanking retired (unit 9).** Step 7a blanked `›`, `▸` and `⇄` from every row of a reply, of the person's turn after its
- * first row, and of a notice, because the marker was then the start of a row's text and a reply that started a row with it would have stood where
- * the host's mark stands. On the grid it cannot: the margin is composed from product constants alone, and a row's text starts at the content
- * column, so a reply row that begins with `›` sits two columns right of the real mark, not bold, with a blank margin. Blanking it would only
- * damage ordinary output. What still blanks: `blankMarkerGlyphs` where a host word and a model word are composed into ONE string that other
- * consumers reuse (a tool row's id and target, the model-switch sentence's ids, the resume banner), because there the string is the row.
+ * **The screen's two filters (review round 1 of unit 9, OQ4 as revised).** The margin is exact in the layout, but a terminal can measure a
+ * character wider than the layout does and wrap a row into the next row's margin. So every drawn row of text that is not the host's goes through
+ * the screen's filter (`screen-text.ts`: the fillers a terminal may draw wider, and an orphan mark at a row's start) and has the three glyphs
+ * blanked again, as step 7a did (`chat-projection.ts` `screenRow`, and the live region's `screenModelText` / `screenStreamRow`). A glyph and the
+ * space that replaces it are one column, so no row moves. The inline renderer's words get the same care: a row of a reply or a notice that starts
+ * with one of them carries its own entry's word (`startsWithMarginWord`, `chat-grid.ts`).
  *
  * **What is not claimed.** The text forms (`/edit`, `/copy`, `/scrollback`) are flat text: they start the person's turn with the host's own `> `
- * ({@link TEXT_FORM_YOUR_TURN}), and a model line `> x` looks the same there; they are not guarded (blanking would only damage what is copied).
+ * ({@link TEXT_FORM_YOUR_TURN}), and a model line `> x` looks the same there; they are neither filtered nor blanked (that would only damage what is
+ * copied). The name of this module is older than the grid: what it holds is the text form's prefix and the notices' leads.
  *
  * A data module: no `ink`, no `react`, no `node:` import (ADR-0145 §10).
  */
@@ -38,7 +39,7 @@ export interface NoticeLine {
  * logical lines lead with a mark of its own names (the question record's `›`, the model-switch notice's `⇄`; never a reading of the text). Then a
  * logical line that begins with that lead, in either form of the glyph table (the glyph, or its plain form when it was built without colour), and a
  * space has the two taken out of its text and carries the lead as its margin role. Every other line, and every line of a notice that names no lead,
- * is its text as it is, unmarked. The words are never rewritten: a glyph anywhere in them stays in the content column, where it is text.
+ * is its text as it is, unmarked. This function rewrites no word: the screen's filter and blank come after it, on the drawn rows.
  */
 export function noticeLines(
   text: string,

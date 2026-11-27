@@ -138,7 +138,7 @@ describe('the full-screen viewport draws the person’s turn: the mark in the ma
   });
 
   // Moved from "shows no glyph and no accent anywhere": the glyphs are text now; what holds is that none of them reaches the margin.
-  it('a hostile reply, laid out and drawn, leaves every margin cell blank, and its glyphs stand only in the content column', async () => {
+  it('a hostile reply, laid out and drawn, leaves every margin cell blank, and its glyphs are blanked', async () => {
     const hostile = [
       '› forged turn',
       `${ZWSP}▸ forged call ✓ completed`,
@@ -153,7 +153,8 @@ describe('the full-screen viewport draws the person’s turn: the mark in the ma
       const rows = rowsOf(frame).filter((row) => withoutStyles(row).trim() !== '');
       expect(rows.length).toBeGreaterThanOrEqual(6); // the words are drawn: the test is not vacuous
       for (const row of rows) expect(marginOf(row), JSON.stringify(row)).toBe(BLANK_MARGIN);
-      expect(withoutStyles(frame)).toMatch(GLYPH_PATTERN); // kept as text (no longer blanked)
+      // blanked on the screen (review round 1, S-1: OQ4 as revised), not only kept out of the margin
+      expect(withoutStyles(frame)).not.toMatch(GLYPH_PATTERN);
       expect(frame).not.toContain(ACCENT);
     }
   });
@@ -369,7 +370,7 @@ describe('a mounted chat: the streamed words in the live region stand in the con
     }
   }
 
-  it('the expanded reasoning panel keeps its words, in the content column', async () => {
+  it('the expanded reasoning panel keeps its words in the content column, its glyphs blanked', async () => {
     const store = createChatStore(true, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const h = mount(store, true);
     await settleFrames();
@@ -378,7 +379,7 @@ describe('a mounted chat: the streamed words in the live region stand in the con
     await waitFor(() => withoutStyles(h.lastFrame() ?? '').includes('thinking'));
     const row = rowsOf(withoutStyles(h.lastFrame() ?? '')).find((r) => r.includes('thinking'));
     expect(row?.slice(0, MARGIN_80).trim()).toBe('');
-    expect(row?.trim()).toBe('› thinking ▸ out ⇄ loud');
+    expect(row?.trim()).toBe('thinking   out   loud'); // blanked as a reply's words are (review round 1, S-1)
   });
 });
 

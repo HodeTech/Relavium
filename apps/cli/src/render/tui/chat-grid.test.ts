@@ -37,11 +37,17 @@ describe('the chat grid (MVP-11 unit 9): the numbers the plan’s frames carry',
     }
   });
 
-  it('gives the margin up before the text its room: 2 below 20 columns, none below 16', () => {
+  it('gives the margin up before the text its room: 0 at 17 columns and fewer, 1 at 18–19, 2 at 20–21, 4 at 24 (review round 1, C-8)', () => {
     expect(chatGrid(24).margin).toBe(4);
     expect(chatGrid(20).margin).toBe(2);
     expect(chatGrid(19).margin).toBe(1);
     expect(chatGrid(16).margin).toBe(0);
+    expect(
+      [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28].map((columns) => chatGrid(columns).margin),
+    ).toEqual([0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6]);
+    // the glyph needs a margin of 3 (two blank columns after it): it is drawn from 22 columns
+    expect(marginCell('yourTurn', chatGrid(21), 'glyph').trim()).toBe('');
+    expect(marginCell('yourTurn', chatGrid(22), 'glyph')).toBe('›  ');
     expect(chatGrid(10)).toMatchObject({ margin: 0, content: 10, text: 10 });
     expect(chatGrid(1)).toMatchObject({ margin: 0, content: 1, text: 1 });
     expect(GRID_MIN_CONTENT_COLUMNS).toBe(16);
@@ -92,12 +98,15 @@ describe('the margin cell: composed from product constants, exactly the margin w
     expect(marginCell('yourTurn', chatGrid(80), 'word')).toBe('you   ');
     expect(marginCell('agent', chatGrid(80), 'word')).toBe('agent ');
     expect(marginCell('toolCall', chatGrid(80), 'word')).toBe('tool  ');
-    expect(marginCell('modelSwitch', chatGrid(100), 'word')).toBe('model   ');
+    // review round 1 (D-5, S-2): the model switch's word is `note` (its sentence starts with `model changed`), and a notice has the same word
+    expect(marginCell('modelSwitch', chatGrid(100), 'word')).toBe('note    ');
+    expect(marginCell('notice', chatGrid(80), 'word')).toBe('note  ');
     expect(MARGIN_WORDS).toEqual({
       yourTurn: 'you',
       toolCall: 'tool',
-      modelSwitch: 'model',
+      modelSwitch: 'note',
       agent: 'agent',
+      notice: 'note',
     });
   });
 

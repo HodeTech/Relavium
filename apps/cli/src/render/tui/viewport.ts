@@ -252,35 +252,45 @@ export function expandTabs(text: string, startColumn = 0): string {
   return parts.join('');
 }
 
-/**
- * Word-wrap display text while retaining whitespace and graphemes. A token wider
- * than a row falls back to character wrapping. Zero/invalid widths suspend paint;
- * a glyph wider than the positive row becomes `?` in this display projection only.
- */
-export function wrapWords(line: string, cols: number): string[] {
-  if (!Number.isFinite(cols) || cols < 1) return [];
-  const width = Math.trunc(cols);
-  const expanded = expandTabs(line);
-  if (expanded === '') return [''];
+/** The first index at or after `start` that is not a break space (`isSpace`): where a wrap-created continuation row begins its text. */
+function afterBreakSpaces(start: number, length: number, isSpace: (at: number) => boolean): number {
+  let at = start;
+  while (at < length && isSpace(at)) at += 1;
+  return at;
+}
+
+/** The ASCII fast path of {@link wrapWords}: every character is one cluster of one cell. */
+function wrapAscii(expanded: string, width: number, dropBreakSpace: boolean): string[] {
   const rows: string[] = [];
-  if (ASCII_ONLY.test(expanded)) {
-    for (let start = 0; start < expanded.length; ) {
-      let end = Math.min(start + width, expanded.length);
-      if (end < expanded.length && expanded.charAt(end) !== ' ') {
-        // Search only this row, never an ever-growing prefix of a long URL.
-        const boundary = expanded.slice(start, end).lastIndexOf(' ');
-        if (boundary >= 0) end = start + boundary + 1;
-      }
-      rows.push(expanded.slice(start, end));
-      start = end;
+  for (let start = 0; start < expanded.length; ) {
+    if (dropBreakSpace && start > 0) {
+      start = afterBreakSpaces(start, expanded.length, (at) => expanded.charAt(at) === ' ');
+      if (start >= expanded.length) break;
     }
-    return rows;
+    let end = Math.min(start + width, expanded.length);
+    if (end < expanded.length && expanded.charAt(end) !== ' ') {
+      // Search only this row, never an ever-growing prefix of a long URL.
+      const boundary = expanded.slice(start, end).lastIndexOf(' ');
+      if (boundary >= 0) end = start + boundary + 1;
+    }
+    rows.push(expanded.slice(start, end));
+    start = end;
   }
+  return rows;
+}
+
+/** The grapheme path of {@link wrapWords}: clusters measured once, a cluster wider than the row drawn as `?`. */
+function wrapClusters(expanded: string, width: number, dropBreakSpace: boolean): string[] {
   const clusters = Array.from(graphemeSegmenter.segment(expanded), ({ segment }) => {
     const cells = graphemeWidth(segment);
     return cells > width ? { text: '?', cells: 1 } : { text: segment, cells };
   });
+  const rows: string[] = [];
   for (let start = 0; start < clusters.length; ) {
+    if (dropBreakSpace && start > 0) {
+      start = afterBreakSpaces(start, clusters.length, (at) => clusters[at]?.text === ' ');
+      if (start >= clusters.length) break;
+    }
     let end = start;
     let cells = 0;
     let boundary = start;
@@ -307,14 +317,34 @@ export function wrapWords(line: string, cols: number): string[] {
 }
 
 /**
+ * Word-wrap display text while retaining whitespace and graphemes. A token wider
+ * than a row falls back to character wrapping. Zero/invalid widths suspend paint;
+ * a glyph wider than the positive row becomes `?` in this display projection only.
+ *
+ * `dropBreakSpace` (off by default: the contract above, which the selection and `viewport.test.ts` pin) is the chat transcript's hanging wrap
+ * (MVP-11 unit 9, review round 1, D-2): a row the WRAP starts (never the line's first row, so never a source indent) begins at its text, the
+ * spaces the line broke at dropped, as the markdown layout's own `dropBreakSpace` does for its prose blocks. The rows after it are filled from
+ * there, so the plain reply and the live plain tail (the layout's literal block) wrap alike.
+ */
+export function wrapWords(line: string, cols: number, dropBreakSpace = false): string[] {
+  if (!Number.isFinite(cols) || cols < 1) return [];
+  const width = Math.trunc(cols);
+  const expanded = expandTabs(line);
+  if (expanded === '') return [''];
+  return ASCII_ONLY.test(expanded)
+    ? wrapAscii(expanded, width, dropBreakSpace)
+    : wrapClusters(expanded, width, dropBreakSpace);
+}
+
+/**
  * Wrap a multi-line block: split on `\n` (each logical line is a rendered row group) then width-wrap each. Preserves
  * empty lines as blank rows. This is the row count the viewport scroll math is defined over. PURE — the transcript
  * memoization is a per-ENTRY cache in `wrapTranscript` (chat-projection.ts), which never thrashes because it is keyed
  * on the immutable, append-only entry object (Step-4b-3 Opus review — the earlier per-line LRU thrashed to a 0% hit
- * rate once a session exceeded the cache size, the exact case it was introduced for).
+ * rate once a session exceeded the cache size, the exact case it was introduced for). `dropBreakSpace` as {@link wrapWords}.
  */
-export function wrapText(text: string, cols: number): string[] {
-  return text.split('\n').flatMap((line) => wrapWords(line, cols));
+export function wrapText(text: string, cols: number, dropBreakSpace = false): string[] {
+  return text.split('\n').flatMap((line) => wrapWords(line, cols, dropBreakSpace));
 }
 
 /** The maximum scroll offset — the top-line index at which the LAST full screen is shown (0 when it all fits). */

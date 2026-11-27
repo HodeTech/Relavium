@@ -13,7 +13,7 @@ import { statusLine, type StatusLine } from './status-line.js';
  * model and finally the cost itself), so long as the mode and the effort fit; a terminal narrower than those two words, which the chat does not
  * support, wraps the row between words. A qualified cost is never cut into a figure without its qualifier. `provider` is the lowercase provider id
  * of the bound agent (absent where the host does not know it: the line then starts at the model). The effort reads as the picker reads it
- * (`on` for a budget model's bound tier). `leftMargin` is where the host draws the row: 0, the chat's own left edge, until the grid lands.
+ * (`on` for a budget model's bound tier). `leftMargin` is where the host draws the row: the chat's grid's margin (MVP-11 unit 9), 0 by default.
  */
 export function chatStatusLine(
   state: SessionViewState,

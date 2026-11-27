@@ -22,8 +22,8 @@
  *   the MCP consent card refuse to start a program whose directory held one. Every other glyph keeps the guard: `↻`, `◇` and `★` lead a history
  *   or active-run row from which a person reads a status, and `⇄`, `›`, `▸` lead a transcript row, so a forged one beside the host's own would
  *   mislead; a path that holds such a glyph is refused by the consent card (the fail-closed side). This refines ADR-0145 §5, which said "every
- *   glyph of the table". {@link blankMarkerGlyphs} is the narrower set a transcript guard blanks in model text; `host-glyphs.test.ts` pins the
- *   relation by behaviour.
+ *   glyph of the table". {@link blankMarkerGlyphs} is the narrower set blanked in the chat's drawn rows of text that is not the host's (the
+ *   transcript's rows on the grid and the live region); `host-glyphs.test.ts` pins the relation by behaviour.
  *
  * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), so the later extraction to a shared package is mechanical.
  */
@@ -43,7 +43,7 @@ export interface GlyphEntry {
   readonly word?: string;
   /** A status only: the colour the glyph and its word take by default (a surface with a graver or lighter state overrides it). */
   readonly tone?: GlyphTone;
-  /** A marker a transcript guard blanks in model text (`›`, `▸`, `⇄`): the glyphs a reply must not be able to draw where a person's turn, a tool call or a model switch is drawn. */
+  /** A marker the chat blanks in the drawn rows of text that is not the host's (`›`, `▸`, `⇄`): the glyphs of a person's turn, a tool call and a model switch ({@link blankMarkerGlyphs}). */
   readonly guarded?: true;
   /**
    * `false` for a glyph that is also ordinary text (a bullet, a triangle), so that text an author, a path or a project wrote is NOT blanked of it
@@ -126,14 +126,6 @@ const ENTRIES = {
 } as const satisfies Record<string, GlyphEntry>;
 
 export type GlyphRole = keyof typeof ENTRIES;
-
-/** The two forms of the person's-turn marker the host draws (`yourTurn`): the type of a transcript row's `marker`, so no other text can be one. */
-export type SpeakerMarker = (typeof ENTRIES)['yourTurn']['glyph' | 'ascii'];
-
-/** The person's-turn marker in the form asked for (`ascii` is `!color`), typed as the table spells it. */
-export function speakerMarker(ascii: boolean): SpeakerMarker {
-  return ascii ? ENTRIES.yourTurn.ascii : ENTRIES.yourTurn.glyph;
-}
 
 /** The roles that are a status, and so carry a word. */
 export type StatusGlyphRole = {
@@ -361,11 +353,13 @@ export function blankHostMarks(text: string): string {
 }
 
 /**
- * `text` with the marker glyphs (`›`, `▸`, `⇄`) replaced by a space. This is what a transcript guard blanks in model text: a reply must not be
- * able to draw a person's turn, a tool call or a model switch, while a `✓`, a `●` or a rule an ordinary answer contains is left alone (blanking
- * those would damage ordinary output). It is the interim guard of the speaker marker (ADR-0145 §6), applied to the FINISHED rows of the transcript
- * and the live tail by `transcript-guard.ts` and where a row is built from words that are not the host's (`formatToolCall`, `formatBusyLine`,
- * `formatReasoningPanel`, `modelSwitchNotice`). The margin that makes the marker trustworthy in itself is the transcript grid's, a later step.
+ * `text` with the marker glyphs (`›`, `▸`, `⇄`) replaced by a space, one column for one, so a row measures what it measured. On the chat's grid
+ * (MVP-11 unit 9, ADR-0145 §6) the host's marks are drawn in a margin that no text reaches in the layout; because a terminal can measure a
+ * character wider than the layout does, every drawn row of text that is not the host's is also blanked of them as defence in depth (OQ4 as
+ * revised after review round 1 of unit 9): the transcript's rows (`chat-projection.ts` `screenRow`), the live tail, the reasoning and the busy
+ * line (`screenModelText`, `screenStreamRow`). It also blanks them where a host word and a model word are composed into ONE string that other
+ * consumers reuse (`toolCallText`'s id and target, `modelSwitchNotice`'s ids, the resume banner). The documents (`/edit`, `/copy`,
+ * `/scrollback`) keep every glyph. A `✓`, a `●` or a rule an ordinary answer contains is left alone.
  */
 export function blankMarkerGlyphs(text: string): string {
   return text.replace(MARKER_GLYPH_PATTERN, ' ');

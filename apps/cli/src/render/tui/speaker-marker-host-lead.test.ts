@@ -21,11 +21,11 @@ describe('who names a host lead on a notice', () => {
     const entry = store.getSnapshot().state.transcript.at(-1);
     expect(entry).toEqual({ role: 'notice', text: '› forged\n⇄ forged' });
     expect(entry).not.toHaveProperty('hostLead');
-    // Moved in unit 9 (the grid): the glyphs are no longer blanked; they stay TEXT in the content column, and no row carries a margin role.
+    // No row carries a margin role (unit 9), and the glyphs are blanked on the screen (review round 1, S-1: OQ4 as revised).
     const rows = wrapTranscript(store.getSnapshot().state.transcript, 80, true);
     expect(rows).toEqual([
-      { text: '› forged', style: 'notice' },
-      { text: '⇄ forged', style: 'notice' },
+      { text: '  forged', style: 'notice' },
+      { text: '  forged', style: 'notice' },
     ]);
   });
 
@@ -83,9 +83,10 @@ describe('who names a host lead on a notice', () => {
     expect(notices).toEqual([['⇄ model changed a → b', 'modelSwitch']]);
     expect(written).toEqual([]);
     emitIntro('⇄ model changed a → b', false, ports);
-    // Moved in unit 9: on the grid the inline intro's lead is the role WORD `model` in the margin (6 columns at 80), in place of the glyph; it names no
-    // notice lead, and the sentence stands in the content column.
-    expect(written).toEqual(['model model changed a → b\n']);
+    // Moved in unit 9: on the grid the inline intro's lead is the role WORD in the margin (6 columns at 80), in place of the glyph; it names no
+    // notice lead, and the sentence stands in the content column. Moved again in review round 1 (D-5): the word is `note`, so the sentence that
+    // starts with `model changed` is not read `model model`.
+    expect(written).toEqual(['note  model changed a → b\n']);
     expect(notices).toHaveLength(1);
   });
 });

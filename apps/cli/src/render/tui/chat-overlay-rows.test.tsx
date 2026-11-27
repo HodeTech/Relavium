@@ -115,8 +115,12 @@ describe.each(OVERLAY_SURFACES)('$id', (entry) => {
 describe('the / palette over a conversation, as observed', () => {
   const LEGEND_ROW = '↑/↓ select · Enter run · Esc close';
   // the names are padded to the widest in view (OB7-L8), so the words start after two spaces or more
-  // and every row of the palette begins at the content column of the grid (unit 9), so the entry's marker is preceded by the margin
-  const ENTRY_ROW = /^ +[› ] \/[a-z]+ {2,}\S/u;
+  // and every row of the palette begins at the content column of the grid (unit 9), so the entry's marker is preceded by EXACTLY the margin
+  // (6 columns at 80, 8 from 100): a row at any other column is not a row of the chat's palette
+  const entryRow = (cols: number): RegExp =>
+    new RegExp(`^ {${String(chatGrid(cols).margin)}}[› ] \\/[a-z]+ {2,}\\S`, 'u');
+  const hiddenRow = (cols: number): RegExp =>
+    new RegExp(`^ {${String(chatGrid(cols).margin + 2)}}[▲▼] (\\d+) more`, 'u');
 
   it.each(
     CHAT_SURFACES.filter((entry) => entry.id.endsWith('.palette')).flatMap((entry) =>
@@ -132,7 +136,7 @@ describe('the / palette over a conversation, as observed', () => {
         frame.filter((line) => line === `${' '.repeat(chatGrid(size.cols).margin)}${LEGEND_ROW}`),
         shown,
       ).toHaveLength(1);
-      const entries = frame.filter((line) => ENTRY_ROW.test(line));
+      const entries = frame.filter((line) => entryRow(size.cols).test(line));
       // The palette takes half the terminal with its prompt row, rule and hint row (12 rows at 24): a window of 9 lines, the marker among them.
       expect(entries.length, shown).toBeGreaterThanOrEqual(8);
       // One entry per line: a line that holds a second `/name  ` start was two rows on the same y.
@@ -146,9 +150,9 @@ describe('the / palette over a conversation, as observed', () => {
         { ...variant, size: { cols: 100, rows: 60 } },
         0,
       );
-      const total = tall.filter((line) => ENTRY_ROW.test(line)).length;
+      const total = tall.filter((line) => entryRow(100).test(line)).length;
       const hidden = frame
-        .map((line) => /^\s*[▲▼] (\d+) more/u.exec(line)?.[1])
+        .map((line) => hiddenRow(size.cols).exec(line)?.[1])
         .reduce<number>((sum, count) => sum + (count === undefined ? 0 : Number(count)), 0);
       expect(entries.length + hidden, `the window's count\n${shown}`).toBe(total);
     },

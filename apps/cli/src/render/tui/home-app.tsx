@@ -42,7 +42,7 @@ import type { PendingAttachment } from './attachments.js';
 import {
   chatIsBusy,
   ChatView,
-  ContentColumn,
+  ChromeColumn,
   composerEditor,
   dockedCardOpen,
   hintRowNotification,
@@ -357,14 +357,14 @@ function ChatRegion(
       {/* The history search and the `@` completion list are host-drawn rows below the prompt that show stored names (a history line, a file name):
           they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
       {props.search !== undefined && (
-        <ContentColumn grid={chatGrid(layoutColumns(props.cols))}>
+        <ChromeColumn columns={props.cols}>
           <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
-        </ContentColumn>
+        </ChromeColumn>
       )}
       {props.mention !== undefined && (
-        <ContentColumn grid={chatGrid(layoutColumns(props.cols))}>
+        <ChromeColumn columns={props.cols}>
           <MentionView state={props.mention} color={color} />
-        </ContentColumn>
+        </ChromeColumn>
       )}
     </Box>
   );

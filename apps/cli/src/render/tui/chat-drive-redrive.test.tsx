@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SessionWorkOwner } from '../../chat/session-work-owner.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
+import { resumeIntro } from '../../chat/resume-intro.js';
 import type { ChatStopReason } from '../../commands/chat.js';
 import type { CliIo } from '../../process/io.js';
 import { invocationFixture } from '../../process/invocation.test-support.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import { createSuspendPort } from '../suspend.js';
-import { chatGrid } from './chat-grid.js';
+import { chatGrid, marginCell } from './chat-grid.js';
+import { WORDMARK } from './home-layout.js';
 import { driveInk } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND, type SessionViewSeed } from './session-view-model.js';
@@ -60,6 +62,8 @@ interface Drive {
   readonly endsWith: { readonly line: string; readonly reason: ChatStopReason };
   readonly intro?: string;
   readonly seed?: SessionViewSeed;
+  /** Turns of the person already in the store when the chat mounts: the first thing `<Static>` prints. */
+  readonly turns?: readonly string[];
 }
 
 /** Drive one inline chat over `io` until the person types the line that ends it; returns the screen lines once it is idle and just before it ends. */
@@ -75,6 +79,7 @@ async function driveOnce(
     cleanup: () => Promise.resolve(),
   });
   const store = createChatStore(false, drive.seed, INLINE_TRANSCRIPT_BOUND);
+  for (const turn of drive.turns ?? []) store.appendUser(turn);
   const bus = new RunEventBus({ now: () => new Date(0).toISOString() });
   const handle = createSessionHandle(bus, 'drive-redrive', () => undefined, 16, 'subscribe-only');
   let requestedExit = false;
@@ -204,7 +209,7 @@ function introRowsOf(
     raw.push(lines[at] ?? '');
   for (const [index, row] of raw.entries())
     expect(row.slice(0, grid.margin), `row ${String(index)} of ${lines.join('\n')}`).toBe(
-      index === 0 && switched ? 'model'.padEnd(grid.margin) : ' '.repeat(grid.margin),
+      index === 0 && switched ? marginCell('modelSwitch', grid, 'word') : ' '.repeat(grid.margin),
     );
   return { raw, content: raw.map((row) => row.slice(grid.margin)), body };
 }
@@ -258,5 +263,80 @@ describe('a chat that ends the session keeps its last frame', () => {
       lines.filter((line) => new RegExp(`^ {${String(GAP)}}ask mode · `, 'u').test(line)),
     ).toHaveLength(1);
     expect(lines.filter((line) => /\[Ctrl\+C\] end/u.test(line))).toHaveLength(1);
+  });
+});
+
+describe('the header the stand-alone inline chat writes before it mounts', () => {
+  it.each([60, 80, 100, 120])(
+    'starts at the content column of a terminal of %i columns',
+    async (width) => {
+      const { first } = await twoChats(width, 'clear', clearedNotice('standalone-chat'), undefined);
+      expect(first[0], first.join('\n')).toBe(`${' '.repeat(chatGrid(width).margin)}${WORDMARK}`);
+    },
+  );
+});
+
+describe('the first turn after the intro the stand-alone inline chat wrote before it mounted (unit 9, C-4)', () => {
+  const banner = resumeIntro({
+    sessionId: 'sess-1',
+    agentId: 'coder',
+    turns: 2,
+    directory: '/work/project',
+    launchRoots: { cwd: '/work/project', home: '/home/me' },
+  });
+  const INTROS = [
+    ['the resume banner', banner],
+    ['the /clear notice', clearedNotice('standalone-chat')],
+    ['the model switch', modelSwitchNotice('claude-a', 'claude-b')],
+  ] as const;
+
+  /** The screen of a chat that mounts with one turn of the person in its store, written after `intro` (or after the header alone). */
+  async function screenWith(width: number, intro: string | undefined): Promise<string[]> {
+    const input = new OwnedTtyInput();
+    const output = new FakeStdout(width, ROWS);
+    const io = ioOver(input, output, new OwnedTtyOutput());
+    const { idle } = await driveOnce(io, output, input, {
+      endsWith: { line: '/exit', reason: 'exit' },
+      turns: ['hello there'],
+      ...(intro === undefined ? {} : { intro }),
+    });
+    return idle;
+  }
+
+  it.each(INTROS)(
+    'has one blank row between %s and the first turn, as between any two turns',
+    async (_name, intro) => {
+      const lines = await screenWith(WIDTH, intro);
+      const shown = lines.join('\n');
+      const turn = lines.findIndex((line) => line.startsWith('you '));
+      expect(turn, shown).toBeGreaterThan(0);
+      // the last row of the intro, a blank row, the person's turn: exactly one blank row
+      expect(lines[turn - 1], shown).toBe('');
+      expect(lines[turn - 2]?.trim(), shown).not.toBe('');
+      // (every intro here is longer than the content column, so its last row is a continuation: a blank margin)
+      expect(lines[turn - 2]?.startsWith(' '.repeat(GAP)), shown).toBe(true);
+      expect(lines[turn - 2]?.[GAP], shown).not.toBe(' ');
+    },
+  );
+
+  it('has no more than the header’s own blank row when there is no intro: the gap is not doubled', async () => {
+    const lines = await screenWith(WIDTH, undefined);
+    const shown = lines.join('\n');
+    const turn = lines.findIndex((line) => line.startsWith('you '));
+    expect(lines[turn - 1], shown).toBe('');
+    expect(lines[turn - 2], shown).toBe(`${' '.repeat(GAP)}${WORDMARK}`);
+  });
+
+  it('keeps the row budget: the live region under the first turn is the same with and without an intro', async () => {
+    const [withIntro, without] = [
+      await screenWith(WIDTH, banner),
+      await screenWith(WIDTH, undefined),
+    ];
+    const live = (lines: readonly string[]): string[] => {
+      const rule = lines.findIndex((line) => RULE_ROW.test(line));
+      const turn = lines.findIndex((line) => line.startsWith('you '));
+      return lines.slice(turn + 1, rule + 3);
+    };
+    expect(live(withIntro)).toEqual(live(without));
   });
 });

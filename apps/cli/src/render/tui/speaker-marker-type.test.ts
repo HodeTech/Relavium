@@ -21,7 +21,9 @@ describe('a row’s mark is a role of a closed set, never a text', () => {
   it('is typed as the closed role set, not a string', () => {
     expectTypeOf<DisplayLine['margin']>().toEqualTypeOf<MarginRole | undefined>();
     expectTypeOf<string>().not.toExtend<MarginRole>();
-    expectTypeOf<MarginRole>().toEqualTypeOf<'yourTurn' | 'toolCall' | 'modelSwitch' | 'agent'>();
+    expectTypeOf<MarginRole>().toEqualTypeOf<
+      'yourTurn' | 'toolCall' | 'modelSwitch' | 'agent' | 'notice'
+    >();
     // @ts-expect-error a glyph is not a role: no text, a model's or a person's, can be a row's mark
     const forged: DisplayLine = { text: 'x', style: 'user', margin: GLYPHS.yourTurn.glyph };
     expect(forged.text).toBe('x');
@@ -35,10 +37,11 @@ describe('a row’s mark is a role of a closed set, never a text', () => {
     expect(marginCell.length).toBe(3);
   });
 
-  it('the role set is the four roles the words name, and each draws only the table’s mark or its word', () => {
+  it('the role set is the five roles the words name, and each draws only the table’s mark or its word', () => {
     expect(Object.keys(MARGIN_WORDS).sort()).toEqual([
       'agent',
       'modelSwitch',
+      'notice',
       'toolCall',
       'yourTurn',
     ]);
@@ -49,5 +52,7 @@ describe('a row’s mark is a role of a closed set, never a text', () => {
     expect(marginCell('modelSwitch', grid, 'ascii').trim()).toBe(GLYPHS.modelSwitch.ascii);
     expect(marginCell('agent', grid, 'glyph').trim()).toBe(''); // a reply has no glyph
     expect(marginCell('agent', grid, 'word').trim()).toBe('agent');
+    expect(marginCell('notice', grid, 'glyph').trim()).toBe(''); // a notice has no glyph either
+    expect(marginCell('notice', grid, 'word').trim()).toBe('note');
   });
 });

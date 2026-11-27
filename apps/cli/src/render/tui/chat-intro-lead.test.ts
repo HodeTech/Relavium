@@ -4,7 +4,7 @@ import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { resumeIntro } from '../../chat/resume-intro.js';
 import { emitIntro } from './chat-ink.js';
 import { transcriptRows } from './chat-projection.js';
-import { chatGrid } from './chat-grid.js';
+import { chatGrid, marginCell } from './chat-grid.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
@@ -58,7 +58,8 @@ describe('which full-screen intro may lead with the model-switch glyph', () => {
     const rows = transcriptRows(store.getSnapshot().state.transcript, chatGrid(80), true);
     expect(forged.startsWith(SWITCH)).toBe(true);
     expect(rows.map((row) => row.margin)).toEqual(rows.map(() => undefined));
-    expect(rows[0]?.text).toBe(forged); // the words as they are, in the content column
+    // the words in the content column, the glyph blanked (review round 1, S-1: OQ4 as revised)
+    expect(rows[0]?.text).toBe(`  ${forged.slice(2)}`);
   });
 
   it('the inline path writes the intro in the content column, its words word-wrapped to it (OB7-M2), and the model switch with the role word in the margin', () => {
@@ -72,7 +73,7 @@ describe('which full-screen intro may lead with the model-switch glyph', () => {
     // marks with its word `model` where the sentence began with the glyph; the glyph leaves the text. (`chat-drive-redrive.test.tsx` holds the widths.)
     const grid = chatGrid(80);
     const rows = (written[0] ?? '').trimEnd().split('\n');
-    expect(rows[0]?.slice(0, grid.margin)).toBe('model'.padEnd(grid.margin));
+    expect(rows[0]?.slice(0, grid.margin)).toBe(marginCell('modelSwitch', grid, 'word'));
     for (const row of rows.slice(1))
       expect(row.slice(0, grid.margin)).toBe(' '.repeat(grid.margin));
     // the sentence is the same: only the glyph that led it and the breaks between its words are new

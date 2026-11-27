@@ -24,6 +24,7 @@ import {
 } from './surface-matrix/chat-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { waitFor } from './harness-util.js';
+import type { TranscriptEntry } from './session-view-model.js';
 import { displayWidth } from './viewport.js';
 
 /**
@@ -120,6 +121,62 @@ describe.each(HOSTS)('the full-screen chat frame, in the %s host', (host) => {
         shown,
       ).toBe(true);
       expect(rows).toHaveLength(CHAT_HEADER_ROWS + 16 + PROMPT_BLOCK_ROWS);
+    } finally {
+      m.unmount();
+    }
+  });
+
+  // Review round 1 (C-2, O-1): the relaxed "never two blank rows together" holds over replies with no words of their own too (a turn stopped or
+  // failed before its first token, a checkpoint stop, a restored empty final), not only over the 40-turn conversation of plain answers.
+  it('never draws two blank rows together, with replies that have no words of their own among the turns', async () => {
+    const tokens = { input: 3, output: 0 };
+    const transcript: TranscriptEntry[] = [];
+    for (let turn = 0; turn < 6; turn += 1) {
+      transcript.push({ role: 'user', text: `question ${String(turn)}` });
+      transcript.push(
+        [
+          {
+            role: 'assistant' as const,
+            text: '',
+            summary: { stopReason: 'aborted' as const, tokensUsed: tokens },
+          },
+          {
+            role: 'assistant' as const,
+            text: '',
+            summary: {
+              stopReason: 'stop' as const,
+              tokensUsed: tokens,
+              errorCode: 'provider_auth',
+            },
+          },
+          { role: 'assistant' as const, text: '' },
+          {
+            role: 'assistant' as const,
+            text: '',
+            summary: {
+              stopReason: 'stop' as const,
+              tokensUsed: tokens,
+              errorCode: 'turn_limit',
+              stoppedAtCheckpoint: 2,
+            },
+          },
+        ][turn % 4] ?? { role: 'assistant', text: 'ok' },
+      );
+    }
+    const m = await mountIn(host, ALT_80, {
+      seed: { initialRestore: true, transcript },
+      standalone: { provider: 'anthropic' },
+      hosted: { session: { provider: 'anthropic' } },
+    });
+    try {
+      const rows = m.frame();
+      const shown = rows.map((row, index) => `${String(index)}|${row}`).join('\n');
+      const body = rows.slice(CHAT_HEADER_ROWS, CHAT_HEADER_ROWS + 16);
+      expect(body.join('\n'), shown).toContain('question 5');
+      expect(
+        body.some((row, index) => row.trim() === '' && body[index - 1]?.trim() === ''),
+        shown,
+      ).toBe(false);
     } finally {
       m.unmount();
     }

@@ -3,10 +3,12 @@ import type { Memory } from '@relavium/shared';
 
 import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
+import type { MarkdownSpan } from '../markdown/types.js';
 import { formatReportedCost, formatTokens } from './format.js';
 import { blankMarkerGlyphs, glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
 import { noticeLines, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
-import type { ChatGrid, MarginRole } from './chat-grid.js';
+import { startsWithMarginWord, type ChatGrid, type MarginRole } from './chat-grid.js';
+import { screenPieces, screenText } from './screen-text.js';
 import { selectionText, type SelectionRange } from './selection.js';
 import { formatDuration, formatElapsed, formatUsd } from '../notation.js';
 import type {
@@ -339,7 +341,8 @@ const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>()
 
 /**
  * `text` wrapped at `cols` as rows of `style`: the first row carries `margin` (absent: a blank margin) and every later row, a wrapped row or a line
- * after a newline, HANGS under it with a blank margin. The one way a row gets a mark: from the host's role, never from the text.
+ * after a newline, HANGS under it with a blank margin, starting at its text (the space the wrap broke at is dropped: review round 1, D-2). The one
+ * way a row gets a host mark: from the host's role, never from the text.
  */
 function hangingRows(
   text: string,
@@ -347,7 +350,7 @@ function hangingRows(
   cols: number,
   margin?: MarginRole,
 ): DisplayLine[] {
-  return wrapText(text, cols).map((row, index) =>
+  return wrapText(text, cols, true).map((row, index) =>
     index === 0 && margin !== undefined ? { text: row, style, margin } : { text: row, style },
   );
 }
@@ -369,7 +372,7 @@ function replyBodyRows(
 }
 
 /** The screen's form of a reply's summary or hint line: the document's leading space is the content column's job on the grid (OQ8). */
-function screenLine(line: DisplayLine): string {
+function contentOfLine(line: DisplayLine): string {
   return line.text.startsWith(' ') ? line.text.slice(1) : line.text;
 }
 
@@ -387,13 +390,95 @@ function toolCallRows(
   return rows;
 }
 
+/** The rows of one entry as the layout builds them, before the screen's filter: content only, the host's roles set (see {@link wrapEntry}). */
+function entryRows(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): DisplayLine[] {
+  if (entry.role === 'tools') return toolCallRows(entry, cols, displays);
+  const source = entryLines(entry, displays);
+  const first = source[0]?.text ?? '';
+  if (entry.role === 'user')
+    return hangingRows(first.slice(TEXT_FORM_YOUR_TURN.length), 'user', cols, 'yourTurn');
+  if (entry.role === 'notice')
+    return noticeLines(first, entry.hostLead).flatMap((line) =>
+      hangingRows(line.text, 'notice', cols, line.margin),
+    );
+  // A reply with no words of its own (a turn stopped or failed before its first token, a restored empty final) draws no body row: its summary is
+  // its first row, and an entry with neither draws nothing (review round 1, C-2).
+  const rows = screenText(first).trim() === '' ? [] : replyBodyRows(entry, first, cols, color);
+  for (const line of source.slice(1))
+    rows.push(...hangingRows(contentOfLine(line), line.style, cols));
+  const head = rows[0];
+  if (head !== undefined) rows[0] = { ...head, margin: 'agent' };
+  return rows;
+}
+
+/**
+ * One row as the screen draws it (review round 1, S-1; OQ4 as revised after the security sitting): the fillers a terminal may draw wider than the
+ * layout measures and an orphan leading mark dropped ({@link screenText}), and the host's marker glyphs (`›`, `▸`, `⇄`) blanked, in the text and
+ * in every span alike. Neither changes a row's measured width, so the rows keep their count and their places. The grid's margin is exact in the
+ * layout; this is what keeps a terminal that measures a character differently from carrying the host's glyph into it. The documents are built
+ * from {@link entryLines}, not from these rows, and keep every byte.
+ */
+function screenRow(row: DisplayLine): DisplayLine {
+  const text = screenModelText(row.text);
+  return row.spans === undefined
+    ? { ...row, text }
+    : { ...row, text, spans: screenModelSpans(row.spans) };
+}
+
+/** A row's styled pieces through the screen's filter ({@link screenPieces}) with the marker glyphs blanked in each. */
+function screenModelSpans(spans: readonly MarkdownSpan[]): readonly MarkdownSpan[] {
+  return screenPieces(spans).map((span) => {
+    const guarded = blankMarkerGlyphs(span.text);
+    return guarded === span.text ? span : { ...span, text: guarded };
+  });
+}
+
+/**
+ * Text a model wrote, made fit for the screen outside the transcript (the live tail, the reasoning, a running tool's words): the screen's filter
+ * ({@link screenText}) and the marker glyphs blanked, as {@link screenRow} does for a transcript row. Newlines kept.
+ */
+export function screenModelText(text: string): string {
+  return blankMarkerGlyphs(screenText(text));
+}
+
+/** A laid-out markdown row of the live tail, through the same filter and blank as a finished reply's row, in its text and in every span. */
+export function screenStreamRow<
+  Row extends { readonly text: string; readonly spans: readonly MarkdownSpan[] },
+>(row: Row): Row {
+  return { ...row, text: screenModelText(row.text), spans: screenModelSpans(row.spans) };
+}
+
+/**
+ * The entry's own role on a row that starts with a margin word ({@link startsWithMarginWord}) and has no role of its own: `agent` for a reply and
+ * for a tool call's words, `notice` for a notice. They have no glyph, so the full-screen margin stays blank; the inline renderer writes the word,
+ * so a screen reader hears `agent you …` where the row would have read as the person's turn (review round 1, S-2). The person's own turn is not
+ * given one: its words are theirs.
+ */
+function speakerWord(row: DisplayLine, role: MarginRole): DisplayLine {
+  return row.margin === undefined && startsWithMarginWord(row.text)
+    ? { ...row, margin: role }
+    : row;
+}
+
+/** The role {@link speakerWord} gives a row of an entry of `kind`, none for the person's turn. */
+function speakerOf(kind: TranscriptEntry['role']): MarginRole | undefined {
+  if (kind === 'user') return undefined;
+  return kind === 'notice' ? 'notice' : 'agent';
+}
+
 /**
  * Wrap ONE transcript entry to its rows on the grid ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6,
  * MVP-11 unit 9): every row's text is CONTENT at most `cols` (the content column) wide, and the host's mark is the row's `margin`, a role of the
  * closed set, set here and nowhere else. The person's turn is the document's line without its text-form prefix, `yourTurn` on its first row; a
  * reply's first row is `agent` (drawn only as the inline renderer's word); a tool entry is one call per row with `toolCall`; a notice line the host
- * leads ({@link noticeLines}) carries the lead's role. A wrapped row hangs. Built in the form the colour setting asks for (ADR-0145 §5). The
- * per-entry unit {@link wrapTranscript} caches.
+ * leads ({@link noticeLines}) carries the lead's role. A wrapped row hangs. Every row then goes through the screen's filter ({@link screenRow}),
+ * and a row of a reply, a tool call or a notice that starts with a margin word gets its entry's word ({@link speakerWord}). Built in the form the
+ * colour setting asks for (ADR-0145 §5). The per-entry unit {@link wrapTranscript} caches.
  */
 function wrapEntry(
   entry: TranscriptEntry,
@@ -401,22 +486,11 @@ function wrapEntry(
   color: boolean,
   displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
-  return withGlyphForm(!color, () => {
-    if (entry.role === 'tools') return toolCallRows(entry, cols, displays);
-    const source = entryLines(entry, displays);
-    const first = source[0]?.text ?? '';
-    if (entry.role === 'user')
-      return hangingRows(first.slice(TEXT_FORM_YOUR_TURN.length), 'user', cols, 'yourTurn');
-    if (entry.role === 'notice')
-      return noticeLines(first, entry.hostLead).flatMap((line) =>
-        hangingRows(line.text, 'notice', cols, line.margin),
-      );
-    const rows = replyBodyRows(entry, first, cols, color);
-    for (const line of source.slice(1))
-      rows.push(...hangingRows(screenLine(line), line.style, cols));
-    const head = rows[0];
-    if (head !== undefined) rows[0] = { ...head, margin: 'agent' };
-    return rows;
+  const rows = withGlyphForm(!color, () => entryRows(entry, cols, color, displays));
+  const speaker = speakerOf(entry.role);
+  return rows.map((row) => {
+    const screened = screenRow(row);
+    return speaker === undefined ? screened : speakerWord(screened, speaker);
   });
 }
 
@@ -490,7 +564,9 @@ function* walkTranscript(
 ): Generator<TranscriptStep> {
   let before = previous;
   for (const entry of transcript) {
-    yield { gap: entryGap(before, entry), rows: cachedEntryRows(entry, cols, color, displays) };
+    const rows = cachedEntryRows(entry, cols, color, displays);
+    // An entry that draws no row (a reply with neither words nor a summary) has no separator either (review round 1, C-2).
+    yield { gap: rows.length > 0 && entryGap(before, entry), rows };
     before = entry;
   }
 }
@@ -676,7 +752,7 @@ export function formatBusyLine(input: {
   if (input.busyCommand !== undefined) {
     return {
       text: legend(
-        [{ text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running` }],
+        [{ text: `${spinner} ! ${screenText(sanitizeInline(input.busyCommand))} — running` }],
         CANCEL_IT,
       ),
       dim: true,
@@ -685,8 +761,10 @@ export function formatBusyLine(input: {
   // While a card waits for the person there is no busy line: the sheet takes the prompt block's place and its rule carries the wait clock
   // (ADR-0147 §2: the `Waiting for your answer` row and its spinner retired).
   // The streamed answer is the model's, drawn in the content column of the grid above the prompt (unit 9): the margin beside it is the host's and
-  // blank, so these words cannot stand where a marker does, and are not blanked of a glyph they start with (ADR-0145 §6, plan section 4).
-  const sanitized = stripTerminalControls(input.liveTokens);
+  // blank. It goes through the screen's filter and its marker glyphs are blanked, as a finished reply's rows are ({@link screenModelText}): the
+  // margin is exact in the layout, not on a terminal that measures a character wider (ADR-0145 §6, OQ4 as revised after review round 1). The
+  // filter and the blank change no measured width, so the tail's row estimate below is the one it was.
+  const sanitized = screenModelText(stripTerminalControls(input.liveTokens));
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
@@ -751,7 +829,10 @@ export interface DockedTurnRow {
  * stand under a screenful of the model's words.
  */
 export const DOCKED_REASONING_BODY_ROWS = 3;
-/** The indent of a reasoning body row above a docked sheet: no row of the model's begins where the sheet's rule and the host's rows begin. */
+/**
+ * The indent of a reasoning body row above a docked sheet, inside the content column: the docked rows stand on the grid (unit 9), so the margin
+ * already keeps the model's words off the column where the sheet's rule begins; the indent sets the body under its header, as a panel's body.
+ */
 const DOCKED_REASONING_INDENT = '  ';
 
 /**
@@ -786,7 +867,7 @@ export function dockedTurnRows(input: {
           row(
             [...input.warnings]
               .reverse()
-              .map((said) => `${glyph('warning')} ${stripTerminalControls(said)}`)
+              .map((said) => `${glyph('warning')} ${screenText(stripTerminalControls(said))}`)
               .join('  '),
             'warning',
           ),
@@ -935,9 +1016,9 @@ export function formatReasoningPanel(input: {
   if (!input.visible) {
     return { header };
   }
-  // The reasoning is the model's words in the live region, drawn in the content column like the streamed answer: no margin of the grid is its to draw.
+  // The reasoning is the model's words in the live region, drawn in the content column like the streamed answer, and filtered and blanked as it is.
   const { body, tailed } = tailToRenderedRows(
-    stripTerminalControls(input.liveReasoning),
+    screenModelText(stripTerminalControls(input.liveReasoning)),
     input.columns,
   );
   const elided = input.liveReasoningTruncated || tailed;
@@ -967,9 +1048,10 @@ export function toolCallText(call: ToolCallView, display?: ToolDisplay): string 
     unknown: '? outcome unknown',
     running: '…',
   };
-  // The host's own `▸` leads the row; the tool's id and its target are not the host's (a model names the id, a path names the target), so a glyph
-  // of the speaker marker's set in either is blanked here, where the row is built: the row cannot be blanked whole (ADR-0145 §6). The target is
-  // sanitised by the store that built it; the row strips terminal controls from it again (and makes it one line) rather than trust that.
+  // The host's `▸` is the row's margin on the grid (and leads `formatToolCall`'s string, which the plain driver and the documents write); the tool's
+  // id and its target are not the host's (a model names the id, a path names the target), so a glyph of the speaker marker's set in either is blanked
+  // here, where the words are built, for every consumer of this string (ADR-0145 §6). The target is sanitised by the store that built it; the row
+  // strips terminal controls from it again (and makes it one line) rather than trust that. The screen's filter is the drawing site's (`screenText`).
   const target =
     display?.target === undefined
       ? ''

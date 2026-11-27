@@ -2,6 +2,7 @@ import './force-color.js';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import { ChatView } from './chat-ink.js';
 import { emptyEditor } from './chat-input.js';
 import {
@@ -95,12 +96,20 @@ async function draw(shape: Shape, cols: number): Promise<string[]> {
   return rows;
 }
 
+/** The row of the thin rule: EXACTLY the margin of the grid at `cols`, then the content column of rule glyphs (the margin is the grid's, not any indent). */
+function ruleAt(rows: readonly string[], cols: number): number {
+  const grid = chatGrid(cols);
+  return rows.findIndex((row) =>
+    new RegExp(`^ {${String(grid.margin)}}[-─]{${String(grid.content)}}$`, 'u').test(row),
+  );
+}
+
 /**
  * The rows of the status line: those between the thin rule and the hint, the last row of the block. The block stands on the grid (unit 9), so the rule
  * is the row of rule glyphs after the margin, and the status line is fitted to what the terminal leaves right of that margin.
  */
-function statusRows(rows: readonly string[]): string[] {
-  const rule = rows.findIndex((row) => /^ +[-─]+$/u.test(row));
+function statusRows(rows: readonly string[], cols: number): string[] {
+  const rule = ruleAt(rows, cols);
   expect(rule, rows.join('\n')).toBeGreaterThanOrEqual(0);
   return rows.slice(rule + 1, rows.length - 1);
 }
@@ -111,7 +120,7 @@ const WIDTHS = Array.from({ length: 181 }, (_unused, index) => 20 + index);
 describe.each(SHAPES)('the drawn status rows, $name, from 20 to 200 columns (SE7-2)', (shape) => {
   it('never shows a number of a qualified cost without its qualifier, and never an amount cut by an ellipsis', async () => {
     for (const cols of WIDTHS) {
-      const rows = statusRows(await draw(shape, cols));
+      const rows = statusRows(await draw(shape, cols), cols);
       for (const row of rows) {
         expect(row, `${String(cols)} columns`).not.toMatch(/\$[\d.,]*…/u);
         if (!shape.qualified) continue;
@@ -128,7 +137,7 @@ describe.each(SHAPES)('the drawn status rows, $name, from 20 to 200 columns (SE7
       shape.effort === undefined ? [shape.mode] : [shape.mode, `effort ${shape.effort}`];
     for (const cols of WIDTHS) {
       // below the width of the words that are never cut a row may wrap between two of their words, never inside one
-      const joined = statusRows(await draw(shape, cols))
+      const joined = statusRows(await draw(shape, cols), cols)
         .join(' ')
         .replace(/\s+/gu, ' ');
       for (const word of expected)
@@ -141,8 +150,8 @@ describe.each(SHAPES)('the drawn status rows, $name, from 20 to 200 columns (SE7
   it('is exactly one row from 80 columns up, with the prompt block five rows below the leading row', async () => {
     for (const cols of WIDTHS.filter((width) => width >= 80)) {
       const rows = await draw(shape, cols);
-      const rule = rows.findIndex((row) => /^ +[-─]+$/u.test(row));
-      expect(statusRows(rows), `${String(cols)} columns`).toHaveLength(1);
+      const rule = ruleAt(rows, cols);
+      expect(statusRows(rows, cols), `${String(cols)} columns`).toHaveLength(1);
       expect(rows.length - rule, 'the rule, the status line and the hint').toBe(3);
     }
   });

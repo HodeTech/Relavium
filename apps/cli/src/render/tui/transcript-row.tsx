@@ -1,9 +1,9 @@
-import { Box } from 'ink';
 import type { ReactElement } from 'react';
 
-import { marginCell, type ChatGrid, type MarginForm } from './chat-grid.js';
+import type { ChatGrid, MarginForm } from './chat-grid.js';
 import { Emph } from './emphasis-view.js';
 import { SELECTED_ROW } from './emphasis.js';
+import { MarginRow } from './margin-row.js';
 import { MarkdownText } from './markdown-text.js';
 import { colorProps, transcriptStyleProps } from './projection.js';
 import type { RowSegments } from './selection.js';
@@ -111,27 +111,11 @@ export function TranscriptRowBody(
 }
 
 /**
- * The margin cell of a row: {@link marginCell} of its role, exactly the grid's margin wide. The person's own turn draws its mark in the accent and
- * bold; every other mark takes the row's style (a tool call's `▸` and a notice's lead are dim, as their rows are).
- */
-function MarginCellText(
-  props: Readonly<{ line: DisplayLine; grid: ChatGrid; color: boolean; form: MarginForm }>,
-): ReactElement {
-  const { line, color } = props;
-  const cell = marginCell(line.margin, props.grid, props.form);
-  if (line.margin === 'yourTurn' && line.style === 'user')
-    return (
-      <Text {...colorProps(color, 'cyan')}>
-        <Emph kinds="bold">{cell}</Emph>
-      </Text>
-    );
-  return <Text {...transcriptStyleProps(line.style, color)}>{cell}</Text>;
-}
-
-/**
- * One row of the transcript on the grid: the margin cell (absent when the grid has no margin) and the content cell, side by side. `form` is the
- * margin's form: the glyph (or its ASCII form without colour) full-screen, the role word inline. `segments` is the row's text split by the mouse
- * selection (the full-screen viewport's), so a highlight covers the content and never the margin.
+ * One row of the transcript on the grid: a {@link MarginRow} (the margin cell, absent when the grid has no margin, and the content cell exactly the
+ * content column wide). The person's own turn draws its mark in the accent and bold; every other mark takes the row's style (a tool call's `▸`
+ * and a notice's lead are dim, as their rows are). `form` is the margin's form (`marginFormFor`): the glyph (or its ASCII form without
+ * colour) full-screen, the role word inline. `segments` is the row's text split by the mouse selection (the full-screen viewport's), so a
+ * highlight covers the content and never the margin.
  */
 export function TranscriptRow(
   props: Readonly<{
@@ -143,18 +127,18 @@ export function TranscriptRow(
   }>,
 ): ReactElement {
   const { line, grid, color } = props;
+  const accent = line.margin === 'yourTurn' && line.style === 'user';
   return (
-    <Box flexDirection="row" flexShrink={0}>
-      {grid.margin > 0 && (
-        <Box width={grid.margin} flexShrink={0}>
-          <MarginCellText line={line} grid={grid} color={color} form={props.form} />
-        </Box>
-      )}
-      <Box width={Math.max(1, grid.content)} flexShrink={0}>
-        <Text {...transcriptStyleProps(line.style, color)}>
-          <TranscriptRowBody line={line} color={color} segments={props.segments} />
-        </Text>
-      </Box>
-    </Box>
+    <MarginRow
+      role={line.margin}
+      grid={grid}
+      form={props.form}
+      mark={accent ? colorProps(color, 'cyan') : transcriptStyleProps(line.style, color)}
+      markEmphasis={accent ? 'bold' : undefined}
+    >
+      <Text {...transcriptStyleProps(line.style, color)}>
+        <TranscriptRowBody line={line} color={color} segments={props.segments} />
+      </Text>
+    </MarginRow>
   );
 }

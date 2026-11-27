@@ -6,6 +6,7 @@ import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
 import { TranscriptRow } from './transcript-row.js';
+import { marginFormFor } from './margin-row.js';
 
 /**
  * The full-screen alt-screen transcript **viewport** (2.6.F Step 4b, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c) —
@@ -140,7 +141,7 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
             line={line}
             grid={props.grid}
             color={props.color}
-            form={props.color ? 'glyph' : 'ascii'}
+            form={marginFormFor(true, props.color)}
             segments={segments}
           />
         );

@@ -172,17 +172,26 @@ describe('markdown subset and geometry', () => {
           layoutMarkdown(literal, width).map((row) => row.text),
           `${JSON.stringify(source)} at ${width}`,
         ).toEqual(wrapText(source, width));
+        // A paragraph is prose: a row the wrap starts begins at its text (the chat's hanging wrap, MVP-11 unit 9, review round 1, D-2): it matches
+        // the plain wrap that drops the break space, as does a literal block marked prose (the chat's plain live tail).
         const styled: MarkdownBlock[] = [
           { kind: 'paragraph', source, text: source, spans: [{ text: source, strong: true }] },
         ];
         expect(layoutMarkdown(styled, width).map((row) => row.text)).toEqual(
-          wrapText(source, width),
+          wrapText(source, width, true),
+        );
+        const prose: MarkdownBlock[] = [{ kind: 'literal', source, text: source, prose: true }];
+        expect(layoutMarkdown(prose, width).map((row) => row.text)).toEqual(
+          wrapText(source, width, true),
         );
       }
     }
   });
   it('expands tabs before wrapping, accounting for the quote prefix', () => {
-    expect(rows('> 1234567X\tz', 6)).toEqual(['│ 1234', '│ 567X', '│     ', '│   z']);
+    // Moved in unit 9 (review round 1, D-2): the tab's spaces fell where the wrap broke the line, so the continuation starts at its text (`z`)
+    // instead of a row of spaces and an indented `z`; a tab inside a row is still expanded from the prefix's column.
+    expect(rows('> 1234567X\tz', 6)).toEqual(['│ 1234', '│ 567X', '│ z']);
+    expect(rows('> 12\tz', 12)).toEqual(['│ 12    z']);
   });
   it('never emits a row wider than the available width, including narrow prefixes', () => {
     for (const source of ['> 界', '- 👩‍💻 test', '```\n界\n```', 'a\tb', 'x**́**y']) {
