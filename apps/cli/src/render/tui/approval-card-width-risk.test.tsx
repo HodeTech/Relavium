@@ -8,7 +8,7 @@ import { isWidthRiskCodePoint } from './screen-text.js';
 import { mountStandaloneChat, type ChatMount } from './surface-matrix/chat-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { physicalRows, terminalColumns } from './terminal-wrap.test-support.js';
-import { escapeReviewCharacter } from './tool-review-projection.js';
+import { escapeReviewCharacter, escapeReviewText } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
 
 /**
@@ -45,6 +45,23 @@ const PATHS: readonly (readonly [string, string, string])[] = [
   ],
   // review round 4 (R4-S-1): conjuncts in a path are measured cell by cell (the layout's own measure: no escape needed)
   ['a chain of Hindi conjuncts', `report${'क्'.repeat(30)}क${TAIL}`, 'क्क्'],
+  // review round 5 (R5-S-3): a halfwidth sound mark after a narrow base would join its pictograph, a Prepend letter before one would draw as one
+  // glyph with it: both written as tokens there; Kirat Rai vowel signs are letters the measure counts cell by cell (no escape)
+  [
+    'a halfwidth voiced mark after a narrow emoji base',
+    `report${`${c(0x261d)}${c(0xff9e)}`.repeat(31)}${TAIL}`,
+    `${c(0x261d)}${c(0xfe0f)}<U+FF9E>`,
+  ],
+  [
+    'a Prepend letter before a narrow emoji base',
+    `report${`${c(0x0d4e)}${c(0x261d)}`.repeat(31)}${TAIL}`,
+    `<U+0D4E>${c(0x261d)}${c(0xfe0f)}`,
+  ],
+  [
+    'a run of Kirat Rai vowel signs',
+    `report${c(0x16d43)}${c(0x16d63).repeat(29)}${TAIL}`,
+    `${c(0x16d43)}${c(0x16d63)}`,
+  ],
 ];
 
 const VARIANTS: readonly Variant[] = [true, false].flatMap((color) =>
@@ -89,6 +106,22 @@ describe('the escape covers every code point the screen filter treats as a width
     // ordinary text, an emoji and a CJK character are drawn as they are: the layout counts them as the terminal draws them
     for (const text of ['a', 'é', c(0x1f44d), c(0x4e2d), c(0x0e01)])
       expect(escapeReviewCharacter(text, false)).toBe(text);
+  });
+
+  it('by context (review round 5, R5-S-3): a halfwidth sound mark after an emoji or a narrow base, and a Prepend letter before a narrow base, but not ordinary Japanese', () => {
+    expect(escapeReviewText(`${c(0x261d)}${c(0xff9e)}`)).toEqual([
+      `${c(0x261d)}${c(0xfe0f)}`,
+      '<U+FF9E>',
+    ]);
+    expect(escapeReviewText(`${c(0x1f600)}${c(0xff9f)}`)).toEqual([c(0x1f600), '<U+FF9F>']);
+    expect(escapeReviewText(`${c(0x1f1fa)}${c(0x1f1f8)}${c(0xff9e)}`).at(-1)).toBe('<U+FF9E>');
+    expect(escapeReviewText(`${c(0x0d4e)}${c(0x261d)}`)).toEqual([
+      '<U+0D4E>',
+      `${c(0x261d)}${c(0xfe0f)}`,
+    ]);
+    // ordinary halfwidth katakana (`ｶﾞ`) and a Prepend letter before a letter stay readable
+    expect(escapeReviewText(`${c(0xff76)}${c(0xff9e)}`)).toEqual([c(0xff76), c(0xff9e)]);
+    expect(escapeReviewText(`${c(0x0d4e)}${c(0x0d15)}`)).toEqual([c(0x0d4e), c(0x0d15)]);
   });
 });
 
@@ -341,49 +374,64 @@ describe('the question card and the rows a chat fits with a Hindi conjunct in th
       (variant) => [`${variant.renderer}, colour ${String(variant.color)}`, variant] as const,
     ),
   )(
-    '%s: a typed reason to deny with a conjunct chain a terminal draws 10 columns wide (string-width: 1) is cut by ink as the terminal draws it',
+    '%s: a typed reason to deny that reaches the edge is cut by the layout’s measure (a conjunct chain; a family and halfwidth sound marks)',
     async (_label, variant) => {
-      // The box draws the reason's first 40 units, then how many it left out: ten conjuncts and twenty wide letters fill those units
-      // and 50 columns, and the row (with its words around them) reaches the terminal's edge, where ink cuts it by its own count.
-      const reason = `${'क्'.repeat(10)}${'中'.repeat(20)}x`;
-      const mount = mountStandaloneChat(variant);
-      mounts.push(mount);
-      await mount.settle();
-      const request: ToolApprovalRequest = {
-        toolId: 'write_file',
-        action: 'fs_write',
-        preview: { path: 'report.txt' },
-        unredactedPreview: { path: 'report.txt' },
-      };
-      mount.store
-        .requestApproval(request, true, undefined, {
-          callId: 'deny',
-          preview: createPreview('report.txt'),
-        })
-        .catch(() => undefined);
-      await mount.until(() => mount.text().includes('Approval needed'));
-      const denial = (): string | undefined => mount.store.getSnapshot().review?.denial;
-      // `Ctrl+R` opens the reason box once the card has been on screen for the approval's settle time
-      for (let attempt = 0; attempt < 20 && denial() === undefined; attempt += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 100));
-        mount.key('\u0012');
-        await mount.settle();
+      for (const reason of DENIAL_REASONS) {
+        const mount = mountStandaloneChat(variant);
+        mounts.push(mount);
+        await denialFits(mount, reason);
       }
-      expect(denial()).toBe('');
-      // the box takes one code point per key
-      for (const character of reason) {
-        mount.key(character);
-        await mount.settle();
-      }
-      expect(denial()).toBe(reason);
-      await mount.settle();
-      const frame = mount.frame();
-      expect(
-        frame.find((row) => row.startsWith('Reason to deny: क')),
-        frame.join('\n'),
-      ).toBeDefined();
-      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
-      expect(physicalRows(frame, 80).length, frame.join('\n')).toBe(frame.length);
     },
   );
 });
+
+/**
+ * Reasons whose row reaches the terminal's edge (the box draws the reason's first 40 units, then how many it left out): ten conjuncts and twenty
+ * wide letters (a chain `string-width` counts one column, review round 4); a family and twenty halfwidth sound marks, which follow the token of the
+ * first one as one cluster with its `>` (review round 5: ink cut that row by `string-width`, then sliced it by another count and kept it whole, 89
+ * columns in a row of 78, measured on the real binary).
+ */
+const DENIAL_REASONS = [
+  `${'क्'.repeat(10)}${'中'.repeat(20)}x`,
+  `${String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467)}${c(0xff9e).repeat(20)}${'中'.repeat(8)}x`,
+];
+
+/** Opens the reason box on a write's card in `mount`, types `reason` one code point per key, and holds every row to the 80 columns. */
+async function denialFits(mount: ChatMount, reason: string): Promise<void> {
+  await mount.settle();
+  const request: ToolApprovalRequest = {
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: 'report.txt' },
+    unredactedPreview: { path: 'report.txt' },
+  };
+  mount.store
+    .requestApproval(request, true, undefined, {
+      callId: 'deny',
+      preview: createPreview('report.txt'),
+    })
+    .catch(() => undefined);
+  await mount.until(() => mount.text().includes('Approval needed'));
+  const denial = (): string | undefined => mount.store.getSnapshot().review?.denial;
+  // `Ctrl+R` opens the reason box once the card has been on screen for the approval's settle time
+  for (let attempt = 0; attempt < 20 && denial() === undefined; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    mount.key('\u0012');
+    await mount.settle();
+  }
+  expect(denial()).toBe('');
+  // the box takes one code point per key
+  for (const character of reason) {
+    mount.key(character);
+    await mount.settle();
+  }
+  expect(denial()).toBe(reason);
+  await mount.settle();
+  const frame = mount.frame();
+  expect(
+    frame.find((row) => row.startsWith('Reason to deny: ')),
+    frame.join('\n'),
+  ).toBeDefined();
+  for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+  expect(physicalRows(frame, 80).length, frame.join('\n')).toBe(frame.length);
+}

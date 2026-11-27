@@ -1,6 +1,6 @@
 import { displayPath, type DisplayPathRoots } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, fitColumns } from './viewport.js';
 
 /**
  * How a screen names a directory ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §8: a path is
@@ -70,13 +70,5 @@ export function namedProjectRoot(roots: DisplayPathRoots | undefined, bound: num
  */
 export function keepEnd(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
-  const kept: string[] = [];
-  let used = 1; // the ellipsis
-  for (const char of [...text].reverse()) {
-    const next = displayWidth(char);
-    if (used + next > width) break;
-    kept.unshift(char);
-    used += next;
-  }
-  return `…${kept.join('')}`;
+  return `…${fitColumns(text, width - 1, 'end')}`;
 }

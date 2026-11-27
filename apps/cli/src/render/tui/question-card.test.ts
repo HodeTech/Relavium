@@ -1,7 +1,7 @@
 import { ASK_USER_BOUNDS, plainTextRefusal, type AskUserRequest } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
-import { blankHostGlyphs, withGlyphForm } from './glyphs.js';
+import { blankHostGlyphs, blankHostMarks, withGlyphForm } from './glyphs.js';
 import { cardRowBudget, CARD_KEY_ROWS, CARD_RULE_ROWS } from './tool-review-card.js';
 import {
   initialQuestionCard,
@@ -30,6 +30,33 @@ const WIDTH = COLUMNS - 2;
 const clusterSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const graphemes = (text: string): string[] =>
   [...clusterSegmenter.segment(text)].map((part) => part.segment);
+
+/** `text` with every `<U+XXXX>` token as its code point, a token cut at either end of a cut dropped (the oracle's own decoder). */
+function decodeTokens(text: string): string {
+  return text
+    .replace(/^[0-9A-F]*>/u, '')
+    .replace(/<U?\+?[0-9A-F]*$/u, '')
+    .replace(/<U\+([0-9A-F]{4,6})>/gu, (_token, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
+}
+
+/**
+ * Whether `part` (an option row with its prefix taken off) draws `label` (review round 5, R5-S-7): the label as the screen draws it (the filter's
+ * documented form with the card's marks blanked), or written one-to-one (its tokens decode to the label); whole, or cut with `…` at its end or in
+ * its middle, each kept side a start or an end of one of the two forms. A row that is any other text (a placeholder, another label) is not.
+ */
+function drawsLabel(part: string, label: string): boolean {
+  const drawn = blankHostMarks(screenText(label));
+  if (part === drawn || decodeTokens(part) === label) return true;
+  const cut = part.indexOf('…');
+  if (cut < 0) return false;
+  const start = part.slice(0, cut);
+  const end = part.slice(cut + 1);
+  const startOk = drawn.startsWith(start) || label.startsWith(decodeTokens(start));
+  const endOk = drawn.endsWith(end) || label.endsWith(decodeTokens(end));
+  return startOk && endOk && (start !== '' || end !== '');
+}
 
 /**
  * The UTF-16 offsets at which a row of `rows` ends or begins INSIDE a grapheme cluster of the rows' concatenation (none for a
@@ -323,6 +350,12 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
         expect(options).toHaveLength(question.options.length);
         for (const row of options) expect(row.slice(8).trim(), row).not.toBe('');
         const labels = question.options.map((option) => option.label);
+        // FIDELITY (review round 5, R5-S-7): each row is ITS label, as the screen draws it (the filter's documented form, the card's marks
+        // blanked) or written one-to-one (its tokens decode to the label), whole or cut at the start or in the middle
+        options.forEach((row, index) => {
+          const label = labels[index] ?? '';
+          expect(drawsLabel(row.slice(8), label), `${row} for ${JSON.stringify(label)}`).toBe(true);
+        });
         options.forEach((row, index) => {
           for (let other = index + 1; other < options.length; other += 1)
             if (labels[other] !== labels[index])

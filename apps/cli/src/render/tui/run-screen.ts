@@ -19,6 +19,7 @@ import type { HostedRunDisposition } from '../../home/hosted-run-terminal.js';
 import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
 import { formatElapsed } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
+import { screenText } from './screen-text.js';
 import type { StatusColor } from './format.js';
 import { glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
@@ -195,7 +196,7 @@ function noticeRows(
   for (const raw of notices) {
     // Bounded BEFORE it is sanitized and clipped: `clipLine` measures the whole line's width first, and a notice is whatever a caller
     // was handed (the same unbounded text the Home's own notice is bounded for, `MAX_HOME_NOTICE_CHARS`).
-    const line = sanitizeInline(boundedNotice(raw)).trim();
+    const line = screenText(sanitizeInline(boundedNotice(raw))).trim();
     if (line !== '') clean.push(clipLine(line, room));
   }
   const rows = clean.slice(-RUN_SCREEN_NOTICE_ROWS);
@@ -204,7 +205,7 @@ function noticeRows(
 
 /** `text` wrapped to `width` and cut to `maxRows`, the last row ending in an ellipsis when something was left out. */
 function wrapped(text: string, width: number, maxRows: number): readonly string[] {
-  const lines = wrapText(sanitizeInline(text), width)
+  const lines = wrapText(screenText(sanitizeInline(text)), width)
     .map((line) => line.trimEnd())
     .filter((line) => line !== '');
   if (lines.length <= maxRows) return lines;
@@ -218,7 +219,8 @@ function cardOf(end: HostedLegEnd, width: number): RunScreenCard {
   const appearance = DISPOSITION_APPEARANCE[terminal.disposition];
   const rows: string[] = [...wrapped(terminal.headline, width, HEADLINE_MAX_ROWS)];
   if (terminal.remedy !== undefined) rows.push(...wrapped(terminal.remedy, width, REMEDY_MAX_ROWS));
-  if (end.fault !== undefined) rows.push(clipLine(`Reason: ${sanitizeInline(end.fault)}`, width));
+  if (end.fault !== undefined)
+    rows.push(clipLine(`Reason: ${screenText(sanitizeInline(end.fault))}`, width));
   return {
     disposition: terminal.disposition,
     tone: toneOfAppearance(appearance),

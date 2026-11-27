@@ -1,4 +1,4 @@
-import { Box } from 'ink';
+import { Box, useWindowSize } from 'ink';
 import { Text } from './text.js';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
@@ -15,7 +15,8 @@ import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
-import { inkSafe } from './viewport.js';
+import { screenText } from './screen-text.js';
+import { inkRows } from './sheet-frame.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
@@ -50,6 +51,11 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
+  // A model's line (its reasoning, its tokens, a tool line, a warning) through the screen's filter, then cut by the layout's measure where ink
+  // would count it narrower than a terminal draws it (MVP-11 unit 9, review round 5): ink cuts every other row itself.
+  const { columns } = useWindowSize();
+  const modelRow = (text: string): string =>
+    inkRows(screenText(text), Math.max(1, columns), 'truncate')[0] ?? '';
 
   const activeNode = state.activeNodeId === undefined ? undefined : state.nodes[state.activeNodeId];
   const activeLines =
@@ -78,7 +84,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           <Text {...dimProps(color)}>thinking · {sanitizeInline(activeNode.nodeId)}</Text>
           {reasoningLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {inkSafe(stripTerminalControls(line))}
+              {modelRow(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -95,7 +101,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
               narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}
           {activeLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {inkSafe(stripTerminalControls(line))}
+              {modelRow(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -106,7 +112,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.toolLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {inkSafe(sanitizeInline(line))}
+              {modelRow(sanitizeInline(line))}
             </Text>
           ))}
         </Box>
@@ -129,7 +135,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
             <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              {glyphOf('warning', !color)} {inkSafe(sanitizeInline(w))}
+              {modelRow(`${glyphOf('warning', !color)} ${sanitizeInline(w)}`)}
             </Text>
           ))}
         </Box>

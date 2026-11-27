@@ -16,8 +16,8 @@ import type { MarginRole } from './chat-grid.js';
  * the viewport's `overflowY: hidden` clips the tail, and every scroll offset and mouse row→line mapping below it
  * shifts. Which is why {@link displayWidth} is built on the SAME function ink measures with — `string-width` — rather than a
  * hand-rolled table (2.6.F Step 6g, [ADR-0069](../../../../docs/decisions/0069-string-width-for-the-cli-renderer.md)), and never counts less than
- * it (a cluster with an Indic linker or a Prepend letter counts every spacing character it holds, as a terminal draws it: MVP-11 unit 9, review
- * round 4); so a row measured to fit is never re-wrapped by ink.
+ * it (every cluster of several code points counts the sum of its code points unless it is a join a terminal performs, as a terminal draws it:
+ * MVP-11 unit 9, review rounds 4 and 5); so a row measured to fit is never re-wrapped by ink.
  *
  * The table it replaces claimed to "never under-count vs ink". Measured across the BMP and SMP it under-counted 8 539
  * code points — Tangut (7 382 of them), Yijing hexagrams, Kana Supplement, Hangul Jamo Extended-A, vertical forms —
@@ -62,21 +62,6 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme
 /** Printable ASCII: one code unit, one cluster, one cell. `string-width`'s own fast-path predicate. */
 const ASCII_ONLY = /^[\u0020-\u007e]*$/;
 
-/**
- * The code points that make ONE grapheme cluster of more than one spacing character (MVP-11 unit 9, review round 4, R4-S-1): the Indic conjunct
- * LINKERS (a virama or invisible stacker between two consonants, Unicode 17's `Indic_Conjunct_Break=Linker`: V8's regular expressions do not know
- * the property, so the list is explicit, and `terminal-widths.test.ts` re-derives it from this runtime's `Intl.Segmenter`) and the PREPEND
- * letters (`Grapheme_Cluster_Break=Prepend`; the format ones among them never reach a row, the screen's filter drops them). `string-width` counts a
- * cluster by its first code point, so `क्ष` (one cluster) is 1 and `ൎy` is 1; a terminal draws each spacing character in a cell of its own (tmux
- * 3.7b: 2 and 2; `राष्ट्रीय स्वास्थ्य मिशन` 10 counted, 15 drawn).
- */
-/** The Indic conjunct linkers (Unicode 17 `Indic_Conjunct_Break=Linker`, as this runtime's segmenter joins them: see {@link CLUSTER_JOINERS}). */
-const LINKERS = [
-  0x094d, 0x09cd, 0x0acd, 0x0b4d, 0x0c4d, 0x0d4d, 0x1039, 0x17d2, 0x1a60, 0x1b44, 0x1bab, 0xa9c0,
-  0xaaf6, 0x10a3f, 0x11133, 0x113d0, 0x1193e, 0x11a47, 0x11a99, 0x11f42,
-]
-  .map((code) => String.fromCodePoint(code))
-  .join('');
 /** The Prepend letters and format characters (`Grapheme_Cluster_Break=Prepend`, as this runtime's segmenter joins them). */
 const PREPENDS = [
   0x0600, 0x0601, 0x0602, 0x0603, 0x0604, 0x0605, 0x06dd, 0x070f, 0x0890, 0x0891, 0x08e2, 0x0d4e,
@@ -85,49 +70,87 @@ const PREPENDS = [
 ]
   .map((code) => String.fromCodePoint(code))
   .join('');
-const CLUSTER_JOINERS = new RegExp(`[${LINKERS}${PREPENDS}]`, 'u');
-/** Where {@link inkSafe} sets a zero width non-joiner: after a linker (and the marks and joiner after it) before a letter, after a Prepend before anything. */
-const INK_SPLIT = new RegExp(
-  `([${LINKERS}][\\p{M}${String.fromCodePoint(0x200d)}]*)(?=\\p{L})|([${PREPENDS}])(?=[^${String.fromCodePoint(0x200c)}\\n])`,
-  'gu',
-);
+const PREPEND_ONLY = new RegExp(`^[${PREPENDS}]$`, 'u');
 
-/**
- * `text` as ink must be given it where INK fits a text to its box itself (a `wrap` or `truncate` cell the repo did not fit first): a zero width
- * non-joiner after every Indic linker that joins two letters and after every Prepend letter (MVP-11 unit 9, review round 4, R4-S-1). It breaks the
- * one grapheme cluster `string-width` would count by its first code point into the clusters a terminal draws, so ink counts the text as
- * {@link displayWidth} does and as tmux draws it (`क्‌क` two columns to all three; the non-joiner draws nothing). Display only: the text a row
- * holds, a copy and a document keep their bytes. The cost, recorded: a terminal that shapes Indic scripts draws the explicit virama there.
- */
-export function inkSafe(text: string): string {
-  if (!CLUSTER_JOINERS.test(text)) return text;
-  return text.replace(INK_SPLIT, (match) => `${match}${String.fromCodePoint(0x200c)}`);
+/** Whether `character` is a Prepend letter or format character: it joins the code point after it into one cluster (review round 5, R5-S-3). */
+export function isPrepend(character: string): boolean {
+  return PREPEND_ONLY.test(character);
 }
 
 /**
- * Terminal display width of ONE grapheme cluster in cells: what `string-width` (ink's own measure) counts, and for a cluster with an Indic
- * linker or a Prepend letter in it ({@link CLUSTER_JOINERS}) the sum of what it counts for each of its code points, the larger of the two (review
- * round 4, R4-S-1: every spacing character of such a cluster takes a cell on the terminal; a mark takes none to both). Never less than ink counts,
- * so a row this measures to fit is never re-wrapped or cut by ink.
- *
- * `countAnsiEscapeCodes: true` skips `string-width`'s `strip-ansi` pass. The text reaching here is already stripped of
- * ANSI/C0/C1 by `sanitizeInline`, and skipping it keeps the hot path (one cluster per character of a wrapped line) off
- * a regex it does not need.
+ * Every code point that can stand in a grapheme cluster of more than one code point, beside another (MVP-11 unit 9, review round 5): what
+ * extends the cluster before it (a mark, `Grapheme_Extend`, a tone, a format character such as the joiners and tags, the Thai and Lao AM and the
+ * Kirat Rai vowel signs, which this runtime joins as spacing marks and vowels), and what takes the code point after it (a Prepend letter, a Hangul
+ * jamo, a regional indicator). A string with none of them is one cluster per code point, and `string-width` counts it exactly as the sum would.
+ * `terminal-widths.test.ts` re-derives the set from this runtime's `Intl.Segmenter`, every code point against every kind of neighbour.
+ */
+const JOINING = new RegExp(
+  `[\\p{M}\\p{Grapheme_Extend}\\p{Emoji_Modifier}\\p{Regional_Indicator}\\p{Cf}${PREPENDS}\\u1100-\\u11FF\\uA960-\\uA97F\\uD7B0-\\uD7FF\\u0E33\\u0EB3${String.fromCodePoint(0x16d63)}${String.fromCodePoint(0x16d67)}-${String.fromCodePoint(0x16d6a)}]`,
+  'u',
+);
+/** A recommended-for-general-interchange emoji sequence (a flag, a keycap, a tag flag, `❤️`, a zero-width-joiner sequence: `string-width`'s own test). */
+const RGI_EMOJI = new RegExp('^\\p{RGI_Emoji}$', 'v');
+const EMOJI_MODIFIER = /\p{Emoji_Modifier}/u;
+/** A cluster of Hangul jamo and syllables only (`L+ V+ T*`, a syllable and the vowels and finals after it): tmux draws it as one syllable block. */
+const HANGUL_ONLY = /^[\u1100-\u11FF\uA960-\uA97F\uD7B0-\uD7FF\uAC00-\uD7A3]+$/u;
+const VS16 = String.fromCodePoint(0xfe0f);
+/** `string-width` of `text`. `countAnsiEscapeCodes: true` skips its `strip-ansi` pass: the text reaching here is already stripped of ANSI/C0/C1. */
+function inkCount(text: string): number {
+  return stringWidth(text, { countAnsiEscapeCodes: true });
+}
+
+/**
+ * The joins tmux 3.7b performs, where a cluster of several code points draws narrower than their sum and `string-width`'s count of it holds:
+ * a recommended emoji sequence without a tone (a flag, a keycap, a tag flag, `❤️`, a family; tmux draws a toned one four columns, and the screen's
+ * filter drops every tone), and a run of Hangul jamo and syllables (one syllable block). Finite and measured exhaustively on tmux
+ * (`tmux-whitelist.test-support.ts`); every other cluster counts the sum of its code points (MVP-11 unit 9, review round 5, R5-S-4).
+ */
+function isTmuxJoin(cluster: string): boolean {
+  return HANGUL_ONLY.test(cluster) || (RGI_EMOJI.test(cluster) && !EMOJI_MODIFIER.test(cluster));
+}
+
+/**
+ * What a terminal draws for `cluster` cell by cell: the sum of `string-width` over its code points, where a U+FE0F that a terminal combines into
+ * a one-column cell makes that cell two columns (tmux widens the cell before the selector whatever it holds: `ൎ❤️` is 1 + 2, `#️⃣ﾞ` 2 + 1, `a`+U+FE0F
+ * 2; never less than `string-width` of the code point with the selector, review round 5, R5-S-2).
+ */
+function codePointSum(cluster: string): number {
+  let sum = 0;
+  let cell = 0; // the width of the last cell a code point took, which a selector after it widens once
+  for (const character of cluster) {
+    const width = inkCount(character);
+    if (width > 0) {
+      sum += width;
+      cell = width;
+    } else if (character === VS16 && cell === 1) {
+      sum += 1;
+      cell = 2;
+    }
+  }
+  return sum;
+}
+
+/**
+ * Terminal display width of ONE grapheme cluster in cells (MVP-11 unit 9, review round 5, R5-S-4: the default inverted). One code point, and a
+ * join tmux performs ({@link isTmuxJoin}), count what `string-width` (ink's own measure) counts; EVERY other cluster counts the larger of that
+ * and the sum over its code points ({@link codePointSum}), because a terminal that does not join a sequence draws each of its spacing characters
+ * in a cell of its own (`क्ष` 2, `ൎy` 2, `❤️ﾞ` 3, four Kirat Rai vowel signs 4, thirteen tag flags joined by zero width joiners 26). No later
+ * class of cluster can count less than a terminal draws unless it is a whitelisted join and the whitelist is wrong. Never less than ink counts,
+ * so a row this measures to fit is never re-wrapped or cut by ink. A cluster of several code points recurs in natural text (a syllable), so its
+ * width is remembered: short clusters only (a hostile one cannot hold memory), and the memo is emptied when full (its size is bounded).
  */
 function graphemeWidth(cluster: string): number {
-  const counted = stringWidth(cluster, { countAnsiEscapeCodes: true });
-  if (!CLUSTER_JOINERS.test(cluster)) return counted;
-  // a cluster with a joiner costs a pass over its code points: a syllable of natural text recurs, so its width is remembered (short clusters only,
-  // so a hostile one cannot hold memory; the memo is emptied when full, so its size is bounded)
-  if (cluster.length <= MEMO_CLUSTER_UNITS) {
+  // the memo is read before anything is counted: a recurring syllable (or letter) of natural text costs one lookup
+  const remembered = cluster.length <= MEMO_CLUSTER_UNITS;
+  if (remembered) {
     const known = joinedWidths.get(cluster);
     if (known !== undefined) return known;
   }
-  let spacing = 0;
-  for (const character of cluster)
-    spacing += stringWidth(character, { countAnsiEscapeCodes: true });
-  const width = Math.max(counted, spacing);
-  if (cluster.length <= MEMO_CLUSTER_UNITS) {
+  const counted = inkCount(cluster);
+  const single =
+    cluster.length === 1 || (cluster.length === 2 && (cluster.codePointAt(0) ?? 0) > 0xffff);
+  const width = single || isTmuxJoin(cluster) ? counted : Math.max(counted, codePointSum(cluster));
+  if (remembered) {
     if (joinedWidths.size >= MEMO_SIZE) joinedWidths.clear();
     joinedWidths.set(cluster, width);
   }
@@ -138,18 +161,25 @@ const MEMO_SIZE = 4096;
 const joinedWidths = new Map<string, number>();
 
 /**
- * Terminal display width of a string in cells: `string-width` (the function ink's `Output` measures with), except a cluster with an Indic linker
- * or a Prepend letter in it, which counts every spacing character it holds ({@link graphemeWidth}; review round 4, R4-S-1). An emoji ZWJ
- * sequence, a keycap, a flag each count 2; a base + combining marks counts as the base; a zero-width-only cluster is 0. `string-width` has an
- * ASCII fast path, and a string with no linker or Prepend letter in it costs one more regex. Never less than ink counts. (Where a terminal draws a
- * character wider than this, the screen's filter rewrites or drops it; it runs on untrusted text BEFORE the text is laid out, so this measures the
- * text as it is drawn: `screen-text.ts`, review rounds 3 and 4.)
+ * Terminal display width of a string in cells: the sum of {@link graphemeWidth} over its clusters (review round 5: every cluster of several code
+ * points that is not a join tmux performs counts the sum of its code points). A string with no code point that can join another ({@link JOINING})
+ * is one cluster per code point, and costs `string-width` and one regex; printable ASCII is `string-width`'s own fast path. Never less than ink
+ * counts. (Where a terminal draws a single code point wider than `string-width`, the screen's filter rewrites or drops it; it runs on untrusted
+ * text BEFORE the text is laid out, so this measures the text as it is drawn: `screen-text.ts`, review rounds 3 to 5.)
  */
 export function displayWidth(str: string): number {
-  if (!CLUSTER_JOINERS.test(str)) return stringWidth(str, { countAnsiEscapeCodes: true });
+  if (!JOINING.test(str)) return inkCount(str);
   let width = 0;
   for (const { segment } of graphemeSegmenter.segment(str)) width += graphemeWidth(segment);
   return width;
+}
+
+/**
+ * Whether ink, which fits a `wrap` or `truncate` cell by `string-width`, would count `text` narrower than a terminal draws it (a cluster that is
+ * not a join a terminal performs: review round 5). Text like that is laid out by the layout's own measure before ink sees it.
+ */
+export function inkUndercounts(text: string): boolean {
+  return JOINING.test(text) && displayWidth(text) > inkCount(text);
 }
 
 /**
@@ -240,6 +270,38 @@ export function sliceDisplayColumns(str: string, startColumn: number, endColumn:
     if (piece === 'selected') out += segment;
   });
   return out;
+}
+
+/**
+ * The longest run of WHOLE grapheme clusters from the start (or, with `from` `end`, from the end) of `text` that is at most `columns` display
+ * columns wide: the one rule every cutter of a drawn row uses (MVP-11 unit 9, review round 5, R5-S-6). A cluster that straddles the budget is
+ * left out, never kept (a cut that keeps it overshoots by up to the cluster's width: a chain of conjoined consonants is as wide as its letters);
+ * a cluster wider than the WHOLE row (`whole`, the budget itself unless the caller cuts the rest of a row), which no cut could ever show, is drawn
+ * as `?` in its place, as {@link wrapWords} does, so the text after it is not lost. {@link sliceDisplayColumns} keeps its intersect rule for the
+ * selection only (a click on half a wide character takes all of it).
+ */
+export function fitColumns(
+  text: string,
+  columns: number,
+  from: 'start' | 'end' = 'start',
+  whole: number = columns,
+): string {
+  const budget = Math.max(0, Math.trunc(columns));
+  if (budget === 0) return '';
+  const row = Math.max(budget, Math.trunc(whole));
+  const clusters = Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
+  if (from === 'end') clusters.reverse();
+  const kept: string[] = [];
+  let used = 0;
+  for (const cluster of clusters) {
+    const cells = graphemeWidth(cluster);
+    const [drawn, width] = cells > row ? ['?', 1] : [cluster, cells];
+    if (used + width > budget) break;
+    kept.push(drawn);
+    used += width;
+  }
+  if (from === 'end') kept.reverse();
+  return kept.join('');
 }
 
 /**

@@ -78,6 +78,7 @@ export function LandingMention(props: Readonly<LandingMentionProps>): ReactEleme
         windowRows={props.listRows}
         text={homeMentionText}
         framed={false}
+        columns={homeContentColumns(cols)}
       />
       <Blank rows={props.fillRows} />
       <Text {...dimProps(color)} wrap="truncate-end">
@@ -118,6 +119,7 @@ export function DockedMention(props: Readonly<DockedMentionProps>): ReactElement
         windowRows={props.listRows}
         text={homeMentionText}
         framed={false}
+        columns={homeContentColumns(cols)}
       />
       <PromptEditor
         editor={props.editor}

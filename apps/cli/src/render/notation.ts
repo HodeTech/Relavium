@@ -14,7 +14,7 @@
  *   ({@link directoryLabel}).
  */
 
-import { displayWidth, sliceDisplayColumns } from './tui/viewport.js';
+import { displayWidth, fitColumns } from './tui/viewport.js';
 
 /** USD × 100,000,000: the canonical integer unit of money ([database-schema.md](../../../../docs/reference/shared-core/database-schema.md)). */
 export const MICROCENTS_PER_USD = 100_000_000;
@@ -486,12 +486,7 @@ function fromEnd(cwd: string, win32: boolean): string {
  */
 function keepTail(text: string, room: number): string {
   if (room < 1) return '';
-  const total = displayWidth(text);
-  for (let kept = room - 1; kept > 0; kept -= 1) {
-    const tail = sliceDisplayColumns(text, total - kept, total);
-    if (displayWidth(tail) <= room - 1) return `${PATH_ELLIPSIS}${tail}`;
-  }
-  return PATH_ELLIPSIS;
+  return `${PATH_ELLIPSIS}${fitColumns(text, room - 1, 'end')}`;
 }
 
 /**

@@ -38,7 +38,7 @@ import { nativeLeave, type NativePromptSnapshot } from '../render/tui/native-pro
 import { sanitizeInline } from '../render/sanitize.js';
 import { glyph } from '../render/tui/glyphs.js';
 import { clipLine, type SheetLine } from '../render/tui/sheet-frame.js';
-import { displayWidth, sliceDisplayColumns } from '../render/tui/viewport.js';
+import { displayWidth, fitColumns } from '../render/tui/viewport.js';
 import { fittedLegendItems, popupNoticeLegend, popupText, wrapRows } from './frame-model.js';
 import type { PopupBoxGeometry, PopupPlacement } from './geometry.js';
 
@@ -335,9 +335,8 @@ function fieldRow(prefix: string, typed: string, width: number): string {
   const text = sanitizeInline(typed);
   const all = `${prefix}${text}`;
   if (displayWidth(all) <= width) return all;
-  const total = displayWidth(text);
   const room = Math.max(0, width - displayWidth(prefix) - 1);
-  return clipLine(`${prefix}…${sliceDisplayColumns(text, total - room, total)}`, width);
+  return clipLine(`${prefix}…${fitColumns(text, room, 'end')}`, width);
 }
 
 /** A text or a masked field: its rows above, the field (the channel's display: bullets for a secret, never the secret), its error. */

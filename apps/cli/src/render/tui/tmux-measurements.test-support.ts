@@ -1,5 +1,5 @@
 /**
- * What tmux 3.7b, the reference terminal, drew (MVP-11 unit 9, review rounds 2 and 3): each string written to a pane after an `A`, the cursor read
+ * What tmux 3.7b, the reference terminal, drew (MVP-11 unit 9, review rounds 2 to 5): each string written to a pane after an `A`, the cursor read
  * back with `ESC[6n` (the reviewers' `measure.py`). Three tables, verbatim from the measurement files:
  *
  * - {@link TMUX_MEASUREMENTS}: code points and sequences the simulated terminal (`terminal-wrap.test-support.ts`) must draw exactly as wide as
@@ -14,7 +14,11 @@
  * U+A4D0 to U+FAFF, U+10000 to U+1EFFF, U+1FC00 to U+1FFFE, samples of the CJK blocks) one by one: {@link TMUX_WIDER_CODE_POINTS} are the ones
  * tmux drew wider than `string-width` counts them ALONE; every other code point there is drawn, alone, no wider than it counts. A code point alone
  * says nothing of a SEQUENCE: an Indic conjunct and a Prepend letter are one cluster to `string-width` and several cells to tmux (review round 4,
- * R4-S-1), which only the sequence differential found ({@link TMUX_SEQUENCES}). All of it is tmux 3.7b only.
+ * R4-S-1), which only the sequence differential found ({@link TMUX_SEQUENCES}). Round 5 (`r5 …`, `w5: …`) added the clusters the layout's measure
+ * now counts by the sum of their code points (a halfwidth sound mark after an emoji, a Prepend letter before one drawn with U+FE0F, the Kirat Rai
+ * vowel signs, U+FE0F widening a one-column cell, Hangul syllable blocks) and, among the findings, a tag flag joined to a pictograph (tmux's cell
+ * holds too few bytes to glue it, so it draws them apart); the joins the measure keeps are measured in `tmux-whitelist.test-support.ts`. All of it
+ * is tmux 3.7b only.
  */
 export const TMUX_MEASUREMENTS: readonly (readonly [string, readonly number[], number])[] = [
   ['A', [0x41], 1],
@@ -1198,6 +1202,38 @@ export const TMUX_MEASUREMENTS: readonly (readonly [string, readonly number[], n
     10,
   ],
   ['r4 T alone', [0x11a8], 0],
+  // review round 5 (R5-S-1, R5-S-2, R5-S-4): a halfwidth sound mark after an emoji, a Prepend letter before an emoji drawn with U+FE0F, the
+  // Kirat Rai vowel signs, U+FE0F widening a one-column cell, Hangul syllable blocks, and the five-mark joiner case after the filter
+  ['r5 heart vs16 ff9e', [0x2764, 0xfe0f, 0xff9e], 3],
+  ['r5 index vs16 ff9e', [0x261d, 0xfe0f, 0xff9e], 3],
+  ['r5 index vs16 ff9f', [0x261d, 0xfe0f, 0xff9f], 3],
+  ['r5 flag us ff9e', [0x1f1fa, 0x1f1f8, 0xff9e], 3],
+  ['r5 keycap hash ff9e', [0x23, 0xfe0f, 0x20e3, 0xff9e], 3],
+  ['r5 smile ff9e', [0x1f600, 0xff9e], 3],
+  ['r5 family ff9e x3', [0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0xff9e, 0xff9e, 0xff9e], 5],
+  ['r5 kana ka ff9e', [0xff76, 0xff9e], 2],
+  ['r5 prepend d4e heart vs16', [0xd4e, 0x2764, 0xfe0f], 3],
+  ['r5 prepend 111c2 heart vs16', [0x111c2, 0x2764, 0xfe0f], 3],
+  ['r5 prepend d4e index vs16', [0xd4e, 0x261d, 0xfe0f], 3],
+  ['r5 prepend d4e copyright vs16', [0xd4e, 0xa9, 0xfe0f], 3],
+  ['r5 kr v', [0x16d63], 1],
+  ['r5 kr vv', [0x16d63, 0x16d67], 2],
+  ['r5 kr vvvv', [0x16d63, 0x16d67, 0x16d68, 0x16d69], 4],
+  ['r5 kr cvv', [0x16d43, 0x16d63, 0x16d67], 3],
+  ['r5 hangul LV kr', [0xac00, 0x16d63], 3],
+  ['r5 hangul L kr', [0x1100, 0x16d63], 3],
+  ['r5 a vs16', [0x61, 0xfe0f], 2],
+  ['r5 hash vs16', [0x23, 0xfe0f], 2],
+  ['r5 a acute vs16', [0x61, 0x301, 0xfe0f], 2],
+  ['r5 L V', [0x1100, 0x1161], 2],
+  ['r5 L V T', [0x1100, 0x1161, 0x11a8], 2],
+  ['r5 LV T', [0xac00, 0x11a8], 2],
+  ['r5 L L', [0x1100, 0x1100], 4],
+  [
+    'r5 a 5acute zwj couple (filtered: no joiner)',
+    [0x61, 0x301, 0x301, 0x301, 0x301, 0x301, 0x1f469, 0x200d, 0x2764, 0xfe0f, 0x200d, 0x1f469],
+    3,
+  ],
 ];
 
 /** See the module header: sequences tmux draws by rules of its own; filled from {@link TMUX_MEASUREMENTS} entries the simulation does not model. */
@@ -1255,6 +1291,40 @@ export const TMUX_SEQUENCE_FINDINGS: readonly (readonly [string, readonly number
   [
     'w3 kiss tones',
     [0x1f469, 0x1f3fd, 0x200d, 0x2764, 0xfe0f, 0x200d, 0x1f48b, 0x200d, 0x1f468, 0x1f3ff],
+    4,
+  ],
+  // review round 5 (R5-S-5): a tag flag joined to a pictograph is drawn apart (tmux's cell holds too few bytes to glue it), Hangul `L V V`
+  // (tmux draws a run of vowels after a syllable in its cell), and a letter with five marks before a joiner and an emoji (the filter drops
+  // that joiner: its output is measured above); the layout counts each at least as tmux drew it
+  [
+    'r5 tagflag zwj tagflag',
+    [
+      0x1f3f4, 0xe0067, 0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f, 0x200d, 0x1f3f4, 0xe0067,
+      0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f,
+    ],
+    4,
+  ],
+  [
+    'r5 tagflag zwj planet',
+    [0x1f3f4, 0xe0067, 0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f, 0x200d, 0x1fa90],
+    4,
+  ],
+  [
+    'r5 tagflag zwj x3',
+    [
+      0x1f3f4, 0xe0067, 0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f, 0x200d, 0x1f3f4, 0xe0067,
+      0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f, 0x200d, 0x1f3f4, 0xe0067, 0xe0062, 0xe0073,
+      0xe0063, 0xe0074, 0xe007f,
+    ],
+    6,
+  ],
+  ['r5 L V V', [0x1100, 0x1161, 0x1161], 2],
+  [
+    'r5 a 5acute zwj couple (raw)',
+    [
+      0x61, 0x301, 0x301, 0x301, 0x301, 0x301, 0x200d, 0x1f469, 0x200d, 0x2764, 0xfe0f, 0x200d,
+      0x1f469,
+    ],
     4,
   ],
 ];
@@ -1739,6 +1809,11 @@ export const TMUX_FILTERED: readonly (readonly [string, readonly number[], numbe
     2,
   ],
   ['specs10.json: x 302e', [0x78], 1],
+  // review round 5: the filter's output of the round-5 entries (U+FE0F dropped after `#` and after a letter and its mark; the joiner dropped
+  // between a letter and a pictograph, R5-S-5)
+  ['w5: #', [0x23], 1],
+  ['w5: a acute', [0x61, 0x301], 1],
+  ['w5: a smile', [0x61, 0x1f600], 3],
 ];
 
 /** See the module header: the code points the sweep found drawn wider than `string-width` counts them, as `[first, last, tmux columns]`. */

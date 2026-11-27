@@ -2919,12 +2919,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
                 state={search}
                 entries={historyRef.current.entries}
                 color={color}
+                columns={chromeGridFor(windowSize.columns).text}
               />
             </ChromeColumn>
           )}
           {mention !== undefined && (
             <ChromeColumn columns={windowSize.columns}>
-              <MentionView state={mention} color={color} />
+              <MentionView
+                state={mention}
+                color={color}
+                columns={chromeGridFor(windowSize.columns).text}
+              />
             </ChromeColumn>
           )}
         </Box>

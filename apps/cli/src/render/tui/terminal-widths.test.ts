@@ -10,7 +10,13 @@ import {
   TMUX_SEQUENCES,
   TMUX_WIDER_CODE_POINTS,
 } from './tmux-measurements.test-support.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import {
+  TMUX_JOINING_WIDER,
+  TMUX_WHITELIST_EVIDENCE,
+  TMUX_ZERO_AFTER_A_LETTER,
+  whitelistStrings,
+} from './tmux-whitelist.test-support.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The widths the screen's filter is held to (MVP-11 unit 9, review rounds 2 and 3): what tmux 3.7b, the reference terminal, drew, from the
@@ -110,11 +116,10 @@ describe('the filter’s output, measured on tmux itself: the layout never count
   it.each(TMUX_FILTERED.map(([name, codes, width]) => [name, codes, width] as const))(
     '%s',
     (_name, codes, width) => {
-      // the safe direction: the layout may count a row wider than tmux draws it (it then leaves a column), never narrower; and ink, given the
-      // text in its ink-safe form where it fits text itself, counts it so too
+      // the safe direction: the layout may count a row wider than tmux draws it (it then leaves a column), never narrower (where ink would
+      // count it narrower, the layout fits the row before ink sees it: `inkRows`, review round 5)
       const text = String.fromCodePoint(...codes);
       expect(displayWidth(text)).toBeGreaterThanOrEqual(width);
-      expect(stringWidth(inkSafe(text))).toBeGreaterThanOrEqual(width);
     },
   );
 
@@ -159,7 +164,7 @@ const JOINS_SPACING = new RegExp(
     0x094d, 0x09cd, 0x0acd, 0x0b4d, 0x0c4d, 0x0d4d, 0x1039, 0x17d2, 0x1a60, 0x1b44, 0x1bab, 0xa9c0,
     0xaaf6, 0x10a3f, 0x11133, 0x113d0, 0x1193e, 0x11a47, 0x11a99, 0x11f42, 0x0d4e, 0x111c2, 0x111c3,
     0x113d1, 0x1193f, 0x11941, 0x11a84, 0x11a85, 0x11a86, 0x11a87, 0x11a88, 0x11a89, 0x11d46,
-    0x11f02,
+    0x11f02, 0x16d63, 0x16d67, 0x16d68, 0x16d69, 0x16d6a,
   ]
     .map((code) => String.fromCodePoint(code))
     .join('')}]`,
@@ -171,9 +176,8 @@ describe('the SEQUENCE differential against tmux (review round 4, R4-S-1, item A
     '%s',
     (_name, codes, width) => {
       const text = String.fromCodePoint(...codes);
-      // the layout never counts a row narrower than tmux draws it; ink given the ink-safe form neither; the simulated terminal draws no less
+      // the layout never counts a row narrower than tmux draws it; the simulated terminal draws no less
       expect(displayWidth(text)).toBeGreaterThanOrEqual(width);
-      expect(stringWidth(inkSafe(text))).toBeGreaterThanOrEqual(width);
       // the simulated terminal models a conjunct and a Prepend cluster (not tmux's own rules for a run of Hangul vowel jamo, which the layout
       // counts wider anyway)
       if (JOINS_SPACING.test(text))
@@ -248,4 +252,164 @@ describe('the SEQUENCE differential against tmux (review round 4, R4-S-1, item A
       '11f42',
     ]);
   }, 120_000);
+});
+
+describe('the joins the measure keeps at `string-width`’s count are the ones measured on tmux (review round 5, R5-S-4)', () => {
+  it('this runtime’s recommended sequences and Hangul blocks are the measured ones, and the measure keeps `string-width`’s count for each', () => {
+    const strings = whitelistStrings();
+    for (const kind of ['presentation', 'keycap', 'flag', 'tagFlag', 'zwj'] as const) {
+      expect(strings[kind], kind).toHaveLength(TMUX_WHITELIST_EVIDENCE[kind].strings);
+      // tmux drew every one of them exactly as `string-width` counts it (the evidence's `exact`), and that is what the measure says
+      expect(TMUX_WHITELIST_EVIDENCE[kind].exact).toBe(TMUX_WHITELIST_EVIDENCE[kind].strings);
+      for (const text of strings[kind]) {
+        expect(displayWidth(text), `${kind} ${text}`).toBe(stringWidth(text));
+        expect(displayWidth(text), `${kind} ${text}`).toBe(2);
+      }
+    }
+    // a toned sequence is not kept: tmux drew 315 of them wider than `string-width`, so it counts the sum, never less than `string-width`
+    expect(strings.modifier).toHaveLength(TMUX_WHITELIST_EVIDENCE.modifier.strings);
+    for (const text of strings.modifier)
+      expect(displayWidth(text), text).toBeGreaterThan(stringWidth(text));
+    expect(strings.hangul).toHaveLength(TMUX_WHITELIST_EVIDENCE.hangul.strings);
+    expect(TMUX_WHITELIST_EVIDENCE.hangul.wider).toBe(0);
+    for (const text of strings.hangul) expect(displayWidth(text), text).toBe(stringWidth(text));
+  }, 120_000);
+
+  it('every code point that joins a letter was measured after one: drawn in no column, or one of the fourteen that add columns', () => {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const zero = (code: number): boolean =>
+      TMUX_ZERO_AFTER_A_LETTER.some(([first, last]) => code >= first && code <= last);
+    const wider = new Map(TMUX_JOINING_WIDER);
+    let joining = 0;
+    for (let code = 0x80; code < 0x110000; code += 1) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const text = `a${String.fromCodePoint(code)}`;
+      if ([...segmenter.segment(text)].length !== 1) continue;
+      joining += 1;
+      const added = wider.get(code);
+      if (added === undefined) {
+        expect(zero(code), code.toString(16)).toBe(true);
+        expect(displayWidth(text), code.toString(16)).toBe(1);
+      } else {
+        // the sum counts what tmux added, or the screen's filter drops the code point (a tone, a wide tone mark)
+        expect(displayWidth(screenText(text)), code.toString(16)).toBeGreaterThanOrEqual(
+          screenText(text) === text ? 1 + added : 1,
+        );
+      }
+    }
+    expect(joining).toBe(2619);
+    expect(TMUX_ZERO_AFTER_A_LETTER.reduce((sum, [first, last]) => sum + last - first + 1, 0)).toBe(
+      2605,
+    );
+  }, 120_000);
+
+  it('a string the measure counts whole (no code point that can join another) is counted as its clusters are, against every kind of neighbour', () => {
+    // the fast path: `displayWidth` counts a string with no joining code point as `string-width` does; a combining mark and a line feed before
+    // it force the cluster path (a line feed ends every cluster, and both count nothing), and the two must agree for every code point of the planes text uses beside a letter, a consonant, a Hangul
+    // leading jamo and syllable, a regional indicator, a Prepend letter and an emoji with a joiner, on either side (every code point of the other
+    // planes is an ideograph, private use or unassigned, which joins nothing)
+    const c = (code: number): string => String.fromCodePoint(code);
+    const NEIGHBOURS = [
+      'a',
+      'क',
+      c(0x1100),
+      c(0xac00),
+      c(0x1f1fa),
+      c(0x0d4e),
+      `${c(0x2764)}${c(0xfe0f)}${c(0x200d)}`,
+    ];
+    for (let code = 0x20; code < 0x110000; code += 1) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const character = c(code);
+      if (code >= 0x20000 && (code < 0xe0000 || code > 0xe0fff)) {
+        expect(/^[\p{Lo}\p{Co}\p{Cn}]$/u.test(character), code.toString(16)).toBe(true);
+        continue;
+      }
+      for (const neighbour of NEIGHBOURS)
+        for (const text of [`${neighbour}${character}`, `${character}${neighbour}`])
+          expect(displayWidth(text), `${code.toString(16)} ${JSON.stringify(text)}`).toBe(
+            displayWidth(`${c(0x0301)}\n${text}`),
+          );
+    }
+  }, 300_000);
+});
+
+describe('the round-5 sitting’s reproductions, measured on tmux (review round 5, R5-S-1, R5-S-2, R5-S-4, R5-S-5)', () => {
+  const c = (...codes: readonly number[]): string => String.fromCodePoint(...codes);
+  const TAG_FLAG = c(0x1f3f4, 0xe0067, 0xe0062, 0xe0073, 0xe0063, 0xe0074, 0xe007f);
+  const KIRAT_RAI = [0x16d63, 0x16d67, 0x16d68, 0x16d69, 0x16d6a];
+  const PREPENDS = [
+    0x0d4e, 0x111c2, 0x111c3, 0x113d1, 0x1193f, 0x11941, 0x11a84, 0x11a85, 0x11a86, 0x11a87,
+    0x11a88, 0x11a89, 0x11d46, 0x11f02,
+  ];
+  it.each([
+    ['❤️ and a halfwidth voiced mark', c(0x2764, 0xfe0f, 0xff9e), 3],
+    ['☝️ and a halfwidth voiced mark', c(0x261d, 0xfe0f, 0xff9e), 3],
+    ['a flag and a halfwidth voiced mark', c(0x1f1fa, 0x1f1f8, 0xff9e), 3],
+    ['a keycap and a halfwidth voiced mark', c(0x23, 0xfe0f, 0x20e3, 0xff9e), 3],
+    [
+      'a family and 42 halfwidth voiced marks',
+      `${c(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467)}${c(0xff9e).repeat(42)}`,
+      44,
+    ],
+    ['ൎ❤️ ten times', c(0x0d4e, 0x2764, 0xfe0f).repeat(10), 30],
+    ...PREPENDS.flatMap((code) => [
+      [`Prepend ${code.toString(16)} before ❤️`, c(code, 0x2764, 0xfe0f), 3] as const,
+      [
+        `Prepend ${code.toString(16)} before ☝ (the filter adds U+FE0F)`,
+        c(code, 0x261d),
+        3,
+      ] as const,
+    ]),
+    ['four Kirat Rai vowel signs', c(0x16d63, 0x16d67, 0x16d68, 0x16d69), 4],
+    [
+      '74 Kirat Rai vowel signs',
+      c(...Array.from({ length: 74 }, (_, at) => KIRAT_RAI[at % 5] ?? 0x16d63)),
+      74,
+    ],
+    ['a Hangul syllable and a Kirat Rai vowel sign', c(0xac00, 0x16d63), 3],
+    ['Kirat Rai consonant, vowel, vowel, ten times', c(0x16d43, 0x16d63, 0x16d67).repeat(10), 30],
+    [
+      'thirteen tag flags joined by zero width joiners',
+      Array.from({ length: 13 }, () => TAG_FLAG).join(c(0x200d)),
+      26,
+    ],
+    ['a tag flag, a joiner and a planet', `${TAG_FLAG}${c(0x200d, 0x1fa90)}`, 4],
+    // the one the sum cannot fix: tmux glues the couple into the letter's cell, and with five to seven marks draws one column more (the filter
+    // drops the joiner; what is left was measured at 3)
+    [
+      'a letter, five marks, a joiner and a couple',
+      c(
+        0x61,
+        0x301,
+        0x301,
+        0x301,
+        0x301,
+        0x301,
+        0x200d,
+        0x1f469,
+        0x200d,
+        0x2764,
+        0xfe0f,
+        0x200d,
+        0x1f469,
+      ),
+      3,
+    ],
+  ] as const)('%s', (_name, text, drawn) => {
+    expect(displayWidth(screenText(text))).toBeGreaterThanOrEqual(drawn);
+  });
+
+  it('the filter drops a joiner before a pictograph that does not follow an emoji, and keeps one before a letter or after an emoji', () => {
+    const couple = c(0x1f469, 0x200d, 0x2764, 0xfe0f, 0x200d, 0x1f469);
+    expect(screenText(`a${c(0x301).repeat(5)}${c(0x200d)}${couple}`)).toBe(
+      `a${c(0x301).repeat(5)}${couple}`,
+    );
+    expect(screenText(`क${c(0x200d)}${c(0x2764, 0xfe0f)}`)).toBe(`क${c(0x2764, 0xfe0f)}`);
+    // an Indic joiner before a letter stays (`क्‍ष`), and so does a recommended sequence's own joiner
+    expect(screenText(c(0x915, 0x94d, 0x200d, 0x937))).toBe(c(0x915, 0x94d, 0x200d, 0x937));
+    expect(screenText(couple)).toBe(couple);
+    // and after a tag flag (an emoji sequence), the joiner stays: the measure counts the chain as the sum of its pictographs
+    expect(screenText(`${TAG_FLAG}${c(0x200d, 0x1fa90)}`)).toBe(`${TAG_FLAG}${c(0x200d, 0x1fa90)}`);
+  });
 });

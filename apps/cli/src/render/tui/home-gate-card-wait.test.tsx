@@ -20,6 +20,7 @@ import {
   type HomeControllerState,
   type HomeGateCardsPort,
 } from './home-controller.js';
+import { waitSinceText } from './sheet-frame.js';
 
 afterEach(cleanup);
 
@@ -125,7 +126,13 @@ describe('the gate card’s wait clock starts when the run parked', () => {
     expect(screen.waitingSinceMs).toBe(Date.parse(PARKED_SINCE));
     expect(Object.keys(screen.card.getSnapshot())).not.toContain('waitingSinceMs');
     // Inline the clock is the static origin, in the rule.
-    expect(m.frame()).toMatch(/^== Waiting for you =+ waiting since \d\d:\d\d ==$/mu);
+    // (the text the card draws names the day once the run parked before today, so the expectation is the formatter's own text for that origin)
+    expect(m.frame()).toMatch(
+      new RegExp(
+        `^== Waiting for you =+ ${waitSinceText(Date.parse(PARKED_SINCE)).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')} ==$`,
+        'mu',
+      ),
+    );
   });
 
   it('with no parkedSince it is the moment the card opened', async () => {

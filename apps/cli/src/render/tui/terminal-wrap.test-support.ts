@@ -18,6 +18,10 @@ import stringWidth from 'string-width';
  *   join a tone to two more; an emoji the layout draws wide only as a whole (a flag, `❤️`, a keycap) with more after it in its cluster two columns
  *   and what follows; a keycap without its selector one; the wide tone marks U+302E, U+302F, U+16FF0, U+16FF1 two more; U+2065, U+FFF0 to
  *   U+FFF8, U+E0000, U+E0002 to U+E001F one more (the sweep);
+ * - (review rounds 4 and 5) an Indic conjunct, a Prepend cluster and a run of Kirat Rai vowel signs code point by code point (a letter right after a
+ *   zero width joiner in the cell before it; U+FE0F widening a one-column cell to two); a spacing character after an emoji the layout draws wide
+ *   as a whole (a halfwidth sound mark) in a cell of its own, unless it follows a zero width joiner, where tmux glues it into the emoji's cell;
+ *   a chain of tag flags joined by joiners is NOT modelled (tmux draws it apart only when its cell overflows: `TMUX_SEQUENCE_FINDINGS`);
  * - a TAB moves to the next multiple of eight columns (or to the last column: it never wraps by itself);
  * - narrower than `string-width`: U+2028, U+2029 and a vowel or trailing Hangul jamo with no leading jamo, none.
  *
@@ -87,25 +91,71 @@ const CLUSTER_JOINERS = new RegExp(
     0x0603, 0x0604, 0x0605, 0x06dd, 0x070f, 0x0890, 0x0891, 0x08e2, 0x0d4e, 0x110bd, 0x110cd,
     0x111c2, 0x111c3, 0x113d1, 0x1193f, 0x11941, 0x11a84, 0x11a85, 0x11a86, 0x11a87, 0x11a88,
     0x11a89, 0x11d46, 0x11f02,
+    // review round 5 (R5-S-4): the Kirat Rai vowel signs, which this runtime joins as Hangul vowels are joined; tmux draws each in its own cell
+    0x16d63,
+    0x16d67, 0x16d68, 0x16d69, 0x16d6a,
   ]
     .map((code) => String.fromCodePoint(code))
     .join('')}]`,
   'u',
 );
+const ZWJ = String.fromCodePoint(0x200d);
+const VS16 = String.fromCodePoint(0xfe0f);
+
+/**
+ * What tmux draws after an emoji it draws two columns, in the same cluster: a spacing character in a cell of its own (a halfwidth sound mark:
+ * review round 5, R5-S-1), except right after a zero width joiner, where tmux glues it into the emoji's cell (a chain of pictographs: two
+ * columns, measured); a tone two more unless the base takes it (`combined`), and the extras of the module header.
+ */
+function afterEmoji(rest: readonly string[], combined: boolean): number {
+  return rest.reduce((sum, character, index) => {
+    const code = character.codePointAt(0) ?? 0;
+    if (isTone(code) && combined) return sum;
+    const glued = rest[index - 1] === ZWJ;
+    const own = glued || isTone(code) ? 0 : stringWidth(character, { countAnsiEscapeCodes: true });
+    return sum + own + measuredExtra(code);
+  }, 0);
+}
+
+/** The longest start of `characters` that is a recommended emoji sequence (at most 64 code points are tried), or `undefined`. */
+function recommendedStart(characters: readonly string[]): number | undefined {
+  for (let length = Math.min(characters.length - 1, 64); length > 0; length -= 1)
+    if (RGI_EMOJI.test(characters.slice(0, length).join(''))) return length;
+  return undefined;
+}
+
+/**
+ * A cluster tmux does not join, drawn code point by code point (review rounds 4 and 5): each as it is alone, except a letter right after a zero
+ * width joiner, which tmux draws in the cell before it (`क्‍ष` one cell, measured), and U+FE0F, which widens a one-column cell before it to two
+ * (`ൎ❤️` 1 + 2, measured).
+ */
+function perCodePoint(characters: readonly string[]): number {
+  let sum = 0;
+  let cell = 0;
+  characters.forEach((character, index) => {
+    if (characters[index - 1] === ZWJ && /\p{L}/u.test(character)) return;
+    if (character === VS16) {
+      if (cell === 1) {
+        sum += 1;
+        cell = 2;
+      }
+      return;
+    }
+    const width = terminalWidth(character);
+    if (width > 0) {
+      sum += width;
+      cell = width;
+    }
+  });
+  return sum;
+}
 
 /** The columns the reference terminal draws one grapheme cluster in (see the module header; a TAB is the caller's: it depends on the column). */
 export function terminalWidth(cluster: string): number {
   if (DRAWN_EMPTY.test(cluster)) return 0;
   const characters = [...cluster];
-  // a conjunct or a Prepend cluster: each code point drawn as it is alone (a mark none, a letter its cells), except one right after a zero width
-  // joiner, which tmux draws in the cell before it (`क्‍ष` one cell, measured)
-  if (characters.length > 1 && CLUSTER_JOINERS.test(cluster))
-    return characters.reduce(
-      (sum, character, index) =>
-        sum +
-        (characters[index - 1] === String.fromCodePoint(0x200d) ? 0 : terminalWidth(character)),
-      0,
-    );
+  // a conjunct, a Prepend cluster or a run of Kirat Rai vowel signs: each code point drawn as it is alone ({@link perCodePoint})
+  if (characters.length > 1 && CLUSTER_JOINERS.test(cluster)) return perCodePoint(characters);
   const counted = stringWidth(cluster, { countAnsiEscapeCodes: true });
   const codes = [...cluster].map((character) => character.codePointAt(0) ?? 0);
   const base = codes[0] ?? 0;
@@ -117,11 +167,13 @@ export function terminalWidth(cluster: string): number {
   // which no longer recognises the cluster, counts its first code point
   const unit = WIDE_UNIT_PREFIX.exec(cluster)?.[0];
   if (unit !== undefined && RGI_EMOJI.test(unit) && unit.length < cluster.length) {
-    const rest = [...cluster.slice(unit.length)].map((character) => character.codePointAt(0) ?? 0);
     const combined = !TONE_APART.has(base) && NARROW_BASE.test(cluster);
-    return (
-      2 + rest.reduce((sum, code) => sum + (isTone(code) && combined ? 0 : measuredExtra(code)), 0)
-    );
+    return 2 + afterEmoji([...cluster.slice(unit.length)], combined);
+  }
+  // a recommended sequence with more after it in its cluster (a family, then halfwidth sound marks: review round 5, R5-S-1)
+  if (cluster.includes(ZWJ) && !codes.some(isTone)) {
+    const start = recommendedStart(characters);
+    if (start !== undefined) return 2 + afterEmoji(characters.slice(start), false);
   }
   let extra = tonesApart;
   let presentation = false;

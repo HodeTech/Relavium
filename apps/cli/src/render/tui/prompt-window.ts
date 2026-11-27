@@ -1,6 +1,6 @@
 import { promptRows, type PromptRow } from './prompt-cursor.js';
 import { windowBody } from './sheet-frame.js';
-import { wrapLogicalLine, wrapWords } from './viewport.js';
+import { displayWidth, inkUndercounts, wrapLogicalLine, wrapWords } from './viewport.js';
 
 /**
  * The window of a long draft that the prompt editor draws when it is given a row budget (OB7-M3, the observation of unit 7's chat half): a 30-line
@@ -63,6 +63,20 @@ export function wrappedRowCount(
   return total;
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * `text` as a row of a draft shows it: a cluster wider than the whole row (a chain of conjoined letters), which no row could hold, drawn as `?`
+ * (MVP-11 unit 9, review round 5, as every wrap of the chat does); display only, the offsets are the source's.
+ */
+function shown(text: string, columns: number): string {
+  if (displayWidth(text) <= columns) return text;
+  let out = '';
+  for (const { segment } of graphemes.segment(text))
+    out += displayWidth(segment) > columns ? '?' : segment;
+  return out;
+}
+
 /** One logical line of the draft as rows of at most `columns` display columns, and which of them (if any) holds the cursor cell. */
 function chunkRows(
   logical: PromptRow,
@@ -81,11 +95,11 @@ function chunkRows(
       cursorChunk = rows.length;
       const local = before.length - offset;
       rows.push({
-        before: chunk.slice(0, local),
-        at: cell,
-        after: chunk.slice(local + cell.length),
+        before: shown(chunk.slice(0, local), columns),
+        at: shown(cell, columns),
+        after: shown(chunk.slice(local + cell.length), columns),
       });
-    } else rows.push({ before: chunk, at: undefined, after: '' });
+    } else rows.push({ before: shown(chunk, columns), at: undefined, after: '' });
     offset += chunk.length;
   }
   return { rows, cursorChunk };
@@ -113,7 +127,9 @@ function physicalRows(
 /**
  * The lines to draw for `text` (the cursor at the UTF-16 offset `cursor`, or `-1` for none) in at most `maxRows` rows of `textColumns` columns,
  * or `undefined` when the draft fits and is drawn unbounded. A window never has fewer than {@link PROMPT_WINDOW_MIN_ROWS} lines. `clean` is the
- * display scrub (`sanitizeInline`): the rows are measured on what is drawn.
+ * display scrub (`sanitizeInline`): the rows are measured on what is drawn. A draft that fits but holds a cluster ink would count narrower than a
+ * terminal draws it ({@link inkUndercounts}) is drawn as its own rows, every one of them, so ink never wraps it (MVP-11 unit 9, review round 5):
+ * ink's wrap of it could reach the right edge and go on at the next row's first column.
  */
 export function promptWindow(
   text: string,
@@ -134,7 +150,10 @@ export function promptWindow(
     rows.length <= height &&
     (leadWidth === undefined ||
       wrappedRowCount(text, cursor, leadWidth, columns + leadWidth, clean) <= height);
-  if (fits) return undefined;
+  if (fits) {
+    if (!inkUndercounts(clean(text))) return undefined;
+    return rows.map((row): PromptWindowLine => ({ kind: 'row', row }));
+  }
   // a cursor that is not drawn is not followed: the window shows the end of the draft, where a person is typing
   const { start, end } = windowBody(
     rows.length,

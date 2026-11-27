@@ -68,6 +68,19 @@ const RUNS: readonly (readonly [string, string])[] = [
   ['Hindi conjuncts', `${c(0x0915)}${c(0x094d)}`.repeat(N / 2)],
   ['Khmer coeng', `${c(0x1780)}${c(0x17d2)}`.repeat(N / 2)],
   ['Prepend letters', `${c(0x0d4e)}y`.repeat(N / 2)],
+  // review round 5: every cluster of several code points counts the sum of its code points (one cluster of 32,000 Kirat Rai vowel signs, one of
+  // 4,000 tag flags joined by joiners, and 21,333 distinct clusters that defeat the measure's memo)
+  ['Kirat Rai vowel signs', c(0x16d63).repeat(N / 2)],
+  [
+    'tag flags joined by joiners',
+    `${c(0x1f3f4)}${c(0xe0067)}${c(0xe0062)}${c(0xe0073)}${c(0xe0063)}${c(0xe0074)}${c(0xe007f)}${c(0x200d)}`.repeat(
+      N / 16,
+    ),
+  ],
+  [
+    'distinct clusters (the memo defeated)',
+    Array.from({ length: N / 3 }, (_, at) => `${c(0x4e00 + at)}${c(0x301)}`).join(''),
+  ],
   [
     'a Hindi paragraph',
     'राष्ट्रीय स्वास्थ्य मिशन के अंतर्गत प्रशिक्षित स्वास्थ्यकर्मियों '.repeat(1100).slice(0, N),

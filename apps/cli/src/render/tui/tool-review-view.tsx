@@ -62,7 +62,7 @@ import {
 import { rowSegments } from './legend-row.js';
 import { EmphText } from './emphasis-view.js';
 import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
-import { sheetRule, type SheetRole } from './sheet-frame.js';
+import { inkRows, sheetRule, type SheetRole } from './sheet-frame.js';
 import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 import { colorProps, dimProps } from './projection.js';
 import {
@@ -74,7 +74,7 @@ import {
 } from './tool-review-projection.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import { displayWidth } from './viewport.js';
 
 const escaped = (text: string): string => escapeReviewText(text).join('');
 
@@ -831,7 +831,15 @@ function ReviewCardBody({
           <Text {...dimProps(color)}>
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
-          <Text wrap="truncate-end">{`Reason to deny: ${inkSafe(inputDisplay(review.denial))}${glyphOf('caret', plain)}`}</Text>
+          <Text wrap="truncate-end">
+            {
+              inkRows(
+                `Reason to deny: ${inputDisplay(review.denial)}${glyphOf('caret', plain)}`,
+                Math.max(1, columns - 2),
+                'truncate',
+              )[0]
+            }
+          </Text>
           <Text wrap="truncate-end">
             {legend(
               [{ keys: 'Enter', verb: 'deny and continue' }, STOP_KEY],

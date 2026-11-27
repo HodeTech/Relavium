@@ -7,7 +7,7 @@ import {
   type SheetLine,
   type SheetSpan,
 } from '../render/tui/sheet-frame.js';
-import { displayWidth, sliceDisplayColumns, wrapWords } from '../render/tui/viewport.js';
+import { displayWidth, fitColumns, wrapWords } from '../render/tui/viewport.js';
 import type { BoundAgentView } from './bound-agent-view.js';
 
 /**
@@ -109,16 +109,9 @@ export function nameText(view: BoundAgentView): string {
  * end of its path, which a cut at the end would remove first. A wide character that straddles the cut is left out.
  */
 function tailClipped(text: string, width: number): string {
-  const total = displayWidth(text);
-  if (total <= width) return text;
-  if (width <= 1) return sliceDisplayColumns(text, total - Math.max(0, width), total);
-  let from = total - (width - 1);
-  let kept = sliceDisplayColumns(text, from, total);
-  while (displayWidth(kept) > width - 1 && from < total) {
-    from += 1;
-    kept = sliceDisplayColumns(text, from, total);
-  }
-  return `…${kept}`;
+  if (displayWidth(text) <= width) return text;
+  if (width <= 1) return fitColumns(text, width, 'end');
+  return `…${fitColumns(text, width - 1, 'end')}`;
 }
 
 /** One name of the grant as the sheet says it: with its mark when the host does not wire it. */

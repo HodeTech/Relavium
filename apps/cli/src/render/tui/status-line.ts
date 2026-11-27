@@ -2,7 +2,7 @@ import { AMOUNT_UNAVAILABLE, cutPathLead, cutPathNames, PATH_ELLIPSIS } from '..
 import { flowLine } from './flow-text.js';
 import { homeMargin } from './home-layout.js';
 import { LEGEND_SEPARATOR } from './legend.js';
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
+import { displayWidth, fitColumns } from './viewport.js';
 
 /**
  * ONE pure model for the status line of the Home and of a chat
@@ -108,21 +108,14 @@ export interface StatusLine {
 
 // ── measuring and cutting ───────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The first `columns` display columns of `text` as whole grapheme clusters (a wide character that would straddle the edge is left out). */
-function headWithin(text: string, columns: number): string {
-  if (columns < 1) return '';
-  const head = sliceDisplayColumns(text, 0, columns);
-  return displayWidth(head) <= columns ? head : sliceDisplayColumns(text, 0, columns - 1);
+/** The first `columns` display columns of `text` as whole grapheme clusters that fit ({@link fitColumns}: one that would straddle the edge is left out). */
+function headWithin(text: string, columns: number, whole: number = columns): string {
+  return fitColumns(text, columns, 'start', whole);
 }
 
 /** The last `columns` display columns of `text` as whole grapheme clusters (the same rule, from the end). */
-function tailWithin(text: string, columns: number): string {
-  if (columns < 1) return '';
-  const total = displayWidth(text);
-  const tail = sliceDisplayColumns(text, total - columns, total);
-  return displayWidth(tail) <= columns
-    ? tail
-    : sliceDisplayColumns(text, total - columns + 1, total);
+function tailWithin(text: string, columns: number, whole: number = columns): string {
+  return fitColumns(text, columns, 'end', whole);
 }
 
 /**
@@ -132,7 +125,7 @@ function tailWithin(text: string, columns: number): string {
 export function keepStart(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
   if (width < 1) return '';
-  return `${headWithin(text, width - 1)}${PATH_ELLIPSIS}`;
+  return `${headWithin(text, width - 1, width)}${PATH_ELLIPSIS}`;
 }
 
 /**
@@ -146,7 +139,8 @@ export function keepEnds(text: string, width: number): string {
   if (width < 3) return keepStart(text, width);
   const kept = width - 1;
   const tailColumns = Math.max(1, Math.floor(kept / 4));
-  return `${headWithin(text, kept - tailColumns)}${PATH_ELLIPSIS}${tailWithin(text, tailColumns)}`;
+  // each end is a piece of the row: what is too wide to show at all is judged against the row, not the piece
+  return `${headWithin(text, kept - tailColumns, width)}${PATH_ELLIPSIS}${tailWithin(text, tailColumns, width)}`;
 }
 
 /**

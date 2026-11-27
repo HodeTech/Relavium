@@ -10,7 +10,7 @@ import { emphasize } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { moreAboveText, moreBelowText } from './sheet-frame.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The live multi-line prompt with the cursor drawn at its position (2.5.D step 2) — shared by `ChatView`
@@ -110,10 +110,11 @@ export function PromptEditor(
         return (
           <Text key={rowOffset} {...colorProps(color, 'cyan')}>
             {rowOffset === 0 ? lead : hang}
-            {/* ink wraps an unwindowed draft itself: given in the form ink counts as a terminal draws it (review round 4, R4-S-1) */}
-            {inkSafe(sanitizeInline(row.before))}
+            {/* ink wraps a draft only where it counts it as a terminal draws it: every host passes a window, and a draft that holds a
+                cluster ink would count narrower is drawn as the window's own rows (`promptWindow`, review round 5) */}
+            {sanitizeInline(row.before)}
             {row.at !== undefined && emphasize(cursorCell, 'inverse')}
-            {inkSafe(sanitizeInline(row.after))}
+            {sanitizeInline(row.after)}
           </Text>
         );
       })}

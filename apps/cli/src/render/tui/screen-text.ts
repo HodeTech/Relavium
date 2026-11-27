@@ -1,16 +1,18 @@
 /**
- * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 to 4: S-1, S-3, S2-1, S2-4, C2-1, M2-3, R3S-1 to R3S-5,
- * R4-S-3, R4-S-6): what untrusted text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
+ * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 to 5: S-1, S-3, S2-1, S2-4, C2-1, M2-3, R3S-1 to R3S-5,
+ * R4-S-3, R4-S-6, R5-S-5): what untrusted text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
  *
  * **Why.** The chat lays a row out with the width the layout measures (`string-width`), and the grid's margin guarantee is exact in that layout:
  * a row is at most the content column wide, in a cell that starts at the margin. A terminal measures some characters differently, and a row the
  * layout sized to fit can then reach the right edge on screen: the terminal wraps it, and the rest starts at column 0 of the next physical row,
  * the margin, where the host draws who spoke. The reference terminal is tmux 3.7b, measured code point by code point over the planes text uses,
  * sequence by sequence for every class below, and on a SEQUENCE differential of random strings over all of Unicode and natural paragraphs (each
- * string written after an `A`, the cursor read back with `ESC[6n`; review rounds 2 to 4); `terminal-widths.test.ts` holds those tables and holds
- * the LAYOUT's measure (`viewport.ts` `displayWidth`: `string-width`, and every spacing character of an Indic conjunct or a Prepend cluster, which
- * this filter does not touch: review round 4, R4-S-1) of every FILTERED measured string to at least what tmux drew for it; and
- * `terminal-wrap.test-support.ts` draws the witness frames with them. All of it is tmux 3.7b only.
+ * string written after an `A`, the cursor read back with `ESC[6n`; review rounds 2 to 5); `terminal-widths.test.ts` holds those tables and holds
+ * the LAYOUT's measure (`viewport.ts` `displayWidth`: every cluster of several code points counts the sum of its code points unless it is a join
+ * tmux performs, a finite whitelist measured exhaustively: review round 5, R5-S-4) of every FILTERED measured string to at least what tmux drew
+ * for it; and `terminal-wrap.test-support.ts` draws the witness frames with them. The MEASURE is the guarantee for a cluster; this filter is for
+ * what a measure of clusters cannot cover (a single code point tmux draws wider than `string-width`, a join tmux makes across two clusters) and for
+ * what reads badly. All of it is tmux 3.7b only.
  *
  * **Where it runs: before the layout.** A rewrite below can change the width the layout measures (a decomposed AM, a selector added), so the
  * filter runs on the text BEFORE anything lays it out: a transcript entry's source (`chat-projection.ts` `entryRows`), the stream before the live
@@ -29,7 +31,11 @@
  *   draws two columns wide (`a`+U+FE0F, a digit+U+FE0F: two on tmux), a lone surrogate (written as U+FFFD), the Hangul and Vietnamese tone marks
  *   U+302E, U+302F, U+16FF0, U+16FF1 (spacing marks the layout counts as 0 columns, tmux 2), and whatever follows an emoji the layout draws wide
  *   only as a whole (a flag, `❤️`, a keycap, `☝️`, an emoji zero-width-joiner sequence): a joiner, a combining mark, a selector after it makes the
- *   cluster one the layout no longer recognises and counts one column, tmux two.
+ *   cluster one the layout no longer recognises and counts one column, tmux two. Among the default-ignorable code points are the Mongolian free
+ *   variation selectors U+180B to U+180D and U+180F (U+182D U+180C is drawn as U+182D: the variant form a Mongolian font would pick is not drawn; review round 5,
+ *   recorded). A zero width joiner before a pictograph that does not follow an emoji (a letter and its marks before it): tmux glues the pictograph
+ *   into the letter's cell, and a letter with five to seven marks then draws one column wider than its two clusters count (review round 5,
+ *   R5-S-5); a joiner before a letter (Indic and Arabic shaping) is kept.
  * - **Rewritten** to a form both measure alike: the Thai and Lao vowel AM (U+0E33, U+0EB3) as its compatibility decomposition (U+0E4D U+0E32,
  *   U+0ECD U+0EB2: the same glyphs); a regional indicator that is not half of a flag followed by a zero width non-joiner (a pair that is not a
  *   flag is two columns on tmux and one to the layout; a flag stays as it is and gets no joiner after it, which would make it one column to the
@@ -225,6 +231,10 @@ function passMatch(match: string, groups: readonly (string | undefined)[]): stri
  */
 const DROP_PASS = new RegExp(
   [
+    // a joiner before a pictograph that does not follow an emoji (a letter, its marks): tmux glues the pictograph into the letter's cell, and a
+    // letter with five or more marks then draws one column wider than the two clusters count (review round 5, R5-S-5); Indic and Arabic joiners
+    // stand before letters and are kept
+    `(?<![\\p{Extended_Pictographic}\\p{Emoji_Modifier}\\p{Regional_Indicator}${VS15}${VS16}${KEYCAP}${TAG_FIRST}-${TAG_LAST}])(?:${ZWNJ}|${ZWJ})*${ZWJ}(?=[${VS15}${VS16}]*\\p{Extended_Pictographic})`,
     `(${BLACK_FLAG}[${TAG_FIRST}-${TAG_LAST}]+)`,
     // a run of joiners, whole (one match, whatever follows: linear), and the selectors after it, which select nothing and go
     `((?:${ZWNJ}|${ZWJ})+)(?:${VS15}|${VS16})*`,

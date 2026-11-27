@@ -34,7 +34,7 @@ import {
 import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
 import { escapeScreenText, screenText } from './screen-text.js';
 import { sheetRule } from './sheet-frame.js';
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
+import { displayWidth, fitColumns } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
 export const QUESTION_CARD_MAX_BODY_ROWS = 9;
@@ -115,8 +115,7 @@ function middleCut(text: string, room: number): string {
   if (displayWidth(text) <= room) return text;
   const left = Math.max(0, Math.floor((room - 1) / 2));
   const right = Math.max(0, room - 1 - left);
-  const total = displayWidth(text);
-  return `${sliceDisplayColumns(text, 0, left)}…${sliceDisplayColumns(text, total - right, total)}`;
+  return `${fitColumns(text, left, 'start', room)}…${fitColumns(text, right, 'end', room)}`;
 }
 
 /**
@@ -197,31 +196,13 @@ export function hardWrap(text: string, width: number): string[] {
 /** The LAST `width` columns of `text` (the end of a long own-text line, so the cursor stays visible), with a leading ellipsis. */
 function tail(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
-  const graphemes = [...segmenter.segment(text)].map((part) => part.segment);
-  let out = '';
-  let used = 1; // the ellipsis
-  for (let index = graphemes.length - 1; index >= 0; index -= 1) {
-    const segment = graphemes[index] ?? '';
-    const cells = displayWidth(segment);
-    if (used + cells > width) break;
-    out = segment + out;
-    used += cells;
-  }
-  return `…${out}`;
+  return `…${fitColumns(text, width - 1, 'end')}`;
 }
 
 /** The first `width` columns of `text`, with a trailing ellipsis when it was cut. */
 function head(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
-  let out = '';
-  let used = 1; // the ellipsis
-  for (const { segment } of segmenter.segment(text)) {
-    const cells = displayWidth(segment);
-    if (used + cells > width) break;
-    out += segment;
-    used += cells;
-  }
-  return `${out}…`;
+  return `${fitColumns(text, width - 1)}…`;
 }
 
 function mark(multiSelect: boolean, chosen: boolean): string {
@@ -422,14 +403,7 @@ function answerRows(lines: readonly string[], allowed: number, width: number): s
   const total = [...lines.join('')].length;
   const lastWidth = last === 0 ? width : width - REVIEW_INDENT.length;
   const room = Math.max(0, lastWidth - displayWidth(hiddenNotice(total)) - 1);
-  let kept = '';
-  let used = 0;
-  for (const { segment } of segmenter.segment(shown[last] ?? '')) {
-    const cells = displayWidth(segment);
-    if (used + cells > room) break;
-    kept += segment;
-    used += cells;
-  }
+  const kept = fitColumns(shown[last] ?? '', room);
   const before = [...shown.slice(0, last).join('')].length + [...kept].length;
   const rows = [...shown.slice(0, last), `${kept} ${hiddenNotice(total - before)}`];
   return rows.map((row, at) => head(indent(row, at), width));

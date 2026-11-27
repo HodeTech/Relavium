@@ -94,9 +94,10 @@ describe('waitClockText — the alternate screen’s clock, quantised to the uni
 describe('waitSinceText — the inline renderer’s static clock', () => {
   it('names the local time the wait began, in HH:MM, and nothing that ticks', () => {
     const since = new Date(2026, 10, 27, 9, 5, 41).getTime();
-    expect(waitSinceText(since)).toBe('waiting since 09:05');
+    // The caller's `now` is passed (a default of the wall clock would add the day once the wait began before today).
+    expect(waitSinceText(since, since + 60_000)).toBe('waiting since 09:05');
     // The same text a minute, an hour later: it is the origin, not an elapsed time.
-    expect(waitSinceText(since)).toBe(waitSinceText(since));
+    expect(waitSinceText(since, since + 60_000)).toBe(waitSinceText(since, since + 3_600_000));
   });
 
   it('an origin that is not a time draws the bare word', () => {

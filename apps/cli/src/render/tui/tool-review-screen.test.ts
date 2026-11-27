@@ -2520,13 +2520,14 @@ describe('escapedFit never separates a base from the zero-width mark after it', 
 });
 
 describe('escapedFit verifies its estimate, in both directions: the whole decides, not the sum of the pieces', () => {
-  // `☝🏻` (a hand and a skin-tone modifier), a decomposed Hangul syllable and a keycap with a modifier: the pieces add up to
-  // MORE than the cluster is wide, where a keycap's pieces add up to LESS. Either way the cut must be measured as a whole.
+  // An emoji zero-width-joiner sequence, a decomposed Hangul syllable and a couple with a heart: the pieces add up to MORE than the cluster is
+  // wide, where a keycap's pieces add up to LESS. Either way the cut must be measured as a whole. (Review round 5, R5-S-4: a toned hand and a
+  // toned keycap, the samples before, are counted by their code points now, as tmux draws a toned emoji, so their pieces no longer add up to more.)
   const JAMO = '한';
   const samples: readonly (readonly [string, string])[] = [
-    ['a hand with a skin tone', '☝🏻'.repeat(40)],
+    ['a family', '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}'.repeat(40)],
     ['decomposed Hangul', JAMO.repeat(30)],
-    ['a keycap with a skin tone', '1⃣🏻'.repeat(40)],
+    ['a couple with a heart', '\u{1F469}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F468}'.repeat(40)],
   ];
 
   it.each(samples)(
@@ -2603,10 +2604,15 @@ describe('escapedFit gives the base back when the shorter cut would not fit (wid
     MARK +
     'TAIL';
 
-  it('has the premise: a keycap is two cells, and the same keycap with a modifier is one', () => {
+  it('has the premise: a keycap is two cells, a mark none, and the width of a prefix is not monotone', () => {
     expect(displayWidth(KEYCAP)).toBe(2);
-    expect(displayWidth(KEYCAP + MODIFIER)).toBe(1);
     expect(displayWidth(MARK)).toBe(0);
+    // review round 5 (R5-S-4): the same keycap with a modifier was ONE cell to `string-width`; the measure counts a toned cluster by its code
+    // points, as tmux draws it, so it is the keycap's one, the keycap's none and the tone's two. Width is still not monotone in a prefix: a
+    // family's first two members are two pictographs (four cells), the family one join (two)
+    expect(displayWidth(KEYCAP + MODIFIER)).toBe(3);
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}')).toBe(4);
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}')).toBe(2);
   });
 
   it('keeps a start cut within the width, ending in an ellipsis, for the security sitting’s input at widths 8..120, 1..6 keycaps and every mark count around the cap', () => {

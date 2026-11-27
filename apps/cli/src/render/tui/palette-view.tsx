@@ -11,7 +11,8 @@ import { paletteGapCount, paletteLines, paletteRowBudget } from './palette-windo
 import { colorProps, dimProps } from './projection.js';
 import { SelectableNote, SelectableText, selectionMarker } from './selectable-text.js';
 import { keepStart } from './status-line.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import { displayWidth } from './viewport.js';
+import { inkRows } from './sheet-frame.js';
 
 /**
  * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the palette's rows ({@link PaletteList.rows}), the very list
@@ -43,6 +44,11 @@ export interface PaletteViewProps {
    * and the legend row: the chrome of three rows is the same). Absent ⇒ the layout decides.
    */
   readonly bare?: boolean | undefined;
+  /**
+   * The columns the query row is drawn in (every host passes it): a query ink would count narrower than a terminal draws it is cut to them by the
+   * layout's measure first ({@link inkRows}, review round 5). Absent only where a test draws the view alone.
+   */
+  readonly columns?: number | undefined;
 }
 
 /** The words a dim row carries instead of its description: they read without colour (`unavailable · no conversation to clear`). */
@@ -130,7 +136,9 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
   const rows = list.rows;
   const query = (
     <Text key="query" {...dimProps(color)} wrap="truncate-end">
-      {`/${inkSafe(sanitizeInline(state.query))}`}
+      {props.columns === undefined
+        ? `/${sanitizeInline(state.query)}`
+        : inkRows(`/${sanitizeInline(state.query)}`, props.columns, 'truncate')[0]}
     </Text>
   );
   const legendLine = (

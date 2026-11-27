@@ -21,6 +21,7 @@ import { paletteQueryEditor, type PaletteBlockPalette } from './palette-block.js
 import { paletteLegend, PaletteView } from './palette-view.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
+import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 import { statusLine } from './status-line.js';
 import { Text } from './text.js';
 
@@ -284,6 +285,8 @@ export function LandingPalette(
         editor={paletteQueryEditor(palette.state.query)}
         color={color}
         glyph={glyphOf('yourTurn', !color)}
+        maxRows={PROMPT_WINDOW_MIN_ROWS}
+        columns={homeContentColumns(props.cols)}
       />
       <Text {...dimProps(color)} wrap="truncate-end">
         {thinRule(homeRailWidth(props.cols), !color)}
@@ -293,6 +296,7 @@ export function LandingPalette(
         state={palette.state}
         color={color}
         maxRows={props.maxRows}
+        columns={homeContentColumns(props.cols)}
         bare
       />
       <Blank rows={props.fillRows} />

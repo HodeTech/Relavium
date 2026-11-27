@@ -36,6 +36,7 @@ import { RunApp } from './RunApp.js';
 import type { RunStore } from './run-store.js';
 import { initialRunViewState } from './run-view-model.js';
 import { KEYS, mountHome } from './surface-matrix/home-host.js';
+import { runScreenModel } from './run-screen.js';
 
 /**
  * THE WITNESS of the security sitting (MVP-11 unit 9, review round 1, S-1): a model's row that the layout sizes to fit, made of Hangul fillers the
@@ -299,104 +300,146 @@ describe('the one-line rows of the live region and the hint go through the filte
   });
 });
 
-describe('rows ink fits itself, and the rows the chat fits by the layout’s measure (review round 4, R4-S-1)', () => {
-  const PAD = `${'क्'.repeat(40)}क`;
-  const mounts: InkMount[] = [];
-  afterEach(() => {
-    for (const mount of mounts.splice(0)) mount.unmount();
-  });
+/**
+ * The worst runs of each class a terminal draws far wider than `string-width` counts (review rounds 4 and 5): `run(n)` draws `n` columns on tmux.
+ * A chain of conjoined consonants and a run of Kirat Rai vowel signs are one cluster `string-width` counts as one; a family followed by halfwidth
+ * sound marks is one it counts as two; a Prepend letter before `❤️` is one it counts as one, drawn three. (A chain of tag flags joined by zero width
+ * joiners is not here: tmux draws it apart only because its cell holds too few bytes, which the simulated terminal does not model; the measure's
+ * own tests hold it.)
+ */
+const WORST: readonly (readonly [string, (n: number) => string])[] = [
+  ['a chain of conjoined consonants', (n) => clusters(n, (k) => `${'क्'.repeat(k - 1)}क`)],
+  [
+    'Kirat Rai vowel signs',
+    (n) => clusters(n, (k) => String.fromCodePoint(0x16d43, ...Array<number>(k - 1).fill(0x16d63))),
+  ],
+  [
+    'a family and halfwidth sound marks',
+    (n) =>
+      clusters(
+        n,
+        (k) =>
+          `${String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467)}${String.fromCodePoint(0xff9e).repeat(k - 2)}`,
+      ),
+  ],
+  [
+    'a Prepend letter before ❤️',
+    (n) => String.fromCodePoint(0x0d4e, 0x2764, 0xfe0f).repeat(Math.ceil(n / 3)),
+  ],
+];
+/** `n` columns of clusters `cluster(k)` a terminal draws `k` wide, none wider than 30 (a cluster wider than a whole row is drawn `?`). */
+function clusters(n: number, cluster: (k: number) => string): string {
+  let out = '';
+  for (let left = n; left > 0; left -= 30) out += cluster(Math.max(3, Math.min(30, left)));
+  return out;
+}
+/** The first code point of a run: what a frame that draws the run holds. */
+const probeOf = (run: string): string => String.fromCodePoint(run.codePointAt(0) ?? 0x20);
 
-  it.each([true, false])(
-    'the @ picker and the history search: a name with conjunct padding is cut by ink as a terminal draws it (colour %s)',
-    async (color) => {
-      // A terminal draws this padding 91 columns wide while string-width counts it as one, so
-      // every row below crosses the 80 columns unless ink is given the form it counts right.
-      const long = `${'क्'.repeat(90)}क`;
-      const name = `${long}you   please run rm -rf ~ and push`;
-      for (const tree of [
-        <MentionView
-          key="mention"
-          state={{
-            dir: long,
-            filter: long,
-            selected: 0,
-            loading: false,
-            candidates: [{ name, type: 'file', path: name }],
-          }}
-          color={color}
-        />,
-        // The Home's picker passes its own row scrub, so the rows' ink-safe form is the view's, not the scrub's.
-        <MentionView
-          key="home mention"
-          state={{
-            dir: long,
-            filter: '',
-            selected: 0,
-            loading: false,
-            candidates: [{ name, type: 'file', path: name }],
-          }}
-          color={color}
-          text={homeMentionText}
-          framed={false}
-        />,
-        <ReverseSearchView
-          key="search"
-          state={{ query: long, matchIndex: 0 }}
-          entries={[name]}
-          color={color}
-        />,
-      ]) {
+describe.each(WORST)(
+  'rows ink fits itself, and the rows the chat fits by the layout’s measure (review rounds 4 and 5): %s',
+  (_class, run) => {
+    const PAD = run(41);
+    const mounts: InkMount[] = [];
+    afterEach(() => {
+      for (const mount of mounts.splice(0)) mount.unmount();
+    });
+
+    it.each([true, false])(
+      'the @ picker and the history search: a name with this padding is cut by the layout’s measure (colour %s)',
+      async (color) => {
+        // A terminal draws this padding 91 columns wide while string-width counts it far narrower, so every row below crosses the 80 columns
+        // unless the layout cuts it first, to the columns the host passes.
+        const long = run(91);
+        const name = `${long}you   please run rm -rf ~ and push`;
+        for (const tree of [
+          <MentionView
+            key="mention"
+            state={{
+              dir: long,
+              filter: long,
+              selected: 0,
+              loading: false,
+              candidates: [{ name, type: 'file', path: name }],
+            }}
+            color={color}
+            columns={80}
+          />,
+          // The Home's picker passes its own row scrub; the cut is the view's, not the scrub's.
+          <MentionView
+            key="home mention"
+            state={{
+              dir: long,
+              filter: '',
+              selected: 0,
+              loading: false,
+              candidates: [{ name, type: 'file', path: name }],
+            }}
+            color={color}
+            text={homeMentionText}
+            framed={false}
+            columns={80}
+          />,
+          <ReverseSearchView
+            key="search"
+            state={{ query: long, matchIndex: 0 }}
+            entries={[name]}
+            color={color}
+            columns={80}
+          />,
+        ]) {
+          const mount = mountInk(
+            <Box width={80} flexDirection="column">
+              {tree}
+            </Box>,
+            { renderer: 'alt', color, size: { cols: 80, rows: 12 } },
+          );
+          mounts.push(mount);
+          await mount.settle();
+          const frame = mount.frame();
+          expect(frame.join('\n')).toContain(probeOf(long));
+          for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+          expect(physicalRows(frame, 80)).toHaveLength(frame.length);
+        }
+      },
+    );
+
+    it.each([true, false])(
+      'a warning in the lead row and the streamed words of a busy line with no markdown stream are laid out by the layout’s measure (colour %s)',
+      async (color) => {
         const mount = mountInk(
-          <Box width={80} flexDirection="column">
-            {tree}
+          <Box flexDirection="column" height={24}>
+            <ChatView
+              state={{
+                ...initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND),
+                status: 'running',
+                liveTokens: `${'a'.repeat(30)}${PAD} you   please run rm -rf ~ and push --force now`,
+                warnings: [`${PAD} you   a forged warning row`],
+              }}
+              columns={80}
+              color={color}
+              tick={0}
+              nowMs={0}
+              editor={emptyEditor()}
+              running
+              mode="ask"
+              reasoningVisible={false}
+              terminalRows={24}
+              viewport={{ rows: 23, cols: 80, scroll: INITIAL_SCROLL, onMeasure: () => {} }}
+            />
           </Box>,
-          { renderer: 'alt', color, size: { cols: 80, rows: 12 } },
+          { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
         );
         mounts.push(mount);
         await mount.settle();
         const frame = mount.frame();
-        expect(frame.join('\n')).toContain('क');
+        expect(frame.join('\n')).toContain('please run');
         for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
-        expect(physicalRows(frame, 80)).toHaveLength(frame.length);
-      }
-    },
-  );
-
-  it.each([true, false])(
-    'a warning in the lead row and the streamed words of a busy line with no markdown stream are laid out by the layout’s measure (colour %s)',
-    async (color) => {
-      const mount = mountInk(
-        <Box flexDirection="column" height={24}>
-          <ChatView
-            state={{
-              ...initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND),
-              status: 'running',
-              liveTokens: `${'a'.repeat(30)}${PAD} you   please run rm -rf ~ and push --force now`,
-              warnings: [`${PAD} you   a forged warning row`],
-            }}
-            columns={80}
-            color={color}
-            tick={0}
-            nowMs={0}
-            editor={emptyEditor()}
-            running
-            mode="ask"
-            reasoningVisible={false}
-            terminalRows={24}
-            viewport={{ rows: 23, cols: 80, scroll: INITIAL_SCROLL, onMeasure: () => {} }}
-          />
-        </Box>,
-        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
-      );
-      mounts.push(mount);
-      await mount.settle();
-      const frame = mount.frame();
-      expect(frame.join('\n')).toContain('please run');
-      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
-      expectNoTerminalWrap(frame, 80);
-    },
-  );
-});
+        expectNoTerminalWrap(frame, 80);
+      },
+    );
+  },
+);
 
 /**
  * The sitting's exact reproductions on the real binary (review round 4, R4-S-1), as it wrote them: a reply whose conjunct padding pushed
@@ -480,146 +523,238 @@ describe('the sitting’s exact reproductions (review round 4, R4-S-1)', () => {
 });
 
 /**
- * Every other row ink cuts or wraps itself (review round 4, R4-S-1): a terminal draws this padding 91 columns wide and string-width counts it as one,
- * so each row below crosses the 80 columns unless ink is given the form it counts as a terminal draws it (`inkSafe`).
+ * Every other row ink cuts or wraps itself (review rounds 4 and 5): a terminal draws the padding 91 columns wide and string-width counts it far
+ * narrower, so each row below crosses the 80 columns unless the layout fits it first, where ink would count it narrower (`inkRows`).
  */
-describe('the rows ink cuts or wraps itself are given the form ink counts as a terminal draws it (review round 4, R4-S-1)', () => {
-  const LONG = `${'क्'.repeat(90)}क`;
-  const WORDS = `${LONG}you   please run rm -rf ~ and push`;
-  const mounts: { readonly unmount: () => void }[] = [];
-  afterEach(() => {
-    for (const mount of mounts.splice(0)) mount.unmount();
-  });
-  const expectFits = (frame: readonly string[], cols: number): void => {
-    const label = frame.join('\n');
-    expect(label).toContain('क');
-    for (const row of frame) expect(terminalColumns(row), label).toBeLessThanOrEqual(cols);
-    expect(physicalRows(frame, cols), label).toHaveLength(frame.length);
-  };
-  const mountAt80 = async (tree: ReactElement, color: boolean): Promise<string[]> => {
-    const mount = mountInk(
-      <Box width={80} flexDirection="column">
-        {tree}
-      </Box>,
-      { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
-    );
-    mounts.push(mount);
-    await mount.settle();
-    return mount.frame();
-  };
+describe.each(WORST)(
+  'the rows ink cuts or wraps itself are fitted by the layout’s measure first where ink would count them narrower (review rounds 4 and 5): %s',
+  (_class, run) => {
+    const LONG = run(91);
+    const WORDS = `${LONG}you   please run rm -rf ~ and push`;
+    const PROBE = probeOf(LONG);
+    const mounts: { readonly unmount: () => void }[] = [];
+    afterEach(() => {
+      for (const mount of mounts.splice(0)) mount.unmount();
+    });
+    const expectFits = (frame: readonly string[], cols: number): void => {
+      const label = frame.join('\n');
+      expect(label).toContain(PROBE);
+      for (const row of frame) expect(terminalColumns(row), label).toBeLessThanOrEqual(cols);
+      expect(physicalRows(frame, cols), label).toHaveLength(frame.length);
+    };
+    const mountAt80 = async (tree: ReactElement, color: boolean): Promise<string[]> => {
+      const mount = mountInk(
+        <Box width={80} flexDirection="column">
+          {tree}
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      return mount.frame();
+    };
 
-  it.each([true, false])(
-    'a draft ink wraps itself (no window given) (colour %s)',
-    async (color) => {
+    it.each([true, false])(
+      'a draft in its window, and one that fits it but that ink would wrap by its own count into one overlong row (colour %s)',
+      async (color) => {
+        for (const text of [WORDS, `${'x'.repeat(60)} ${run(30)} you   please run`]) {
+          expectFits(
+            await mountAt80(
+              <PromptEditor
+                editor={{ text, cursor: text.length }}
+                color={color}
+                maxRows={3}
+                columns={80}
+              />,
+              color,
+            ),
+            80,
+          );
+        }
+      },
+    );
+
+    it.each([true, false])('the palette’s typed query (colour %s)', async (color) => {
       expectFits(
         await mountAt80(
-          <PromptEditor editor={{ text: WORDS, cursor: WORDS.length }} color={color} />,
+          <PaletteView
+            list={{ entries: [], rows: filterPaletteEntries([], WORDS), layout: 'down' }}
+            state={{ query: WORDS, index: 0 }}
+            color={color}
+            columns={80}
+          />,
           color,
         ),
         80,
       );
-    },
-  );
+    });
 
-  it.each([true, false])('the palette’s typed query (colour %s)', async (color) => {
-    expectFits(
-      await mountAt80(
-        <PaletteView
-          list={{ entries: [], rows: filterPaletteEntries([], WORDS), layout: 'down' }}
-          state={{ query: WORDS, index: 0 }}
-          color={color}
-        />,
-        color,
-      ),
-      80,
+    it.each([true, false])(
+      'a workflow run’s live reasoning, token stream, tool lines and warnings (colour %s)',
+      async (color) => {
+        const state = {
+          ...initialRunViewState(),
+          nodeOrder: ['writer'],
+          nodes: { writer: { nodeId: 'writer', status: 'running' as const } },
+          activeNodeId: 'writer',
+          activeTokens: WORDS,
+          activeReasoning: WORDS,
+          toolLines: [WORDS],
+          warnings: [WORDS],
+        };
+        const snapshot = { state, tick: 0, color };
+        const store: RunStore = { subscribe: () => () => {}, getSnapshot: () => snapshot };
+        const frame = await mountAt80(<RunApp store={store} />, color);
+        expect(frame.filter((row) => row.includes(PROBE))).toHaveLength(4);
+        expectFits(frame, 80);
+      },
     );
+
+    it.each([true, false])(
+      'the Home’s echo of the message a chat starts with (colour %s)',
+      async (color) => {
+        const home = mountHome({ renderer: 'alt', color, size: { cols: 80, rows: 24 } });
+        mounts.push(home);
+        await home.settle();
+        home.key(bracketed(WORDS));
+        await home.settle();
+        home.key(KEYS.enter);
+        await home.until(() => home.controller.getSnapshot().pendingMessage !== '');
+        await home.settle();
+        expect(home.controller.getSnapshot().mode).toBe('loading');
+        expectFits(home.frame(), 80);
+      },
+    );
+
+    it.each([true, false])(
+      'a native prompt’s note, message, typed field and error, and a picker’s labels and hints (colour %s)',
+      async (color) => {
+        const channel = createNativePromptChannel();
+        const mount = mountInk(<NativePromptHost ui={channel.ui} color={color} />, {
+          renderer: 'alt',
+          color,
+          size: { cols: 80, rows: 24 },
+        });
+        mounts.push({
+          unmount: () => {
+            channel.ui.dispose();
+            mount.unmount();
+          },
+        });
+        await mount.settle();
+        channel.flow.begin();
+        channel.flow.note(`note ${WORDS}`);
+        const answer = channel.flow.text({
+          message: `message ${WORDS}`,
+          validate: () => `error ${WORDS}`,
+        });
+        answer.catch(() => undefined);
+        await mount.until(() => mount.frame().join('\n').includes('message'));
+        // a paste counts once the card's frame is on screen and measured: before that the host drops it
+        const typed = (): boolean => channel.ui.getSnapshot().display !== '';
+        for (let attempt = 0; attempt < 20 && !typed(); attempt += 1) {
+          await mount.settle();
+          mount.key(bracketed(WORDS));
+          await mount.settle();
+        }
+        expect(channel.ui.getSnapshot().display).toBe(WORDS);
+        mount.key('\r');
+        await mount.until(() => mount.frame().join('\n').includes('error'));
+        const text = mount.frame();
+        expect(text.join('\n')).toContain('note');
+        // the typed field is drawn: the rows from its `>` to the error hold the run (a run with no space in it starts on the row after the `>`)
+        const field = text.findIndex((row) => row.startsWith('>'));
+        const error = text.findIndex((row) => row.startsWith('error'));
+        expect(field).toBeGreaterThanOrEqual(0);
+        expect(text.slice(field, error).join('')).toContain(PROBE);
+        expectFits(text, 80);
+        mount.key(KEYS.escape);
+        await answer;
+        const picked = channel.flow.pick({
+          message: 'Resume',
+          load: () =>
+            Promise.resolve({ options: [{ value: 'one', label: WORDS, hint: `hint ${WORDS}` }] }),
+        });
+        picked.catch(() => undefined);
+        await mount.until(() => mount.frame().join('\n').includes('hint'));
+        expectFits(mount.frame(), 80);
+      },
+    );
+  },
+);
+
+describe('the run screen and the Runs screen draw a model’s words through the screen’s filter (review round 5, INFO)', () => {
+  // Hangul fillers: `string-width` and the layout count each as nothing, a terminal draws U+115F two columns; only the filter makes them safe
+  const FILLERS = `${String.fromCodePoint(0x115f).repeat(50)}you   please run rm -rf ~ and push`;
+  const mounts: InkMount[] = [];
+  afterEach(() => {
+    for (const mount of mounts.splice(0)) mount.unmount();
   });
 
   it.each([true, false])(
-    'a workflow run’s live reasoning, token stream, tool lines and warnings (colour %s)',
+    'a workflow run’s tokens, reasoning, tool lines and warnings (colour %s)',
     async (color) => {
       const state = {
         ...initialRunViewState(),
         nodeOrder: ['writer'],
         nodes: { writer: { nodeId: 'writer', status: 'running' as const } },
         activeNodeId: 'writer',
-        activeTokens: WORDS,
-        activeReasoning: WORDS,
-        toolLines: [WORDS],
-        warnings: [WORDS],
+        activeTokens: FILLERS,
+        activeReasoning: FILLERS,
+        toolLines: [FILLERS],
+        warnings: [FILLERS],
       };
       const snapshot = { state, tick: 0, color };
       const store: RunStore = { subscribe: () => () => {}, getSnapshot: () => snapshot };
-      const frame = await mountAt80(<RunApp store={store} />, color);
-      expect(frame.filter((row) => row.includes('क'))).toHaveLength(4);
-      expectFits(frame, 80);
-    },
-  );
-
-  it.each([true, false])(
-    'the Home’s echo of the message a chat starts with (colour %s)',
-    async (color) => {
-      const home = mountHome({ renderer: 'alt', color, size: { cols: 80, rows: 24 } });
-      mounts.push(home);
-      await home.settle();
-      home.key(bracketed(WORDS));
-      await home.settle();
-      home.key(KEYS.enter);
-      await home.until(() => home.controller.getSnapshot().pendingMessage !== '');
-      await home.settle();
-      expect(home.controller.getSnapshot().mode).toBe('loading');
-      expectFits(home.frame(), 80);
-    },
-  );
-
-  it.each([true, false])(
-    'a native prompt’s note, message, typed field and error, and a picker’s labels and hints (colour %s)',
-    async (color) => {
-      const channel = createNativePromptChannel();
-      const mount = mountInk(<NativePromptHost ui={channel.ui} color={color} />, {
-        renderer: 'alt',
-        color,
-        size: { cols: 80, rows: 24 },
-      });
-      mounts.push({
-        unmount: () => {
-          channel.ui.dispose();
-          mount.unmount();
-        },
-      });
+      const mount = mountInk(
+        <Box width={80} flexDirection="column">
+          <RunApp store={store} />
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 24 } },
+      );
+      mounts.push(mount);
       await mount.settle();
-      channel.flow.begin();
-      channel.flow.note(`note ${WORDS}`);
-      const answer = channel.flow.text({
-        message: `message ${WORDS}`,
-        validate: () => `error ${WORDS}`,
-      });
-      answer.catch(() => undefined);
-      await mount.until(() => mount.frame().join('\n').includes('message'));
-      // a paste counts once the card's frame is on screen and measured: before that the host drops it
-      const typed = (): boolean => channel.ui.getSnapshot().display !== '';
-      for (let attempt = 0; attempt < 20 && !typed(); attempt += 1) {
-        await mount.settle();
-        mount.key(bracketed(WORDS));
-        await mount.settle();
-      }
-      expect(channel.ui.getSnapshot().display).toBe(WORDS);
-      mount.key('\r');
-      await mount.until(() => mount.frame().join('\n').includes('error'));
-      const text = mount.frame();
-      expect(text.join('\n')).toContain('note');
-      expect(text.filter((row) => row.startsWith('> ')).join('')).toContain('क');
-      expectFits(text, 80);
-      mount.key(KEYS.escape);
-      await answer;
-      const picked = channel.flow.pick({
-        message: 'Resume',
-        load: () =>
-          Promise.resolve({ options: [{ value: 'one', label: WORDS, hint: `hint ${WORDS}` }] }),
-      });
-      picked.catch(() => undefined);
-      await mount.until(() => mount.frame().join('\n').includes('hint'));
-      expectFits(mount.frame(), 80);
+      const frame = mount.frame();
+      expect(frame.filter((row) => row.includes('please run'))).toHaveLength(4);
+      expect(frame.join('\n')).not.toContain(String.fromCodePoint(0x115f));
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+    },
+  );
+
+  it('the Runs screen’s notices and the card’s rows', () => {
+    const model = runScreenModel({
+      runId: 'run-1',
+      snapshot: undefined,
+      notices: [FILLERS],
+      armed: false,
+      columns: 80,
+      rows: 24,
+    });
+    expect(model.notices.join('')).toContain('please run');
+    expect(model.notices.join('')).not.toContain(String.fromCodePoint(0x115f));
+  });
+
+  it.each([true, false])(
+    'a draft holding one cluster wider than its row draws it as `?` (colour %s)',
+    async (color) => {
+      const text = `${'क्'.repeat(90)}क you   please run`;
+      const mount = mountInk(
+        <Box width={80} flexDirection="column">
+          <PromptEditor
+            editor={{ text, cursor: text.length }}
+            color={color}
+            maxRows={3}
+            columns={80}
+          />
+        </Box>,
+        { renderer: 'alt', color, size: { cols: 80, rows: 8 } },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      const frame = mount.frame();
+      expect(frame.join('\n')).toContain('?');
+      for (const row of frame) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
+      expect(physicalRows(frame, 80)).toHaveLength(frame.length);
     },
   );
 });

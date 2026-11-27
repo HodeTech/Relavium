@@ -9,9 +9,14 @@ import { visibleMentions, type MentionState } from './mention.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { screenText } from './screen-text.js';
-import { inkSafe } from './viewport.js';
 import { SelectableText, selectedTone, selectionMarker } from './selectable-text.js';
-import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js';
+import {
+  clipLine,
+  clipPieces,
+  markedWindow,
+  windowMarkers,
+  type MarkedWindow,
+} from './sheet-frame.js';
 
 /** The most candidate rows shown at once — a directory with hundreds of entries scrolls a window around the
  *  selection rather than flooding the terminal (the palette renders all; a directory listing can be far larger). */
@@ -47,6 +52,12 @@ export interface MentionViewProps {
   readonly text?: ((stored: string) => string) | undefined;
   /** Whether the view draws its own legend row and the blank row above it (the chat's); the Home draws the legend on its hint row. Default `true`. */
   readonly framed?: boolean | undefined;
+  /**
+   * The columns the view is drawn in (every host passes it): each row that holds a stored name is cut to it by the layout's own measure before ink
+   * sees it, so ink never fits it (MVP-11 unit 9, review round 5: a cluster ink counts narrower than a terminal draws it would make ink's own cut
+   * reach the next row). Absent only where a test draws the view alone.
+   */
+  readonly columns?: number | undefined;
 }
 
 /** The window of candidate indices to render around `selected` (a `[start, end)` slice) of `size` rows ({@link MENTION_WINDOW} by default), keeping
@@ -70,21 +81,22 @@ export function mentionListLines(state: MentionState, size: number = MENTION_WIN
 /**
  * How the chat draws a stored name (a candidate, the browsed directory, the filter's echo): the inline sanitiser, then the screen's filter (unit 9,
  * review round 2, S2-5). A file name is the repository's, and a row of fillers a terminal draws wider than the layout counts would wrap at the right
- * edge and start the rest of the name at column 0. Ink cuts these rows itself, so a name is given in the form ink counts as a terminal draws it
- * ({@link inkSafe}: an Indic conjunct, review round 4, R4-S-1).
+ * edge and start the rest of the name at column 0; the rows are cut to the view's columns by the layout's measure (review round 5).
  */
-const screenName = (stored: string): string => inkSafe(screenText(sanitizeInline(stored)));
+const screenName = (stored: string): string => screenText(sanitizeInline(stored));
 
 export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const { state, color } = props;
   const text = props.text ?? screenName;
   const framed = props.framed !== false;
+  const fit = (row: string): string =>
+    props.columns === undefined ? row : clipLine(row, Math.max(1, props.columns));
   const visible = visibleMentions(state);
   // Clamp the highlighted index for display — an async listing can land after the filter narrowed the set, leaving
   // `selected` momentarily past the end until the next keystroke re-clamps it (foldMentionKey clamps on move).
   const selected =
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
-  const where = state.dir.length === 0 ? './' : `${inkSafe(text(state.dir))}/`;
+  const where = state.dir.length === 0 ? './' : `${text(state.dir)}/`;
   const span = mentionWindow(
     visible.length,
     selected,
@@ -124,17 +136,21 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       return (
         <Text key={candidate.path} {...selectedTone(isSelected, color)} wrap="truncate-end">
           <SelectableText selected={isSelected}>
-            {`${selectionMarker(isSelected, color)} ${inkSafe(text(candidate.name))}${slash}`}
+            {fit(`${selectionMarker(isSelected, color)} ${text(candidate.name)}${slash}`)}
           </SelectableText>
         </Text>
       );
     });
   };
+  // the echo: the browsed directory, then the filter in bold, cut as one row (a long directory leaves the filter out, never the row's edge)
+  const echo = [`@ ${where}`, screenName(state.filter)];
+  const [lead = '', filter = ''] =
+    props.columns === undefined ? echo : clipPieces(echo, Math.max(1, props.columns));
   return (
     <Box flexDirection="column" flexShrink={0} marginTop={framed ? 1 : 0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-        {`@ ${where}`}
-        <Emph kinds="bold">{screenName(state.filter)}</Emph>
+        {lead}
+        <Emph kinds="bold">{filter}</Emph>
       </Text>
       {renderBody()}
       {framed && (

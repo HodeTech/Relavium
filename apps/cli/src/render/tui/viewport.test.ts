@@ -41,8 +41,10 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     expect(displayWidth('a‍b')).toBe(2); // ZWJ contributes nothing
     expect(displayWidth('﻿')).toBe(0); // BOM
     // A LONE regional indicator is not an RGI emoji (a flag needs a pair), so `string-width` — and therefore ink —
-    // gives it the East-Asian width of U+1F1F9, which is Neutral: 1. The old hand-rolled table said 2.
-    expect(displayWidth('🇹️')).toBe(1);
+    // gives it the East-Asian width of U+1F1F9, which is Neutral: 1. With U+FE0F after it the cluster is not a join a terminal performs, and
+    // the measure counts what tmux draws: the selector widens the one-column cell it joins to two (MVP-11 unit 9, review round 5, R5-S-2/-4).
+    expect(displayWidth(String.fromCodePoint(0x1f1f9))).toBe(1);
+    expect(displayWidth('🇹️')).toBe(2);
   });
 
   it('counts control chars as zero (defensive — they are sanitized before display)', () => {
@@ -55,8 +57,14 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     // (an under-count would make a wrapped line wider than cols → ink re-wraps → the viewport clips the tail).
     expect(displayWidth('1\u{FE0F}\u{20E3}')).toBe(2); // enclosing keycap 1️⃣ (was 1 — the dangerous under-count)
     expect(displayWidth('\u{2764}\u{FE0F}')).toBe(2); // VS16 heart ❤️ (a narrow base forced to emoji presentation)
-    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}')).toBe(2); // ZWJ sequence 👨‍👩 (was 4 — a safe over-count, now exact)
-    expect(displayWidth('\u{1F44B}\u{1F3FD}')).toBe(2); // skin-tone modifier 👋🏽
+    // ZWJ sequence 👨‍👩: not a recommended one, so counted by its code points (review round 5, R5-S-4: tmux glues a short chain into one cell
+    // but draws a chain whose cell overflows apart, thirteen tag flags 26 columns, so only the recommended sequences are kept at two; this one
+    // is a safe over-count again)
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}')).toBe(4);
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}')).toBe(2); // the family 👨‍👩‍👧, recommended: one glyph
+    // a skin-tone modifier sequence 👋🏽: the measure counts a toned sequence by its code points, as tmux draws 315 of the 665 of them (`☝🏽` four
+    // columns; MVP-11 unit 9, review round 5, R5-S-4); the screen's filter drops every tone, so a row never holds one
+    expect(displayWidth('\u{1F44B}\u{1F3FD}')).toBe(4);
     expect(displayWidth('\u{1F1F9}\u{1F1F7}')).toBe(2); // regional-indicator flag 🇹🇷 (a two-code-point pair, one glyph)
   });
 

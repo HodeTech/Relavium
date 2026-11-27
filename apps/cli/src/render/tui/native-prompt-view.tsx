@@ -17,7 +17,7 @@ import {
 } from './native-prompt-acknowledgement.js';
 import { TERMINAL_TOO_SMALL_TEXT } from './measured-frame-acknowledgement.js';
 import { dimProps } from './projection.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import { displayWidth } from './viewport.js';
 import {
   nativeFramed,
   nativeLegendParts,
@@ -26,6 +26,8 @@ import {
   withLiveBullets,
 } from '../../popups/native-popup-body.js';
 import { PromptEditor } from './prompt-view.js';
+import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
+import { inkRows } from './sheet-frame.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
 import {
@@ -146,16 +148,20 @@ function useResizeClearsFirst(acknowledgement: NativePromptAcknowledgement): voi
 function FieldRow({
   snapshot,
   acknowledgement,
+  cols,
 }: Readonly<{
   snapshot: NativePromptSnapshot;
   acknowledgement: NativePromptAcknowledgement;
+  /** The terminal's columns: a field ink would count narrower than a terminal draws it is wrapped to them first ({@link inkRows}). */
+  cols: number;
 }>): ReactElement | null {
   if (snapshot.kind === 'text')
     return (
-      <Text>
-        {'> '}
-        {inkSafe(snapshot.display)}
-      </Text>
+      <>
+        {inkRows(`> ${snapshot.display}`, cols, 'wrap').map((row, at) => (
+          <Text key={at}>{row}</Text>
+        ))}
+      </>
     );
   if (snapshot.kind !== 'password') return null;
   return (
@@ -234,9 +240,19 @@ export function NativePromptView({
     ));
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
-      {/* ink wraps these itself: given in the form ink counts as a terminal draws it (an Indic conjunct, review round 4, R4-S-1) */}
-      {snapshot.note !== '' && <Text wrap="wrap">{inkSafe(snapshot.note)}</Text>}
-      {snapshot.message !== '' && <Text wrap="wrap">{inkSafe(snapshot.message)}</Text>}
+      {/* ink wraps these itself only where it counts them as a terminal draws them; else they are the layout's own rows (review round 5) */}
+      {snapshot.note !== '' &&
+        inkRows(snapshot.note, size.cols, 'wrap').map((row, at) => (
+          <Text key={`note-${String(at)}`} wrap="wrap">
+            {row}
+          </Text>
+        ))}
+      {snapshot.message !== '' &&
+        inkRows(snapshot.message, size.cols, 'wrap').map((row, at) => (
+          <Text key={`message-${String(at)}`} wrap="wrap">
+            {row}
+          </Text>
+        ))}
       {snapshot.kind === 'picker' && (
         <>
           <Text wrap="truncate-end">
@@ -249,6 +265,8 @@ export function NativePromptView({
               cursor: snapshot.picker?.cursor ?? snapshot.display.length,
             }}
             color={color}
+            maxRows={PROMPT_WINDOW_MIN_ROWS}
+            columns={size.cols}
           />
           {snapshot.picker?.loading === true ? (
             <Text>Loading sessions…</Text>
@@ -259,14 +277,18 @@ export function NativePromptView({
             <Box key={option.value} flexDirection="column">
               <Text wrap="truncate-end">
                 <SelectableText selected={index === snapshot.selected}>
-                  {`${selectionMarker(index === snapshot.selected, color)} `}
-                  {inkSafe(option.label)}
+                  {
+                    inkRows(
+                      `${selectionMarker(index === snapshot.selected, color)} ${option.label}`,
+                      size.cols,
+                      'truncate',
+                    )[0]
+                  }
                 </SelectableText>
               </Text>
               {option.hint !== undefined && (
                 <Text {...dimProps(color)} wrap="truncate-end">
-                  {'  '}
-                  {inkSafe(option.hint)}
+                  {inkRows(`  ${option.hint}`, size.cols, 'truncate')[0]}
                 </Text>
               )}
             </Box>
@@ -306,8 +328,11 @@ export function NativePromptView({
                 </Text>
               ),
             ))}
-      <FieldRow snapshot={snapshot} acknowledgement={acknowledgement} />
-      {snapshot.error !== '' && <Text>{inkSafe(snapshot.error)}</Text>}
+      <FieldRow snapshot={snapshot} acknowledgement={acknowledgement} cols={size.cols} />
+      {snapshot.error !== '' &&
+        inkRows(snapshot.error, size.cols, 'wrap').map((row, at) => (
+          <Text key={`error-${String(at)}`}>{row}</Text>
+        ))}
       <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined, locked)}</Text>
     </Box>
   );

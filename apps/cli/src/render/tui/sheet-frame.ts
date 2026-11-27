@@ -1,5 +1,5 @@
 import { glyph } from './glyphs.js';
-import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
+import { displayWidth, fitColumns, inkUndercounts, wrapText, wrapWords } from './viewport.js';
 
 /**
  * The small, pure frame a sheet is drawn on ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
@@ -84,15 +84,51 @@ export function usableColumns(columns: number): number {
 }
 
 /**
- * `text` cut to at most `width` display columns, the cut shown by `…`; whole when it fits. A wide character (CJK, an emoji sequence) that
- * straddles the cut is left out, never counted over the width.
+ * `text` cut to at most `width` display columns, the cut shown by `…`; whole when it fits. Only whole clusters that fit are kept ({@link fitColumns}):
+ * a wide character or a chain of conjoined letters that straddles the cut is left out, never counted over the width (review round 5, R5-S-6).
  */
 export function clipLine(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
-  if (width <= 1) return sliceDisplayColumns(text, 0, Math.max(0, width));
-  let cut = sliceDisplayColumns(text, 0, width - 1);
-  if (displayWidth(cut) > width - 1) cut = sliceDisplayColumns(text, 0, width - 2);
-  return `${cut}…`;
+  if (width <= 1) return fitColumns(text, width);
+  return `${fitColumns(text, width - 1)}…`;
+}
+
+/**
+ * The rows of a cell INK fits itself (a `wrap` or a `truncate-end` cell) for `text` in `width` columns (MVP-11 unit 9, review round 5), each at
+ * most `width` wide by the layout's measure, so ink never has to fit them. A cut is always the layout's ({@link clipLine}): ink decides to cut by
+ * `string-width` and then slices by another count, which keeps a cluster of a character and its halfwidth sound marks whole and draws the row
+ * past the edge (measured on the real binary: a reason to deny 89 columns wide in a row of 78). A wrap is ink's where ink counts the text as a
+ * terminal draws it (it breaks a word by each character's own width), else the layout's own rows: ink counts a cluster that is not a join a
+ * terminal performs narrower than the terminal draws it ({@link inkUndercounts}).
+ */
+export function inkRows(text: string, width: number, mode: 'wrap' | 'truncate'): readonly string[] {
+  const columns = Math.max(1, Math.floor(width));
+  if (mode === 'truncate') return [clipLine(text, columns)];
+  return inkUndercounts(text) ? wrapText(text, columns) : [text];
+}
+
+/**
+ * One row drawn in styled `pieces` (a lead, a bold query, a dim match), cut to `width` as {@link clipLine} cuts the row: the pieces that fit whole,
+ * the piece that straddles the cut cut by {@link fitColumns} with the `…` after it, and an empty string for every piece after the cut, so each
+ * keeps its style. The pieces meet at host text (a space, a `/`), so no cluster joins across them.
+ */
+export function clipPieces(pieces: readonly string[], width: number): readonly string[] {
+  if (displayWidth(pieces.join('')) <= width) return pieces;
+  let room = Math.max(0, width - 1);
+  let cut = false;
+  return pieces.map((piece) => {
+    if (cut) return '';
+    const cells = displayWidth(piece);
+    if (cells <= room) {
+      room -= cells;
+      return piece;
+    }
+    cut = true;
+    // the row's own budget decides what is too wide to show at all; the room left decides what fits
+    return width <= 1
+      ? fitColumns(piece, width)
+      : `${fitColumns(piece, room, 'start', width - 1)}…`;
+  });
 }
 
 /** `text` wrapped to `width` into at most `max` lines, a cut shown by `…` on the last; never an empty list. */

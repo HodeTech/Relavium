@@ -2,7 +2,7 @@ import { secretShapedRanges, type ToolPreview } from '@relavium/core';
 import { secretMaskRanges } from '@relavium/llm/scrub-secrets';
 import { sanitizeUntrusted, stripTerminalControls } from '../sanitize.js';
 import { isNarrowEmojiBase, isWidthRiskCodePoint } from './screen-text.js';
-import { displayWidth } from './viewport.js';
+import { displayWidth, isPrepend } from './viewport.js';
 
 export interface SourceRange {
   readonly field: number;
@@ -404,6 +404,10 @@ function buildReviewDocument(
 const INVISIBLE = /[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/u;
 const BLANKS = new Set([0x2800, 0x16fe4, 0x1d159]);
 const COMBINING = /\p{M}/u;
+/** The halfwidth voiced and semi-voiced sound marks: they extend the cluster before them, so after an emoji they join it (review round 5). */
+const HALFWIDTH_VOICED = /^[\uFF9E\uFF9F]$/u;
+/** What ends an emoji a halfwidth sound mark would join: a pictograph, its presentation selector, a keycap, a regional indicator, a tag flag's end. */
+const EMOJI_END = /^[\p{Extended_Pictographic}\p{Regional_Indicator}\uFE0F\u20E3\u{E007F}]$/u;
 /** The code point of `text` that ends just before `position` (a surrogate pair whole), or `undefined` at the start. */
 export function codePointBefore(text: string, position: number): string | undefined {
   if (position <= 0) return undefined;
@@ -411,11 +415,16 @@ export function codePointBefore(text: string, position: number): string | undefi
   const start = low >= 0xdc00 && low <= 0xdfff && position >= 2 ? position - 2 : position - 1;
   return String.fromCodePoint(text.codePointAt(start) ?? 0);
 }
-/** Every code point of `text` as the card draws it ({@link escapeReviewCharacter}, each with the code point before it). */
+/** The code point of `text` that starts at `position` (a surrogate pair whole), or `undefined` at the end. */
+export function codePointAt(text: string, position: number): string | undefined {
+  const code = text.codePointAt(position);
+  return code === undefined ? undefined : String.fromCodePoint(code);
+}
+/** Every code point of `text` as the card draws it ({@link escapeReviewCharacter}, each with the code points before and after it). */
 export function escapeReviewText(text: string): readonly string[] {
   const characters = [...text];
   return characters.map((char, index) =>
-    escapeReviewCharacter(char, false, false, characters[index - 1]),
+    escapeReviewCharacter(char, false, false, characters[index - 1], characters[index + 1]),
   );
 }
 /**
@@ -427,13 +436,18 @@ export function escapeReviewText(text: string): readonly string[] {
  * drawn. The nine text-default emoji bases a terminal draws two columns ({@link isNarrowEmojiBase}, review round 3) are drawn with U+FE0F after
  * them instead, legible, and two columns to the layout as on the terminal ALONE; a mark right after one (`previous`, the code point before
  * `char` in the source) would make one cluster with it that the layout counts one column and tmux draws two (`☝️́`; review round 4, R4-S-2), so
- * that mark is escaped: the base keeps its two columns to both, and the mark's token is ASCII.
+ * that mark is escaped: the base keeps its two columns to both, and the mark's token is ASCII. The layout's measure counts every other joined
+ * cluster as a terminal draws it (review round 5, R5-S-4), so the card escapes only for what it shows, by context (R5-S-3): a halfwidth sound mark
+ * (U+FF9E, U+FF9F) after an emoji or a narrow base would join it and read as part of the pictograph, and a Prepend letter before a narrow base
+ * (`next`, the code point after `char`) would draw as one glyph with it; both are written as tokens there. A halfwidth sound mark after a kana
+ * (`ｶﾞ`, ordinary Japanese) stays as it is.
  */
 export function escapeReviewCharacter(
   char: string,
   trailing: boolean,
   numeric = false,
   previous?: string,
+  next?: string,
 ): string {
   const cp = char.codePointAt(0) ?? 0;
   if (char === '\t') return '<TAB>';
@@ -446,7 +460,11 @@ export function escapeReviewCharacter(
     (char !== ' ' && INVISIBLE.test(char)) ||
     BLANKS.has(cp) ||
     isWidthRiskCodePoint(char) ||
-    (previous !== undefined && isNarrowEmojiBase(previous) && COMBINING.test(char))
+    (previous !== undefined && isNarrowEmojiBase(previous) && COMBINING.test(char)) ||
+    (previous !== undefined &&
+      (isNarrowEmojiBase(previous) || EMOJI_END.test(previous)) &&
+      HALFWIDTH_VOICED.test(char)) ||
+    (next !== undefined && isNarrowEmojiBase(next) && isPrepend(char))
   )
     return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`;
   // one of the nine text-default emoji bases a terminal draws two columns: drawn with its presentation selector, so the layout counts two too
@@ -717,6 +735,7 @@ function emitReviewRow(
         isTrailingCharacter(line, field, position),
         page.numeric,
         codePointBefore(field.text, position),
+        codePointAt(field.text, position + char.length),
       );
       const stop = position + char.length;
       appendVisibleRange(page.visibleSource, line.field, position, stop);
@@ -752,6 +771,7 @@ function tokenAt(
           isTrailingCharacter(line, field, position),
           page.numeric,
           codePointBefore(field.text, position),
+          codePointAt(field.text, position + char.length),
         ),
         next: position + char.length,
       }

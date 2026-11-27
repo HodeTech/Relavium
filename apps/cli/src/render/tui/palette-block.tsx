@@ -8,6 +8,7 @@ import type { PaletteList, PaletteState } from './palette-reducer.js';
 import { paletteLegend, PaletteView } from './palette-view.js';
 import { dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
+import { PROMPT_WINDOW_MIN_ROWS } from './prompt-window.js';
 import { Text } from './text.js';
 
 /**
@@ -55,11 +56,14 @@ export function PaletteAbovePrompt(
         state={palette.state}
         color={color}
         maxRows={props.maxRows}
+        columns={props.contentColumns ?? props.ruleColumns}
       />
       <PromptEditor
         editor={paletteQueryEditor(palette.state.query)}
         color={color}
         glyph={glyphOf('yourTurn', !color)}
+        maxRows={PROMPT_WINDOW_MIN_ROWS}
+        columns={props.contentColumns ?? props.ruleColumns}
       />
       <Text {...dimProps(color)} wrap="truncate-end">
         {thinRule(props.ruleColumns, !color)}

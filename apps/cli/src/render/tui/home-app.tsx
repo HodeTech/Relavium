@@ -25,7 +25,8 @@ import {
   createNativePromptAcknowledgement,
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
-import { displayWidth, inkSafe } from './viewport.js';
+import { displayWidth } from './viewport.js';
+import { inkRows } from './sheet-frame.js';
 import { Box, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
 import { BackdropDim, Text } from './text.js';
 import {
@@ -42,6 +43,7 @@ import type { PendingAttachment } from './attachments.js';
 import {
   chatIsBusy,
   ChatView,
+  chromeGridFor,
   ChromeColumn,
   composerEditor,
   dockedCardOpen,
@@ -358,12 +360,21 @@ function ChatRegion(
           they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
       {props.search !== undefined && (
         <ChromeColumn columns={props.cols}>
-          <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
+          <ReverseSearchView
+            state={props.search}
+            entries={props.historyEntries}
+            color={color}
+            columns={chromeGridFor(props.cols).text}
+          />
         </ChromeColumn>
       )}
       {props.mention !== undefined && (
         <ChromeColumn columns={props.cols}>
-          <MentionView state={props.mention} color={color} />
+          <MentionView
+            state={props.mention}
+            color={color}
+            columns={chromeGridFor(props.cols).text}
+          />
         </ChromeColumn>
       )}
     </Box>
@@ -1201,8 +1212,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {state.pendingMessage !== '' && (
             // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-              {'> '}
-              {inkSafe(sanitizeInline(state.pendingMessage))}
+              {
+                inkRows(
+                  `> ${sanitizeInline(state.pendingMessage)}`,
+                  layoutColumns(size.cols),
+                  'truncate',
+                )[0]
+              }
             </Text>
           )}
           {!homeFitsTerminal(size.cols, size.rows) && (
