@@ -1,12 +1,15 @@
 import type { AskUserRequest, ToolApprovalRequest, ToolPreview } from '@relavium/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { initialQuestionCard } from './question-card-model.js';
+import { projectQuestionCard } from './question-card.js';
 import { projectRunCard } from './run-card-model.js';
 import { isWidthRiskCodePoint } from './screen-text.js';
 import { mountStandaloneChat, type ChatMount } from './surface-matrix/chat-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { physicalRows, terminalColumns } from './terminal-wrap.test-support.js';
 import { escapeReviewCharacter } from './tool-review-projection.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The approval card is a CONSENT surface: it ESCAPES what a terminal may draw wider than its layout counts, and never drops it (MVP-11 unit 9,
@@ -31,6 +34,9 @@ const PATHS: readonly (readonly [string, string, string])[] = [
     '<U+1F1E6><U+1F1E7>',
   ],
   ['the Thai AM', `report${`${c(0x0e01)}${c(0x0e33)}`.repeat(31)}${TAIL}`, `${c(0x0e01)}<U+0E33>`],
+  // review round 3: a text-default emoji base tmux draws two columns is drawn with its selector (legible, two columns to both)
+  ['the narrow emoji bases', `report${c(0x261d).repeat(31)}${TAIL}`, `${c(0x261d)}${c(0xfe0f)}`],
+  ['the wide tone marks', `report${`a${c(0x302e)}`.repeat(31)}${TAIL}`, 'a<U+302E>'],
 ];
 
 const VARIANTS: readonly Variant[] = [true, false].flatMap((color) =>
@@ -200,4 +206,46 @@ describe('a workflow gate whose message carries skin tones on a letter or indica
       for (const row of rows) expect(terminalColumns(row), row).toBeLessThanOrEqual(80);
     },
   );
+});
+
+describe('the question card: two labels the core admits as different never draw alike (review round 3, R3S-4)', () => {
+  const card = (labels: readonly string[], header = 'Pick'): readonly string[] =>
+    projectQuestionCard(
+      initialQuestionCard({
+        questions: [
+          {
+            header,
+            question: 'Which one?',
+            multiSelect: false,
+            options: labels.map((label) => ({ label, description: 'An option' })),
+          },
+        ],
+      }),
+      80,
+    ).body.map((row) => row.text);
+
+  it('`Ok` and `Ok🏽` (the filter drops the tone): every label of the question is written with what the filter drops escaped', () => {
+    const rows = card(['Ok', `Ok${TONE}`]);
+    const options = rows.filter((row) => /\b[12] /u.test(row));
+    expect(options).toHaveLength(2);
+    expect(options[0]).toMatch(/Ok$/u);
+    expect(options[1]).toMatch(/Ok<U\+1F3FD>$/u);
+    // a literal token cannot pose as one: it is escaped itself
+    const forged = card(['Ok<U+1F3FD>', `Ok${TONE}`]).filter((row) => /\b[12] /u.test(row));
+    expect(new Set(forged.map((row) => row.slice(row.indexOf('Ok')))).size).toBe(2);
+  });
+
+  it('labels that stay distinct draw as every row does: filtered, no escape', () => {
+    const options = card([`Yes${TONE}`, 'No']).filter((row) => /\b[12] /u.test(row));
+    expect(options[0]).toMatch(/Yes$/u);
+    expect(options[1]).toMatch(/No$/u);
+  });
+
+  it('a label the escapes make wider than its row is cut with an ellipsis, never silently', () => {
+    const wide = `x${TONE.repeat(3)}`.repeat(4); // 52 bytes: admitted; twelve escapes
+    // the filter draws the first as `xxxx`: the two collide, so both are escaped and the first no longer fits its row
+    const options = card([wide, 'xxxx']).filter((row) => /\b[12] /u.test(row));
+    expect(options[0]?.endsWith('…')).toBe(true);
+    for (const row of options) expect(displayWidth(row)).toBeLessThanOrEqual(78);
+  });
 });

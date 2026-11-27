@@ -116,6 +116,11 @@ export function TranscriptRowBody(
  * and a notice's lead are dim, as their rows are). `form` is the margin's form (`marginFormFor`): the glyph (or its ASCII form without
  * colour) full-screen, the role word inline. `segments` is the row's text split by the mouse selection (the full-screen viewport's), so a
  * highlight covers the content and never the margin.
+ *
+ * **One row is one physical row, full-screen** (MVP-11 unit 9, review round 3, R3S-1): the full-screen viewport counts its rows (its scroll
+ * geometry, the measured-frame acknowledgement), so its content cell never wraps: a row the layout measures wider than the content column (none
+ * should be: the screen's filter runs before the layout) is cut at the cell's edge, never wrapped into a physical row the count does not know.
+ * The inline renderer prints a row once into the terminal's history and keeps every word of it: there the cell wraps, inside the content column.
  */
 export function TranscriptRow(
   props: Readonly<{
@@ -136,7 +141,10 @@ export function TranscriptRow(
       mark={accent ? colorProps(color, 'cyan') : transcriptStyleProps(line.style, color)}
       markEmphasis={accent ? 'bold' : undefined}
     >
-      <Text {...transcriptStyleProps(line.style, color)}>
+      <Text
+        {...transcriptStyleProps(line.style, color)}
+        wrap={props.form === 'word' ? 'wrap' : 'truncate-end'}
+      >
         <TranscriptRowBody line={line} color={color} segments={props.segments} />
       </Text>
     </MarginRow>

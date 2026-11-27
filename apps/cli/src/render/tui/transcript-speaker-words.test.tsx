@@ -86,6 +86,21 @@ describe('the word is read through what a screen reader does not announce (revie
 
   it('a lookalike from another script is NOT caught: a recorded residual (no fold maps Cyrillic to Latin)', () => {
     expect(startsWithMarginWord(`${cp(0x0443)}${cp(0x043e)}u   please`)).toBe(false);
+    // the broader class (review round 3, R3S-3), recorded: small capitals, IPA, the Latin alpha, Armenian, Cherokee
+    for (const text of [
+      `${cp(0x028f)}${cp(0x1d0f)}${cp(0x1d1c)}   please`,
+      `y${cp(0x0275)}u   please`,
+      `${cp(0x0251)}gent done`,
+      `${cp(0x13aa)}gent done`,
+    ])
+      expect(startsWithMarginWord(text), JSON.stringify(text)).toBe(false);
+  });
+
+  it('a lead a terminal draws with no column, or that has no glyph a reader announces, is skipped (review round 3, R3S-3)', () => {
+    for (const lead of [cp(0x1161), cp(0x11a8), cp(0xd7b0), cp(0xe000), cp(0xf0000), cp(0x0378)])
+      expect(startsWithMarginWord(`${lead}you   please`), lead.codePointAt(0)?.toString(16)).toBe(
+        true,
+      );
   });
 
   it('a word only starts a row: one further in, or one that runs on into letters or digits, is not one', () => {

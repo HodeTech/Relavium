@@ -624,7 +624,9 @@ export function escapedFit(
     );
     while (reversed.length > 0 && displayWidth(reversed.at(-1) ?? '') === 0) reversed.pop();
     const joined = `${first}…${reversed.toReversed().join('')}`;
-    if (displayWidth(joined) <= width) return joined;
+    // a middle cut that keeps nothing on either side (every token wider than its share: a narrow emoji base drawn with its selector,
+    // MVP-11 unit 9, review round 3) falls back to the start cut, which keeps what fits
+    if (displayWidth(joined) <= width && (first !== '' || reversed.length > 0)) return joined;
   }
   return `${startFit(width - 1)}…`;
 }

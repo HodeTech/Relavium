@@ -1,43 +1,58 @@
 /**
- * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 and 2: S-1, S-3, S2-1, S2-4, C2-1, M2-3): what a row of untrusted
- * text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
+ * The screen's text filter and its width classifier (MVP-11 unit 9, review rounds 1 to 3: S-1, S-3, S2-1, S2-4, C2-1, M2-3, R3S-1 to R3S-5): what
+ * untrusted text may hold when it is drawn on a terminal, so that the layout and the terminal count it alike.
  *
  * **Why.** The chat lays a row out with the width the layout measures (`string-width`), and the grid's margin guarantee is exact in that layout:
  * a row is at most the content column wide, in a cell that starts at the margin. A terminal measures some characters differently, and a row the
  * layout sized to fit can then reach the right edge on screen: the terminal wraps it, and the rest starts at column 0 of the next physical row,
- * the margin, where the host draws who spoke. The reference terminal is tmux 3.7b, measured code point by code point in review round 2 (each
- * string written after an `A`, the cursor read back with `ESC[6n`); `terminal-widths.test.ts` holds that table, `terminal-wrap.test-support.ts`
- * draws with it, and the witness tests draw every frame through it. Two cures, by class, both leaving `string-width`'s count of the filtered text
- * at least what tmux draws (`terminal-widths.test.ts` proves it for every measured class):
+ * the margin, where the host draws who spoke. The reference terminal is tmux 3.7b, measured code point by code point over the planes text uses
+ * and sequence by sequence for every class below (each string written after an `A`, the cursor read back with `ESC[6n`; review rounds 2 and 3);
+ * `terminal-widths.test.ts` holds those tables, holds `string-width` of every FILTERED measured string to at least what tmux drew for it, and
+ * `terminal-wrap.test-support.ts` draws the witness frames with them.
  *
- * - **Dropped** ({@link dropScreenFillers}): what the layout measures as 0 columns, so a row keeps its measured width without it. The default-
- *   ignorable code points and the other format characters (`\p{Default_Ignorable_Code_Point}`, `\p{Cf}`: the Hangul fillers, the soft hyphen,
- *   the word joiner and its kin, the tag and variation-selector supplements, the prepended concatenation marks, …; tmux draws U+115F two columns
- *   and U+FFA0 and U+00AD one), the emoji presentation selector U+FE0F where it does not make an emoji the layout already draws two columns wide
- *   (tmux draws `a`+U+FE0F, a digit+U+FE0F two columns), a skin tone U+1F3FB to U+1F3FF that does not follow a base that takes one (tmux draws
- *   each two columns), and a lone surrogate (written as U+FFFD, one column).
- * - **Rewritten** to a form both measure alike (ordinary text a terminal draws wider than the layout counts; the rewrite measured on tmux too):
- *   the Thai and Lao vowel AM (U+0E33, U+0EB3: one column more than the layout counts after a base) as its compatibility decomposition
- *   (U+0E4D U+0E32, U+0ECD U+0EB2: the same glyphs, which the layout and tmux both count as one column), and a pair of regional indicators that
- *   is not a flag (tmux two columns, the layout one) with a zero width non-joiner between the two (two clusters: two columns to both).
+ * **Where it runs: before the layout.** A rewrite below can change the width the layout measures (a decomposed AM, a selector added), so the
+ * filter runs on the text BEFORE anything lays it out: a transcript entry's source (`chat-projection.ts` `entryRows`), the stream before the live
+ * tail is laid out ({@link ScreenStream}), every one-line producer before it is fitted (review round 3, R3S-1: run after the layout, a decomposed
+ * AM grew a row past the content column, the full-screen viewport clipped the newest rows and the acknowledgement counted a notice it did not
+ * show). Run again over a laid-out row it changes nothing ({@link screenText} is idempotent), except where the layout itself joined two pieces the
+ * source kept apart (markdown emphasis between two of them); there the row can grow, and the full-screen viewport clips a row to its cell
+ * (`transcript-row.tsx`), so one row stays one physical row whatever a width says.
  *
- * **What is kept as it is.** The zero width joiner and non-joiner (U+200D, U+200C: emoji sequences, Indic and Arabic shaping) and the text
- * presentation selector U+FE0E, which tmux draws with no column of their own after a letter; U+FE0F on an emoji the layout draws two columns
- * wide (`❤️`, `™️`, a keycap); a skin tone on a base that takes one (`👍🏽`); the tag characters of an emoji tag sequence (U+E0020 to U+E007F after
- * the black flag U+1F3F4: a subdivision flag); a flag's pair of regional indicators. Not every terminal agrees with tmux: a terminal without
- * zero-width-joiner support draws a family as its members, and a CJK locale draws the ambiguous-width characters two columns (recorded
- * residuals; the only general cure is autowrap off, not done).
+ * **The classes**, all measured on tmux (`string-width` against the terminal):
+ *
+ * - **Dropped**: the default-ignorable and format code points (`\p{Default_Ignorable_Code_Point}`, `\p{Cf}`: the Hangul fillers, the soft hyphen,
+ *   the word joiner and its kin, the tag and variation-selector supplements, the prepended concatenation marks; tmux draws U+115F two columns,
+ *   U+FFA0, U+00AD and others one), every skin tone U+1F3FB to U+1F3FF (tmux joins a tone to only some of the bases that take one and draws
+ *   `☝🏽`, `🏃🏽` and 62 more four columns where the layout counts two: a tone is not drawn), U+FE0F where it does not make an emoji the layout
+ *   draws two columns wide (`a`+U+FE0F, a digit+U+FE0F: two on tmux), a lone surrogate (written as U+FFFD), the Hangul and Vietnamese tone marks
+ *   U+302E, U+302F, U+16FF0, U+16FF1 (spacing marks the layout counts as 0 columns, tmux 2), and whatever follows an emoji the layout draws wide
+ *   only as a whole (a flag, `❤️`, a keycap, `☝️`, an emoji zero-width-joiner sequence): a joiner, a combining mark, a selector after it makes the
+ *   cluster one the layout no longer recognises and counts one column, tmux two.
+ * - **Rewritten** to a form both measure alike: the Thai and Lao vowel AM (U+0E33, U+0EB3) as its compatibility decomposition (U+0E4D U+0E32,
+ *   U+0ECD U+0EB2: the same glyphs); a regional indicator that is not half of a flag followed by a zero width non-joiner (a pair that is not a
+ *   flag is two columns on tmux and one to the layout; a flag stays as it is and gets no joiner after it, which would make it one column to the
+ *   layout and two on tmux: review round 3, R3S-2); the nine emoji bases a terminal draws two columns although they are text by default (`☝`,
+ *   `⛹`, `✌`, `✍`, `🏋`, `🏌`, `🕴`, `🕵`, `🖐`: the layout counts one) with U+FE0F after them; an emoji zero-width-joiner sequence that is not a
+ *   recommended one (tmux draws a chain of more than eight as two clusters) as its members, each on its own.
+ *
+ * **What is kept as it is.** The zero width joiner and non-joiner and the text selector U+FE0E after a letter (Indic and Arabic shaping); an
+ * emoji with its presentation selector, a keycap, a flag, a recommended zero-width-joiner sequence (families, professions, `❤️‍🔥`), a subdivision
+ * flag's tag characters. Not every terminal agrees with tmux: a terminal without zero-width-joiner support draws a family as its members, and a
+ * CJK locale draws the ambiguous-width characters two columns (recorded residuals; the only general cure is autowrap off, not done).
+ *
+ * **What a person sees differs from what was written** (review round 3, R3S-4, recorded): Thai and Lao are drawn decomposed (a drag-copy copies
+ * the decomposed form); a skin tone is not drawn; U+0600 and U+06DD (prepended marks) are dropped; regional indicators carry the joiner. The
+ * documents (`/copy`, `/edit`, the history) keep every byte: only the screen's rows are filtered.
  *
  * **An orphan mark** (S-3): a combining mark or a kept joiner that starts a line has no character of its own to sit on, and a terminal paints it
- * on the cell before the row: the margin's last column. It is dropped at the start of each line, after the drops and rewrites (a leading Thai or
- * Lao AM is a mark and a vowel by then: the mark goes).
+ * on the cell before the row: the margin's last column. It is dropped at the start of each line.
  *
- * **The consent surfaces** (S2-4) never drop or rewrite what is approved: the approval card escapes every code point of the risky classes as
- * `<U+XXXX>` ({@link isWidthRiskCodePoint}, `tool-review-projection.ts`), so what a person sees is what they approve, and as wide as it is drawn.
+ * **The decision surfaces** never drop what is decided on: the approval card escapes every code point of the risky classes as `<U+XXXX>`
+ * ({@link isWidthRiskCodePoint}, `tool-review-projection.ts`); the question card escapes what this filter would drop from an option's label or a
+ * header ({@link escapeScreenText}), so two labels the core admits as different never draw alike.
  *
- * **Linear.** Every pattern here is forward and bounded (review round 2, C2-1: the first version had a lookbehind that was quadratic on a run of
- * tag characters, 28 s of a stalled event loop for 64,000 of them): `screen-text-performance.test.ts` holds each function to a bound on a
- * 64,000-character hostile run of every class.
+ * **Linear.** Every pattern here is forward and bounded (review round 2, C2-1): `screen-text-performance.test.ts` holds each function to a bound on
+ * a 64,000-character hostile run of every class.
  *
  * Pure: no `ink`, no `react`, no `node:` import (ADR-0145 §10).
  */
@@ -52,6 +67,8 @@ const TAG_FIRST = String.fromCodePoint(0xe0020);
 const TAG_LAST = String.fromCodePoint(0xe007f);
 const THAI_AM = String.fromCodePoint(0x0e33);
 const LAO_AM = String.fromCodePoint(0x0eb3);
+/** The spacing tone marks the layout counts as 0 columns and tmux draws two (Hangul U+302E, U+302F; Vietnamese reading marks U+16FF0, U+16FF1). */
+const WIDE_MARKS = `${String.fromCodePoint(0x302e)}${String.fromCodePoint(0x302f)}${String.fromCodePoint(0x16ff0)}${String.fromCodePoint(0x16ff1)}`;
 /** The compatibility decompositions of the two AM vowels: NIKHAHIT + SARA AA, NIGGAHITA + LAO AA. */
 const DECOMPOSED_AM: Readonly<Record<string, string>> = {
   [THAI_AM]: `${String.fromCodePoint(0x0e4d)}${String.fromCodePoint(0x0e32)}`,
@@ -60,81 +77,232 @@ const DECOMPOSED_AM: Readonly<Record<string, string>> = {
 
 /** An emoji the layout draws two columns wide (a recommended-for-general-interchange sequence, `string-width`'s own test). */
 const RGI_EMOJI = new RegExp('^\\p{RGI_Emoji}$', 'v');
-/** A keycap, with or without its presentation selector (`string-width` draws it two columns wide too). */
+/** A keycap, with or without its presentation selector (`string-width` draws it two columns wide; tmux one or two: never more). */
 const KEYCAP_SEQUENCE = new RegExp(`^[0-9#*]${VS16}?${KEYCAP}$`, 'u');
+/** The emoji bases that are text by default (no emoji presentation) and that tmux draws two columns: the layout counts them one. */
+const NARROW_BASE = '(?!\\p{Emoji_Presentation})\\p{Emoji_Modifier_Base}';
+const NARROW_BASE_ONLY = new RegExp(`^${NARROW_BASE}$`, 'u');
+/** What joins onto the character before it, or is dropped anyway: marks (the selectors and the keycap among them), tones, format and default-ignorable code points. */
+const EXTENDER_CLASS = '[\\p{M}\\p{Emoji_Modifier}\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Cs}]';
+/**
+ * What follows an emoji the layout draws wide only as a whole, and is dropped with it: the extenders, and a Thai or Lao AM (its decomposition's
+ * mark would join onto the emoji: only its spacing vowel is kept, see {@link wideTail}).
+ */
+const WIDE_TAIL = `(?:${EXTENDER_CLASS}|${THAI_AM}|${LAO_AM})*`;
+/** One member of an emoji zero-width-joiner sequence: a pictograph with its selectors and tones. */
+const ELEMENT = `\\p{Extended_Pictographic}[${VS15}${VS16}\\p{Emoji_Modifier}]*`;
+const TONES = /\p{Emoji_Modifier}/gu;
 
 /**
- * The one forward pass of {@link dropScreenFillers}. At each position, in order: an emoji tag sequence (kept), a skin tone on a base that takes
- * one (kept), a run of regional indicators (its flags kept, every other indicator set apart), an emoji with its presentation selector and an optional keycap
- * (kept when the layout draws it wide, else the selector dropped), a kept joiner or the text selector (kept), the Thai or Lao AM (decomposed);
- * else a code point of the dropped classes. No lookbehind and no nested quantifier: linear.
+ * The one forward pass of {@link dropScreenFillers} and {@link escapeScreenText}. At each position, in order: an emoji tag sequence (kept); an
+ * emoji zero-width-joiner sequence and what follows it; a run of regional indicators and what follows it; one of the nine narrow emoji bases and
+ * what follows it; an emoji with its presentation selector or a keycap and what follows it; a kept joiner or the text selector (kept); the Thai or
+ * Lao AM (decomposed); else a code point of the dropped classes. Each alternative starts with its own class of code point and its repetitions are
+ * separated by a fixed one (the joiner) or are a single class: linear.
  */
 const SCREEN_PASS = new RegExp(
   [
-    `(${BLACK_FLAG}[${TAG_FIRST}-${TAG_LAST}]*)`,
-    '(\\p{Emoji_Modifier_Base}\\p{Emoji_Modifier})',
-    '(\\p{Regional_Indicator}+)',
-    `((?!\\p{Emoji_Modifier})\\p{Emoji}${VS16}${KEYCAP}?)`,
+    `(${BLACK_FLAG}[${TAG_FIRST}-${TAG_LAST}]+)`,
+    `(${ELEMENT}(?:${ZWJ}${ELEMENT})+)(${WIDE_TAIL})`,
+    `(\\p{Regional_Indicator}+)(${WIDE_TAIL})`,
+    `(${NARROW_BASE})(${WIDE_TAIL})`,
+    `((?!\\p{Emoji_Modifier})\\p{Emoji}(?:${VS16}${KEYCAP}?|${KEYCAP}))(${WIDE_TAIL})`,
     `(${ZWNJ}|${ZWJ}|${VS15})`,
     `(${THAI_AM}|${LAO_AM})`,
-    '[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}]',
+    `[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
   ].join('|'),
   'gu',
 );
 
-/**
- * A run of combining marks and kept joiners at the start of a line: nothing of its own to sit on. A leading Thai or Lao AM is among them: the
- * filter has decomposed it by then, and its NIKHAHIT (a mark) goes while its AA (a spacing vowel, a cell of its own) stays.
- */
+/** A run of combining marks and kept joiners at the start of a line: nothing of its own to sit on (a leading AM is a mark and a vowel by then). */
 const ORPHAN_LEAD = new RegExp(`^(?:\\p{M}|${ZWNJ}|${ZWJ})+`, 'gmu');
 
 /** The code points a terminal may draw wider than the layout counts, wherever they stand (see {@link isWidthRiskCodePoint}). */
 const WIDTH_RISK = new RegExp(
-  `[\\p{Emoji_Modifier}\\p{Regional_Indicator}\\p{Cs}${VS16}${THAI_AM}${LAO_AM}]`,
+  `[\\p{Emoji_Modifier}\\p{Regional_Indicator}\\p{Cs}${VS16}${THAI_AM}${LAO_AM}]|[${WIDE_MARKS}]`,
   'u',
 );
 
+/** How the pass treats what it removes: drops it (the screen's rows) or writes each removed code point as `<U+XXXX>` (a decision surface). */
+type Removal = 'drop' | 'escape';
+
+/** One code point as the visible token a decision surface writes for it. */
+function codePointToken(character: string): string {
+  return `<U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}>`;
+}
+
+/** `text`, removed: nothing, or each of its code points as its token. */
+function removed(text: string, removal: Removal): string {
+  if (removal === 'drop' || text === '') return '';
+  let out = '';
+  for (const character of text) out += codePointToken(character);
+  return out;
+}
+
 /**
- * A run of regional indicators as the screen draws it: taken in pairs from its start, as a terminal pairs them; a pair that is a flag stays a
- * pair, and every other indicator is set apart from the next by a zero width non-joiner, so no two of them that are not a flag form one cluster
- * (the layout counts such a cluster one column, tmux draws two). Linear in the run.
+ * What follows an emoji the layout draws wide only as a whole (a flag, `❤️`, a keycap, `☝️`, a zero-width-joiner sequence): removed, except that
+ * a Thai or Lao AM keeps its spacing vowel (its mark would join onto the emoji; drawn alone, the vowel is one column to both).
  */
-function splitRegional(run: string): string {
-  const indicators = [...run];
-  const pieces: string[] = [];
-  for (let at = 0; at < indicators.length; at += 2) {
-    const pair = `${indicators[at] ?? ''}${indicators[at + 1] ?? ''}`;
-    if (at + 1 < indicators.length && RGI_EMOJI.test(pair)) pieces.push(pair);
-    else pieces.push(...[...pair]);
+function wideTail(tail: string, removal: Removal): string {
+  if (tail === '') return '';
+  let out = '';
+  for (const character of tail) {
+    const decomposed = DECOMPOSED_AM[character];
+    out +=
+      decomposed === undefined || removal === 'escape'
+        ? removed(character, removal)
+        : decomposed.slice(1);
   }
-  return pieces.join(ZWNJ);
-}
-
-/** What one match of {@link SCREEN_PASS} becomes: the kept groups as they are, the rest rewritten or dropped (see the pattern). */
-function keepOrDrop(
-  match: string,
-  flag: string | undefined,
-  toned: string | undefined,
-  regional: string | undefined,
-  presented: string | undefined,
-  joiner: string | undefined,
-  vowel: string | undefined,
-): string {
-  if (flag !== undefined || toned !== undefined || joiner !== undefined) return match;
-  if (regional !== undefined) return splitRegional(regional);
-  if (presented !== undefined)
-    return RGI_EMOJI.test(presented) || KEYCAP_SEQUENCE.test(presented)
-      ? presented
-      : presented.replace(VS16, '');
-  return vowel === undefined ? '' : (DECOMPOSED_AM[vowel] ?? '');
+  return out;
 }
 
 /**
- * `text` with the dropped classes dropped (see the module header): the code points the layout measures as 0 columns and a terminal may draw
- * wider. Newlines and everything else kept; one forward pass.
+ * A run of regional indicators as the screen draws it: taken in pairs from its start, as a terminal pairs them; a pair that is a flag stays as it
+ * is, and every other indicator is followed by a zero width non-joiner, so no two of them that are not a flag form one cluster, wherever the text
+ * around them goes (a markdown layout that joins two runs included). Nothing follows a flag: a joiner after it would make it one column to the
+ * layout and two on tmux (review round 3, R3S-2). Linear in the run.
+ */
+function regionalRun(run: string): string {
+  const indicators = [...run];
+  let out = '';
+  for (let at = 0; at < indicators.length; at += 2) {
+    const first = indicators[at] ?? '';
+    const second = indicators[at + 1];
+    if (second !== undefined && RGI_EMOJI.test(`${first}${second}`)) out += `${first}${second}`;
+    else out += second === undefined ? `${first}${ZWNJ}` : `${first}${ZWNJ}${second}${ZWNJ}`;
+  }
+  return out;
+}
+
+/** One member of a zero-width-joiner sequence as the screen draws it: no tone; a narrow base with its presentation selector (and no other). */
+function sequenceElement(element: string, removal: Removal): string {
+  const base = String.fromCodePoint(element.codePointAt(0) ?? 0);
+  const rest = element.slice(base.length);
+  if (NARROW_BASE_ONLY.test(base))
+    return `${base}${VS16}${removed(rest.replaceAll(VS16, ''), removal)}`;
+  return `${base}${rest.replace(TONES, '')}${removed([...rest.matchAll(TONES)].join(''), removal)}`;
+}
+
+/**
+ * An emoji zero-width-joiner sequence as the screen draws it: its members without tones; kept joined when the result is a recommended sequence
+ * (the layout draws it two columns, as tmux does), else written as its members, each through the pass on its own (tmux draws a long chain as
+ * more than one cluster: review round 3).
+ */
+function zwjSequence(sequence: string, removal: Removal): string {
+  const members = sequence.split(ZWJ).map((element) => sequenceElement(element, removal));
+  const joined = members.join(ZWJ);
+  const plain = members.map((member) => member.replace(/<U\+[0-9A-F]+>/gu, ''));
+  if (RGI_EMOJI.test(plain.join(ZWJ))) return joined;
+  return members.map((member) => screenPass(member, removal)).join(removed(ZWJ, removal));
+}
+
+/**
+ * What one emoji with its presentation selector or keycap becomes, with what follows it (`trailing`): kept, and what follows it removed, when the
+ * layout draws it wide; else only its base is kept (the selector or keycap does not belong to it, and what follows it would join onto it).
+ */
+function presentedUnit(unit: string, trailing: string, removal: Removal): string {
+  if (RGI_EMOJI.test(unit) || KEYCAP_SEQUENCE.test(unit))
+    return `${unit}${wideTail(trailing, removal)}`;
+  const base = String.fromCodePoint(unit.codePointAt(0) ?? 0);
+  return `${base}${wideTail(`${unit.slice(base.length)}${trailing}`, removal)}`;
+}
+
+/** The pass's callback: the groups of {@link SCREEN_PASS} in order (see the pattern). */
+function passMatch(
+  removal: Removal,
+  match: string,
+  groups: readonly (string | undefined)[],
+): string {
+  const [
+    tagSequence,
+    sequence,
+    sequenceTail,
+    regional,
+    regionalTail,
+    narrow,
+    narrowTail,
+    presented,
+    presentedTail,
+    joiner,
+    vowel,
+  ] = groups;
+  if (tagSequence !== undefined || joiner !== undefined) return match;
+  if (sequence !== undefined)
+    return `${zwjSequence(sequence, removal)}${wideTail(sequenceTail ?? '', removal)}`;
+  if (regional !== undefined)
+    return `${regionalRun(regional)}${wideTail(regionalTail ?? '', removal)}`;
+  if (narrow !== undefined) {
+    const tail = narrowTail ?? '';
+    return `${narrow}${VS16}${wideTail(tail.startsWith(VS16) ? tail.slice(1) : tail, removal)}`;
+  }
+  if (presented !== undefined) return presentedUnit(presented, presentedTail ?? '', removal);
+  if (vowel !== undefined) return DECOMPOSED_AM[vowel] ?? '';
+  return removed(match, removal);
+}
+
+/**
+ * The first pass: the code points dropped wherever they stand (default-ignorable and format code points, tones, lone surrogates, the wide tone
+ * marks), except the joiners and the selectors and a subdivision flag's tags, which the second pass judges by what they stand next to. Dropped
+ * FIRST, so that what was on either side of them is judged as it will be drawn: side by side (review round 3: a tone between a joiner and an emoji
+ * hid a sequence from a single pass, which a second run then found).
+ */
+const DROP_PASS = new RegExp(
+  [
+    `(${BLACK_FLAG}[${TAG_FIRST}-${TAG_LAST}]+)`,
+    // a run of joiners, whole (one match, whatever follows: linear), and the selectors after it, which select nothing and go
+    `((?:${ZWNJ}|${ZWJ})+)(?:${VS15}|${VS16})*`,
+    `(${ZWNJ}|${ZWJ}|${VS15}|${VS16})`,
+    `[\\p{Default_Ignorable_Code_Point}\\p{Cf}\\p{Emoji_Modifier}\\p{Cs}${WIDE_MARKS}]`,
+  ].join('|'),
+  'gu',
+);
+
+function dropPass(text: string, removal: Removal): string {
+  return text.replace(
+    DROP_PASS,
+    (match: string, tagSequence: unknown, joiners: unknown, kept: unknown) => {
+      if (typeof tagSequence === 'string' || typeof kept === 'string') return match;
+      if (typeof joiners === 'string')
+        return `${joiners}${removed(match.slice(joiners.length), removal)}`;
+      return removed(match, removal);
+    },
+  );
+}
+
+function onePass(text: string, removal: Removal): string {
+  return dropPass(text, removal).replace(SCREEN_PASS, (match: string, ...rest: unknown[]) =>
+    passMatch(
+      removal,
+      match,
+      rest.slice(0, 11).map((group) => (typeof group === 'string' ? group : undefined)),
+    ),
+  );
+}
+
+/** How many times the pass runs at most: a removal can bring two pieces side by side that a later pass judges again (a joiner and an emoji). */
+const SETTLE_PASSES = 4;
+
+/**
+ * The pass, run again over its own output until it changes nothing (in practice once more; at most {@link SETTLE_PASSES} times): what one pass
+ * removes can put two characters side by side that it judged apart (a selector between a joiner and an emoji, dropped late), and the screen must
+ * draw what a second look would (so a row filtered again after its layout does not change). Each pass is linear.
+ */
+function screenPass(text: string, removal: Removal): string {
+  let out = onePass(text, removal);
+  for (let pass = 1; pass < SETTLE_PASSES; pass += 1) {
+    const again = onePass(out, removal);
+    if (again === out) break;
+    out = again;
+  }
+  return out;
+}
+
+/**
+ * `text` with the dropped classes dropped and the rewritten ones rewritten (see the module header). Newlines and everything else kept; forward
+ * passes, run until they change nothing. Idempotent.
  */
 export function dropScreenFillers(text: string): string {
-  return text.replace(SCREEN_PASS, keepOrDrop);
+  return screenPass(text, 'drop');
 }
 
 /** `text` with the combining marks and joiners that start a line (the text's, and each after a newline) dropped (after {@link dropScreenFillers}). */
@@ -143,28 +311,50 @@ export function dropOrphanMarks(text: string): string {
 }
 
 /**
- * Untrusted text made fit for a row of the screen: the dropped classes dropped, then the orphan marks at the start of each line. Neither changes
- * the width the layout measures (both are 0 columns to it), so a row filtered after it was laid out keeps its place and its row count.
+ * Untrusted text made fit for the screen: the dropped classes dropped, the rewritten ones rewritten, then the orphan marks at the start of each
+ * line. Run it BEFORE the text is laid out: a rewrite can change the width the layout measures (see the module header). Idempotent.
  */
 export function screenText(text: string): string {
   return dropOrphanMarks(dropScreenFillers(text));
 }
 
 /**
- * The same filter over a row cut in styled pieces: the dropped classes dropped from every piece, and the orphan marks from the start of the ROW
- * (the first pieces, across an empty one). The pieces keep their order and their styles; a piece the filter empties is kept, empty. Returns the
- * very same array when nothing changed.
+ * {@link screenText} for a decision surface (the question card's option labels and headers: review round 3, R3S-4): what the filter would DROP is
+ * written as `<U+XXXX>` instead, so two strings the core admits as different never draw alike (`Ok` and `Ok🏽`); a literal `<U+` is written
+ * `<U+003C>U+`, so a token can only come from a code point. The rewrites (a decomposed AM, a joiner after an indicator, a selector after a narrow
+ * base) are as on every row. For a string drawn once: it is not idempotent (a token's own `<U+` is escaped again).
+ */
+export function escapeScreenText(text: string): string {
+  const literal = text.replace(/<(?=U\+)/gu, codePointToken('<'));
+  return screenPass(literal, 'escape').replace(ORPHAN_LEAD, (lead) => removed(lead, 'escape'));
+}
+
+/** A character after which an emoji the layout draws wide as a whole ends (a flag, a selector, a keycap, a pictograph): see {@link screenPieces}. */
+const WIDE_UNIT_END = new RegExp(
+  `(?:\\p{Regional_Indicator}\\p{Regional_Indicator}|${VS16}|${KEYCAP}|\\p{Extended_Pictographic})$`,
+  'u',
+);
+const LEADING_EXTENDERS = new RegExp(`^${EXTENDER_CLASS}+`, 'u');
+
+/**
+ * The same filter over a laid-out row cut in styled pieces (the markdown layout's spans): {@link dropScreenFillers} on every piece, the orphan marks
+ * dropped from the start of the ROW (the first pieces, across an empty one), and what a piece starts with that would join onto an emoji the previous
+ * piece ends with dropped (the layout put the two pieces side by side: the source kept them apart). The pieces keep their order and their styles;
+ * a piece the filter empties is kept, empty. Returns the very same array when nothing changed.
  */
 export function screenPieces<Piece extends { readonly text: string }>(
   pieces: readonly Piece[],
 ): readonly Piece[] {
   let leading = true;
+  let afterWideUnit = false;
   let changed = false;
   const out = pieces.map((piece) => {
     let text = dropScreenFillers(piece.text);
-    if (leading) {
-      text = text.replace(ORPHAN_LEAD, '');
-      if (text !== '') leading = false;
+    if (leading) text = text.replace(ORPHAN_LEAD, '');
+    else if (afterWideUnit) text = text.replace(LEADING_EXTENDERS, '');
+    if (text !== '') {
+      leading = false;
+      afterWideUnit = WIDE_UNIT_END.test(text);
     }
     if (text === piece.text) return piece;
     changed = true;
@@ -175,9 +365,108 @@ export function screenPieces<Piece extends { readonly text: string }>(
 
 /**
  * Whether a code point is one a terminal may draw wider than the layout counts in SOME context: U+FE0F, a skin tone, a regional indicator, a
- * lone surrogate, the Thai or Lao AM. The approval card escapes every one of them as `<U+XXXX>` wherever it stands (a consent surface shows what
- * is approved and never drops it; it escapes U+FE0F and a surrogate already as invisible).
+ * lone surrogate, the Thai or Lao AM, the wide tone marks. The approval card escapes every one of them as `<U+XXXX>` wherever it stands (a consent
+ * surface shows what is approved and never drops it; it escapes the joiners and a surrogate already as invisible).
  */
 export function isWidthRiskCodePoint(character: string): boolean {
   return WIDTH_RISK.test(character);
+}
+
+/**
+ * One of the nine emoji bases that are text by default and that a terminal draws two columns wide while the layout counts one (`☝`, `⛹`, `✌`, `✍`,
+ * `🏋`, `🏌`, `🕴`, `🕵`, `🖐`; review round 3, measured on tmux): a consent surface draws it WITH U+FE0F after it (the two count two columns to
+ * both), a mark of how it is drawn and not a character of the text, so the glyph stays legible where an escape would not.
+ */
+export function isNarrowEmojiBase(character: string): boolean {
+  return NARROW_BASE_ONLY.test(character);
+}
+
+/** What a stream holds back at most before it lets text through anyway (a run with no neutral character in it). */
+const HOLD_LIMIT = 1024;
+/**
+ * A character whose presence does not change how the filter treats the text before it, and that the filter writes as it is whatever follows it
+ * (a letter, a digit, a space, punctuation): everything but a regional indicator, a pictograph, a mark, a tone, a format, default-ignorable or
+ * surrogate code point, and the Thai or Lao AM (it can follow an emoji as part of what is dropped after it). A keycap's base (a digit, `#`, `*`)
+ * is let through, and carried into the next piece's filter as its context (a selector and a keycap after it make one emoji with it).
+ */
+const NOT_NEUTRAL = new RegExp(
+  `[\\p{Regional_Indicator}\\p{Extended_Pictographic}\\p{M}\\p{Emoji_Modifier}\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Cs}${THAI_AM}${LAO_AM}]`,
+  'u',
+);
+/** The orphan marks after a newline inside a piece of a stream (its start is a line start only when the text before it ended a line). */
+const ORPHAN_AFTER_NEWLINE = new RegExp(`\\n(?:\\p{M}|${ZWNJ}|${ZWJ})+`, 'gu');
+
+/**
+ * Where a stream may cut `text`: just after its last neutral character, or `-1`. Only `text` from `from` on is looked at (what the stream held
+ * has no neutral character: it is what followed the last one), and never further than {@link HOLD_LIMIT} from its end.
+ */
+function settledEnd(text: string, from: number): number {
+  const floor = Math.max(from, text.length - HOLD_LIMIT);
+  for (let at = text.length - 1; at >= floor; at -= 1) {
+    const unit = text.charCodeAt(at);
+    if (unit >= 0xdc00 && unit <= 0xdfff) continue; // the low half of a pair: the character starts one unit earlier
+    const end = unit >= 0xd800 && unit <= 0xdbff ? at + 2 : at + 1;
+    if (!NOT_NEUTRAL.test(text.slice(at, end))) return end;
+  }
+  return -1;
+}
+
+/**
+ * The filter over a stream that arrives in chunks (the live tail, review round 3, R3S-1): {@link ScreenStream.append} returns the filtered text that
+ * is now settled and holds back the end the next chunk could still change (a regional indicator that could be half of a flag, an emoji a selector
+ * or a joiner could follow, a mark): it lets the text through up to its last NEUTRAL character, so the decisions the filter makes about it never
+ * depend on a later chunk and the output is the filter of the whole text, whatever the chunks. A line start is a line start of the whole text
+ * (an orphan mark is dropped only there), and what a piece starts with that would join onto an emoji the previous piece ended with is dropped, as
+ * the whole text's filter drops it. A run of more than {@link HOLD_LIMIT} code units with no neutral character is let through anyway, cut between
+ * two code points (each side's filter is still width-safe; a decision at the cut may differ). Linear: the scan for the cut looks only at the new chunk (what is held has no neutral character), and what is held is never more than
+ * {@link HOLD_LIMIT} code units.
+ */
+export class ScreenStream {
+  private held = '';
+  private atLineStart = true;
+  private afterWideUnit = false;
+  /** The keycap base (a digit, `#`, `*`) the last piece ended with: the next piece is filtered after it, and it is not written again. */
+  private keycapBase = '';
+
+  append(chunk: string): string {
+    if (chunk === '') return '';
+    const text = `${this.held}${chunk}`;
+    let cut = settledEnd(text, this.held.length);
+    if (cut < 0 && text.length > HOLD_LIMIT) {
+      cut = text.length - 8;
+      const unit = text.charCodeAt(cut);
+      if (unit >= 0xdc00 && unit <= 0xdfff) cut -= 1;
+    }
+    if (cut <= 0) {
+      this.held = text;
+      return '';
+    }
+    this.held = text.slice(cut);
+    return this.settle(text.slice(0, cut));
+  }
+
+  /** Forget what is held and where the text stands (a new turn's stream). */
+  reset(): void {
+    this.held = '';
+    this.atLineStart = true;
+    this.afterWideUnit = false;
+    this.keycapBase = '';
+  }
+
+  private settle(piece: string): string {
+    const context = this.keycapBase;
+    this.keycapBase = /[0-9#*]$/u.test(piece) ? piece.slice(-1) : '';
+    // the filter never removes a keycap's base (it keeps the base of whatever it judges): the output starts with the context, written already
+    let out = dropScreenFillers(`${context}${piece}`).slice(context.length);
+    if (this.atLineStart) out = out.replace(ORPHAN_LEAD, '');
+    else {
+      if (this.afterWideUnit) out = out.replace(LEADING_EXTENDERS, '');
+      out = out.replace(ORPHAN_AFTER_NEWLINE, '\n');
+    }
+    if (out !== '') {
+      this.atLineStart = out.endsWith('\n');
+      this.afterWideUnit = WIDE_UNIT_END.test(out);
+    }
+    return out;
+  }
 }

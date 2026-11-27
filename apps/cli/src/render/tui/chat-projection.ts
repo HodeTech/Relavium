@@ -342,7 +342,8 @@ const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>()
 /**
  * `text` wrapped at `cols` as rows of `style`: the first row carries `margin` (absent: a blank margin) and every later row, a wrapped row or a line
  * after a newline, HANGS under it with a blank margin, starting at its text (the space the wrap broke at is dropped: review round 1, D-2). The one
- * way a row gets a host mark: from the host's role, never from the text.
+ * way a row gets a host mark: from the host's role, never from the text. The text goes through the screen's filter BEFORE it is wrapped (review
+ * round 3, R3S-1: a rewrite can change the width the wrap measures, so a row is laid out from the text as it is drawn).
  */
 function hangingRows(
   text: string,
@@ -350,12 +351,15 @@ function hangingRows(
   cols: number,
   margin?: MarginRole,
 ): DisplayLine[] {
-  return wrapText(text, cols, true).map((row, index) =>
+  return wrapText(screenText(text), cols, true).map((row, index) =>
     index === 0 && margin !== undefined ? { text: row, style, margin } : { text: row, style },
   );
 }
 
-/** A reply's own rows: the markdown laid out at `cols` with colour, the plain text wrapped at `cols` without. */
+/**
+ * A reply's own rows: the markdown laid out at `cols` with colour, the plain text wrapped at `cols` without; either from the source as the screen
+ * draws it (the filter runs before the parse and the layout: review round 3, R3S-1).
+ */
 function replyBodyRows(
   entry: TranscriptEntry,
   source: string,
@@ -365,7 +369,7 @@ function replyBodyRows(
   if (!color) return hangingRows(source, 'assistant', cols);
   let blocks = entryParseCache.get(entry);
   if (blocks === undefined) {
-    blocks = parseMarkdown(source);
+    blocks = parseMarkdown(screenText(source));
     entryParseCache.set(entry, blocks);
   }
   return layoutMarkdown(blocks, cols).map((line): DisplayLine => ({ ...line, style: 'assistant' }));
@@ -390,7 +394,10 @@ function toolCallRows(
   return rows;
 }
 
-/** The rows of one entry as the layout builds them, before the screen's filter: content only, the host's roles set (see {@link wrapEntry}). */
+/**
+ * The rows of one entry as the layout builds them from its text as the screen draws it (every text goes through the screen's filter before its
+ * layout: {@link hangingRows}, {@link replyBodyRows}): content only, the host's roles set (see {@link wrapEntry}).
+ */
 function entryRows(
   entry: TranscriptEntry,
   cols: number,
@@ -418,11 +425,11 @@ function entryRows(
 }
 
 /**
- * One row as the screen draws it (review round 1, S-1; OQ4 as revised after the security sitting): the fillers a terminal may draw wider than the
- * layout measures and an orphan leading mark dropped ({@link screenText}), and the host's marker glyphs (`›`, `▸`, `⇄`) blanked, in the text and
- * in every span alike. Neither changes a row's measured width, so the rows keep their count and their places. The grid's margin is exact in the
- * layout; this is what keeps a terminal that measures a character differently from carrying the host's glyph into it. The documents are built
- * from {@link entryLines}, not from these rows, and keep every byte.
+ * One row as the screen draws it (review round 1, S-1; OQ4 as revised after the security sitting): the host's marker glyphs (`›`, `▸`, `⇄`) blanked,
+ * in the text and in every span alike (one column for one column), and the screen's filter again. The row was laid out from filtered text, so the
+ * filter changes nothing in it (it is idempotent), except where the layout joined two pieces the source kept apart (markdown emphasis between an
+ * emoji and a joiner: {@link screenPieces}); such a row can grow by a column, and the full-screen viewport clips a row to its cell, so a row stays
+ * one physical row (review round 3, R3S-1). The documents are built from {@link entryLines}, not from these rows, and keep every byte.
  */
 function screenRow(row: DisplayLine): DisplayLine {
   const text = screenModelText(row.text);
@@ -440,14 +447,18 @@ function screenModelSpans(spans: readonly MarkdownSpan[]): readonly MarkdownSpan
 }
 
 /**
- * Text a model wrote, made fit for the screen outside the transcript (the live tail, the reasoning, a running tool's words): the screen's filter
- * ({@link screenText}) and the marker glyphs blanked, as {@link screenRow} does for a transcript row. Newlines kept.
+ * Text a model wrote, made fit for the screen outside the transcript (the reasoning, the busy line's tokens, a running tool's words): the screen's
+ * filter ({@link screenText}) and the marker glyphs blanked, as {@link screenRow} does for a transcript row. Newlines kept. Run it before the text is
+ * laid out or measured (review round 3, R3S-1).
  */
 export function screenModelText(text: string): string {
   return blankMarkerGlyphs(screenText(text));
 }
 
-/** A laid-out markdown row of the live tail, through the same filter and blank as a finished reply's row, in its text and in every span. */
+/**
+ * A laid-out markdown row of the live tail, through the same filter and blank as a finished reply's row, in its text and in every span. The stream
+ * was filtered before its layout (`ScreenStream`, `chat-store.ts`), so this changes the row's width only where the layout joined two pieces.
+ */
 export function screenStreamRow<
   Row extends { readonly text: string; readonly spans: readonly MarkdownSpan[] },
 >(row: Row): Row {
@@ -778,9 +789,9 @@ export function formatBusyLine(input: {
   // (ADR-0147 §2: the `Waiting for your answer` row and its spinner retired).
   // The streamed answer is the model's, drawn in the content column of the grid above the prompt (unit 9): the margin beside it is the host's and
   // blank. It goes through the screen's filter and its marker glyphs are blanked, as a finished reply's rows are ({@link screenModelText}): the
-  // margin is exact in the layout, not on a terminal that measures a character wider (ADR-0145 §6, OQ4 as revised after review round 1). The
-  // filter and the blank change no measured width, so the tail's row estimate below is the one it was.
-  // Tabs expanded here, before the row math: a terminal moves a tab to its next stop, which the layout counts as 0 columns (review round 2, S2-1).
+  // margin is exact in the layout, not on a terminal that measures a character wider (ADR-0145 §6, OQ4 as revised after review round 1). Both run
+  // HERE, before the tail's row estimate below and before Ink lays the line out: a rewrite of the filter can change the width (review round 3).
+  // Tabs expanded here too, before the row math: a terminal moves a tab to its next stop, which the layout counts as 0 columns (round 2, S2-1).
   const sanitized = expandTabs(screenModelText(stripTerminalControls(input.liveTokens)));
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';

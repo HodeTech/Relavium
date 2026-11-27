@@ -100,11 +100,14 @@ const WORDS: readonly string[] = [...new Set(Object.values(MARGIN_WORDS))];
 /**
  * A row's FOLDED head that a screen reader could hear as a margin word: one of {@link MARGIN_WORDS} (any case, a whole word) at its start, after
  * only what a reader does not announce or a person does not read as a word: white space, the box-drawing gutters of a quotation or a code block
- * (U+2500 to U+257F) and the blank-looking characters the approval card treats as blanks (U+2800, U+1D159; its third, U+16FE4, is a mark and
- * is gone already). The format, zero-width and combining characters are gone from the head before this test ({@link foldedHead}).
+ * (U+2500 to U+257F), the blank-looking characters the approval card treats as blanks (U+2800, U+1D159; its third, U+16FE4, is a mark and
+ * is gone already), and (review round 3, R3S-3) the Hangul vowel and final jamo with no leading one before them (U+1160 to U+11FF, U+D7B0 to
+ * U+D7FF: a terminal draws them with no column), private-use and unassigned code points (no glyph a reader announces as a word). Skipping them
+ * here only decides the word: it changes no width. The format, zero-width and combining characters are gone from the head before this test
+ * ({@link foldedHead}).
  */
 const MARGIN_WORD_LEAD = new RegExp(
-  `^[\\s${String.fromCodePoint(0x2500)}-${String.fromCodePoint(0x257f)}${String.fromCodePoint(0x2800)}${String.fromCodePoint(0x1d159)}]*(?:${WORDS.join('|')})(?![\\p{L}\\p{N}_])`,
+  `^[\\s${String.fromCodePoint(0x2500)}-${String.fromCodePoint(0x257f)}${String.fromCodePoint(0x2800)}${String.fromCodePoint(0x1d159)}${String.fromCodePoint(0x1160)}-${String.fromCodePoint(0x11ff)}${String.fromCodePoint(0xd7b0)}-${String.fromCodePoint(0xd7ff)}\\p{Co}\\p{Cn}]*(?:${WORDS.join('|')})(?![\\p{L}\\p{N}_])`,
   'iu',
 );
 
@@ -135,8 +138,9 @@ function foldedHead(text: string): string {
  * Whether `text` starts with a margin word: the inline renderer then puts the row's own entry's word in its margin, so a reply or a notice row
  * that begins `you   …` is read as `agent you …` or `note you …`, never as the person's turn (review round 1, S-2). The test reads the row's
  * folded head (review round 2, S2-2): a joiner, a non-joiner or a selector inside the word, a blank-looking lead, a fullwidth or a mathematical
- * form do not hide it. NOT caught, a recorded residual: a lookalike from another script (a Cyrillic `у` and `о` for `yo`, a Greek `ο`), which no
- * fold maps to Latin.
+ * form do not hide it. NOT caught, a recorded residual (review rounds 2 and 3, R3S-3): a LOOKALIKE letter, which no compatibility fold maps to
+ * Latin: Cyrillic (`у`, `о`), Greek (`ο`), the Latin small capitals (`ʏᴏᴜ`, `nᴏte`), IPA (`yɵu`), the Latin alpha and script g (`ɑgent`, `aɡent`),
+ * Armenian (`yօս`), Cherokee (`Ꭺgent`). A confusable-skeleton fold (UTS #39) would catch them; it is not done.
  */
 export function startsWithMarginWord(text: string): boolean {
   return MARGIN_WORD_LEAD.test(foldedHead(text));

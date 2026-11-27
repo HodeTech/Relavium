@@ -14,6 +14,7 @@ import {
   questionRule,
   QUESTION_CARD_MAX_BODY_ROWS,
 } from './question-card.js';
+import { escapeScreenText, screenText } from './screen-text.js';
 import { displayWidth } from './viewport.js';
 
 /** The 80×24 floor: the card's twelve rows are a rule, two key rows and nine body rows. */
@@ -303,7 +304,10 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           .map((row) => row.text);
         // Every row of model text starts with the host's gutter; strip it and the rows rejoin to exactly the question.
         expect(questionRows.every((row) => row.startsWith('│ '))).toBe(true);
-        expect(questionRows.map((row) => row.slice(2)).join('')).toBe(question.question);
+        // (as the screen draws it: the screen's filter runs on the question before the card lays it out, MVP-11 unit 9, review round 3)
+        expect(questionRows.map((row) => row.slice(2)).join('')).toBe(
+          screenText(question.question),
+        );
         // ...and no row of it begins or ends inside a grapheme cluster (Intl.Segmenter is the oracle). A question's rows do not
         // depend on the state, so each is checked once per call.
         if (!cutChecked.has(state.index)) {
@@ -311,12 +315,19 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           expect(cutsInsideClusters(questionRows.map((row) => row.slice(2)))).toEqual([]);
         }
         const text = view.body.map((row) => row.text);
+        // a label as the card draws it: filtered, or escaped where two of them would draw alike (review round 3, R3S-4)
         for (const option of question.options)
-          expect(text.some((row) => row.endsWith(option.label))).toBe(true);
+          expect(
+            text.some((row) =>
+              [screenText(option.label), escapeScreenText(option.label)].some((drawn) =>
+                row.endsWith(drawn),
+              ),
+            ),
+          ).toBe(true);
         const entry = state.entries[state.index];
         const highlighted = question.options[entry?.highlight ?? -1];
         if (highlighted !== undefined && state.hint === undefined)
-          expect(text.some((row) => row === `│ ${highlighted.description}`)).toBe(true);
+          expect(text.some((row) => row === `│ ${screenText(highlighted.description)}`)).toBe(true);
       }
     }
     // The generator really exercised clusters: a question with a multi-code-point cluster in it is most of the calls (174 of 300 at this seed).
@@ -354,7 +365,9 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
         const text = `${'a'.repeat(before)}${cluster}bc`;
         expect(plainTextRefusal(text, ASK_USER_BOUNDS.questionBytes), 'admissible').toBeUndefined();
         const rows = questionRowsOf(text);
-        expect(rows.join(''), `${JSON.stringify(cluster)} after ${String(before)}`).toBe(text);
+        expect(rows.join(''), `${JSON.stringify(cluster)} after ${String(before)}`).toBe(
+          screenText(text),
+        );
         expect(
           cutsInsideClusters(rows),
           `${JSON.stringify(cluster)} after ${String(before)}`,
@@ -370,7 +383,7 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
       const alphabet = EDGE_ALPHABETS[n % EDGE_ALPHABETS.length] ?? [];
       const text = longest(random, alphabet, ASK_USER_BOUNDS.questionBytes); // throws on a refusal
       const rows = questionRowsOf(text);
-      expect(rows.join('')).toBe(text);
+      expect(rows.join('')).toBe(screenText(text));
       expect(cutsInsideClusters(rows), JSON.stringify(text)).toEqual([]);
       if (rows.length > 1) wrapped += 1;
     }
@@ -378,9 +391,13 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
   });
 
   it('a wide cluster that does not fit the room left moves whole to the next row', () => {
-    for (const cluster of ['👍🏽', '🇯🇵']) {
+    // (the tone is not drawn: the screen's filter drops every skin tone, review round 3; the hand is still a wide cluster)
+    for (const [cluster, drawn] of [
+      ['👍🏽', '👍'],
+      ['🇯🇵', '🇯🇵'],
+    ] as const) {
       const rows = questionRowsOf(`${'a'.repeat(ROW_CELLS - 1)}${cluster}b`);
-      expect(rows).toEqual(['a'.repeat(ROW_CELLS - 1), `${cluster}b`]);
+      expect(rows).toEqual(['a'.repeat(ROW_CELLS - 1), `${drawn}b`]);
     }
   });
 });

@@ -1,7 +1,7 @@
 import { secretShapedRanges, type ToolPreview } from '@relavium/core';
 import { secretMaskRanges } from '@relavium/llm/scrub-secrets';
 import { sanitizeUntrusted, stripTerminalControls } from '../sanitize.js';
-import { isWidthRiskCodePoint } from './screen-text.js';
+import { isNarrowEmojiBase, isWidthRiskCodePoint } from './screen-text.js';
 import { displayWidth } from './viewport.js';
 
 export interface SourceRange {
@@ -406,9 +406,11 @@ const BLANKS = new Set([0x2800, 0x16fe4, 0x1d159]);
 /**
  * One code point of a reviewed string as the card draws it. Escaped as `<U+XXXX>` (never dropped: what the person sees is what they approve): `<`,
  * what draws nothing or blank, and (MVP-11 unit 9, review round 2, S2-4) every code point a terminal may draw WIDER than the card's layout counts
- * ({@link isWidthRiskCodePoint}, the screen filter's one classifier: a skin tone, a regional indicator, the Thai or Lao AM; U+FE0F and a lone
- * surrogate are invisible already). Unescaped, a run of them makes a row the card sized to fit wrap on the terminal: the path row of a write once
- * pushed its stats to the next row and shifted the whole frame. Escaped, the row is ASCII where it was at risk, measured as it is drawn.
+ * ({@link isWidthRiskCodePoint}, the screen filter's one classifier: a skin tone, a regional indicator, the Thai or Lao AM, the wide tone marks;
+ * U+FE0F and a lone surrogate are invisible already). Unescaped, a run of them makes a row the card sized to fit wrap on the terminal: the path row
+ * of a write once pushed its stats to the next row and shifted the whole frame. Escaped, the row is ASCII where it was at risk, measured as it is
+ * drawn. The nine text-default emoji bases a terminal draws two columns ({@link isNarrowEmojiBase}, review round 3) are drawn with U+FE0F after
+ * them instead: legible, and two columns to the layout as on the terminal.
  */
 export function escapeReviewCharacter(char: string, trailing: boolean, numeric = false): string {
   const cp = char.codePointAt(0) ?? 0;
@@ -424,6 +426,9 @@ export function escapeReviewCharacter(char: string, trailing: boolean, numeric =
     isWidthRiskCodePoint(char)
   )
     return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`;
+  // one of the nine text-default emoji bases a terminal draws two columns: drawn with its presentation selector, so the layout counts two too
+  // (MVP-11 unit 9, review round 3); a real U+FE0F after it is escaped on its own, so the two never draw alike
+  if (isNarrowEmojiBase(char)) return `${char}${String.fromCodePoint(0xfe0f)}`;
   return char;
 }
 export interface ReviewPage {

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import stringWidth from 'string-width';
 
-import { dropOrphanMarks, dropScreenFillers, screenPieces, screenText } from './screen-text.js';
+import {
+  dropOrphanMarks,
+  dropScreenFillers,
+  escapeScreenText,
+  isNarrowEmojiBase,
+  screenPieces,
+  ScreenStream,
+  screenText,
+} from './screen-text.js';
 import { terminalWidth } from './terminal-wrap.test-support.js';
 
 /**
@@ -181,11 +189,13 @@ describe('the classes the layout measures narrower than tmux draws (review round
       expect(screenText(`x ${emoji} y`), JSON.stringify(emoji)).toBe(`x ${emoji} y`);
   });
 
-  it('a skin tone is dropped unless it is on a base that takes one', () => {
+  it('a skin tone is dropped wherever it stands (round 3: tmux joins a tone to only some of the bases that take one)', () => {
     expect(screenText(`x${TONE.repeat(5)}`)).toBe('x');
     expect(screenText(`ok ${TONE}`)).toBe('ok ');
-    expect(screenText(`${THUMB}${TONE}`)).toBe(`${THUMB}${TONE}`);
-    expect(screenText(`${THUMB}${TONE}${TONE}`)).toBe(`${THUMB}${TONE}`);
+    expect(screenText(`${THUMB}${TONE}`)).toBe(THUMB);
+    expect(screenText(`${THUMB}${TONE}${TONE}`)).toBe(THUMB);
+    // a narrow base keeps its selector: `☝🏽` is four columns on tmux, two to the layout; `☝️` two to both
+    expect(screenText(`${c(0x261d)}${TONE}`)).toBe(`${c(0x261d)}${VS16}`);
   });
 
   it('a lone surrogate is dropped (Node writes it as U+FFFD: one column the layout does not count)', () => {
@@ -207,13 +217,235 @@ ${c(0x0eb3)}y`),
 ${c(0x0eb2)}y`);
   });
 
-  it('a pair of regional indicators that is not a flag is set apart; a flag stays one', () => {
-    expect(screenText(`${RI_A}${RI_B}`)).toBe(`${RI_A}${ZWNJ}${RI_B}`);
+  it('an indicator that is not half of a flag is followed by a joiner; a flag stays as it is, with no joiner after it (round 3, R3S-2)', () => {
+    expect(screenText(`${RI_A}${RI_B}`)).toBe(`${RI_A}${ZWNJ}${RI_B}${ZWNJ}`);
     expect(screenText(US)).toBe(US);
     expect(screenText(`${RI_A}${RI_B}${c(0x1f1e8)}`)).toBe(
-      `${RI_A}${ZWNJ}${RI_B}${ZWNJ}${c(0x1f1e8)}`,
+      `${RI_A}${ZWNJ}${RI_B}${ZWNJ}${c(0x1f1e8)}${ZWNJ}`,
     );
-    expect(screenText(`${US}${US}`)).toBe(`${US}${ZWNJ}${US}`);
+    // consecutive flags: no joiner between them (a joiner after a flag is one column to the layout and two on tmux)
+    expect(screenText(`${US}${US}`)).toBe(`${US}${US}`);
+    expect(screenText(`${US}${RI_A}`)).toBe(`${US}${RI_A}${ZWNJ}`);
+    // a joiner a model wrote after a flag goes, as everything that would join onto it
+    expect(screenText(`${US}${ZWNJ}x`)).toBe(`${US}x`);
     expect(stringWidth(screenText(`${RI_A}${RI_B}`.repeat(5)))).toBe(10);
+    expect(stringWidth(screenText(`${US}${ZWNJ}`.repeat(20)))).toBe(40);
+  });
+});
+
+describe('the classes round 3 measured (review round 3: R3S-2 and the sweep of every code point a terminal draws wider)', () => {
+  const US = `${c(0x1f1fa)}${c(0x1f1f8)}`;
+  const HEART = `${c(0x2764)}${VS16}`;
+  const SMILE = c(0x1f600);
+  const TONE = c(0x1f3fd);
+
+  it('the nine text-default emoji bases are drawn with their presentation selector (tmux two columns, the layout one without it)', () => {
+    const bases = [0x261d, 0x26f9, 0x270c, 0x270d, 0x1f3cb, 0x1f3cc, 0x1f574, 0x1f575, 0x1f590].map(
+      c,
+    );
+    for (const base of bases) {
+      expect(isNarrowEmojiBase(base)).toBe(true);
+      expect(screenText(base)).toBe(`${base}${VS16}`);
+      expect(screenText(`${base}${VS15}`)).toBe(`${base}${VS16}`);
+      expect(screenText(`${base}${VS16}`)).toBe(`${base}${VS16}`);
+      expect(stringWidth(screenText(base))).toBe(2);
+    }
+    expect(isNarrowEmojiBase(c(0x1f44d))).toBe(false); // an emoji-presentation base is wide to both already
+  });
+
+  it('what would join onto an emoji the layout draws wide only as a whole is dropped (a joiner, a mark, a selector after it)', () => {
+    for (const [unit, after] of [
+      [US, ZWNJ],
+      [US, ZWJ],
+      [US, COMBINING_ACUTE],
+      [US, VS15],
+      [HEART, ZWNJ],
+      [HEART, COMBINING_ACUTE],
+      [`1${VS16}${KEYCAP}`, ZWNJ],
+      [`${c(0x261d)}${VS16}`, ZWNJ],
+    ] as const)
+      expect(screenText(`${unit}${after}x`), JSON.stringify(unit + after)).toBe(`${unit}x`);
+    // a joiner that starts a recommended sequence stays: the heart on fire
+    expect(screenText(`${HEART}${ZWJ}${c(0x1f525)}`)).toBe(`${HEART}${ZWJ}${c(0x1f525)}`);
+  });
+
+  it('an emoji zero-width-joiner sequence: a recommended one kept (without its tones), any other written as its members', () => {
+    expect(screenText(FAMILY)).toBe(FAMILY);
+    expect(screenText(`${c(0x1f469)}${TONE}${ZWJ}${c(0x1f4bb)}`)).toBe(
+      `${c(0x1f469)}${ZWJ}${c(0x1f4bb)}`,
+    );
+    // a narrow base in a sequence gets its selector (the fully-qualified form)
+    expect(screenText(`${c(0x1f3cb)}${ZWJ}${c(0x2640)}${VS16}`)).toBe(
+      `${c(0x1f3cb)}${VS16}${ZWJ}${c(0x2640)}${VS16}`,
+    );
+    // a chain of ten (tmux draws it as two clusters, four columns; the layout two): its members, each two columns to both
+    const chain = Array.from({ length: 10 }, () => SMILE).join(ZWJ);
+    expect(screenText(chain)).toBe(SMILE.repeat(10));
+    expect(stringWidth(screenText(chain))).toBe(20);
+  });
+
+  it('the spacing tone marks the layout counts as nothing and tmux draws two columns are dropped', () => {
+    for (const code of [0x302e, 0x302f, 0x16ff0, 0x16ff1])
+      expect(screenText(`a${c(code)}b`), code.toString(16)).toBe('ab');
+  });
+
+  it('a Thai or Lao AM after an emoji the layout draws wide only as a whole keeps its vowel; its mark, which would join the emoji, goes', () => {
+    expect(screenText(`${c(0x261d)}${c(0x0e33)}`)).toBe(`${c(0x261d)}${VS16}${c(0x0e32)}`);
+    expect(screenText(`${US}${c(0x0eb3)}`)).toBe(`${US}${c(0x0eb2)}`);
+  });
+
+  it('is idempotent on the cases a first single pass missed (a removal put a joiner and an emoji side by side)', () => {
+    for (const codes of [
+      [
+        0x1f469, 0x115f, 0x2764, 0x200d, 0x1f3fd, 0x1f600, 0x301, 0x31, 0x200c, 0x20, 0xfe0f,
+        0x200d, 0xfe0e, 0xe0041,
+      ],
+      [
+        0x302e, 0x2a, 0x1f1fa, 0x2122, 0x1f469, 0x200d, 0xfe0f, 0x2640, 0x1f1e6, 0x1f1e6, 0x261d,
+        0x115f,
+      ],
+      [0x23, 0x200d, 0x200d, 0xe0041, 0xfe0e, 0xe007f, 0x1f3f4],
+      [0x1f469, 0x1f3fd, 0xfe0f, 0x200d, 0xfe0f, 0xe0041, 0x302e, 0x1f600, 0x115f, 0x1f4bb],
+      [0x115f, 0xfe0e, 0x261d, 0x115f, 0x0e33],
+    ]) {
+      const once = screenText(String.fromCodePoint(...codes));
+      expect(screenText(once), codes.map((code) => code.toString(16)).join(' ')).toBe(once);
+    }
+  });
+
+  it('is idempotent: run again over its own output (a laid-out row), it changes nothing', () => {
+    const ALPHABET = [
+      'a',
+      ' ',
+      '\n',
+      '1',
+      '#',
+      US,
+      c(0x1f1e6),
+      c(0x1f1e7),
+      ZWNJ,
+      ZWJ,
+      VS15,
+      VS16,
+      KEYCAP,
+      TONE,
+      c(0x261d),
+      SMILE,
+      c(0x2764),
+      c(0x1f469),
+      c(0x1f4bb),
+      COMBINING_ACUTE,
+      c(0x0e01),
+      c(0x0e33),
+      c(0x115f),
+      c(0xe0041),
+      BLACK_FLAG,
+      c(0x302e),
+    ];
+    let state = 0x5eed1234;
+    const next = (): number => {
+      state = (state * 1103515245 + 12345) >>> 0;
+      return state / 4294967296;
+    };
+    for (let n = 0; n < 20_000; n += 1) {
+      let text = '';
+      for (let k = 1 + Math.floor(next() * 14); k > 0; k -= 1)
+        text += ALPHABET[Math.floor(next() * ALPHABET.length)] ?? '';
+      const once = screenText(text);
+      expect(screenText(once), JSON.stringify(text)).toBe(once);
+    }
+  });
+});
+
+describe('the decision surfaces: what the filter drops, escaped (review round 3, R3S-4)', () => {
+  const TONE = c(0x1f3fd);
+
+  it('a dropped code point is written as its token; a rewrite is as on every row', () => {
+    expect(escapeScreenText(`Ok${TONE}`)).toBe('Ok<U+1F3FD>');
+    expect(escapeScreenText(`a${VS16}`)).toBe('a<U+FE0F>');
+    expect(escapeScreenText(`x${c(0x302e)}`)).toBe('x<U+302E>');
+    expect(escapeScreenText(`${c(0x0e01)}${c(0x0e33)}`)).toBe(
+      screenText(`${c(0x0e01)}${c(0x0e33)}`),
+    );
+    expect(escapeScreenText(`${COMBINING_ACUTE}a`)).toBe('<U+0301>a');
+  });
+
+  it('one-to-one: labels the core admits as different never draw alike, a literal token included', () => {
+    const labels = ['Ok', `Ok${TONE}`, 'Ok<U+1F3FD>', `Ok${TONE}${TONE}`, `Ok${VS16}`];
+    const drawn = labels.map(escapeScreenText);
+    expect(new Set(drawn).size).toBe(labels.length);
+    expect(drawn[2]).toBe('Ok<U+003C>U+1F3FD>');
+  });
+});
+
+describe('the stream filter: the same text, whatever its chunks (review round 3, R3S-1)', () => {
+  const ALPHABET = [
+    'a',
+    'b',
+    ' ',
+    '\n',
+    '1',
+    '#',
+    c(0x1f1fa),
+    c(0x1f1f8),
+    c(0x1f1e6),
+    ZWNJ,
+    ZWJ,
+    VS15,
+    VS16,
+    KEYCAP,
+    c(0x1f3fd),
+    c(0x261d),
+    c(0x1f600),
+    c(0x2764),
+    c(0x1f469),
+    COMBINING_ACUTE,
+    c(0x0e01),
+    c(0x0e33),
+    c(0x115f),
+    c(0xe0041),
+    BLACK_FLAG,
+  ];
+
+  it('random texts in random chunks: the stream gives the filter of the whole text', () => {
+    let state = 0x31337;
+    const next = (): number => {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+    for (let n = 0; n < 5_000; n += 1) {
+      let text = '';
+      for (let k = 1 + Math.floor(next() * 30); k > 0; k -= 1)
+        text += ALPHABET[Math.floor(next() * ALPHABET.length)] ?? '';
+      text += ' END'; // a neutral ending: the stream lets everything through
+      const stream = new ScreenStream();
+      const units = [...text];
+      let out = '';
+      for (let at = 0; at < units.length; ) {
+        const size = 1 + Math.floor(next() * 4);
+        out += stream.append(units.slice(at, at + size).join(''));
+        at += size;
+      }
+      expect(out, JSON.stringify(text)).toBe(screenText(text));
+    }
+  });
+
+  it('holds back what a later chunk could change, and lets ordinary text through at once', () => {
+    const stream = new ScreenStream();
+    expect(stream.append('Sure, ')).toBe('Sure, ');
+    expect(stream.append(c(0x1f1fa))).toBe(''); // half of a flag, or a lone indicator: not decided yet
+    expect(stream.append(`${c(0x1f1f8)} ok`)).toBe(`${c(0x1f1fa)}${c(0x1f1f8)} ok`);
+    expect(stream.append(c(0x261d))).toBe('');
+    expect(stream.append(`${c(0x1f3fd)}!`)).toBe(`${c(0x261d)}${VS16}!`);
+    stream.reset();
+    expect(stream.append(`${COMBINING_ACUTE}x`)).toBe('x'); // a new stream starts a line: an orphan mark goes
+  });
+
+  it('a run with no neutral character is let through past the hold limit, width-safe at the cut', () => {
+    const stream = new ScreenStream();
+    let out = '';
+    for (let k = 0; k < 3000; k += 1) out += stream.append(c(0x1f1e6));
+    expect(out.length).toBeGreaterThan(0);
+    expect(stringWidth(out)).toBe([...out].filter((ch) => ch === c(0x1f1e6)).length);
   });
 });

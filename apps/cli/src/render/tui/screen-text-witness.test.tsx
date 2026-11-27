@@ -48,6 +48,13 @@ const CLASSES: readonly (readonly [string, string])[] = [
   ['the Thai AM', `${c(0x0e01)}${c(0x0e33)}`.repeat(36)],
   ['regional indicators that are not a flag', `${c(0x1f1e6)}${c(0x1f1e7)}`.repeat(36)],
   ['lone surrogates', String.fromCharCode(0xd800).repeat(72)],
+  // review round 3 (R3S-2 and the sweep): consecutive flags (a joiner after a flag made each one column to the layout, two on tmux), a joiner a
+  // model wrote after each flag, the text-default emoji bases tmux draws two columns, a tone on a base tmux does not join it to, the wide marks
+  ['consecutive flags', `${c(0x1f1fa)}${c(0x1f1f8)}`.repeat(36)],
+  ['a joiner after each flag', `${c(0x1f1fa)}${c(0x1f1f8)}${c(0x200c)}`.repeat(36)],
+  ['the narrow emoji bases', c(0x261d).repeat(36)],
+  ['tones on a base tmux does not join them to', `${c(0x1f3c3)}${c(0x1f3fd)}`.repeat(18)],
+  ['the wide tone marks', `a${c(0x302e)}`.repeat(24)],
 ];
 
 /** The forged mark, the forged word, a tool's id, a notice and a pasted turn, each led by `run`. */

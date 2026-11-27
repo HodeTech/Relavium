@@ -279,24 +279,35 @@ describe('the mark of a notice the host leads is the notice’s own dim, not the
 });
 
 describe('the content cell of a row is exactly the content column wide', () => {
-  it('a row wider than the column wraps inside its own cell, and its continuation hangs under a blank margin', async () => {
+  it('a row wider than the column: inline it wraps inside its own cell, its continuation under a blank margin; full-screen it is cut at the cell (one row is one physical row, review round 3, R3S-1)', async () => {
     const grid = chatGrid(100);
-    const mount = mountInk(
-      <Box width={100} flexDirection="column">
-        <TranscriptRow
-          line={{ text: 'x'.repeat(grid.content + 5), style: 'assistant' }}
-          grid={grid}
-          color={false}
-          form="glyph"
-        />
-      </Box>,
-      { renderer: 'alt', color: false, size: { cols: 100, rows: 4 } },
-    );
-    mounts.push(mount);
-    await mount.settle();
-    const [first, second] = mount.frame();
-    expect(first).toBe(`${' '.repeat(grid.margin)}${'x'.repeat(grid.content)}`);
-    expect(second).toBe(`${' '.repeat(grid.margin)}${'x'.repeat(5)}`);
+    for (const form of ['word', 'glyph'] as const) {
+      const mount = mountInk(
+        <Box width={100} flexDirection="column">
+          <TranscriptRow
+            line={{ text: 'x'.repeat(grid.content + 5), style: 'assistant' }}
+            grid={grid}
+            color={false}
+            form={form}
+          />
+        </Box>,
+        {
+          renderer: form === 'word' ? 'inline' : 'alt',
+          color: false,
+          size: { cols: 100, rows: 4 },
+        },
+      );
+      mounts.push(mount);
+      await mount.settle();
+      const [first, second] = mount.frame();
+      if (form === 'word') {
+        expect(first).toBe(`${' '.repeat(grid.margin)}${'x'.repeat(grid.content)}`);
+        expect(second).toBe(`${' '.repeat(grid.margin)}${'x'.repeat(5)}`);
+      } else {
+        expect(first).toBe(`${' '.repeat(grid.margin)}${'x'.repeat(grid.content - 1)}…`);
+        expect(second?.trim() ?? '').toBe('');
+      }
+    }
   });
 });
 

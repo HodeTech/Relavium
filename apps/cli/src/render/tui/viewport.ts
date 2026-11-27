@@ -75,8 +75,8 @@ function graphemeWidth(cluster: string): number {
  * Terminal display width of a string in cells — exactly what ink's `Output` computes for the same string, because it
  * is the same function. An emoji ZWJ sequence, a keycap, a flag each count 2; a base + combining marks counts as the
  * base; a zero-width-only cluster is 0. `string-width` has an ASCII fast path, so the common line costs one regex.
- * (Where a terminal draws a character wider than this, the screen's filter rewrites or drops it before the layout
- * measures the row: `screen-text.ts`.)
+ * (Where a terminal draws a character wider than this, the screen's filter rewrites or drops it; it runs on untrusted
+ * text BEFORE the text is laid out, so this measures the text as it is drawn: `screen-text.ts`, review round 3.)
  */
 export function displayWidth(str: string): number {
   return stringWidth(str, { countAnsiEscapeCodes: true });

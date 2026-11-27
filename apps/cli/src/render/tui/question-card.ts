@@ -32,6 +32,7 @@ import {
   legendItems,
 } from './legend.js';
 import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
+import { escapeScreenText, screenText } from './screen-text.js';
 import { sheetRule } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
@@ -94,6 +95,34 @@ const ASCII_LINE = /^[\x20-\x7e]*$/u;
 export function questionRule(columns: number, clock = ''): string {
   return sheetRule(RULE_LABEL, clock, Math.max(1, columns - 1)).text;
 }
+
+/**
+ * What the person decides on, the labels of a question's options or the headers of a call's questions, as the card draws them (MVP-11 unit 9,
+ * review round 3, R3S-4): through the screen's filter before the card lays them out, and the host's marks blanked. The filter drops what a
+ * terminal draws wider than the layout counts (a skin tone among them), so two labels the core admits as different can draw alike (`Ok` and `Ok🏽`);
+ * when ANY two of the set would, every one of them is written with what the filter drops ESCAPED as `<U+XXXX>` instead ({@link escapeScreenText},
+ * which is one-to-one), so no two draw alike. A set with no such pair draws as every other row does: an escape only where it decides something.
+ */
+function decisionTexts(texts: readonly string[]): readonly string[] {
+  const screened = texts.map((text) => blankHostMarks(screenText(text)));
+  const alike = screened.some(
+    (drawn, index) =>
+      screened.indexOf(drawn) !== index && texts.indexOf(texts[index] ?? '') === index,
+  );
+  return alike ? texts.map((text) => blankHostMarks(escapeScreenText(text))) : screened;
+}
+
+/** The drawn labels of `question`'s options ({@link decisionTexts}). */
+const drawnLabels = (question: {
+  readonly options: readonly { readonly label: string }[];
+}): readonly string[] => decisionTexts(question.options.map((option) => option.label));
+
+/** The drawn headers of a call's questions ({@link decisionTexts}). */
+const drawnHeaders = (state: QuestionCardState): readonly string[] =>
+  decisionTexts(state.request.questions.map((question) => question.header));
+
+/** The question and a description (prose): through the screen's filter before the card lays it out (review round 3, R3S-1); the host's marks blanked. */
+const proseText = (text: string): string => blankHostMarks(screenText(text));
 
 /**
  * Hard-wrap `text` to rows of at most `width` display columns, breaking at a grapheme boundary. A wide grapheme that does
@@ -185,7 +214,9 @@ function optionRow(
   const chosen = entry.ticked.includes(index);
   const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
-  const text = hardWrap(`${prefix}${blankHostMarks(option?.label ?? '')}`, width)[0] ?? '';
+  const label = option === undefined ? '' : (drawnLabels(question)[index] ?? '');
+  // one row: a label the escapes made wider than the row is cut with an ellipsis, never silently
+  const text = head(`${prefix}${label}`, width);
   return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
 }
 
@@ -222,8 +253,8 @@ function summaryOf(state: QuestionCardState, index: number): string {
   const labels = [...entry.ticked]
     .sort((a, b) => a - b)
     .flatMap((optionIndex) => {
-      const option = question.options[optionIndex];
-      return option === undefined ? [] : [blankHostMarks(option.label)];
+      const label = drawnLabels(question)[optionIndex];
+      return label === undefined ? [] : [label];
     });
   return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
 }
@@ -372,7 +403,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   const rest = Math.max(1, width - REVIEW_INDENT.length);
   const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
-    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${blankHostMarks(question.header)} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${drawnHeaders(state)[index] ?? ''} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
     return {
       tone: answered ? ('chosen' as const) : ('pending' as const),
       lines: wrapRows(line, width, rest),
@@ -425,8 +456,8 @@ export function projectQuestionCard(
   const question = currentQuestion(state);
   const entry = currentEntry(state);
   const body: QuestionCardRow[] = [
-    { text: headerRow(state, blankHostMarks(question.header), width), tone: 'header' },
-    ...hardWrap(blankHostMarks(question.question), width - gutterWidth).map(
+    { text: headerRow(state, drawnHeaders(state)[state.index] ?? '', width), tone: 'header' },
+    ...hardWrap(proseText(question.question), width - gutterWidth).map(
       (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),
     ...question.options.map((_, index) => optionRow(state, entry, index, width)),
@@ -440,7 +471,7 @@ export function projectQuestionCard(
     body.push({ text: `  ${head(OWN_DESCRIPTION, Math.max(1, width - 2))}`, tone: 'description' });
   } else {
     body.push({
-      text: `${GUTTER}${head(blankHostMarks(highlighted.description), Math.max(1, width - gutterWidth))}`,
+      text: `${GUTTER}${head(proseText(highlighted.description), Math.max(1, width - gutterWidth))}`,
       tone: 'description',
     });
   }

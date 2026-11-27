@@ -62,7 +62,7 @@ import {
 import { formatSessionFooter } from './chat-projection.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 import { withGlyphForm } from './glyphs.js';
-import { screenText } from './screen-text.js';
+import { ScreenStream, screenText } from './screen-text.js';
 import {
   appendNotice,
   appendUserMessage,
@@ -348,6 +348,9 @@ export function createChatStore(
   const listeners = new Set<() => void>();
   const markdown = new MarkdownStream();
   const terminal = new TerminalStream();
+  // The screen's filter runs on the stream BEFORE the live tail is laid out (MVP-11 unit 9, review round 3, R3S-1): a rewrite can change a row's
+  // width, so the tail must be laid out from the text as it is drawn. Chunk-safe: it holds back what a later chunk could still change.
+  const screen = new ScreenStream();
   let state = initialSessionViewState(seed, transcriptBound);
   let mode: ChatMode = DEFAULT_CHAT_MODE;
   let reasoningEffort: ReasoningEffort | undefined;
@@ -628,6 +631,7 @@ export function createChatStore(
       if (event.phase === 'started') {
         markdown.reset();
         terminal.reset();
+        screen.reset();
       }
       toolDisplays = new Map(toolDisplays).set(
         event.callId,
@@ -1029,7 +1033,8 @@ export function createChatStore(
       const fresh =
         state.lastSequenceNumber === undefined || event.sequenceNumber > state.lastSequenceNumber;
       if (fresh) {
-        if (event.type === 'agent:token') markdown.append(terminal.append(event.token));
+        if (event.type === 'agent:token')
+          markdown.append(screen.append(terminal.append(event.token)));
         else if (
           event.type === 'agent:tool_call' ||
           event.type === 'session:turn_started' ||
@@ -1038,6 +1043,7 @@ export function createChatStore(
         ) {
           markdown.reset();
           terminal.reset();
+          screen.reset();
         }
       }
       state = fresh

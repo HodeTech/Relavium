@@ -1026,8 +1026,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
       const answerRows = Math.max(0, maxRows - 1);
       // The live tail is the model's words, laid out in the content column at its width: the finished reply is laid out at the same width
-      // (`transcriptRows`), so the stream never reflows when the turn completes. Its rows go through the screen's filter and have the marker glyphs
-      // blanked, as the finished reply's do (`screenStreamRow`; ADR-0145 §6, OQ4 as revised after review round 1 of unit 9).
+      // (`transcriptRows`), so the stream never reflows when the turn completes. The stream went through the screen's filter before this layout
+      // (`ScreenStream` in the store: review round 3, R3S-1), and its rows have the marker glyphs blanked, as the finished reply's do
+      // (`screenStreamRow`; ADR-0145 §6, OQ4 as revised after review round 1 of unit 9).
       const answerColumns = chromeGrid.content;
       const lines = (
         color
@@ -1046,7 +1047,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               grid={chromeGrid}
               form={marginForm}
             >
-              <Text>
+              {/* full-screen the row is one physical row whatever a width says (cut at the cell's edge, never wrapped: review round 3, R3S-1) */}
+              <Text wrap={marginForm === 'word' ? 'wrap' : 'truncate-end'}>
                 <MarkdownText
                   spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
                   color={color}

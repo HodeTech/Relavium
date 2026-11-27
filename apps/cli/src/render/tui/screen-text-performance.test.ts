@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { startsWithMarginWord } from './chat-grid.js';
 import { transcriptRows } from './chat-projection.js';
 import { chatGrid } from './chat-grid.js';
-import { dropOrphanMarks, dropScreenFillers, screenPieces, screenText } from './screen-text.js';
+import {
+  dropOrphanMarks,
+  dropScreenFillers,
+  escapeScreenText,
+  screenPieces,
+  ScreenStream,
+  screenText,
+} from './screen-text.js';
 import { displayWidth, expandTabs, wrapText, wrapWords } from './viewport.js';
 
 /**
@@ -48,6 +55,15 @@ const RUNS: readonly (readonly [string, string])[] = [
   ['lone surrogates', String.fromCharCode(0xd800).repeat(N)],
   ['prepended concatenation marks', c(0x0600).repeat(N)],
   ['tabs', '\t'.repeat(N)],
+  // review round 3: consecutive flags, a joiner after each flag, a chain of emoji joined by joiners, the narrow bases, toned bases, the wide marks
+  ['consecutive flags', `${c(0x1f1fa)}${c(0x1f1f8)}`.repeat(N / 4)],
+  ['a joiner after each flag', `${c(0x1f1fa)}${c(0x1f1f8)}${c(0x200c)}`.repeat(N / 5)],
+  ['an emoji chain', `${c(0x1f600)}${c(0x200d)}`.repeat(N / 3)],
+  ['joiners and selectors', `${c(0x200d)}${c(0xfe0f)}`.repeat(N / 2)],
+  ['narrow emoji bases', c(0x261d).repeat(N)],
+  ['toned bases', `${c(0x1f3c3)}${c(0x1f3fd)}`.repeat(N / 4)],
+  ['an emoji and a run of selectors', `${c(0x2764)}${c(0xfe0f).repeat(N)}`],
+  ['wide tone marks', `a${c(0x302e)}`.repeat(N / 2)],
   ['spaces', ' '.repeat(N)],
   ['one long word', 'x'.repeat(N)],
 ];
@@ -59,6 +75,14 @@ describe('every screen function is linear on a hostile run (64,000 characters of
       ['dropScreenFillers', () => dropScreenFillers(run)],
       ['dropOrphanMarks', () => dropOrphanMarks(run)],
       ['screenPieces', () => screenPieces([{ text: run }, { text: run.slice(0, 1000) }])],
+      ['escapeScreenText', () => escapeScreenText(run)],
+      [
+        'ScreenStream in chunks of 7',
+        () => {
+          const stream = new ScreenStream();
+          for (let at = 0; at < run.length; at += 7) stream.append(run.slice(at, at + 7));
+        },
+      ],
       ['startsWithMarginWord', () => startsWithMarginWord(run)],
       ['startsWithMarginWord after the run', () => startsWithMarginWord(`${run}you`)],
       ['displayWidth', () => displayWidth(run)],
@@ -77,6 +101,15 @@ describe('every screen function is linear on a hostile run (64,000 characters of
       expect(timed(() => screenText(cluster))).toBeLessThan(BOUND_MS);
       expect(timed(() => displayWidth(screenText(cluster)))).toBeLessThan(BOUND_MS);
     }
+  });
+
+  it('a 6,400-character Thai paragraph streamed in chunks of 3: the stream filter costs no more than a bound for the whole stream', () => {
+    const paragraph = 'กำลังทำงานอยู่ คำถามนี้สำคัญ น้ำค่ำ '.repeat(200).slice(0, 6400);
+    const ms = timed(() => {
+      const stream = new ScreenStream();
+      for (let at = 0; at < paragraph.length; at += 3) stream.append(paragraph.slice(at, at + 3));
+    });
+    expect(ms, `${ms.toFixed(1)} ms`).toBeLessThan(BOUND_MS);
   });
 
   it.each([true, false])(
@@ -99,16 +132,16 @@ describe('the forward filter gives the old filter’s answers on the old classes
     `(?!${ZWNJ}|${ZWJ}|${VS15}|${VS16})(?!(?<=${c(0x1f3f4)}[${c(0xe0020)}-${c(0xe007f)}]*)[${c(0xe0020)}-${c(0xe007f)}])\\p{Default_Ignorable_Code_Point}`,
     'gu',
   );
-  /** The old classes: the flag, tags, the kept joiners and VS15, default-ignorable fillers, letters and spaces (no VS16, tone, surrogate, Cf). */
+  /**
+   * The old classes whose rule is unchanged: the flag and its tags, default-ignorable fillers, letters and spaces (no VS16, tone, surrogate, Cf;
+   * and since review round 3 no joiner or text selector either: a selector after a joiner goes, and an emoji sequence is judged as a whole).
+   */
   const ALPHABET = [
     c(0x1f3f4),
     c(0xe0041),
     c(0xe0067),
     c(0xe007f),
     c(0xe0001),
-    ZWNJ,
-    ZWJ,
-    VS15,
     c(0x115f),
     c(0x3164),
     c(0xffa0),
