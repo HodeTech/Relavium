@@ -3,9 +3,10 @@ import '../render/tui/force-color.js';
 
 /**
  * The `/mode` popup in the hosts of the product ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §3, §6; the 2026-11-25 ruling): the chat the Home hosts and a stand-alone chat, each in both placements. What it pins: a typed bare `/mode`
- * opens the popup from the host's own routing, before any submit; `Enter` goes to step 2 and `Enter` there applies through the port and closes
- * the popup; nothing reaches the transcript, its warnings line or the Home's notice; a typed `/mode plan` and a host whose port has no
+ * §3, §6; MVP-11 unit 8, OD-25: one list, two actions): the chat the Home hosts and a stand-alone chat, each in both placements. What it pins: a
+ * typed bare `/mode` opens the popup from the host's own routing, before any submit; `Enter` applies the highlighted mode to this chat through the
+ * port and closes the popup (ONE step: there is no second screen), `Enter` on the mode in force keeps, `[s]` hands the highlighted mode to the
+ * startup-default flow; nothing reaches the transcript, its warnings line or the Home's notice; a typed `/mode plan` and a host whose port has no
  * `/mode` member dispatch the line, as before.
  */
 import type { ChatMode } from '@relavium/shared';
@@ -50,15 +51,17 @@ function settingsWith(withMode: boolean) {
     ...(withMode
       ? {
           mode: {
+            scope: 'chat' as const,
             current: () => current,
             apply: (mode: ChatMode) => {
               applied.push(mode);
               current = mode;
               return true;
             },
+            startup: () => 'ask' as const,
             saveStartupDefault: (mode: ChatMode) => {
               saved.push(mode);
-              return Promise.resolve({ kind: 'unchanged' });
+              return Promise.resolve({ kind: 'said' as const });
             },
           },
         }
@@ -112,7 +115,7 @@ describe.each(HOSTS)('/mode in the %s host', (host) => {
   describe.each(RENDERERS)('%s', (renderer) => {
     const variant = variantOf(renderer);
 
-    it('a typed bare /mode opens the popup from the host’s routing; Enter, Enter applies this chat and closes; nothing else is written', async () => {
+    it('a typed bare /mode opens the popup from the host’s routing; ↓ then one Enter applies plan to this chat and closes; nothing else is written', async () => {
       const settings = settingsWith(true);
       const m = await mountWith(host, variant, settings.port);
       try {
@@ -122,20 +125,69 @@ describe.each(HOSTS)('/mode in the %s host', (host) => {
           timeout: WAIT_MS,
           interval: 15,
         });
-        await vi.waitFor(() => expect(m.text()).toContain('every action asks first · current'));
+        // the state words, right-aligned: the mode in force is also the startup default
+        await vi.waitFor(() => expect(m.text()).toContain('this chat · startup'));
+        expect(m.text()).not.toContain('step 1 of');
         expect(m.submitted).toEqual([]);
         m.skip(PATIENT_MS);
         m.key(KEYS.down); // ask → plan
         await m.settle();
+        await vi.waitFor(() => expect(m.text()).toContain('Enter use in this chat'));
         await enterFrom(m, 'mode:0');
-        expect(popupStep(m)).toBe('mode:1');
-        await vi.waitFor(() => expect(m.text()).toContain('Mode: plan'));
-        await enterFrom(m, 'mode:1');
         expect(m.popups.getSnapshot().open).toBe(false);
         expect(settings.applied).toEqual(['plan']);
         expect(settings.saved).toEqual([]);
         expect(residue(m)).toEqual(before);
         expect(m.submitted).toEqual([]);
+      } finally {
+        m.unmount();
+      }
+    });
+
+    it('Enter on the mode the popup opened on keeps it: the popup closes, nothing is applied or handed off, and no second screen opens', async () => {
+      const settings = settingsWith(true);
+      const m = await mountWith(host, variant, settings.port);
+      try {
+        await m.typeLine('/mode');
+        await vi.waitFor(() => expect(popupStep(m)).toBe('mode:0'), {
+          timeout: WAIT_MS,
+          interval: 15,
+        });
+        await vi.waitFor(() => expect(m.text()).toContain('Enter keep'));
+        await enterFrom(m, 'mode:0');
+        expect(m.popups.getSnapshot().open).toBe(false);
+        expect(settings.applied).toEqual([]);
+        expect(settings.saved).toEqual([]);
+      } finally {
+        m.unmount();
+      }
+    });
+
+    it('[s] hands the highlighted mode to the startup-default flow: the popup closes and applies nothing to this chat', async () => {
+      const settings = settingsWith(true);
+      const m = await mountWith(host, variant, settings.port);
+      try {
+        await m.typeLine('/mode');
+        await vi.waitFor(() => expect(popupStep(m)).toBe('mode:0'), {
+          timeout: WAIT_MS,
+          interval: 15,
+        });
+        m.skip(PATIENT_MS);
+        m.key(KEYS.down); // plan
+        await m.settle();
+        await vi.waitFor(() => expect(m.text()).toContain('[s] startup'));
+        await vi.waitFor(
+          () => {
+            if (popupStep(m) === 'mode:0') {
+              m.skip(PATIENT_MS);
+              m.key('s');
+            }
+            expect(settings.saved).toEqual(['plan']);
+          },
+          { timeout: WAIT_MS, interval: 50 },
+        );
+        expect(m.popups.getSnapshot().open).toBe(false);
+        expect(settings.applied).toEqual([]);
       } finally {
         m.unmount();
       }

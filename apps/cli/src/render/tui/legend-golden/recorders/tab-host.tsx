@@ -7,12 +7,6 @@ import type { RunStatus } from '@relavium/shared';
 
 import { classifyActiveRuns, type ActiveRow } from '../../../../history/active-model.js';
 import type { ActiveRead } from '../../../../history/active-source.js';
-import { buildAgentsModel, type AgentsModelItem } from '../../../../history/agents-model.js';
-import {
-  buildDefinedModel,
-  type DefinedEntry,
-  type DefinedPin,
-} from '../../../../history/defined-model.js';
 import { buildHistoryRows } from '../../../../history/history-model.js';
 import type {
   HistoryEntry,
@@ -23,11 +17,7 @@ import type { NodeDetailLoad, NodeDetailRead } from '../../../../history/node-de
 import { buildNodeDetailModel } from '../../../../history/node-detail-model.js';
 import { buildRunDetailModel } from '../../../../history/run-detail-model.js';
 import type { RunDetailLoad, RunDetailRead } from '../../../../history/run-detail-source.js';
-import type { AgentsPort } from '../../../../home/agents-port.js';
-import type {
-  PermissionsPort,
-  PermissionsSnapshot,
-} from '../../../../permissions/chat-permissions.js';
+import type { PermissionsSnapshot } from '../../../../permissions/chat-permissions.js';
 import type { ChatKey } from '../../chat-input.js';
 import { keyLabel, legend, type LegendItem } from '../../legend.js';
 import {
@@ -39,7 +29,6 @@ import { PermissionsSheetView } from '../../permissions-sheet-view.js';
 import type { SheetGeometry, SheetLine } from '../../sheet-frame.js';
 import { usableColumns } from '../../sheet-frame.js';
 import { ACTIVE_KEYS, ACTIVE_FOCUS_LEFT, ACTIVE_SELECT_FIRST } from '../../tab-host-active.js';
-import { AGENTS_KEYS } from '../../tab-host-agents.js';
 import {
   HISTORY_COST_FAULT,
   HISTORY_DETAIL_FAULT,
@@ -56,18 +45,6 @@ import {
 import { NODE_KEYS, NODE_NOT_A_NODE, type NodeLoader } from '../../tab-host-node.js';
 import { PIN_KEY } from '../../tab-host-pin.js';
 import {
-  SESSIONS_KEYS,
-  SESSIONS_RESUME_UNAVAILABLE,
-  type SessionRow,
-  type SessionsPort,
-} from '../../tab-host-sessions.js';
-import {
-  DEFINED_KEYS,
-  DEFINED_NO_DETAIL,
-  type DefinedPort,
-  type DefinedRead,
-} from '../../tab-host-workflows.js';
-import {
   enterHistoryAtDetail,
   enterTab,
   foldTabHostKey,
@@ -75,8 +52,6 @@ import {
   tabHostLegend,
   tabHostLines,
   TAB_HOST_KEYS,
-  TAB_HOST_LEGEND_PLAIN_ITEMS,
-  TAB_HOST_LEGEND_ROWS_ITEMS,
   TAB_HOST_TOO_SMALL,
   withActiveFailure,
   withActiveNote,
@@ -120,9 +95,7 @@ const DOWN: ChatKey = { downArrow: true };
 const ENTER: ChatKey = { return: true };
 
 const context = (over: Partial<TabHostContext> = {}): TabHostContext => ({
-  port: undefined,
   now: OPENED,
-  canArm: true,
   ...over,
 });
 
@@ -187,144 +160,6 @@ function grants(count: number): PermissionsSnapshot['project'] {
       remembered: '2026-11-19 12:00Z',
     })),
   };
-}
-
-function permissionsPort(count: number): PermissionsPort {
-  const snapshot: PermissionsSnapshot = { project: grants(count), session: undefined };
-  return {
-    surface: 'project',
-    load: () => snapshot,
-    withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
-  };
-}
-
-const unreadablePort: PermissionsPort = {
-  surface: 'project',
-  load: () => {
-    throw new Error('the store could not be read');
-  },
-  withdraw: () => ({ tone: 'failed', text: 'Nothing changed.' }),
-};
-
-function permissionsHost(port: PermissionsPort | undefined): TabHostState {
-  return enterTab(freshTabMemory('permissions'), 'permissions', { port, now: OPENED });
-}
-
-function permissionsCases(): readonly Case[] {
-  const port = permissionsPort(3);
-  const idle = permissionsHost(port);
-  const armed = pressed(idle, 'd', {}, { port, now: SETTLED });
-  const typed = pressed(idle, 'x', {}, { port, now: SETTLED });
-  const tooEarly = pressed(typed, 'd', {}, { port, now: SETTLED });
-  return [
-    { name: 'tab=permissions rows=3 state=idle', state: idle },
-    { name: 'tab=permissions rows=3 state=armed', state: armed },
-    { name: 'tab=permissions rows=3 note=typed keys', state: tooEarly },
-    { name: 'tab=permissions rows=0', state: permissionsHost(permissionsPort(0)) },
-    { name: 'tab=permissions unreadable=port throws', state: permissionsHost(unreadablePort) },
-    { name: 'tab=permissions unreadable=no port', state: permissionsHost(undefined) },
-  ];
-}
-
-// ---- The Defined tab --------------------------------------------------------------------------------------------------------
-
-const entry = (slug: string, over: Partial<DefinedEntry> = {}): DefinedEntry => ({
-  slug,
-  name: undefined,
-  path: `.relavium/workflows/${slug}.relavium.yaml`,
-  valid: true,
-  ...over,
-});
-
-const READY_ENTRIES: readonly DefinedEntry[] = [
-  entry('code-review', { name: 'Code Review', nodeCount: 5 }),
-  entry('nightly', { nodeCount: 1 }),
-  entry('broken-one', { valid: false, error: 'a workflow must declare at least one node' }),
-];
-
-function definedPort(
-  entries: readonly DefinedEntry[],
-  pins: readonly DefinedPin[] = [],
-  otherRoot?: string,
-): DefinedPort {
-  return {
-    read: (): DefinedRead => ({
-      model: buildDefinedModel({
-        entries,
-        pins,
-        ...(otherRoot === undefined
-          ? {}
-          : {
-              otherPins: [
-                {
-                  kind: 'workflow',
-                  ref: 'elsewhere',
-                  rowid: 9,
-                  oversized: false,
-                  projectRoot: otherRoot,
-                },
-              ],
-            }),
-        lastRuns: new Map<string, RunStatus>([['code-review', 'completed']]),
-      }),
-      slugOf: (index) => entries[index]?.slug,
-      pathOf: (index) => entries[index]?.path,
-    }),
-  };
-}
-
-const workflowPin = (ref: string, rowid: number): DefinedPin => ({
-  kind: 'workflow',
-  ref,
-  rowid,
-  oversized: false,
-});
-
-function definedHost(port: DefinedPort | undefined): TabHostState {
-  return enterTab(freshTabMemory('defined'), 'defined', {
-    port: undefined,
-    defined: port,
-    now: OPENED,
-  });
-}
-
-function definedCases(): readonly Case[] {
-  const rows = definedHost(definedPort(READY_ENTRIES));
-  const pins = [workflowPin('left-the-catalog', 8), workflowPin('code-review', 7)];
-  const withPins = definedHost(definedPort(READY_ENTRIES, pins, '/work/other-project'));
-  // The rows with pins: this project's pins first (the newest pin first), the pin of another project after them, then the rest of the catalog.
-  const sentence: FootOptions = { kinds: ['text', 'legend'] };
-  return [
-    { name: 'tab=defined rows=3 row=ready', state: rows, foot: { kinds: ['legend'] } },
-    { name: 'tab=defined rows=3 row=invalid', state: repeat(rows, 2, DOWN), foot: sentence },
-    {
-      name: 'tab=defined rows=3 key=Enter',
-      state: pressed(rows, '', ENTER),
-      foot: { kinds: ['notice', 'legend'] },
-    },
-    {
-      name: 'tab=defined pins row=pinned in the catalog',
-      state: repeat(withPins, 1, DOWN),
-      foot: sentence,
-    },
-    { name: 'tab=defined pins row=pinned, not in catalog', state: withPins, foot: sentence },
-    {
-      name: 'tab=defined pins row=other project',
-      state: repeat(withPins, 2, DOWN),
-      foot: sentence,
-    },
-    {
-      name: 'tab=defined pins row=other project, root not recorded',
-      state: repeat(definedHost(definedPort(READY_ENTRIES, pins, '')), 2, DOWN),
-      foot: sentence,
-    },
-    { name: 'tab=defined rows=0', state: definedHost(definedPort([])), foot: sentence },
-    {
-      name: 'tab=defined unreadable=no port',
-      state: definedHost(undefined),
-      foot: { kinds: ['legend'] },
-    },
-  ];
 }
 
 // ---- The Active tab ---------------------------------------------------------------------------------------------------------
@@ -411,7 +246,7 @@ function activeHost(last: ActiveRead | undefined, focus?: string): TabHostState 
   return enterTab(
     { ...freshTabMemory('active'), ...(focus === undefined ? {} : { activeFocus: focus }) },
     'active',
-    { port: undefined, active: { last }, now: OPENED },
+    { active: { last }, now: OPENED },
   );
 }
 
@@ -477,7 +312,7 @@ function activeCases(): readonly Case[] {
     { name: 'tab=active phase=loading', state: activeHost(undefined), foot: { text: true } },
     {
       name: 'tab=active phase=unreadable',
-      state: enterTab(freshTabMemory('active'), 'active', { port: undefined, now: OPENED }),
+      state: enterTab(freshTabMemory('active'), 'active', { now: OPENED }),
     },
   ];
 }
@@ -653,14 +488,14 @@ const NODE_LOADS = {
 } as const satisfies Readonly<Record<string, NodeDetailLoad>>;
 
 const historyHost = (port: HistoryPort | undefined): TabHostState =>
-  enterTab(freshTabMemory('history'), 'history', { port: undefined, history: port, now: OPENED });
+  enterTab(freshTabMemory('history'), 'history', { history: port, now: OPENED });
 
 /** The History tab on one run's detail, the host's load landed (`load`), over a port whose node loader answers `node`. */
 function historyDetail(load: RunDetailLoad, node?: NodeDetailLoad): TabHostState {
   const port = historyPort(node === undefined ? {} : { loadNode: () => node });
   const loading = enterHistoryAtDetail(
     freshTabMemory('history'),
-    { port: undefined, history: port, now: OPENED },
+    { history: port, now: OPENED },
     RUN_ID,
   );
   return withHistoryLoad(loading, RUN_ID, load);
@@ -779,104 +614,9 @@ function historyCases(): readonly Case[] {
 function withLoading(): TabHostState {
   return enterHistoryAtDetail(
     freshTabMemory('history'),
-    { port: undefined, history: historyPort(), now: OPENED },
+    { history: historyPort(), now: OPENED },
     RUN_ID,
   );
-}
-
-// ---- The agents strip -------------------------------------------------------------------------------------------------------
-
-const ready = (slug: string): AgentsModelItem => ({
-  entry: { slug, name: `Agent ${slug}`, path: `.relavium/agents/${slug}.agent.yaml`, valid: true },
-  agent: {
-    model: 'claude-sonnet-4-6',
-    provider: 'anthropic',
-    system_prompt: 'You review code.',
-    tools: ['read_file', 'grep'],
-  },
-});
-
-const invalidAgent = (slug: string, error: string): AgentsModelItem => ({
-  entry: {
-    slug,
-    name: undefined,
-    path: `.relavium/agents/${slug}.agent.yaml`,
-    valid: false,
-    error,
-  },
-  agent: undefined,
-});
-
-function agentsPort(items: readonly AgentsModelItem[]): AgentsPort {
-  return {
-    read: () => ({
-      model: buildAgentsModel(items),
-      slugOf: (index) => items[index]?.entry.slug,
-      pathOf: (index) => items[index]?.entry.path,
-      definitionOf: (index) => {
-        const item = items[index];
-        return item?.agent === undefined ? undefined : { id: item.entry.slug, ...item.agent };
-      },
-    }),
-  };
-}
-
-const SESSION_ROWS: readonly SessionRow[] = [
-  { id: 'sess-aaa', title: 'Fix the flaky test', agent: 'coder', age: '5m ago' },
-  { id: 'sess-bbb', title: 'Untitled', agent: 'writer', age: '2h ago' },
-];
-
-const sessionsPort = (rows: readonly SessionRow[], more = false): SessionsPort => ({
-  read: () => ({ rows, more }),
-});
-
-function agentsHost(tab: 'agents' | 'sessions', over: Partial<TabHostContext> = {}): TabHostState {
-  return enterTab(freshTabMemory(tab), tab, { port: undefined, now: OPENED, ...over });
-}
-
-function agentsCases(): readonly Case[] {
-  const items = [
-    ready('reviewer'),
-    invalidAgent('broken-one', 'unknown key "bogus" at the top level'),
-  ];
-  const list = agentsHost('agents', { agents: agentsPort(items) });
-  const open = pressed(list, '', ENTER, { agents: agentsPort(items) });
-  return [
-    { name: 'tab=agents rows=2 row=ready', state: list },
-    { name: 'tab=agents rows=2 row=invalid', state: pressed(list, '', DOWN), foot: { text: true } },
-    {
-      name: 'tab=agents rows=2 row=invalid key=Enter',
-      state: pressed(pressed(list, '', DOWN), '', ENTER),
-      foot: { text: true },
-    },
-    { name: 'tab=agents detail', state: open },
-    {
-      name: 'tab=agents rows=0',
-      state: agentsHost('agents', { agents: agentsPort([]) }),
-      foot: { text: true },
-    },
-    { name: 'tab=agents unreadable=no port', state: agentsHost('agents') },
-  ];
-}
-
-function sessionsCases(): readonly Case[] {
-  return [
-    {
-      name: 'tab=sessions rows=2',
-      state: agentsHost('sessions', { sessions: sessionsPort(SESSION_ROWS) }),
-    },
-    {
-      name: 'tab=sessions rows=2 older ones exist',
-      state: agentsHost('sessions', { sessions: sessionsPort(SESSION_ROWS, true) }),
-      foot: { kinds: ['marker', 'legend'], last: 4 },
-    },
-    {
-      name: 'tab=sessions rows=0',
-      state: agentsHost('sessions', { sessions: sessionsPort([]) }),
-      foot: { kinds: ['text', 'legend'] },
-    },
-    { name: 'tab=sessions unreadable=no port', state: agentsHost('sessions') },
-  ];
 }
 
 // ---- Recorders --------------------------------------------------------------------------------------------------------------
@@ -885,15 +625,16 @@ function sessionsCases(): readonly Case[] {
 const itemText = (item: LegendItem): string =>
   'keys' in item ? `${keyLabel(item.keys)} ${item.verb}` : item.text;
 
-/** The tab strip's own items and the legends it builds for the Permissions tab, with the roles their keys take. */
+/** The Runs screen's own items and the legends it builds for its two lists, with the roles their keys take. */
 const legendRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
-    'items=TAB_HOST_LEGEND_PLAIN_ITEMS': legend(TAB_HOST_LEGEND_PLAIN_ITEMS, TAB_HOST_KEYS.close),
-    'items=TAB_HOST_LEGEND_ROWS_ITEMS': legend(TAB_HOST_LEGEND_ROWS_ITEMS, TAB_HOST_KEYS.close),
     'items=TAB_HOST_KEYS': Object.values(TAB_HOST_KEYS).map(itemText),
     'constant=TAB_HOST_TOO_SMALL': TAB_HOST_TOO_SMALL,
   };
-  const cases = permissionsCases();
+  const cases: readonly Case[] = [
+    { name: 'tab=active rows=every class', state: activeHost(activeRead(EVERY_CLASS)) },
+    { name: 'tab=history list', state: historyHost(historyPort()) },
+  ];
   Object.assign(out, footStates(cases));
   for (const { name, state } of cases) {
     const line = legendLineOf(state);
@@ -906,15 +647,11 @@ const legendRecorder: Recorder = () => {
 const interruptRecorder: Recorder = () => {
   const out: Record<string, string> = {};
   const everything: readonly Case[] = [
-    ...permissionsCases(),
-    ...definedCases(),
     ...activeCases().filter(
       (c) =>
         c.name.includes('row=hosted') || c.name.includes('rows=0') || c.name.includes('phase='),
     ),
     ...historyCases(),
-    ...agentsCases(),
-    ...sessionsCases(),
   ];
   const floor = usableColumns(GEOMETRIES[0].geometry.columns);
   for (const { name, state } of everything) {
@@ -946,21 +683,9 @@ const tooSmallRecorder: Recorder = () => {
     ENTER,
     { history: nodePort },
   );
-  const agentPort = agentsPort([ready('reviewer')]);
   const cases: readonly Case[] = [
-    { name: 'at=permissions list', state: permissionsHost(permissionsPort(3)) },
-    { name: 'at=defined list', state: definedHost(definedPort(READY_ENTRIES)) },
     { name: 'at=active list', state: activeHost(activeRead(EVERY_CLASS)) },
     { name: 'at=history list', state: historyHost(historyPort()) },
-    { name: 'at=agents list', state: agentsHost('agents', { agents: agentPort }) },
-    {
-      name: 'at=sessions list',
-      state: agentsHost('sessions', { sessions: sessionsPort(SESSION_ROWS) }),
-    },
-    {
-      name: 'at=agent detail',
-      state: pressed(agentsHost('agents', { agents: agentPort }), '', ENTER, { agents: agentPort }),
-    },
     { name: 'at=run detail', state: historyDetail({ kind: 'ready', detail: detailRead() }) },
     { name: 'at=node page', state: nodeState },
   ];
@@ -1001,14 +726,10 @@ function coloured(
   };
 }
 
-/** The tab host drawn by its view, with colour off and on, for the states whose keys take a role (the withdraw key, the armed question). */
+/** The Runs screen drawn by its view, with colour off and on, for the states whose keys take a role. */
 const viewRecorder: Recorder = () => {
   const out: Record<string, readonly string[]> = {};
-  const port = permissionsPort(3);
-  const idle = permissionsHost(port);
   const states: readonly (readonly [string, TabHostState])[] = [
-    ['tab=permissions state=idle', idle],
-    ['tab=permissions state=armed', pressed(idle, 'd', {}, { port, now: SETTLED })],
     ['tab=history list', historyHost(historyPort())],
     ['tab=history detail=ready', historyDetail({ kind: 'ready', detail: detailRead() })],
     ['tab=active row=paused at a gate here', activeHost(activeRead(EVERY_CLASS), IDS.gate)],
@@ -1054,14 +775,6 @@ const permissionsSheetViewRecorder: Recorder = () => {
   return out;
 };
 
-const definedRecorder: Recorder = () => {
-  const out: Record<string, string | readonly string[]> = {
-    'constant=DEFINED_NO_DETAIL': DEFINED_NO_DETAIL,
-    'items=DEFINED_KEYS': Object.values(DEFINED_KEYS).map(itemText),
-  };
-  return Object.assign(out, footStates(definedCases()));
-};
-
 const activeRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
     'constant=ACTIVE_FOCUS_LEFT': ACTIVE_FOCUS_LEFT,
@@ -1104,24 +817,10 @@ const nodeRecorder: Recorder = () => {
   );
 };
 
-const agentsRecorder: Recorder = () => ({
-  'items=AGENTS_KEYS': Object.values(AGENTS_KEYS).map(itemText),
-  ...footStates(agentsCases()),
-});
-
-const sessionsRecorder: Recorder = () => ({
-  'constant=SESSIONS_RESUME_UNAVAILABLE': SESSIONS_RESUME_UNAVAILABLE,
-  'items=SESSIONS_KEYS': Object.values(SESSIONS_KEYS).map(itemText),
-  ...footStates(sessionsCases()),
-});
-
 /** Where `[p] pin` joins a legend: asked of the items each state builds, never written by hand. */
 const pinRecorder: Recorder = () => {
   const out: Record<string, string> = { 'item=PIN_KEY': itemText(PIN_KEY) };
   const cases: readonly Case[] = [
-    ...definedCases().filter(
-      (c) => c.name === 'tab=defined rows=3 row=ready' || c.name === 'tab=defined rows=0',
-    ),
     ...historyCases().filter(
       (c) =>
         c.name.includes('list rows=5 scope=project') ||
@@ -1130,9 +829,6 @@ const pinRecorder: Recorder = () => {
         c.name === 'tab=history detail=missing' ||
         c.name === 'tab=node load=ready',
     ),
-    ...permissionsCases().slice(0, 1),
-    ...agentsCases().slice(0, 1),
-    ...sessionsCases().slice(0, 1),
     ...activeCases().slice(0, 1),
   ];
   for (const { name, state } of cases) {
@@ -1161,25 +857,19 @@ export const TAB_HOST_PRODUCERS: readonly Producer[] = [
     id: 'tab-host-too-small',
     file: 'render/tui/tab-host.ts',
     describe:
-      'TAB_HOST_TOO_SMALL and the `Esc` item below 80×24, per level: a tab’s list (`Esc close`), an agent’s detail, a run’s detail (`Esc back to the list`) and a node page (`Esc back to the run`).',
+      'TAB_HOST_TOO_SMALL and the `Esc` item below 80×24, per level: a tab’s list (`Esc back to Home`), a run’s detail (`Esc back to the list`) and a node page (`Esc back to the run`).',
   },
   {
     id: 'tab-host-view',
     file: 'render/tui/tab-host-view.tsx',
     describe:
-      'The tab host drawn by its view with colour off and on: the legend and hint rows with the style each key takes (Permissions idle and armed, History list and detail, Active).',
+      'The Runs screen drawn by its view with colour off and on: the legend and hint rows with the style each key takes (History list and detail, Active).',
   },
   {
     id: 'permissions-sheet-view',
     file: 'render/tui/permissions-sheet-view.tsx',
     describe:
       'The /permissions sheet drawn by its view with colour off and on: the chip `[d] withdraw` / `[Enter] withdraw`, the hint under the selected row and the legend, with the style each key takes (idle, armed, empty).',
-  },
-  {
-    id: 'tab-host-workflows',
-    file: 'render/tui/tab-host-workflows.ts',
-    describe:
-      'The Defined tab: its legend by state (rows, none, unreadable), the sentences that name a key (`Enter` says no detail yet, a pin of another project, an empty list), at 80 and 100 columns.',
   },
   {
     id: 'tab-host-active',
@@ -1200,22 +890,10 @@ export const TAB_HOST_PRODUCERS: readonly Producer[] = [
       'The node page over a run’s detail: its legend by what the loader answered (ready, no attempt, unavailable), its footer, and the `Enter` sentence on a line that is no node.',
   },
   {
-    id: 'tab-host-agents',
-    file: 'render/tui/tab-host-agents.ts',
-    describe:
-      'The /agents strip’s Defined tab: its legend on the list (ready row, invalid row, none, unreadable) and on an agent’s detail (`[c] chat · Esc back`).',
-  },
-  {
-    id: 'tab-host-sessions',
-    file: 'render/tui/tab-host-sessions.ts',
-    describe:
-      'The /agents strip’s Sessions tab: its legend (rows, none, unreadable) and the line that says older conversations are not listed.',
-  },
-  {
     id: 'tab-host-pin',
     file: 'render/tui/tab-host-pin.ts',
     describe:
-      'The `[p] pin` item and every legend it joins (Defined rows, History list rows, History detail, the node page), asked of the items each state builds.',
+      'The `[p] pin` item and every legend it joins (History list rows, History detail, the node page), asked of the items each state builds.',
   },
 ];
 
@@ -1225,11 +903,8 @@ export const TAB_HOST_RECORDERS = {
   'tab-host-too-small': tooSmallRecorder,
   'tab-host-view': viewRecorder,
   'permissions-sheet-view': permissionsSheetViewRecorder,
-  'tab-host-workflows': definedRecorder,
   'tab-host-active': activeRecorder,
   'tab-host-history': historyRecorder,
   'tab-host-node': nodeRecorder,
-  'tab-host-agents': agentsRecorder,
-  'tab-host-sessions': sessionsRecorder,
   'tab-host-pin': pinRecorder,
 } as const satisfies Readonly<Record<string, Recorder>>;

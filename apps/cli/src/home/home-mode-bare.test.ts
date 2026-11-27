@@ -1,9 +1,10 @@
 /**
  * The bare Home's `/mode` is a popup ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §1,
- * §3, §6; MVP-11 Appendix A; the maintainer's observation of 2026-11-26: it opened the old native picker that replaced the whole body). Typed at
- * the landing, it opens the startup-default writer's own flow framed as the `/mode` popup over the Home: the choice, the `Ctrl+Y` confirmation
- * and the Done step that names the file. Nothing is written into the Home's notice; a declined confirmation is one notification; the status
- * line shows the new value however the popup ended. Real Home, controller, channel, config writer and Ink, on owned handle-free streams.
+ * §3, §6; MVP-11 Appendix A; the maintainer's observation of 2026-11-26: it opened the old native picker that replaced the whole body; unit 8,
+ * OD-25: one list). Typed at the landing, it opens the popup host's list of the startup default over the Home; `Enter` on another mode hands it to
+ * the startup-default writer's own flow framed as the `/mode` popup: the `Ctrl+Y` confirmation and the Done step that names the file. Nothing is
+ * written into the Home's notice; a declined confirmation is one notification; the status line shows the new value however the popup ended.
+ * Real Home, controller, channel, config writer and Ink, on owned handle-free streams.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -255,17 +256,29 @@ function nativeOf(f: Awaited<ReturnType<typeof fixture>>) {
   return prompt;
 }
 
-/** `/mode` typed at the landing, its first step on screen. */
+/** `/mode` typed at the landing, its list (the popup host's, one step) on screen and its frame acknowledged. */
 async function openMode(f: Awaited<ReturnType<typeof fixture>>) {
   f.mounted.controller.handlePaste('/mode');
   f.mounted.controller.handleKey('', ENTER);
-  const prompt = nativeOf(f);
-  await vi.waitFor(() => {
-    const snapshot = prompt.getSnapshot();
-    expect(snapshot.kind).toBe('select');
-    expect(snapshot.popup).toMatchObject({ title: '/mode', origin: 'home', stepIndex: 0 });
-  }, WAIT);
-  return prompt;
+  await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
+  // The arrows and `Enter` of a frame nobody has seen are dropped (the opening guard): wait out the frame's acknowledgement and its settle.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 900);
+  });
+  return nativeOf(f);
+}
+
+/** Move the list's highlight to the row `row` (the intro is row 0, `ask` row 1, `plan` row 2) with the arrows, one patient press at a time. */
+async function highlightRow(f: Awaited<ReturnType<typeof fixture>>, row: number) {
+  await vi.waitFor(
+    () => {
+      const selected = f.mounted.popups?.getSnapshot().frame?.steps[0]?.selected;
+      if (selected !== row)
+        f.press(selected !== undefined && selected > row ? { upArrow: true } : { downArrow: true });
+      expect(f.mounted.popups?.getSnapshot().frame?.steps[0]?.selected).toBe(row);
+    },
+    { ...WAIT, interval: 100 },
+  );
 }
 
 /** Wait out a prompt's guards (the opening settle, a chord card's lockout) with no key pressed, then press `key` once. */
@@ -285,8 +298,8 @@ describe('/mode on the bare Home', () => {
         f.mounted.controller.getSnapshot().screen,
         'no screen replaces the body',
       ).toBeUndefined();
-      await patientPress(prompt, '', { ...NONE, downArrow: true }); // → plan
-      await patientPress(prompt, '', { ...NONE, return: true });
+      await highlightRow(f, 2); // → plan
+      await f.pressFrom('mode:0', ENTER); // the list hands plan to the confirmation
       await vi.waitFor(() => {
         expect(prompt.getSnapshot().kind).toBe('chord');
         expect(prompt.getSnapshot().popup).toMatchObject({ title: '/mode', stepIndex: 1 });
@@ -323,7 +336,9 @@ describe('/mode on the bare Home', () => {
     const f = await fixture();
     try {
       const prompt = await openMode(f);
-      await patientPress(prompt, '', { ...NONE, return: true }); // ask, the default
+      // `ask` is the saved default, whose `Enter` keeps (nothing to confirm): a declined confirmation needs another mode.
+      await highlightRow(f, 2); // → plan
+      await f.pressFrom('mode:0', ENTER);
       await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), WAIT);
       prompt.input('n', { ...NONE, ctrl: true });
       await vi.waitFor(() => expect(prompt.getSnapshot().active).toBe(false), WAIT);

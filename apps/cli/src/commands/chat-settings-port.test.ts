@@ -134,8 +134,10 @@ describe('the settings a chat session hands its driver', () => {
   it('its `/mode` member reads the chat’s mode, applies through the session’s one setter (the footer moves) and carries a startup-default writer', async () => {
     await chatWith(true, async (ctx) => {
       const mode = ctx.settings?.mode;
-      if (mode === undefined) throw new Error('no /mode member');
+      if (mode?.scope !== 'chat') throw new Error('no /mode member of a chat');
       expect(mode.current()).toBe('ask');
+      // the saved startup default, read through the invocation’s own runtime (no config here: the default `ask`)
+      expect(mode.startup()).toBe('ask');
       expect(mode.apply('plan')).toBe(true);
       // The setter is the session's own: the status line's mode moved with it, and the member reads it back.
       expect(ctx.store.getSnapshot().mode).toBe('plan');
@@ -151,9 +153,9 @@ describe('the settings a chat session hands its driver', () => {
       if (permissions === undefined) throw new Error('no /permissions member');
       expect(permissions.port.surface).toBe('chat');
       expect(permissions.port.load()).toEqual({ project: { ok: true, rows: [] }, session: [] });
-      expect(permissions.mode()).toBe('ask');
+      expect(permissions.mode?.()).toBe('ask');
       ctx.onModeChange?.('plan');
-      expect(permissions.mode()).toBe('plan');
+      expect(permissions.mode?.()).toBe('plan');
       await Promise.resolve();
     });
   });

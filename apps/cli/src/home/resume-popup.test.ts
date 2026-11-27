@@ -26,7 +26,7 @@ import {
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
-import { SESSIONS_RESUME_UNAVAILABLE } from '../render/tui/tab-host-sessions.js';
+import { RESUME_UNAVAILABLE as SESSIONS_RESUME_UNAVAILABLE } from '../render/tui/home-controller.js';
 import {
   createSessionPickerSource,
   RESUME_RESTORING,

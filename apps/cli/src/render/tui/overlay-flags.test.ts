@@ -398,7 +398,15 @@ describe("the Home's own record is built from its state in one place", () => {
     ['palette', { palette: openPalette([], 'down') }],
     ['search', { search: INITIAL_REVERSE_SEARCH }],
     ['mention', { mention: { dir: '', filter: '', candidates: [], selected: 0, loading: false } }],
-    ['screen', { screen: { kind: 'help' } }],
+    [
+      'screen',
+      {
+        screen: {
+          kind: 'tab-host',
+          host: { tab: 'history', positions: { active: 0, history: 0 } },
+        },
+      },
+    ],
     ['exitGuard', { exitGuard: 'confirm' }],
     ['nativeActionBusy', { nativeActionBusy: true }],
   ] as const)('sets %s from its state field, and no other flag', (kind, patch) => {
@@ -530,10 +538,10 @@ describe('every pause fact derives from the record (a list was missed: pauses)',
       onError: vi.fn(),
       popupOpen: () => open,
     });
-    controller.openScreen('help');
+    controller.openScreen('tab-host', { tab: 'history' });
     expect(controller.getSnapshot().screen, 'refused under a popup').toBeUndefined();
     open = false;
-    controller.openScreen('help');
-    expect(controller.getSnapshot().screen?.kind).toBe('help');
+    controller.openScreen('tab-host', { tab: 'history' });
+    expect(controller.getSnapshot().screen?.kind).toBe('tab-host');
   });
 });

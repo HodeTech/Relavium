@@ -15,10 +15,8 @@ import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
-import {
-  saveStartupDefaultForPopup,
-  type StartupDefaultSaveResult,
-} from '../chat/mode-settings.js';
+import { readStartupDefault } from '../chat/startup-default.js';
+import type { StartupDefaultOutcome } from '../popups/settings-port.js';
 import { publishModePreference } from '../chat/mode-preference-publication.js';
 import { createNativeFlushPort, NativeHostUnavailableError } from '../chat/native-flush-port.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
@@ -184,7 +182,8 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
 import { displayRoots } from '../render/display-roots.js';
-import { formatUsdExact, type DisplayPathRoots } from '../render/notation.js';
+import { displayPath, formatUsdExact, type DisplayPathRoots } from '../render/notation.js';
+import { flowText } from '../render/tui/flow-text.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { chatSurfaceOf, noticeSurfaceOf, type Surface } from '../render/surface.js';
 import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
@@ -332,6 +331,7 @@ function chatModelsSettings(
   setEffort: (effort: ReasoningEffort) => void,
   save: Omit<DefaultModelSaveOptions, 'write'>,
   readDefaultProvider: () => string | undefined,
+  readDefaultEffort: () => ReasoningEffort | undefined,
 ): ModelsSettingsPort | undefined {
   if (picker === undefined) return undefined;
   const write = picker.writeDefault;
@@ -345,6 +345,7 @@ function chatModelsSettings(
     currentEffort: () => store.getSnapshot().reasoningEffort,
     defaultModel: save.readEffective,
     defaultProvider: readDefaultProvider,
+    defaultEffort: readDefaultEffort,
     providerName: providerDisplayName,
     setEffort,
     ...(write === undefined
@@ -656,12 +657,21 @@ interface ChatReplDeps {
   /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
   readonly keychain?: KeychainStore;
   /**
-   * Save `mode` as the global startup default on this chat's native prompt (`saveStartupDefaultForPopup`): what the `/mode` popup's "New
-   * chats" hands off to (ADR-0148 §3, §6). It returns what the flow came to, which the popup says on the host's channel: none of the flow's
-   * words goes into the transcript. Wired by an interactive chat that has its starting-mode runtime (the stand-alone chat and the chat the Home
-   * hosts); where it is absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
+   * Save `mode` as the global startup default on this chat's native prompt, framed as the `/mode` popup's confirmation (`mode-confirm.ts`): what
+   * the popup's `[s]` hands off to (ADR-0148 §3, §6; MVP-11 unit 8, OD-25). `inChat` is the mode in force in this chat, which the confirmation
+   * says stays. It returns what the flow came to (its Done step, one notification, a step back): none of the flow's words goes into the
+   * transcript. Wired by an interactive chat that has its starting-mode runtime (the stand-alone chat and the chat the Home hosts); where it is
+   * absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
    */
-  readonly saveStartupDefault?: (mode: ChatMode) => Promise<StartupDefaultSaveResult>;
+  readonly saveStartupDefault?: (
+    mode: ChatMode,
+    inChat: ChatMode,
+  ) => Promise<StartupDefaultOutcome>;
+  /**
+   * The saved startup default (the global `default_mode`), read when the `/mode` popup opens so its list marks `startup`; `undefined` where it
+   * could not be read. Wired with {@link saveStartupDefault}, by the same hosts.
+   */
+  readonly readStartupDefault?: () => ChatMode | undefined;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
   readonly effectAttention?: ReturnType<typeof createChatEffectAttention>;
@@ -2182,12 +2192,16 @@ function chatModeSettings(
   control: Pick<ChatModeControl, 'onModeChange'>,
   store: Pick<ChatStoreController, 'getSnapshot'>,
   save: ChatReplDeps['saveStartupDefault'],
+  startup: ChatReplDeps['readStartupDefault'],
 ): SettingsMembers['mode'] {
   if (save === undefined) return undefined;
   return {
+    scope: 'chat',
     current: () => store.getSnapshot().mode,
     apply: control.onModeChange,
-    saveStartupDefault: save,
+    startup: startup ?? (() => undefined),
+    // The confirmation says the chat stays in the mode it is in NOW (read at the hand-off, after the list has closed).
+    saveStartupDefault: (mode) => save(mode, store.getSnapshot().mode),
   };
 }
 
@@ -2880,11 +2894,18 @@ export function createChatLineHandler(
               failure: (cause) => workOwner?.failure(cause),
             },
             () => readLiveConfig().config.chat.defaultProvider,
+            () => readLiveConfig().config.chat.reasoningEffort,
           ),
-          // `/mode` (two steps, the 2026-11-25 ruling): this chat through the session's one mode setter, which records the change, refuses an
-          // unrecorded widening and announces itself; new chats through the startup-default writer on this chat's native prompt, its result
-          // said by the popup on the host's channel (never in the transcript). Only where that writer is wired.
-          mode: chatModeSettings(modeControl, store, deps.saveStartupDefault),
+          // `/mode` (one list, two actions: MVP-11 unit 8, OD-25): `Enter` applies this chat through the session's one mode setter, which records
+          // the change, refuses an unrecorded widening and announces itself; `[s]` saves the startup default through the writer's flow on this chat's
+          // native prompt, framed as the confirmation popup, its result its Done step or one notification (never the transcript). The saved default
+          // is read when the popup opens. Only where that writer is wired.
+          mode: chatModeSettings(
+            modeControl,
+            store,
+            deps.saveStartupDefault,
+            deps.readStartupDefault,
+          ),
           // `/permissions` (ADR-0137 §2, as a popup: ADR-0148 §10): the project's remembered commands and this session's approvals over the
           // store and the cache this chat holds, read when the popup opens and again after a withdrawal; the note above them reads the mode now.
           // The session's ONE permissions port: nothing else of the handler builds one (the retired sheet's field is gone).
@@ -3581,16 +3602,24 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     ...(native === undefined || runtime === undefined
       ? {}
       : {
-          // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on this chat's native card, with the
-          // publication's visibly admitted frame, as the `/mode` flow ran it; what it came to is returned for the popup to say, and a fault
-          // after it is the session's work owner's.
-          saveStartupDefault: (mode: ChatMode) =>
-            saveStartupDefaultForPopup(
+          // The `/mode` popup's `[s]` (ADR-0148 §3, §6; MVP-11 unit 8): the startup-default writer's own flow on this chat's native prompt, framed
+          // as the confirmation popup (`Mode · Confirm · Done`), with the publication's visibly admitted frame; what it came to is returned for
+          // the popup to settle (its Done step, one notification, a step back), and a fault after it is the session's work owner's.
+          saveStartupDefault: async (mode: ChatMode, inChat: ChatMode) => {
+            // Loaded when first asked for, as the popups are (`lazy-load.test.ts`): the confirmation is the popup code's.
+            const { saveChatStartupDefault } = await import('../popups/mode-confirm.js');
+            return saveChatStartupDefault(
               {
                 runtime,
                 cwd: built.context.workingDir,
                 interactive,
                 flow: native.flow,
+                target: flowText(
+                  displayPath(
+                    runtime.configPath,
+                    displayRoots(built.context.workingDir, built.operatorHomeDir),
+                  ),
+                ),
                 failure: (cause) => built.workOwner?.failure(cause),
                 assertAdmitting: assertModeAdmitting,
                 publish: (prepared, assertAdmitting) =>
@@ -3603,7 +3632,10 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
                   }),
               },
               mode,
-            ),
+              inChat,
+            );
+          },
+          readStartupDefault: () => readStartupDefault(runtime, built.context.workingDir),
         }),
   };
   const {

@@ -8,6 +8,7 @@ import {
   buildDefinedModel,
   type DefinedOtherPin,
   type DefinedPin,
+  type DefinedPort,
 } from '../history/defined-model.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -18,7 +19,6 @@ import {
   type ExportPort,
   type ExportPrepared,
 } from '../render/tui/export-card.js';
-import type { DefinedPort } from '../render/tui/tab-host-workflows.js';
 import type { LaunchCatalog } from './run-launch.js';
 
 /**
@@ -35,13 +35,15 @@ export interface DefinedPortDeps {
   /** The project's workflow pins, newest first (`listPins({ kind: 'workflow', projectRoot })`). May throw. */
   readonly pins: () => readonly DefinedPin[];
   /**
-   * EVERY pin the store holds, of either kind and any project (`listPins()`): the store caps the pins in total, so the tab lists the
-   * workflow pins of other projects as rows it can remove, and names the stored total when a pin is refused at the cap. Absent ⇒ the tab
-   * knows only this project's pins. May throw.
+   * EVERY pin the store holds, of either kind and any project (`listPins()`): the store caps the pins in total, so the popup lists the
+   * workflow pins of other projects as rows it can remove (a pin at the cap is freed from there). Absent ⇒ the popup knows only this
+   * project's pins. May throw.
    */
   readonly allPins?: (() => readonly (DefinedPin & { readonly projectRoot: string })[]) | undefined;
   /** The status of each workflow's latest run in this project, by slug (`loadLatestRunPerWorkflowInProject`). May throw. Absent ⇒ none is shown. */
   readonly lastRuns?: (() => ReadonlyMap<string, RunStatus>) | undefined;
+  /** When each of those latest runs was last written (an ISO time), by slug: the age the catalogue draws beside the status. May throw. Absent ⇒ no age. */
+  readonly lastRunTimes?: (() => ReadonlyMap<string, string>) | undefined;
   /** What another project's root is shortened against. Absent, the root is listed as stored. */
   readonly paths?: DisplayPathRoots | undefined;
 }
@@ -53,6 +55,7 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
       const entries = deps.catalog.list();
       const pins = deps.pins();
       const lastRuns = deps.lastRuns?.();
+      const lastRunTimes = deps.lastRunTimes?.();
       const all = deps.allPins?.();
       // A workflow pin of this project is already listed; any other workflow pin belongs to another project (or to one that is gone).
       const mine = new Set(pins.map((pin) => pin.rowid));
@@ -64,20 +67,13 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
         otherPins,
         ...optionalPaths(deps.paths),
         ...(lastRuns === undefined ? {} : { lastRuns }),
+        ...(lastRunTimes === undefined ? {} : { lastRunTimes }),
       });
       // The entries are held by the read, so a row's index names the entry that was listed and not whatever sits there later.
       return {
         model,
         slugOf: (entryIndex) => entries[entryIndex]?.slug,
         pathOf: (entryIndex) => entries[entryIndex]?.path,
-        ...(all === undefined
-          ? {}
-          : {
-              stored: {
-                total: all.length,
-                elsewhere: all.length - pins.length,
-              },
-            }),
       };
     },
   };

@@ -3,7 +3,7 @@
  * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6).
  *
  * `requestExit()` is the one way the Home ends. Every path that would end it (`/exit` chosen from the palette, the second
- * `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out, a closed bare `relavium permissions` tab host) is
+ * `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out, a closed bare `relavium permissions` popup) is
  * driven here in both states: with a leg live it asks and leaves nothing changed, with none it leaves exactly as it always did. The
  * run host and the clock are scripted, so nothing here sleeps, builds an engine or touches an operator home.
  */
@@ -21,7 +21,10 @@ import {
   type HomeControllerDeps,
 } from './home-controller.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
 import { HOSTED_RUN_EXIT_GRACE_MS, HOSTED_RUN_POLL_MS } from './tui-constants.js';
+
+type SettingsRequest = Parameters<NonNullable<HomeControllerDeps['openSettings']>>[0];
 
 const EMPTY: HomeSnapshot = {
   failedRuns: [],
@@ -130,14 +133,17 @@ function mount(
     withHost?: boolean;
     /** Whether the exit-guard card's exact frame is on screen (default: it is; `false` is a host that has not measured it). */
     painted?: boolean;
-    /** The monotonic clock the card's lockout runs on (default: it never moves). */
+    /** The monotonic clock the card's lockout runs on (default: the rig's own, which moves only when `pass` says so). */
     now?: () => number;
     /** The Home's one chord history, shared with whatever answered a card a moment ago. */
     chordHistory?: ChordHistory;
   } = {},
 ) {
   const log: string[] = [];
+  /** What the Home asked the settings popups to open (the bare `relavium permissions` is a popup whose close ends the run). */
+  const settingsRequests: SettingsRequest[] = [];
   const clock = virtualClock();
+  let t = 0;
   const run = scriptedHost(initial, log, { cancelEndsLeg: options.cancelEndsLeg ?? false });
   const onExit = vi.fn(() => {
     log.push('exit');
@@ -150,22 +156,30 @@ function mount(
     startChat: options.startChat ?? (() => new Promise<HomeChatSession>(() => {})),
     homeStore: { read: () => EMPTY },
     permissions: PERMISSIONS_PORT,
+    announce: () => undefined, // the settings port needs the Home's one channel to be built
+    openSettings: (request) => {
+      settingsRequests.push(request);
+    },
     ...(options.launchRun === undefined ? {} : { launchRun: options.launchRun }),
     ...(options.withHost === false ? {} : { hostedRuns: run.host }),
     schedule: clock.schedule,
-    now: options.now ?? (() => 0),
+    now: options.now ?? (() => t),
     ...(options.chordHistory === undefined ? {} : { chordHistory: options.chordHistory }),
     onExit,
     onError,
   });
   if (options.painted !== false) controller.bindHomeFrame(() => true);
-  return { controller, run, clock, log, onExit };
+  /** The card has been on screen this long with no key: its lockout, which runs from its APPEARANCE (unit 8), has run out. */
+  const pass = (ms: number = APPROVAL_LOCKOUT_MS): void => {
+    t += ms;
+  };
+  return { controller, run, clock, log, onExit, pass, settingsRequests };
 }
 
 /** Every way to end the Home, each one a function of a fresh Home. `armed` ones are driven with a leg live and with none. */
 const SITES: readonly {
   readonly site: string;
-  readonly drive: (c: HomeController) => void | Promise<void>;
+  readonly drive: (c: HomeController, settings: readonly SettingsRequest[]) => void | Promise<void>;
   readonly startChat?: HomeControllerDeps['startChat'];
 }[] = [
   {
@@ -210,11 +224,12 @@ const SITES: readonly {
     },
   },
   {
-    site: 'the close of a bare `relavium permissions` tab host',
-    drive: (c) => {
+    site: 'the close of a bare `relavium permissions` popup',
+    drive: (c, settings) => {
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().screen?.kind).toBe('tab-host');
-      c.handleKey('', { escape: true });
+      expect(settings.map((request) => request.command)).toEqual(['permissions']);
+      expect(c.getSnapshot().screen, 'a popup, no screen').toBeUndefined();
+      settings[0]?.closed?.(); // the popup closed, however it did: the run ends with it
     },
   },
 ];
@@ -226,10 +241,10 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
       ['cancelling', CANCELLING],
       ['preparing', PREPARING],
     ] as const)('with a leg %s: asks, and neither exits nor cancels', async (_label, snapshot) => {
-      const { controller, run, log, onExit } = mount(snapshot, {
+      const { controller, run, log, onExit, settingsRequests } = mount(snapshot, {
         ...(startChat === undefined ? {} : { startChat }),
       });
-      await drive(controller);
+      await drive(controller, settingsRequests);
       expect(onExit, 'the Home did not end').not.toHaveBeenCalled();
       expect(controller.getSnapshot().exitGuard).toBe('confirm');
       expect(run.host.cancel, 'asking cancels nothing').not.toHaveBeenCalled();
@@ -239,10 +254,10 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
     });
 
     it('with no leg: leaves exactly once and opens no card', async () => {
-      const { controller, run, onExit, clock } = mount(IDLE, {
+      const { controller, run, onExit, clock, settingsRequests } = mount(IDLE, {
         ...(startChat === undefined ? {} : { startChat }),
       });
-      await drive(controller);
+      await drive(controller, settingsRequests);
       expect(onExit).toHaveBeenCalledTimes(1);
       expect(controller.getSnapshot().exitGuard).toBeUndefined();
       expect(run.host.cancel).not.toHaveBeenCalled();
@@ -250,11 +265,11 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
     });
 
     it('with no run host wired: leaves exactly once, as it always did', async () => {
-      const { controller, onExit } = mount(RUNNING, {
+      const { controller, onExit, settingsRequests } = mount(RUNNING, {
         withHost: false,
         ...(startChat === undefined ? {} : { startChat }),
       });
-      await drive(controller);
+      await drive(controller, settingsRequests);
       expect(onExit).toHaveBeenCalledTimes(1);
       expect(controller.getSnapshot().exitGuard).toBeUndefined();
     });
@@ -262,10 +277,13 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
 });
 
 describe('the exit-guard card', () => {
+  // The card is opened and read: a deliberate `Ctrl+Y` counts once the lockout has run from the card's appearance (unit 8; the held-key class
+  // has its own tests below), so the rig's clock passes it here and every answer below is a deliberate one.
   const open = (snapshot: RunHostSnapshot = RUNNING, options: { cancelEndsLeg?: boolean } = {}) => {
     const rig = mount(snapshot, options);
     ctrl(rig.controller, 'd');
     expect(rig.controller.getSnapshot().exitGuard).toBe('confirm');
+    rig.pass();
     return rig;
   };
 
@@ -472,7 +490,7 @@ describe('the exit-guard card', () => {
       let finish: (session: HomeChatSession) => void = () => {};
       const teardown = vi.fn(() => Promise.resolve());
       const built = { teardown } as unknown as HomeChatSession;
-      const { controller, run, onExit } = mount(RUNNING, {
+      const { controller, run, onExit, pass } = mount(RUNNING, {
         startChat: () =>
           new Promise<HomeChatSession>((resolve) => {
             finish = resolve;
@@ -482,6 +500,7 @@ describe('the exit-guard card', () => {
       controller.handleKey('', ENTER);
       ctrl(controller, 'c');
       expect(controller.getSnapshot().exitGuard).toBe('confirm');
+      pass(); // the card was read
       ctrl(controller, 'y');
       expect(run.host.cancel).toHaveBeenCalledTimes(1);
       finish(built);
@@ -544,12 +563,14 @@ describe("the exit-guard card's Ctrl+Y cancels a run for good, so it is a delibe
   };
 
   it('answers nothing while the card has not been measured on screen, and answers once it has', () => {
-    const { controller, run, onExit } = openWith({ painted: false });
+    const { controller, run, onExit, pass } = openWith({ painted: false });
+    pass(); // read for the lockout: only the measurement is missing
     ctrl(controller, 'y');
     expect(controller.getSnapshot().exitGuard, 'the card is still asking').toBe('confirm');
     expect(run.host.cancel, 'nothing was cancelled').not.toHaveBeenCalled();
     expect(onExit).not.toHaveBeenCalled();
     controller.bindHomeFrame(() => true); // the host measured and flushed the card
+    pass(); // the refused key restarted the lockout: the next one is pressed after it
     ctrl(controller, 'y');
     expect(controller.getSnapshot().exitGuard).toBe('stopping');
     expect(run.host.cancel).toHaveBeenCalledTimes(1);
@@ -579,6 +600,46 @@ describe("the exit-guard card's Ctrl+Y cancels a run for good, so it is a delibe
     t = 3800 + 2000; // released for the whole window
     ctrl(controller, 'y');
     expect(controller.getSnapshot().exitGuard).toBe('stopping');
+    expect(run.host.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Ctrl+Y held as the card APPEARS answers nothing with its repeats: the lockout runs from the appearance (unit 8)', () => {
+    let t = 0;
+    // No card was answered before: the history is clean, so only the card's own appearance can hold the key.
+    const chordHistory = createChordHistory();
+    const { controller, run, onExit } = mount(RUNNING, { now: () => t, chordHistory });
+    t = 10_000;
+    ctrl(controller, 'd'); // the card opens at t = 10 000 under a key that is still down
+    expect(controller.getSnapshot().exitGuard).toBe('confirm');
+    // The key's first auto-repeat (a few hundred ms later) and the repeats after it: each restarts the window.
+    for (const at of [10_300, 10_330, 11_900, 13_800]) {
+      t = at;
+      ctrl(controller, 'y');
+      expect(controller.getSnapshot().exitGuard, `refused at ${String(at)} ms`).toBe('confirm');
+    }
+    expect(run.host.cancel, 'a held key stopped nothing').not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+    t = 13_800 + APPROVAL_LOCKOUT_MS - 1; // released, but one millisecond short of the whole window
+    ctrl(controller, 'y');
+    expect(controller.getSnapshot().exitGuard).toBe('confirm');
+    t += APPROVAL_LOCKOUT_MS; // released for the whole window: a deliberate press
+    ctrl(controller, 'y');
+    expect(controller.getSnapshot().exitGuard).toBe('stopping');
+    expect(run.host.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a deliberate first Ctrl+Y counts once the lockout has run from the appearance, and not a moment before', () => {
+    let t = 50_000;
+    const { controller, run } = mount(RUNNING, {
+      now: () => t,
+      chordHistory: createChordHistory(),
+    });
+    ctrl(controller, 'd');
+    t += APPROVAL_LOCKOUT_MS - 1;
+    ctrl(controller, 'y');
+    expect(run.host.cancel, 'one millisecond inside the window').not.toHaveBeenCalled();
+    t += APPROVAL_LOCKOUT_MS; // the refused key restarted the window; this press waits it out
+    ctrl(controller, 'y');
     expect(run.host.cancel).toHaveBeenCalledTimes(1);
   });
 

@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildDefinedModel } from '../../history/defined-model.js';
 import { RUN_AGAIN_NOT_DEFINED, decideRunAgain } from './run-again.js';
 import { runDetailRead } from './run-again.test-support.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 
 /** The detail of a run of this directory that was recorded under `slug`. */
 const detailOf = (slug: string) => runDetailRead({ directory: 'here', workflowSlug: slug });

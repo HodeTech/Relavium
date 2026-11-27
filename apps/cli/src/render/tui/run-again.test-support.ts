@@ -12,7 +12,7 @@ import { buildHistoryRows } from '../../history/history-model.js';
 import type { HistoryRead } from '../../history/history-source.js';
 import { buildRunDetailModel } from '../../history/run-detail-model.js';
 import type { RunDetailRead, RunDirectory } from '../../history/run-detail-source.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 
 export const T0 = Date.parse('2026-11-23T10:00:00.000Z');
 /** The run every fixture here is about. */

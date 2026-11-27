@@ -35,6 +35,7 @@ import type { OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
 import { CliError } from '../process/cli-error.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
@@ -92,6 +93,16 @@ beforeEach(() => {
   client = createClient(':memory:');
   runMigrations(client.db);
 });
+/**
+ * The person reads the exit guard for its lockout before the deliberate `Ctrl+Y`: since MVP-11 unit 8 the lockout runs from the card's
+ * APPEARANCE, so a `Ctrl+Y` pressed with the card's opening is held (it is the held-key case). The Home's guards run on the monotonic clock,
+ * which steps forward by the lockout here, as reading the card takes; `afterEach` restores it.
+ */
+function readTheGuardForItsLockout(): void {
+  const real = performance.now.bind(performance);
+  vi.spyOn(performance, 'now').mockImplementation(() => real() + APPROVAL_LOCKOUT_MS);
+}
+
 afterEach(() => {
   if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
@@ -308,6 +319,7 @@ async function mountOwnedHome(options: { readonly closeRejects?: boolean } = {})
       timeout: WAIT_MS,
     });
     props.controller.bindHomeFrame(() => true); // the host measured the card on screen (this mount paints nothing)
+    readTheGuardForItsLockout();
     props.controller.handleKey('y', CTRL_Y);
     expect(stubborn.cancel, 'the leg was asked to stop, and ignores it').toHaveBeenCalled();
     // The grace ran out: the Home's exit now joins the host, which waits its own bound on the test's clock.

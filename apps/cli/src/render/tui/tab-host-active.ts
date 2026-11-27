@@ -34,6 +34,8 @@ import {
  *   its id: a run that moves up or down the list keeps the cursor. A run that LEFT the list does not hand the cursor to whichever row now
  *   stands at its number: the focus is cleared and the tab says so ({@link ACTIVE_FOCUS_LEFT}), no row is marked, and `Enter` does nothing
  *   until `↑` or `↓` picks a row, because an `Enter` aimed at a run that is gone must never open the card of its neighbour.
+ * - **This directory by default** (MVP-11 unit 8, OD-24 D4): a run started in another directory is not listed (a paused one used to say `another
+ *   project`); `[a] all` lists them too, read-only, and `[a] here` narrows the list again. The scope is the tab's own state and what it remembers.
  * - **Bounded.** At most 200 rows a status (the source's limit) and a marker line for what lies past them: `… N more running not listed`.
  * - **The freshness is stated.** The list is as of each node boundary: streamed output is never stored, and the last row says so until a
  *   message or a warning takes its place.
@@ -70,8 +72,13 @@ export function activeDisplayOrder(rows: readonly ActiveRow[]): readonly ActiveR
   return [...rows].sort((a, b) => GROUP_ORDER[activeGroupOf(a)] - GROUP_ORDER[activeGroupOf(b)]);
 }
 
+/** Which runs the tab lists: those started in this directory (the default), or every project's, the others read-only. */
+export type ActiveScope = 'project' | 'all';
+
 /** The Active tab as it stands. */
 export interface ActiveTabState {
+  /** Which runs {@link rows} lists. */
+  readonly scope: ActiveScope;
   /** `loading`: nothing was read yet. `ready`: `rows` is a read. `unreadable`: the first read failed, or nothing feeds the tab. */
   readonly phase: 'loading' | 'ready' | 'unreadable';
   /** The newest read, for what lies beyond the rows and for the outbox warning. */
@@ -99,12 +106,23 @@ export type ActiveStep =
 export const ACTIVE_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   open: { keys: 'Enter', verb: 'open' },
+  /** Shown while the scope is this directory; the toggle back says `here`. */
+  widen: { keys: 'a', verb: 'all' },
+  narrow: { keys: 'a', verb: 'here' },
 } as const satisfies Readonly<Record<string, LegendKey>>;
 
 export const ACTIVE_LOADING = 'Reading the active runs…';
 export const ACTIVE_UNREADABLE = 'The active runs could not be read.';
-export const ACTIVE_EMPTY = `No run is active. Start one from the Defined tab with ${keyToken('r')}.`;
-export const ACTIVE_FRESHNESS = 'Shown as of each node boundary: streamed output is not stored.';
+/** What the tab says when this directory has no active run: where a run is started, and where the other directories' are. */
+export const ACTIVE_EMPTY = `No run is active here. /run starts one; ${keyToken('a')} lists every project’s.`;
+/** The same when every project is listed. */
+export const ACTIVE_EMPTY_ALL = 'No run is active in any project.';
+/** What the hint under the list says of what is listed, by scope; the list is as of each node boundary. */
+export const ACTIVE_SCOPE_WORDS: Readonly<Record<ActiveScope, string>> = {
+  project: 'this project',
+  all: 'all projects',
+};
+export const ACTIVE_FRESHNESS = 'as of each node boundary; streamed output is not stored.';
 export const ACTIVE_HELD_UNREAD = 'Outbox unreadable: a run whose end is held may show as running.';
 export const ACTIVE_STALE_READ = 'The runs could not be read again: this is the last list read.';
 export const ACTIVE_FOCUS_LEFT = `The run you had selected left the list. ${keyToken('↑/↓')} select another.`;
@@ -125,8 +143,10 @@ export function openActiveTab(
   last: ActiveRead | undefined,
   cursor: number,
   focus?: string,
+  scope: ActiveScope = 'project',
 ): ActiveTabState {
   const empty: ActiveTabState = {
+    scope,
     phase: 'loading',
     read: undefined,
     rows: [],
@@ -138,7 +158,21 @@ export function openActiveTab(
 
 /** The tab for a Home that has nothing to read it from. */
 export function unreadableActiveTab(): ActiveTabState {
-  return { phase: 'unreadable', read: undefined, rows: [], cursor: 0, focus: undefined };
+  return {
+    scope: 'project',
+    phase: 'unreadable',
+    read: undefined,
+    rows: [],
+    cursor: 0,
+    focus: undefined,
+  };
+}
+
+/** The rows a read lists in `scope`, in display order: this directory's runs, or every project's. */
+function scopedRows(read: ActiveRead, scope: ActiveScope): readonly ActiveRow[] {
+  return activeDisplayOrder(
+    scope === 'all' ? read.rows : read.rows.filter((row) => row.elsewhere !== true),
+  );
 }
 
 /**
@@ -149,7 +183,7 @@ export function unreadableActiveTab(): ActiveTabState {
  * stays.
  */
 export function applyActiveRead(state: ActiveTabState, read: ActiveRead): ActiveTabState {
-  const rows = activeDisplayOrder(read.rows);
+  const rows = scopedRows(read, state.scope);
   const found = state.focus === undefined ? -1 : rows.findIndex((row) => row.runId === state.focus);
   const unlisted = rows.length > 0 && found < 0;
   // The focus was set and its run is gone now, or an earlier read already cleared it and nothing was selected since.
@@ -163,6 +197,7 @@ export function applyActiveRead(state: ActiveTabState, read: ActiveRead): Active
   const kept = state.message === ACTIVE_STALE_READ ? undefined : state.message;
   const message = newlyLeft ? ACTIVE_FOCUS_LEFT : kept;
   return {
+    scope: state.scope,
     phase: 'ready',
     read,
     rows,
@@ -237,13 +272,28 @@ function enterRow(cleared: ActiveTabState, row: ActiveRow): ActiveStep {
   return { kind: 'state', state: { ...cleared, message: readOnlyMessage(row) } };
 }
 
+/**
+ * `a`: the other scope, read from the read the tab holds (nothing is read again; the poll's next read lists in the scope in force). The cursor stays
+ * on the run it was on when the new list holds it, else on the first row with nothing selected, as any list that changed under the cursor does.
+ */
+function toggleScope(cleared: ActiveTabState): ActiveStep {
+  const scope: ActiveScope = cleared.scope === 'project' ? 'all' : 'project';
+  const switched: ActiveTabState = { ...cleared, scope };
+  return {
+    kind: 'state',
+    state: cleared.read === undefined ? switched : applyActiveRead(switched, cleared.read),
+  };
+}
+
 /** Fold one key (already past the tab host's own tab keys and `Esc`) into the tab. */
-export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
+export function foldActiveKey(state: ActiveTabState, input: string, key: ChatKey): ActiveStep {
   const cleared: ActiveTabState =
     state.message === undefined ? state : { ...state, message: undefined };
   const stay: ActiveStep = { kind: 'state', state: cleared };
   // A chord (`Ctrl+X`, a meta key) is never one of these keys.
   if (key.ctrl === true || key.meta === true) return stay;
+  // A bare letter is the same key with Caps Lock on.
+  if (state.phase === 'ready' && input.toLowerCase() === 'a') return toggleScope(cleared);
   if (key.upArrow === true || key.downArrow === true) return moveCursor(state, cleared, key);
   if (key.return !== true) return stay;
   if (state.focus === undefined && state.rows.length > 0)
@@ -312,7 +362,10 @@ function footerLine(state: ActiveTabState, width: number): SheetLine {
   if (state.message !== undefined) return { kind: 'notice', text: clipLine(state.message, width) };
   if (state.read?.heldUnread === true)
     return { kind: 'notice', text: clipLine(ACTIVE_HELD_UNREAD, width) };
-  return { kind: 'hint', text: clipLine(ACTIVE_FRESHNESS, width) };
+  return {
+    kind: 'hint',
+    text: clipLine(`${ACTIVE_SCOPE_WORDS[state.scope]} · ${ACTIVE_FRESHNESS}`, width),
+  };
 }
 
 /**
@@ -330,7 +383,10 @@ export function activeBody(
   const footer = footerLine(state, width);
   const beyond = moreLines(state.read, width);
   if (state.rows.length === 0) {
-    const empty: SheetLine = { kind: 'text', text: clipLine(ACTIVE_EMPTY, width) };
+    const empty: SheetLine = {
+      kind: 'text',
+      text: clipLine(state.scope === 'all' ? ACTIVE_EMPTY_ALL : ACTIVE_EMPTY, width),
+    };
     return [empty, ...beyond, footer].slice(0, room);
   }
   const height = Math.max(3, room - 2 - beyond.length);
@@ -359,6 +415,8 @@ export function activeLegendItems(
   state: ActiveTabState,
   tabItems: readonly LegendItem[],
 ): readonly LegendItem[] {
-  if (state.phase !== 'ready' || state.rows.length === 0) return tabItems;
-  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open];
+  if (state.phase !== 'ready') return tabItems;
+  const scope = state.scope === 'project' ? ACTIVE_KEYS.widen : ACTIVE_KEYS.narrow;
+  if (state.rows.length === 0) return [...tabItems, scope];
+  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open, scope];
 }

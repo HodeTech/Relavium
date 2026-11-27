@@ -32,6 +32,7 @@ import {
   PERMISSIONS_STEP,
   PERMISSIONS_UNREADABLE_AGAIN_CONTENT,
   PERMISSIONS_UNREADABLE_CONTENT,
+  homePermissionsContent,
   permissionsContent,
   permissionsControls,
   permissionsSpec,
@@ -78,7 +79,11 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
     }
     context.setContent(
       PERMISSIONS_STEP.list,
-      permissionsContent(snapshot, permissions.mode(), result),
+      // The bare Home has no chat: a `project` port (the remembered commands and the repository's allowlist, no session) draws the Home's
+      // lists, which name no mode; a chat's port draws the chat's, as it always did.
+      permissions.port.surface === 'project'
+        ? homePermissionsContent(snapshot, result)
+        : permissionsContent(snapshot, permissions.mode?.() ?? 'ask', result),
       permissionsControls(snapshot),
     );
   };
@@ -108,6 +113,10 @@ export function openPermissionsPopup(request: SettingsOpenRequest): PopupOpenRes
       land(context, answer);
       context.goToStep(PERMISSIONS_STEP.list);
       port.announce(withdrawnAnnouncement(entry, answer, code));
+    },
+    // However it closed (never an answer): a bare `relavium permissions` ends with it, which is the opener's to know.
+    closed: () => {
+      request.closed?.();
     },
     // Not an answer: the host disarmed the line, or refused the `[d]` that would have armed it. Nothing was withdrawn, and the person is told
     // why. (`armed` is read only by the line's answer, which the host gives only on a line `[d]` armed afresh, so a disarmed one needs no reset.)

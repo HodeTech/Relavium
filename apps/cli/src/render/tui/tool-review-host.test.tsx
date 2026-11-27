@@ -21,6 +21,7 @@ import {
   type ApprovalGuard,
 } from './tool-review-model.js';
 import { CARD_TYPEAHEAD_NOTE, cardRowBudget } from './tool-review-card.js';
+import { INSPECTION_EDGE_ROWS } from './tool-review-screen.js';
 import { bracketed } from './harness-util.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 
@@ -211,8 +212,19 @@ function fixture(
     submitted,
     ready,
     text: () => output.frames.join(''),
-    /** The most recent complete frame (control sequences stripped) that contains `needle`. */
+    /**
+     * The most recent complete frame (control sequences stripped) that contains `needle`. A frame that draws the inspection popup (the full view
+     * and the call list, ADR-0148 §7) is read as the screen it frames: its two edges and its two-column inset are taken off ({@link unframe}), so
+     * every reading below is of the same rows the full screen drew before unit 8.
+     */
     lastFrameWith: (needle: string): string | undefined =>
+      output.frames
+        // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+        .map((frame) => unframe(frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, '')))
+        .filter((frame) => frame.includes(needle))
+        .at(-1),
+    /** The most recent frame that contains `needle` as the terminal shows it: the inspection popup's frame left on. */
+    rawFrameWith: (needle: string): string | undefined =>
       output.frames
         // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
         .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
@@ -225,6 +237,41 @@ function fixture(
     },
   };
 }
+
+/** The inspection popup's top edge without colour: the popup's name and where it came from (ADR-0148 §7). */
+const INSPECTION_TOP =
+  /^ {2}- (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
+/** Its bottom edge: the thin rule over the inner width. */
+const INSPECTION_BOTTOM = /^ {2}-{20,} *$/u;
+/** The columns a row of the popup is inset by: the box's margin from the terminal's edge (the screen spans the box's whole width). */
+const INSPECTION_INSET = 1;
+
+/**
+ * `frame` with the inspection popup's frame taken off: the rows between its top and bottom edges, each without the popup's inset, so a test reads
+ * the screen the popup frames. A frame without the popup is returned as it is. The geometry itself (78 × 23 at 80×24, the edges, the inset) is
+ * pinned in its own block below ("the inspection popup").
+ */
+function unframe(frame: string): string {
+  const rows = frame.split('\n');
+  const top = rows.findIndex((row) => INSPECTION_TOP.test(row));
+  if (top < 0) return frame;
+  const bottom = rows.findIndex((row, index) => index > top && INSPECTION_BOTTOM.test(row));
+  return rows
+    .slice(top + 1, bottom < 0 ? undefined : bottom)
+    .map((row) => row.slice(INSPECTION_INSET))
+    .join('\n');
+}
+
+/**
+ * The rows of the screen the inspection popup frames on a terminal of `rows` (ADR-0148 §7, unit 8): the popup is `rows − 1` tall and its two
+ * edges take two of them. Where the suite pinned "rows − 1 lines and the empty last row" of the full screen, it pins this now.
+ */
+const framedRows = (rows: number): number => rows - 1 - INSPECTION_EDGE_ROWS;
+/**
+ * The terminal the navigation tests run on: 80×26, where the popup's body is the 14 rows the full screen had at 80×24 and every page number
+ * below was written for. The 80×24 popup (a body of 12 rows) is pinned by the geometry tests.
+ */
+const NAV_SIZE = [80, 26] as const;
 
 /** An overwrite of `target`: the longest verb the card prints before the target (`Overwrite `). */
 function overwritePreview(target: string): ToolPreview {
@@ -598,7 +645,9 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     await settle();
     const frame = f.lastFrameWith('Esc stops the turn') ?? '';
     expect(frame).toContain('+1 line 1 of the new file');
-    expect(frame).toContain('write_file \u00b7 +3 -0');
+    // The title line (ADR-0147 §1): what it is on the left, the numbers on the right; the summary row keeps the tool's identity.
+    expect(frame).toMatch(/^Create \S+ {2,}\+3 -0 \u00b7 \d+ bytes$/mu);
+    expect(frame).toMatch(/^write_file$/mu);
     expect(frame).not.toMatch(/masked/u);
     expect(frame).not.toContain('<LF>');
     expect(frame).not.toContain('Inspection requirements met');
@@ -821,7 +870,10 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     });
     await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
     await settle();
-    expect(f.lastFrameWith('Esc stops the turn')).toMatch(/- Approval needed -+/u);
+    // The sheet's heavy rule (ADR-0147 §1), `=` without colour, with the wait clock on its right.
+    expect(f.lastFrameWith('Esc stops the turn')).toMatch(
+      /^== Approval needed =+ waiting (?:0:\d\d|since \d\d:\d\d) ==$/mu,
+    );
   });
 
   it("starts the person's wait clock when the card opens and folds it into the turn when it closes", async () => {
@@ -2776,11 +2828,18 @@ describe.each(['chat', 'home'] as const)(
         expect(screen?.diff[0], 'opened on the context of the first change, not on line 1').toBe(
           ' 27 line 27',
         );
-        expect(screen?.rows.length, 'the screen is never as tall as the terminal').toBe(rows);
+        // The popup is rows − 1 tall (the last row of the terminal left empty) and its two edges frame the screen (ADR-0148 §7).
+        expect(screen?.rows.length, 'the screen the popup frames').toBe(framedRows(rows));
+        const raw = f.rawFrameWith(FULL_NOTE)?.split('\n') ?? [];
+        expect(raw.length, 'the popup and the empty last row').toBe(rows);
+        expect(raw[0], 'the top edge: the popup’s name and where it came from').toMatch(
+          INSPECTION_TOP,
+        );
+        expect(raw.at(-2), 'the bottom edge').toMatch(INSPECTION_BOTTOM);
+        expect(raw.at(-1), 'the last row of the terminal is left empty').toBe('');
         const topmost = screen?.rows.findIndex((row) => row.startsWith('Review · tool'));
         expect(topmost).toBe(0);
-        expect(screen?.rows.at(-1), 'the last row of the terminal is left empty').toBe('');
-        expect(screen?.rows.at(-2)).toBe(FULL_NOTE);
+        expect(screen?.rows.at(-1)).toBe(FULL_NOTE);
         expect(f.text()).not.toContain('Review unavailable');
         expect(outcome(), 'viewing answers nothing').toBeUndefined();
         f.input.push(CTRL_Y);
@@ -2814,8 +2873,9 @@ describe.each(['chat', 'home'] as const)(
       expect(rows[screen.note - 2], 'the grants row').toBe('[Ctrl+Y] Allow');
       expect(rows[screen.note - 1], 'the refusals row').toBe(FULL_DENY_ROW);
       expect(rows[screen.note]).toBe(FULL_NOTE);
-      // The body: the diff in the card's format, at least 14 rows at 80x24, and no unchanged line twice.
-      expect(screen.diff.length).toBeGreaterThanOrEqual(14);
+      // The body: the diff in the card's format, the 12 rows the inspection popup leaves at 80x24 (its two edges took two of the full screen's
+      // 14: ADR-0148 §7; every row of ADR-0134's chrome is kept), and no unchanged line twice.
+      expect(screen.diff.length).toBeGreaterThanOrEqual(12);
       expect(screen.diff).toEqual(expect.arrayContaining(['-30 line 30', '+30 thirty']));
       for (const row of rows) {
         expect(row, 'no `=before` copy of an unchanged line').not.toContain('=before');
@@ -2876,11 +2936,11 @@ describe.each(['chat', 'home'] as const)(
       ).toHaveLength(2);
       expect(rows[screen.rule + 1], 'the message').toBe('No earlier change');
       expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a_/u);
-      // The frame is exactly as tall as with no extra chrome at all (one row under the terminal's 24): the body gave way.
-      expect(rows).toHaveLength(24);
+      // The frame is exactly as tall as with no extra chrome at all (the popup's screen at 80×24): the body gave way.
+      expect(rows).toHaveLength(framedRows(24));
       expect(rows[screen.rule - 1], 'and the body it was left is full, not padded').not.toBe('');
       expect(rows[screen.note]).toBe(FULL_NOTE);
-      expect(rows.at(-1)).toBe('');
+      expect(rows.at(-1)).toBe(FULL_NOTE);
       expect(
         f.output.frames.slice(mark).some((frame) => frame.includes('Review unavailable')),
         'no frame of the sequence was refused as too tall',
@@ -2908,7 +2968,7 @@ describe.each(['chat', 'home'] as const)(
       expect(rows[0]?.length, 'flush to the right edge of the usable width').toBe(78);
       expect(rows[1], 'the whole identity on one row').toBe(`tool ${toolId} · action fs_write`);
       expect(rows[2]).toBe('target src/app.ts');
-      expect(rows).toHaveLength(24);
+      expect(rows).toHaveLength(framedRows(24));
       expect(f.text()).not.toContain('Review unavailable');
       f.input.push(CTRL_Y);
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
@@ -3000,7 +3060,7 @@ describe.each(['chat', 'home'] as const)(
 
     describe('keys (real stdin)', () => {
       it('moves the page with every navigation key and keeps the status rule true', async () => {
-        const { f } = await openFull(SIXTY());
+        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
         const first = view(f);
         expect(first?.diff[0]).toBe(' 27 line 27');
         expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
@@ -3046,7 +3106,7 @@ describe.each(['chat', 'home'] as const)(
       });
 
       it('says there is no later (or earlier) change at the last (or first) one, and Ctrl+Y still answers afterwards', async () => {
-        const { f, outcome } = await openFull(SIXTY());
+        const { f, outcome } = await openFull(SIXTY(), { size: NAV_SIZE });
         await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
         const none = await move(f, KEY.tab, (screen) => screen.message === 'No later change');
         expect(none.diff[0], 'a key that goes nowhere moves nothing').toBe(' 48 line 48');
@@ -3069,7 +3129,7 @@ describe.each(['chat', 'home'] as const)(
       });
 
       it('scrolls on a bare j, k and Space but never answers', async () => {
-        const { f, outcome } = await openFull(SIXTY());
+        const { f, outcome } = await openFull(SIXTY(), { size: NAV_SIZE });
         const down = await move(f, 'j', (screen) => screen.diff[0] === ' 28 line 28');
         expect(down.diff.length).toBeGreaterThan(0);
         await move(f, 'k', (screen) => screen.diff[0] === ' 27 line 27');
@@ -3389,7 +3449,7 @@ describe.each(['chat', 'home'] as const)(
       // ADR-0134 §3: the chrome is constant, so the body is as tall with a message as without one (the message row is always
       // drawn, blank when there is none), and every motion limit agrees with the page that is drawn.
       it('ends on a full page when End is pressed while a message is shown, and the body is as tall as without one', async () => {
-        const { f } = await openFull(SIXTY());
+        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
         const plain = view(f);
         if (plain === undefined) throw new Error('no full view');
         const message = await move(
@@ -3472,7 +3532,8 @@ describe.each(['chat', 'home'] as const)(
        * joined text restores a line however the screen broke it.
        */
       const joined = (frame: string): string =>
-        strip(frame)
+        // A frame of the inspection popup is read as the screen it frames (its edges and its inset off): the rows the person reads.
+        unframe(strip(frame))
           .split('\n')
           // A diff row loses its `+12 ` label; a target loses `target ` on its first row and the 7-space indent (the label's width) on
           // the rows that continue it.
@@ -3719,7 +3780,7 @@ describe.each(['chat', 'home'] as const)(
       });
 
       it('pages down to the last row while a message lingers, and the body keeps its height', async () => {
-        const { f } = await openFull(SIXTY());
+        const { f } = await openFull(SIXTY(), { size: NAV_SIZE });
         const open = view(f);
         const lingering = await move(
           f,
@@ -3811,7 +3872,7 @@ describe.each(['chat', 'home'] as const)(
         expect(rule).toMatch(/2 below/u);
         expect(rule.startsWith('- ')).toBe(true);
         expect(rule.endsWith('-')).toBe(true);
-        expect(both.rows.length, 'the frame did not grow').toBe(24);
+        expect(both.rows.length, 'the frame did not grow').toBe(framedRows(24));
       });
     });
 
@@ -4025,19 +4086,19 @@ describe.each(['chat', 'home'] as const)(
         const short = view((await openFull(editedFilePreview(3, { 2: 'two' }))).f);
         if (tall === undefined || short === undefined) throw new Error('no full view');
         expect(short.diff.length, 'the document really is short').toBeLessThan(tall.diff.length);
-        expect(short.rows.length, 'rows-1 lines and the empty last row').toBe(24);
-        expect(tall.rows).toHaveLength(24);
+        expect(short.rows.length, 'the popup’s screen, whatever the document').toBe(framedRows(24));
+        expect(tall.rows).toHaveLength(framedRows(24));
         expect(short.rule, 'the status rule is where it is for a tall document').toBe(tall.rule);
         expect(short.note).toBe(tall.note);
-        expect(short.rows.at(-1)).toBe('');
+        expect(short.rows.at(-1)).toBe(FULL_NOTE);
       });
 
       it('details: a call with a one-line summary has the same frame height and status-rule row as one with a long summary', async () => {
         const short = details(await openDetailsOf('Clean worktree'));
         const tall = details(await openDetailsOf('a long result '.repeat(140)));
         if (tall === undefined || short === undefined) throw new Error('no details');
-        expect(short.rows).toHaveLength(24);
-        expect(tall.rows).toHaveLength(24);
+        expect(short.rows).toHaveLength(framedRows(24));
+        expect(tall.rows).toHaveLength(framedRows(24));
         expect(short.rule).toBe(tall.rule);
         expect(short.note).toBe(tall.note);
         expect(short.rows.slice(short.rule + 1).join('\n')).toBe(

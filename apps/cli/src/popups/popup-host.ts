@@ -85,9 +85,9 @@
  * (`formFits`, read against the same rows and inner width the slot binds): a form is never windowed, and the warning it states is part of what
  * `Enter` applies. The chord rules do not apply to it (a form is no consent line); a step that consents keeps its chord step.
  *
- * **A form settles on its own frame.** The opening guard runs once per popup, so a form reached by a step (`/mode`'s "Apply to", `/models`'
- * "Effort & scope") would otherwise take an `Enter` the moment it is drawn: `↓↓↓ Enter Enter` typed fast would apply a mode before the effect it
- * states had been on screen at all. So the form's `Enter` counts only when it arrived at least the opening guard's settle time
+ * **A form settles on its own frame.** The opening guard runs once per popup, so a form reached by a step (`/models`' "Effort & scope", and
+ * until MVP-11 unit 8 `/mode`'s "Apply to") would otherwise take an `Enter` the moment it is drawn: `↓↓↓ Enter Enter` typed fast would apply a mode
+ * before the effect it states had been on screen at all. So the form's `Enter` counts only when it arrived at least the opening guard's settle time
  * (`POPUP_SELECT_SETTLE_MS`, the host's `settleMs`) after the acknowledgement of THIS frame of the form drawn whole on its page. Any new frame of
  * the form (a choice moved, its content replaced, the form drawn again after a child popup over it closed), a frame of it acknowledged cut (a
  * page that no longer holds it) and a terminal below the floor (no frame drawn at all) start it again; an acknowledgement of the same frame

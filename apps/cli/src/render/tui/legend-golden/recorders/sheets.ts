@@ -6,7 +6,6 @@ import type {
   SessionApprovalRow,
 } from '../../../../permissions/chat-permissions.js';
 import { emptyEditor } from '../../chat-input.js';
-import { helpSheetLines, HELP_TOO_SMALL } from '../../help-sheet.js';
 import { layoutHomeNotice } from '../../home-notice.js';
 import { keyLabel, legend, legendSpans, type LegendItem } from '../../legend.js';
 import {
@@ -358,24 +357,6 @@ const permissionsSheetRoles: Recorder = () => {
 
 // ---- The help sheet ----------------------------------------------------------------------------------------------------------
 
-/** The rows of the `Keys of the Home` section: a key listing, one row to a key, down to the legend. */
-function keyListing(lines: readonly SheetLine[]): string[] {
-  const from = lines.findIndex(
-    (line) => line.kind === 'heading' && line.text === 'Keys of the Home',
-  );
-  const to = lines.findIndex((line) => line.kind === 'legend');
-  return from < 0 ? [] : lines.slice(from, to < 0 ? undefined : to).map((line) => line.text);
-}
-
-const helpSheet: Recorder = () => ({
-  'constant=HELP_TOO_SMALL': HELP_TOO_SMALL,
-  ...bySize('keys section', (geometry) => keyListing(helpSheetLines(geometry))),
-  ...bySize('legend', (geometry) => footRows(helpSheetLines(geometry), { last: 1 })),
-  'below the floor': helpSheetLines(BELOW_FLOOR).map((line) => line.text),
-  'below the floor legend roles': rolesOf(lineOfKind(helpSheetLines(BELOW_FLOOR), 'legend')),
-  'legend roles': rolesOf(lineOfKind(helpSheetLines(GEOMETRIES[0].geometry), 'legend')),
-});
-
 // ---- The Home's notice -------------------------------------------------------------------------------------------------------
 
 const LONG_NOTICE = Array.from(
@@ -496,12 +477,6 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
       'The chat’s /permissions popup: the legend of its lists (`[d] / Del withdraw (then Enter)`), of a withdrawal’s line answered by Enter (`Enter withdraw · Esc keep`), of nothing to withdraw and of lists that could not be read, colour off and on; and what each refusal of the line says.',
   },
   {
-    id: 'help-sheet',
-    file: 'render/tui/help-sheet.ts',
-    describe:
-      'The landing’s /help sheet: its legend, the hint below the floor and the whole `Keys of the Home` listing, at both sizes.',
-  },
-  {
     id: 'home-notice',
     file: 'render/tui/home-notice.ts',
     describe:
@@ -513,6 +488,5 @@ export const SHEETS_RECORDERS = {
   'permissions-sheet': permissionsSheet,
   'permissions-sheet-roles': permissionsSheetRoles,
   'permissions-popup': permissionsPopup,
-  'help-sheet': helpSheet,
   'home-notice': homeNotice,
 } as const satisfies Readonly<Record<string, Recorder>>;

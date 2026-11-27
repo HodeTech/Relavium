@@ -18,6 +18,12 @@ import { displayWidth } from './viewport.js';
 
 /** The 80×24 floor: the card's twelve rows are a rule, two key rows and nine body rows. */
 const COLUMNS = 80;
+/**
+ * The card's title line at {@link COLUMNS} (ADR-0147 §1, unit 8): the header behind the gutter on the left and the question strip flush right
+ * across the card's width (two columns less than the terminal).
+ */
+const titleLine = (header: string, strip: string): string =>
+  `│ ${header}${' '.repeat(COLUMNS - 2 - displayWidth(`│ ${header}`) - displayWidth(strip))}${strip}`;
 const WIDTH = COLUMNS - 2;
 
 const clusterSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -415,7 +421,7 @@ describe('what the card says', () => {
 
   it('shows the header with the tab strip for several questions and without it for one', () => {
     expect(projectQuestionCard(initialQuestionCard(request), COLUMNS).body[0]?.text).toBe(
-      '│ Pick  [○] ○ · Review',
+      titleLine('Pick', '[○] ○ · Review'),
     );
     const one = initialQuestionCard({ questions: [request.questions[0] ?? request.questions[1]!] });
     expect(projectQuestionCard(one, COLUMNS).body[0]?.text).toBe('│ Pick');
@@ -688,13 +694,17 @@ describe('the Review tab (ADR-0132 §3)', () => {
 
   it('the tab strip fills in as questions are answered and brackets the tab on screen', () => {
     const state = initialQuestionCard(request);
-    expect(projectQuestionCard(state, COLUMNS).body[0]?.text).toBe('│ Pick  [○] ○ ○ · Review');
+    expect(projectQuestionCard(state, COLUMNS).body[0]?.text).toBe(
+      titleLine('Pick', '[○] ○ ○ · Review'),
+    );
     const after = {
       ...state,
       index: 1,
       entries: state.entries.map((e, i) => (i === 0 ? { ...e, ticked: [0] } : e)),
     };
-    expect(projectQuestionCard(after, COLUMNS).body[0]?.text).toBe('│ Also  ● [○] ○ · Review');
+    expect(projectQuestionCard(after, COLUMNS).body[0]?.text).toBe(
+      titleLine('Also', '● [○] ○ · Review'),
+    );
   });
 
   it('colours a chosen option differently from a plain one and from the highlight', () => {
@@ -1127,17 +1137,17 @@ describe('the current dot of the tab strip is not a key token without colour (ro
 
   it('is `<o>` and `<+>` in the plain form and `[○]` and `[●]` with the Unicode form', () => {
     const state = initialQuestionCard(request);
-    expect(head(state, true)).toBe('│ Pick  <o> o · Review');
-    expect(head(state, false)).toBe('│ Pick  [○] ○ · Review');
+    expect(head(state, true)).toBe(titleLine('Pick', '<o> o · Review'));
+    expect(head(state, false)).toBe(titleLine('Pick', '[○] ○ · Review'));
     const answered: QuestionCardState = {
       ...state,
       entries: state.entries.map((entry, index) =>
         index === 0 ? { ...entry, ticked: [0] } : entry,
       ),
     };
-    expect(head(answered, true)).toBe('│ Pick  <+> o · Review');
-    expect(head(answered, false)).toBe('│ Pick  [●] ○ · Review');
-    expect(head({ ...answered, index: 1 }, true)).toBe('│ Also  + <o> · Review');
+    expect(head(answered, true)).toBe(titleLine('Pick', '<+> o · Review'));
+    expect(head(answered, false)).toBe(titleLine('Pick', '[●] ○ · Review'));
+    expect(head({ ...answered, index: 1 }, true)).toBe(titleLine('Also', '+ <o> · Review'));
   });
 
   it('the plain header holds no bracketed letter or sign that the legend would write as a key', () => {

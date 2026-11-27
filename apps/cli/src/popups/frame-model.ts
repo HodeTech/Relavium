@@ -63,21 +63,43 @@ import {
 } from './geometry.js';
 
 /**
- * Where the popup was opened from, said on its top edge: the Home, a chat, or the automatic first run (the provider setup the Home opens by
- * itself, which no one opened from anywhere: MVP-11 unit 6 round 2, OB-5a).
+ * Where the popup was opened from, said on its top edge: the Home, a chat, the automatic first run (the provider setup the Home opens by
+ * itself, which no one opened from anywhere: MVP-11 unit 6 round 2, OB-5a), or the `/workflows` popup (the `/run` and the export it hands
+ * a workflow to: MVP-11 unit 8, OD-24 D1, `Esc` returns there).
  */
-export type PopupOrigin = 'home' | 'chat' | 'first-run';
+export type PopupOrigin = 'home' | 'chat' | 'first-run' | 'workflows';
 
 /** The words of each origin: product constants. */
 const ORIGIN_LABEL: Readonly<Record<PopupOrigin, string>> = {
   home: 'from Home',
   chat: 'from chat',
   'first-run': 'first run',
+  workflows: 'from /workflows',
 };
+
+/** What `Esc` says on the first step of a popup opened from the Home: it goes back to the Home (OD-24; the frames of unit 8). A product constant. */
+export const HOME_EXIT_VERB = 'back to Home';
 
 /** The words of an origin. */
 export function originLabel(origin: PopupOrigin): string {
   return ORIGIN_LABEL[origin];
+}
+
+/** The status a row ends with ({@link PopupListRow.tail}): the role whose glyph leads it, and its words. */
+export interface PopupRowTail {
+  readonly status: StatusGlyphRole;
+  readonly words: string;
+  /** One more word after them, two spaces on (`pinned`): a state that is a word and no glyph of its own. */
+  readonly after?: string | undefined;
+}
+
+/** A letter key a row answers to while it is highlighted ({@link PopupListRow.controls}); the shape of the reducer's `PopupControl`, plus a shorter verb. */
+export interface PopupRowControl {
+  /** One lower-case letter or digit. */
+  readonly key: string;
+  readonly verb: string;
+  /** The verb written where the whole legend does not fit its row (`startup` for `startup default`): the frame's fit chooses, nothing is dropped. */
+  readonly short?: string | undefined;
 }
 
 /** One row of a list the body draws. */
@@ -96,6 +118,12 @@ export interface PopupListRow {
   readonly statusWord?: string | undefined;
   /** A heading inside the list (`Deep check · 3 min ago`): drawn plain and dim, with no marker; never selected (it is not `enabled`). */
   readonly section?: true | undefined;
+  /**
+   * A status drawn at the END of the row, after the detail: its glyph, in the form in force, and the words beside it (`✓ done 3h ago`,
+   * `✗ invalid`). A catalogue says what a name is first and how it stands last (MVP-11 unit 8, the `/workflows` and `/agents` lists); the glyph is
+   * never the only carrier of the state, because the words always follow it.
+   */
+  readonly tail?: PopupRowTail | undefined;
   /** `false` ⇒ the row cannot act: it is drawn dim with `reason`, the arrows skip it and `Enter` on it answers nothing. */
   readonly enabled?: boolean | undefined;
   readonly reason?: string | undefined;
@@ -105,6 +133,28 @@ export interface PopupListRow {
    * row with none leaves it blank), so the frame never jumps when the highlight moves. A list none of whose rows has one draws no room.
    */
   readonly effect?: string | undefined;
+  /**
+   * `warn` ⇒ the effect is drawn as a notice (amber): the row approves something without a card (`/mode`'s `accept-edits` and `auto`), so its
+   * effect is read as a warning BEFORE the key that applies it (MVP-11 unit 8, OD-25). Absent ⇒ the plain message.
+   */
+  readonly effectTone?: 'warn' | undefined;
+  /**
+   * State words at the END of the row, right-aligned and NEVER cut or dropped (`this chat · startup`: they are the point of the row): when the
+   * row's own words do not leave room for them, THOSE are cut with the ellipsis, the tag keeps its columns (MVP-11 unit 8, OD-25 rule (b)). A
+   * product constant, never data: it is drawn through the same floor as every row text, but a row whose tag would not fit the width alone is
+   * clipped as a whole.
+   */
+  readonly tag?: string | undefined;
+  /**
+   * What `Enter` does while THIS row is highlighted, as the legend names it, in place of the step's own (`use in this chat` on another mode,
+   * `keep` on the mode in force: the legend says what the key does to the row it is on). `false` ⇒ `Enter` answers nothing on this row.
+   */
+  readonly enterVerb?: string | false | undefined;
+  /**
+   * The letters this row answers to while it is highlighted, in place of the step's own (`[s] startup default` where saving it would change
+   * something, none on the mode that already is the default). The key reducer, the legend and the host read the same list (`currentStep`).
+   */
+  readonly controls?: readonly PopupRowControl[] | undefined;
   /** More words the filter searches and the row never draws (a model's display name beside its id). */
   readonly match?: string | undefined;
   /** The row survives every filter, where it sits (a row that acts on the list itself: `Refresh the list`). */
@@ -180,6 +230,12 @@ export type PopupContent =
       readonly rows: readonly PopupListRow[];
       /** One line above the rows that says what they add up to (`⚠ doctor: 1 warning`), its glyph by role and its word beside it. */
       readonly heading?: PopupHeading | undefined;
+      /**
+       * The row the highlight goes to when these rows land on a step that showed none before (a list read in the popup's own work, `/workflows`
+       * reopened on the workflow it was left on): by id, and only for a row that can act. Once a list is in place the highlight stays on the row it
+       * was on, as always (`withContent`).
+       */
+      readonly initialRow?: string | undefined;
     }
   | { readonly kind: 'report'; readonly lines: readonly string[] }
   | PopupForm
@@ -302,7 +358,8 @@ function effectBlock(
 ): SheetLine[] {
   const room = effectRoom(rows, width);
   if (room === 0) return [];
-  const shown = effectRows(highlighted, width).map((text) => bodyLine('message', text, width));
+  const tone = highlighted?.effectTone === 'warn' ? 'notice' : 'message';
+  const shown = effectRows(highlighted, width).map((text) => bodyLine(tone, text, width));
   while (shown.length < room) shown.push(bodyLine('text', '', width));
   return [bodyLine('text', '', width), ...shown];
 }
@@ -650,9 +707,37 @@ function detailText(row: PopupListRow): string {
   return row.detail === undefined ? '' : `  ${popupText(row.detail)}`;
 }
 
-function listRowText(row: PopupListRow, selected: boolean): string {
+/** What ends a row: its tail's glyph and words (two spaces before), or nothing; a row that cannot act ends with its reason alone. */
+function tailText(row: PopupListRow): string {
+  if (row.enabled === false || row.tail === undefined) return '';
+  const after = row.tail.after === undefined ? '' : `  ${popupText(row.tail.after)}`;
+  return `  ${glyph(row.tail.status)} ${popupText(row.tail.words)}${after}`;
+}
+
+/** The columns between a row's own words and its state words ({@link PopupListRow.tag}). */
+const TAG_GAP = 2;
+
+/**
+ * A row's own words and its state words as ONE row of `width` columns: the tag right-aligned at the row's end and never cut, what comes before
+ * it cut with the ellipsis to leave it room ({@link PopupListRow.tag}). A row that cannot act has no tag (it says why instead), and a tag wider
+ * than the row alone is the row's whole text, clipped.
+ */
+function withTag(own: string, row: PopupListRow, width: number): string {
+  if (row.tag === undefined || row.enabled === false) return own;
+  const tag = popupText(row.tag);
+  const room = width - displayWidth(tag) - TAG_GAP;
+  if (room < 1) return clipLine(tag, width);
+  const lead = clipLine(own, room);
+  return `${lead}${' '.repeat(room - displayWidth(lead) + TAG_GAP)}${tag}`;
+}
+
+function listRowText(row: PopupListRow, selected: boolean, width: number): string {
   if (row.section === true) return `  ${popupText(row.label)}`;
-  return `${marker(selected)} ${statusText(row)}${popupText(row.label)}${detailText(row)}`;
+  return withTag(
+    `${marker(selected)} ${statusText(row)}${popupText(row.label)}${detailText(row)}${tailText(row)}`,
+    row,
+    width,
+  );
 }
 
 function rowKind(row: PopupListRow, selected: boolean): SheetLine['kind'] {
@@ -682,7 +767,11 @@ function listLines(
       const row = rows[index];
       if (row === undefined) continue;
       out.push(
-        bodyLine(rowKind(row, index === selected), listRowText(row, index === selected), width),
+        bodyLine(
+          rowKind(row, index === selected),
+          listRowText(row, index === selected, width),
+          width,
+        ),
       );
     }
   }

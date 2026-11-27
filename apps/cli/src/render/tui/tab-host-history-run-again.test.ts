@@ -45,7 +45,7 @@ import {
   HISTORY_KEYS,
   type HistoryPort,
 } from './tab-host-history.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 import { displayWidth } from './viewport.js';
 
 const ENTER: ChatKey = { return: true };
@@ -75,11 +75,9 @@ function rig(options: Options = {}) {
   const isRunPinned = vi.fn(() => false);
   const history: HistoryPort = { read, cost, loadDetail, loadNode, isRunPinned };
   const context = (): TabHostContext => ({
-    port: undefined,
     history,
     ...(defined === undefined ? {} : { defined }),
     now: 10_000,
-    canArm: true,
   });
   let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
   const press = (input: string, key: ChatKey = {}): TabHostStep => {

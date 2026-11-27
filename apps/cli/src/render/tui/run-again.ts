@@ -1,5 +1,5 @@
 import type { RunDetailRead } from '../../history/run-detail-source.js';
-import type { DefinedPort, DefinedRead } from './tab-host-workflows.js';
+import type { DefinedPort, DefinedRead } from '../../history/defined-model.js';
 
 /**
  * `r` on a run's detail ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)

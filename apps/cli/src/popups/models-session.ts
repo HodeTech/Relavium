@@ -157,6 +157,28 @@ function applyToThisChat(
 }
 
 /**
+ * Whether saving `choice` as the default of new chats would change nothing in a chat: the default model, its provider and (for a model that
+ * takes a tier) its tier are already the choice's. Anything not known to be the same (a port that cannot say the tier, a read that fails) is a
+ * change, so the writer runs as it always did: only a default KNOWN to be the choice closes with "Already the default".
+ */
+function savesNothing(
+  models: ModelsSettingsPort,
+  view: CatalogView,
+  own: string | undefined,
+  choice: ModelChoice,
+): boolean {
+  try {
+    if (models.defaultModel?.() !== choice.modelId) return false;
+    if (defaultProviderOf(models, view, own) !== choice.provider) return false;
+    return choice.reasoningEffort === undefined
+      ? true
+      : models.defaultEffort !== undefined && models.defaultEffort() === choice.reasoningEffort;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The default of new chats: the writer's own flow, started once the key that applied has been handled to its end (its card, when the config
  * must be rewritten, is a frame of its own that no key has reached), on the port's owner; what it came to is said on the host's channel. The
  * writer's adapter never rejects; a fault that escapes it anyway is the owner's and is said as a failed save, so nobody is left without word.
@@ -292,6 +314,12 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
           return;
         }
         if (models.scope === 'home' && same) {
+          port.announce(alreadyDefaultAnnouncement(choice.modelId));
+          return;
+        }
+        // A chat's `New chats` for what already is the default of new chats changes nothing either: no write, no card, said so (OD-25).
+        const own = currentProviderOf(view.entries, inForce?.current, inForce?.provider);
+        if (models.scope === 'chat' && savesNothing(models, view, own, choice)) {
           port.announce(alreadyDefaultAnnouncement(choice.modelId));
           return;
         }

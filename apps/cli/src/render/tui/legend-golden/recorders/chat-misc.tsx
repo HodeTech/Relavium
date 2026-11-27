@@ -115,6 +115,8 @@ interface ChatCase {
   readonly streamed?: number;
   /** The chat's host: the Home's chat (the second `Ctrl+C` goes back to the Home) or the stand-alone chat. Absent ⇒ stand-alone. */
   readonly host?: ChatHost;
+  /** A sheet is docked below the chat (ADR-0147 §1): it takes the prompt block's place, so the chat draws no hint of its own. */
+  readonly cardDocked?: boolean;
 }
 
 const CHAT_CASES: readonly ChatCase[] = [
@@ -153,8 +155,10 @@ const CHAT_CASES: readonly ChatCase[] = [
     patch: { liveTokens: 'The answer so far' },
   },
   {
+    // The approval's sheet is docked: the chat draws no hint and no busy line (the sheet's key lines are the legend, ADR-0147 §1).
     state: 'running, waiting for an approval',
     running: true,
+    cardDocked: true,
     patch: { turnStartedAtMs: 0, approvalSinceMs: 1000 },
   },
   { state: 'running, compacting the conversation', running: true, patch: { compacting: true } },
@@ -201,6 +205,7 @@ const chatView = (item: ChatCase, color: boolean) => (
     displaySuspended={item.suspended === true}
     markdown={item.streamed === undefined ? undefined : streamOf(item.streamed)}
     {...(item.host === undefined ? {} : { surface: item.host })}
+    cardDocked={item.cardDocked === true}
     columns={100}
   />
 );
@@ -242,11 +247,7 @@ const busyLine: Recorder = () => {
   const cases: Record<string, ReturnType<typeof formatBusyLine>> = {
     compacting: formatBusyLine({ ...common, compacting: true }),
     'a ! command': formatBusyLine({ ...common, compacting: false, busyCommand: 'npm test' }),
-    'waiting for an approval': formatBusyLine({
-      ...common,
-      compacting: false,
-      awaitingApprovalMs: 65_000,
-    }),
+    // No 'waiting for an approval' state any more: the sheet's rule carries the wait (ADR-0147 §2).
     'working, no timer yet': formatBusyLine({ ...common, compacting: false }),
     working: formatBusyLine({ ...common, compacting: false, elapsedMs: 5000 }),
     thinking: formatBusyLine({

@@ -33,7 +33,7 @@ import { RUN_AGAIN_NOT_DEFINED, RUN_AGAIN_OTHER_DIRECTORY } from './run-again.js
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import type { TabHostState } from './tab-host.js';
 import type { HistoryPort } from './tab-host-history.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 
 const EMPTY: HomeSnapshot = {
   failedRuns: [],

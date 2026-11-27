@@ -28,6 +28,11 @@ import {
   type ReportsPort,
 } from '../../../popups/report-port.js';
 import { createPopupHost, type PopupHost } from '../../../popups/popup-host.js';
+import {
+  openHomePopup,
+  type HomePopupKind,
+  type HomePopupsPort,
+} from '../../../popups/home-port.js';
 import { openUnreadableRun } from '../../../popups/unreadable-run-port.js';
 import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import type { ChatStoreController } from '../chat-store.js';
@@ -277,6 +282,19 @@ export function mountHome(
         command,
         origin: chat.surface === 'home' ? 'home' : 'chat',
       });
+    },
+    // As `driveHome` wires it (MVP-11 unit 8): `/help`, `/agents` and `/workflows` open their popup on the Home's popup host with the port the
+    // controller built.
+    openHomePopup: ({
+      kind,
+      port,
+      at,
+    }: {
+      readonly kind: HomePopupKind;
+      readonly port: HomePopupsPort;
+      readonly at?: { readonly slug: string } | undefined;
+    }) => {
+      void openHomePopup({ host: popups, port, kind, origin: 'home', at });
     },
     // The bare Home's own channel, as `driveHome` wires it: what its `/models` popup applied says, after the popup has closed.
     announce: (text: string) => {

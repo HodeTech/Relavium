@@ -13,7 +13,7 @@ import { flowLine } from './flow-text.js';
 import { expiryLabel } from './home-deadline.js';
 import { formatCostShort } from './format.js';
 import { glyph, glyphOf } from './glyphs.js';
-import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
+import { exitKey, keyLabel, legend, waitMark, type LegendExit, type LegendKey } from './legend.js';
 import { clipLine } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
@@ -503,6 +503,12 @@ export const EXIT_GUARD_GLYPH = {
 const EXIT_GUARD_STAY: LegendExit = exitKey.close(['Esc', 'Ctrl+C', 'Ctrl+N'], 'stay');
 
 /**
+ * The rows the exit guard draws above its lines: the sheet's heavy rule (ADR-0147 §1). Every host that counts the card's rows adds it, so the
+ * frame's arithmetic and the drawn card cannot disagree.
+ */
+export const EXIT_GUARD_RULE_ROWS = 1;
+
+/**
  * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The title
  * row is a glyph and a few words; each line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y`
  * stops the run and leaves and the other three keys stay; once the person confirmed, the card only says that the run is stopping and for
@@ -513,7 +519,10 @@ export function exitGuardLines(
   snapshot: RunHostSnapshot | undefined,
   /** The longest a confirmed exit waits for the run: the grace and then the host's settle bound ({@link HOSTED_RUN_EXIT_BOUND_MS}). */
   boundSeconds: number,
+  /** The card's lockout holds `Ctrl+Y` now (the controller's `exitGuardLock`, a display value): it reads `(wait)` (ADR-0145 §3). */
+  locked = false,
 ): readonly string[] {
+  const wait = waitMark(locked);
   const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
   // `: <run id>` for a leg that has named its run, nothing for one that has not: the card's title names the run when it can.
   const named = active?.runId === undefined ? '' : `: ${sanitizeInline(active.runId)}`;
@@ -525,7 +534,7 @@ export function exitGuardLines(
   if (!hostedRunIsLive(snapshot))
     return [
       `${glyph('ended')} The run has ended.`,
-      legend([{ keys: 'Ctrl+Y', verb: 'leave the Home' }], EXIT_GUARD_STAY),
+      legend([{ keys: 'Ctrl+Y', verb: 'leave the Home', ...wait }], EXIT_GUARD_STAY),
     ];
   if (active?.cancelling === true)
     return [
@@ -535,6 +544,7 @@ export function exitGuardLines(
           {
             keys: 'Ctrl+Y',
             verb: `leave once it stops (about ${formatElapsed(boundSeconds * 1000)})`,
+            ...wait,
           },
         ],
         EXIT_GUARD_STAY,
@@ -543,6 +553,6 @@ export function exitGuardLines(
   return [
     `${glyph('warning')} A workflow run is executing${named}.`,
     'Leaving stops it, and a stopped run cannot be resumed.',
-    legend([{ keys: 'Ctrl+Y', verb: 'stop the run and leave' }], EXIT_GUARD_STAY),
+    legend([{ keys: 'Ctrl+Y', verb: 'stop the run and leave', ...wait }], EXIT_GUARD_STAY),
   ];
 }

@@ -22,7 +22,13 @@ import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { legend, legendRows } from './legend.js';
 import { displayWidth } from './viewport.js';
-import { QUESTION_STOP, projectQuestionCard, type QuestionRowTone } from './question-card.js';
+import {
+  QUESTION_STOP,
+  projectQuestionCard,
+  questionRule,
+  type QuestionRowTone,
+} from './question-card.js';
+import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 
 /** The colour of a row by its tone (none with colour off); the weight of a row is {@link toneEmphasis}, which colour does not switch. */
 function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknown> {
@@ -61,10 +67,17 @@ export function QuestionCardHost(
     hasCustody: () => boolean;
     /** Whether colour output is on. */
     color?: boolean | undefined;
+    /** How the sheet's wait clock is drawn (ADR-0147 §2): `ticking` in the alternate screen, static inline (the default: no timer). */
+    waitClock?: WaitClockForm | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const card = snapshot.question;
+  // The wait clock: this host's display value, in no snapshot and read by no guard (ADR-0147 §2).
+  const clock = useWaitClock(
+    card === undefined ? undefined : snapshot.state.approvalSinceMs,
+    props.waitClock ?? 'static',
+  );
   const app = useApp();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement | null>(null);
@@ -140,7 +153,7 @@ export function QuestionCardHost(
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-        {view.rule}
+        {withGlyphForm(props.color === false, () => questionRule(props.size.cols, clock))}
       </Text>
       {view.body.map((row, index) => (
         <EmphText

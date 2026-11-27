@@ -27,6 +27,7 @@ import { settleFrames, waitFor } from './harness-util.js';
 import { openPalette, type OpenPalette } from './palette-reducer.js';
 import { buildPaletteEntries } from './palette-entries.js';
 import { focusAt, stripRows, type StripFocus } from './strip-focus.js';
+import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
 
 afterEach(cleanup);
 
@@ -383,6 +384,8 @@ function mounted(
 ) {
   const timers: { at: number; run: () => void }[] = [];
   let now = 0;
+  // The guards' clock: the real one, moved forward by `pass` (a person who has read a card for its lockout, which runs from its appearance).
+  let skew = 0;
   const controller = createHomeController({
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => options.snapshot ?? BUSY },
@@ -401,11 +404,15 @@ function mounted(
       };
     },
     slideTransitions: true,
+    now: () => performance.now() + skew,
     onExit: () => {},
     onError: (cause) => {
       throw cause;
     },
   });
+  const pass = (): void => {
+    skew += APPROVAL_LOCKOUT_MS;
+  };
   const harness = render(
     <RootApp
       controller={controller}
@@ -431,7 +438,7 @@ function mounted(
   const arrive = (): void => {
     for (let frame = 0; frame < 3; frame += 1) step();
   };
-  return { controller, harness, step, arrive, pending: () => timers.length };
+  return { controller, harness, step, arrive, pass, pending: () => timers.length };
 }
 
 describe('mounted in the alternate screen', () => {
@@ -522,6 +529,7 @@ describe('mounted in the alternate screen', () => {
     expect(frame.join('\n')).not.toContain('type a message, or / for commands');
     expect(frame.length).toBeLessThanOrEqual(23);
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    m.pass(); // and read for the lockout that runs from its appearance (unit 8)
     m.harness.stdin.write('\u0019');
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(m.controller.getSnapshot().exitGuard).toBe('stopping');

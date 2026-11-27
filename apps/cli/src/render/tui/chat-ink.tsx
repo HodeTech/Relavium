@@ -2,6 +2,7 @@ import type { ToolDisplay } from './tool-display.js';
 import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
+import { waitClockForm } from './wait-clock.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
@@ -446,9 +447,10 @@ interface ChatViewProps {
    */
   readonly terminalRows?: number | undefined;
   /**
-   * A card is docked below this view (an approval or command card, the agent's question, the continue checkpoint: {@link dockedCardOpen}). The card
-   * owns the keyboard and draws its own legend, so the hint row above it is blank: the idle hint said `[Ctrl+C] end (twice)` over a card whose own
-   * legend says `Esc / [Ctrl+C] stops the turn` (OB7-L2). The row keeps its place, so the prompt block stays {@link PROMPT_BLOCK_ROWS} rows.
+   * A sheet is docked below this view (an approval or command card, the agent's question, the continue checkpoint: {@link dockedCardOpen}). The
+   * sheet takes the prompt block's place ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+   * §1): its key lines are the legend and its rule the label, so the block (the leading row, the prompt or the in-flight turn, the rule, the status
+   * line and the hint) is not drawn while it is open, and the rows it took go to the conversation.
    */
   readonly cardDocked?: boolean | undefined;
   /**
@@ -728,8 +730,6 @@ interface PromptBlockProps {
   readonly palette: ChatViewProps['palette'];
   readonly notification: string | undefined;
   readonly copied: boolean;
-  /** A card is docked below the block: it draws its own legend, so the hint row is blank ({@link ChatViewProps.cardDocked}). */
-  readonly cardDocked: boolean;
   /** The most rows the idle prompt's editor may take ({@link promptEditorRows}); `undefined` ⇒ unbounded. */
   readonly editorRows: number | undefined;
   /** The in-flight turn, drawn where the prompt row would be while one runs. */
@@ -809,7 +809,7 @@ function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
           leaves says where it leads; with a draft it is the draft's own keys; while a turn runs it is the key that ends the chat. */}
       {showsHint && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {props.cardDocked ? ' ' : hintFor(props)}
+          {hintFor(props)}
         </Text>
       )}
     </Box>
@@ -854,7 +854,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const showIdlePrompt = !running && paletteOpen !== true;
   // The whole-second live-turn elapsed (2.5.H) — `undefined` before a turn starts (no `turnStartedAtMs`), so the
   // pre-first-token status shows only when a turn is actually in flight.
-  // An open approval card is the person's time, not the turn's: the timer excludes it (and shows the wait itself).
+  // An open approval card is the person's time, not the turn's: the timer excludes it (the sheet's own rule shows the wait, ADR-0147 §2).
   const awaitingApprovalMs =
     state.approvalSinceMs === undefined
       ? undefined
@@ -916,7 +916,6 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: props.markdown?.sourceTail() ?? state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
-      awaitingApprovalMs,
       reasoningActive,
       // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
       // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
@@ -1062,28 +1061,30 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
 
       {/* The prompt block (ADR-0146 §4): a blank row, the prompt, a thin rule, the status line, the hint. While a turn runs the in-flight turn
-          stands where the prompt would (below), and the rule, the status line and the hint stay. */}
-      <PromptBlock
-        state={state}
-        color={color}
-        host={props.surface ?? 'standalone-chat'}
-        mode={mode}
-        reasoningEffort={reasoningEffort}
-        provider={props.provider}
-        columns={rowWidth}
-        running={running}
-        interruptArmed={props.interruptArmed === true}
-        editor={editor}
-        cursor={props.composerCursor !== false}
-        attachments={attachments}
-        promptShown={showIdlePrompt}
-        palette={props.palette}
-        notification={props.notification}
-        copied={props.copied === true}
-        cardDocked={props.cardDocked === true}
-        editorRows={chatEditorRows(viewport?.rows, props.terminalRows)}
-        live={liveTurn}
-      />
+          stands where the prompt would (below), and the rule, the status line and the hint stay. A docked sheet takes the whole block's place
+          (ADR-0147 §1), so none of it is drawn while one is open. */}
+      {props.cardDocked !== true && (
+        <PromptBlock
+          state={state}
+          color={color}
+          host={props.surface ?? 'standalone-chat'}
+          mode={mode}
+          reasoningEffort={reasoningEffort}
+          provider={props.provider}
+          columns={rowWidth}
+          running={running}
+          interruptArmed={props.interruptArmed === true}
+          editor={editor}
+          cursor={props.composerCursor !== false}
+          attachments={attachments}
+          promptShown={showIdlePrompt}
+          palette={props.palette}
+          notification={props.notification}
+          copied={props.copied === true}
+          editorRows={chatEditorRows(viewport?.rows, props.terminalRows)}
+          live={liveTurn}
+        />
+      )}
     </Box>
   );
 }
@@ -1139,10 +1140,10 @@ export function composerEditor(editor: EditorState, drawing: SlotDrawing | undef
 }
 
 /**
- * Whether a card docked below the chat is open (OB7-L2): an approval or command card, the agent's question, or the continue checkpoint. Each draws its
- * own legend and owns the keyboard, so the chat's hint row above it is blank (`ChatViewProps.cardDocked`): the two legends disagreed about what `Esc`
- * and `Ctrl+C` do. The card's full view and the details screen take the whole screen (the view is hidden then), and a popup is drawn over the view
- * with its own legend row, so neither is among them.
+ * Whether a sheet docked below the chat is open (OB7-L2, ADR-0147 §1): an approval or command card, the agent's question, or the continue
+ * checkpoint. Each draws its own legend and owns the keyboard, and it takes the prompt block's place (`ChatViewProps.cardDocked`): the two legends
+ * disagreed about what `Esc` and `Ctrl+C` do. The card's full view and the details screen take the whole screen (the view is hidden then), and a
+ * popup is drawn over the view with its own legend row, so neither is among them.
  */
 export function dockedCardOpen(
   flags: Pick<OverlayFlags, 'approval' | 'question' | 'checkpoint'>,
@@ -2426,6 +2427,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // predicate takes the cursor out of the composer and the notification off the hint row while a popup is drawn.
   const drawing = slotDrawing(slotProps, popupSnapshot);
   const dimmed = dimsBackdrop(drawing, color);
+  // A sheet's wait clock ticks in the alternate screen and is the static `waiting since HH:MM` inline (ADR-0147 §2).
+  const waitClock = waitClockForm(props.alternateScreen);
   return (
     <>
       <BackdropDim dimmed={dimmed}>
@@ -2503,6 +2506,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
             clipboard={props.reviewClipboard}
             color={color}
+            waitClock={waitClock}
           />
           {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
           <QuestionCardHost
@@ -2510,6 +2514,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             size={{ cols: windowSize.columns, rows: windowSize.rows }}
             hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
             color={color}
+            waitClock={waitClock}
           />
           {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
           <CheckpointCardHost
@@ -2517,6 +2522,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             size={{ cols: windowSize.columns, rows: windowSize.rows }}
             hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
             color={color}
+            waitClock={waitClock}
           />
           {search !== undefined && (
             <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />

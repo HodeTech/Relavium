@@ -347,7 +347,7 @@ describe('the popup opens before the line is a submit', () => {
 });
 
 describe('the Home’s own landing does not change', () => {
-  it('`/help` and `/workflows` stay the Home’s screens, `/cost` and `/agent` say they work in a chat, and no popup opens', async () => {
+  it('`/cost` and `/agent` say they work in a chat, and `/help` and `/workflows` open no report popup of a chat (they are the Home’s own popups, which this Home wires none of)', async () => {
     const m = mountHome(variantOf('alt'), { reports: reportsPortFor('home-chat', 'cost-held') });
     try {
       await m.settle();
@@ -361,11 +361,13 @@ describe('the Home’s own landing does not change', () => {
       expect(m.controller.getSnapshot().notice).toContain('/cost works in a chat');
       await type('/agent');
       expect(m.controller.getSnapshot().notice).toContain('/agent works in a chat');
+      // MVP-11 unit 8: they are popups of the Home, opened through the Home's own port (`home-manage-popups.test.ts`); a Home that wired none says so.
       await type('/help');
-      expect(m.controller.getSnapshot().screen?.kind).toBe('help');
-      m.key(KEYS.escape);
-      await m.settle();
+      expect(m.controller.getSnapshot().screen).toBeUndefined();
+      expect(m.popups.getSnapshot().open).toBe(false);
       await type('/workflows');
+      expect(m.controller.getSnapshot().screen).toBeUndefined();
+      expect(m.controller.getSnapshot().notice).toContain('not available here');
       expect(m.popups.getSnapshot().open).toBe(false);
     } finally {
       m.unmount();

@@ -354,7 +354,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('One  <o> o o · Review'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/One {2,}<o> o o · Review/u));
       await settle();
       // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
       // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
@@ -438,11 +438,11 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  <o> o o · Review'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/Pick {2,}<o> o o · Review/u));
       await settle();
       await tap(f, RIGHT); // look at question 2 without answering question 1
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  o <o> o · Review'),
+        expect(f.lastFrameWith('Which more?') ?? '').toMatch(/Also {2,}o <o> o · Review/u),
       );
       await tap(f, RIGHT);
       await tap(f, RIGHT); // the Review tab
@@ -453,7 +453,7 @@ describe.each(['chat', 'home'] as const)(
       );
       await tap(f, '\r'); // Enter with holes: goes to the first unanswered question, with a note
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  <o>'),
+        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toMatch(/Pick {2,}<o>/u),
       );
       await tap(f, '2'); // beta.ts → question 2
       await tap(f, '1'); // multi-select: tick "one" …
@@ -501,7 +501,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  <o>'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/Pick {2,}<o>/u));
       await settle();
       await tap(f, '1'); // alpha.ts → question 2
       await tap(f, LEFT);

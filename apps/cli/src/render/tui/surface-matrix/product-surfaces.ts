@@ -72,10 +72,13 @@ const CHAT_ROWS: readonly (readonly [string, string])[] = [
     'settings-effect',
     'a list popup whose highlighted row states its effect: the test layer’s (the body of the /mode first step)',
   ],
-  ['settings-mode', 'the /mode popup: the modes, the one in force marked, its effect stated'],
   [
-    'settings-mode-apply',
-    'the /mode popup’s second step: where the mode applies, its effect stated before Enter',
+    'settings-mode',
+    'the /mode popup: one list, the modes, the one in force marked (also the startup default), its effect stated',
+  ],
+  [
+    'settings-mode-use',
+    'the /mode popup: another mode highlighted, its effect stated before Enter, `Enter use in this chat` and `[s]`',
   ],
 ];
 
@@ -102,7 +105,16 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.palette', 'the / palette on the landing'),
   row('home.mention', 'the @ file picker on the landing, under the prompt row'),
   row('home.work-mention', 'the @ file picker on the work page, above the docked prompt'),
-  row('home.help', 'the /help screen'),
+  // The Home's management popups (MVP-11 unit 8, OD-24): `/help`, `/agents`, `/workflows` and `/permissions` are popups over the Home.
+  row('home.help', 'the /help popup: the Home’s keys and commands on one page'),
+  row('home.agents-list', 'the /agents popup: the project’s agents, `ready` or `invalid`'),
+  row('home.agents-detail', 'the /agents popup: one agent’s detail and `[c] chat`'),
+  row('home.workflows-list', 'the /workflows popup: the catalogue, each row’s last run and pin'),
+  row('home.workflows-detail', 'the /workflows popup: one workflow’s inputs, nodes and last runs'),
+  row(
+    'home.permissions-popup',
+    'the /permissions popup on the Home: the remembered commands and the allowlist',
+  ),
   row('home.notice', 'a command’s one-line answer as the Home’s notice'),
   // The `/doctor` popup (ADR-0148 §8), in each of its states.
   row('home.doctor-checks', 'the /doctor popup: the quick tier’s checks'),
@@ -112,15 +124,11 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.doctor-done', 'the /doctor popup: the deep result, with its age'),
   row('home.doctor-empty', 'the /doctor popup: a confirmation line with nothing to send'),
   row('home.doctor-error', 'the /doctor popup: checks that could not run'),
-  // The screens of the slot: the tab host and the run view.
-  row('home.tab-defined', 'the Defined tab'),
-  row('home.tab-active', 'the Active tab'),
-  row('home.tab-history', 'the History tab'),
+  // The screens of the slot: the Runs screen (Active | History) and the run view.
+  row('home.tab-active', 'the Runs screen: the Active tab'),
+  row('home.tab-history', 'the Runs screen: the History tab'),
   row('home.run-detail', 'the History tab’s run detail'),
   row('home.node-detail', 'the node page of a run’s detail'),
-  row('home.tab-agents', 'the Agents tab'),
-  row('home.tab-sessions', 'the Sessions tab'),
-  row('home.tab-permissions', 'the Permissions tab'),
   row('home.run-view', 'the run view of a hosted run'),
   // The cards of a run.
   row('home.gate-card', 'the gate card of a parked run'),
@@ -148,7 +156,10 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
     'home.settings-models-apply',
     'the /models popup’s second step on the bare Home: the effort of the default of new chats',
   ),
-  row('home.mode-flow', 'the /mode popup on the bare Home: the choice of the startup default'),
+  row(
+    'home.mode-flow',
+    'the /mode popup on the bare Home: the list of the startup default, the saved one marked',
+  ),
   row('home.mode-confirm', 'the /mode popup on the bare Home: the Ctrl+Y confirmation'),
   row('home.mode-done', 'the /mode popup on the bare Home: its Done step'),
   row('home.pricing-card', 'the /pricing form and its card'),

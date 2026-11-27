@@ -125,7 +125,7 @@ describe('every command the registry places on the Home is handled by the Homeâ€
   });
 
   /**
-   * What each word does with NO port wired, by name: the screen it opens, the exit it makes, or the fixed sentence it refuses with. "Answered
+   * What each word does with NO port wired, by name: the exit it makes, or the fixed sentence it refuses with. "Answered
    * with some notice" was the whole oracle once, and a word whose branch said the wrong thing, or the notice of another word, passed it. A new
    * command has to be given its outcome here: the first test below fails for a name that is missing.
    */
@@ -133,7 +133,6 @@ describe('every command the registry places on the Home is handled by the Homeâ€
     | { readonly notice: string }
     /** Said in one notification, and the Home's notice left as it was (a flow that is a popup leaves no residue, ADR-0148 Â§6). */
     | { readonly notified: string }
-    | { readonly screen: 'help' }
     | { readonly exit: true };
   const OUTCOMES: Readonly<Record<string, Outcome>> = {
     resume: { notified: 'Session resume is unavailable here.' },
@@ -149,7 +148,8 @@ describe('every command the registry places on the Home is handled by the Homeâ€
     import: { notice: 'Import is unavailable in this session.' },
     // A popup that `driveHome` always wires: a Home without one says so in one line, as the other words with no port do.
     doctor: { notice: 'Doctor is not available here.' },
-    help: { screen: 'help' },
+    // A popup `driveHome` always wires: a Home without its host's adapter says so in one line (MVP-11 unit 8).
+    help: { notice: '/help is not available here.' },
     clear: { notice: unavailableNotice('clear', 'no conversation to clear') },
     exit: { exit: true },
   };
@@ -168,10 +168,6 @@ describe('every command the registry places on the Home is handled by the Homeâ€
         ? undefined
         : `onExit was called ${String(m.onExit.mock.calls.length)} times`;
     if (m.onExit.mock.calls.length > 0) return 'the Home exited';
-    if ('screen' in expected)
-      return snapshot.screen?.kind === expected.screen
-        ? undefined
-        : `screen: ${snapshot.screen?.kind ?? '(none)'}`;
     if (snapshot.screen !== undefined) return `opened the ${snapshot.screen.kind} screen`;
     if ('notified' in expected) {
       if (snapshot.notice !== undefined) return `notice: ${snapshot.notice}`;

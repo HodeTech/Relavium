@@ -1,14 +1,22 @@
 /**
  * The `/mode` popup over the stand-alone chat's real session ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §3, §6; the 2026-11-25 ruling: two steps, this chat or new chats). End to end through `chatCommand`: the session's line handler hands an
- * interactive driver the `/mode` member of its settings port; the popup, opened over it on a popup host, applies THIS chat through the one mode
- * setter (recorded before it applies; a widening whose record is lost is refused and says so on the host's channel, a narrowing always
- * applies; the popup itself says nothing and writes nothing into the transcript), and hands NEW chats to the startup-default writer on the
- * chat's own native card (its confirmation that defaults to No, its publication through the visibly admitted frame), which never changes the
- * session's mode, and whose result the popup says in a few words on the host's channel (never in the transcript). A plain chat has no member
- * and keeps its text. A new file: the pinned counts of `chat.test.ts` belong to the controls.
+ * §3, §6, dated note of 2026-11-27; MVP-11 unit 8, OD-25: one list, two actions). End to end through `chatCommand`: the session's line handler
+ * hands an interactive driver the `/mode` member of its settings port; the popup, opened over it on a popup host, applies THIS chat on `Enter`
+ * through the one mode setter (recorded before it applies; a widening whose record is lost is refused and says so on the host's channel, a
+ * narrowing always applies; the popup itself writes nothing into the transcript), keeps on the mode in force, and hands the startup default (`[s]`)
+ * to the startup-default writer's flow on the chat's own native prompt, framed as the confirmation popup (its `Ctrl+Y` card that defaults to No, its
+ * Done step, its publication through the visibly admitted frame), which never changes the session's mode. A plain chat has no member and keeps its
+ * text. A new file: the pinned counts of `chat.test.ts` belong to the controls.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,10 +31,11 @@ import type { Key } from 'ink';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MODE_EFFECT, MODE_NOT_RECORDED_NOTICE, modeChangedNotice } from '../chat/mode-effects.js';
+import { CONFIRM_CREATES_LINE } from '../popups/mode-confirm.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { manualClock } from '../popups/doctor.test-support.js';
 import { createPopupHost } from '../popups/popup-host.js';
-import type { PopupKey } from '../popups/popup-reducer.js';
+import { currentStep, visibleRows, type PopupKey } from '../popups/popup-reducer.js';
 import { openSettingsPopup } from '../popups/settings-session.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
@@ -88,6 +97,8 @@ let client: DbClient;
 let store: SessionStore;
 const saved = new Map<string, string | undefined>();
 beforeEach(() => {
+  skipped = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => realNow() + skipped);
   cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-mode-popup-work-')));
   home = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-mode-popup-home-')));
   // Never the operator's real home: the chat reads its config, and the startup default is written, here.
@@ -184,11 +195,26 @@ function modePopupOver(ctx: ChatDriveContext) {
     host,
     announced,
     settle,
-    press: (...keys: PopupKey[]): void => {
-      for (const key of keys) host.input('', key);
+    /** Keys, or letters typed (`'s'`), one per read. */
+    press: (...keys: (PopupKey | string)[]): void => {
+      for (const key of keys)
+        if (typeof key === 'string') host.input(key, {});
+        else host.input('', key);
+    },
+    /** The id of the row highlighted now. */
+    highlighted: (): string | undefined => {
+      const frame = host.getSnapshot().frame;
+      if (frame === undefined) return undefined;
+      const { state } = currentStep(frame);
+      return visibleRows(state)[state.selected]?.id;
     },
   };
 }
+
+/** The process's own monotonic clock, moved on by what the guards need (a chord card's lockout runs from its appearance) instead of waited for. */
+const realNow = performance.now.bind(performance);
+let skipped = 0;
+const GUARDS_PASSED_MS = 6000;
 
 /** The chat's native card, made visible and publishable as the ink host makes it (its frame acknowledged, its flush ready). */
 function nativeCard(ctx: ChatDriveContext) {
@@ -206,17 +232,26 @@ function nativeCard(ctx: ChatDriveContext) {
   return {
     ui: prompt.ui,
     kinds,
-    /** The card asking `question`, once it is open. */
-    asking: async (question: string) => {
+    /** The card asking `question`, once it is open and its frame is acknowledged; its guards pass unless `guarded`. */
+    asking: async (question: string, guarded = false) => {
       await vi.waitFor(() => {
         const snapshot = prompt.ui.getSnapshot();
-        expect(snapshot.kind).toBe('select');
+        expect(snapshot.kind).toBe('chord');
         expect(snapshot.message).toContain(question);
       });
+      prompt.ui.shown(prompt.ui.getSnapshot());
+      if (!guarded) skipped += GUARDS_PASSED_MS;
       return prompt.ui.getSnapshot();
     },
-    key: (key: Partial<Key>): void => {
-      prompt.ui.input('', { ...NONE, ...key });
+    /** The persistent last step, once it is open and its frame is acknowledged. */
+    done: async () => {
+      await vi.waitFor(() => expect(prompt.ui.getSnapshot().final).toBeDefined());
+      prompt.ui.shown(prompt.ui.getSnapshot());
+      skipped += GUARDS_PASSED_MS;
+      return prompt.ui.getSnapshot();
+    },
+    key: (key: Partial<Key>, input = ''): void => {
+      prompt.ui.input(input, { ...NONE, ...key });
     },
   };
 }
@@ -240,8 +275,9 @@ describe('the /mode member a chat session hands its driver', () => {
   it('an interactive chat has one: the mode in force from the chat, and the session’s own setter', async () => {
     await interactiveChat(async (ctx) => {
       const mode = ctx.settings?.mode;
-      if (mode === undefined) throw new Error('no /mode member');
+      if (mode?.scope !== 'chat') throw new Error('no /mode member of a chat');
       expect(mode.current()).toBe('ask');
+      expect(mode.startup()).toBe('ask');
       expect(mode.apply('plan')).toBe(true);
       expect(ctx.store.getSnapshot().mode).toBe('plan');
       expect(mode.current()).toBe('plan');
@@ -287,9 +323,7 @@ describe('this chat, through the popup', () => {
     await interactiveChat(async (ctx) => {
       const before = transcriptNotices(ctx.store);
       const popup = modePopupOver(ctx);
-      popup.press(END, ENTER);
-      popup.settle(); // step 2 is a frame of its own, with its own settle
-      popup.press(ENTER);
+      popup.press(END, ENTER); // one list, one key: `auto` is applied to this chat at once
       expect(popup.host.getSnapshot().open).toBe(false);
       expect(ctx.store.getSnapshot().mode).toBe('auto');
       announced = popup.announced;
@@ -309,8 +343,6 @@ describe('this chat, through the popup', () => {
         throw new Error('disk I/O error');
       });
       popup.press(END, ENTER);
-      popup.settle(); // step 2 is a frame of its own, with its own settle
-      popup.press(ENTER);
       expect(popup.host.getSnapshot().open).toBe(false);
       expect(ctx.store.getSnapshot().mode).toBe('ask');
       expect(transcriptNotices(ctx.store).some((text) => /record|mode/iu.test(text))).toBe(false);
@@ -324,7 +356,9 @@ describe('this chat, through the popup', () => {
   it('a narrowing whose record cannot be written still applies through the popup, and says nothing about the row', async () => {
     let announced: string[] = [];
     await interactiveChat(async (ctx) => {
-      expect(ctx.settings?.mode?.apply('auto')).toBe(true);
+      const member = ctx.settings?.mode;
+      if (member?.scope !== 'chat') throw new Error('no /mode member of a chat');
+      expect(member.apply('auto')).toBe(true);
       const popup = modePopupOver(ctx);
       popup.announced.length = 0;
       vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
@@ -332,8 +366,6 @@ describe('this chat, through the popup', () => {
       });
       // auto (in force, opened on) → plan: ↑ three times.
       popup.press({ upArrow: true }, { upArrow: true }, ENTER);
-      popup.settle(); // step 2 is a frame of its own, with its own settle
-      popup.press(ENTER);
       expect(popup.host.getSnapshot().open).toBe(false);
       expect(ctx.store.getSnapshot().mode).toBe('plan');
       announced = popup.announced;
@@ -345,63 +377,140 @@ describe('this chat, through the popup', () => {
   });
 });
 
-describe('new chats, through the popup: the hand-off to the startup-default writer', () => {
-  it('auto asks its confirmation on the chat’s native card, defaulting to No; declining writes nothing, the chat’s mode stays, and the host’s channel says so', async () => {
+describe('the mode in force: Enter keeps, and nothing is applied, written or asked', () => {
+  it('`Enter` on the mode the popup opened on closes it with the one line it always said: no record, no second screen, no native card, no config', async () => {
+    let announced: string[] = [];
+    let kinds: string[] = [];
+    await interactiveChat(async (ctx) => {
+      const card = nativeCard(ctx);
+      const popup = modePopupOver(ctx);
+      popup.press(ENTER);
+      expect(popup.host.getSnapshot().open).toBe(false);
+      expect(ctx.store.getSnapshot().mode).toBe('ask');
+      announced = popup.announced;
+      kinds = card.kinds;
+      await Promise.resolve();
+    });
+    expect(announced).toEqual([modeChangedNotice('ask')]);
+    // the card never left idle: nothing was asked
+    expect(kinds.filter((kind) => !kind.startsWith('idle:'))).toEqual([]);
+    expect(modeRecords()).toEqual([]);
+    expect(existsSync(configPath())).toBe(false);
+  });
+});
+
+describe('the startup default the list marks is the one saved NOW', () => {
+  it('written after the chat started, it is read when the popup opens: `plan` is marked `startup`, and `[s]` on it saves nothing (it already is the default)', async () => {
+    let kinds: string[] = [];
+    await interactiveChat(async (ctx) => {
+      const card = nativeCard(ctx);
+      writeFileSync(configPath(), '[preferences]\ndefault_mode = "plan"\n');
+      const member = ctx.settings?.mode;
+      if (member?.scope !== 'chat') throw new Error('no /mode member of a chat');
+      expect(member.startup()).toBe('plan');
+      const popup = modePopupOver(ctx);
+      popup.press(DOWN); // plan: the startup default
+      expect(popup.highlighted()).toBe('plan');
+      popup.press('s');
+      // nothing is handed off: the popup stays, and no card asks
+      expect(popup.host.getSnapshot().open).toBe(true);
+      kinds = card.kinds;
+      await Promise.resolve();
+    });
+    expect(kinds.filter((kind) => !kind.startsWith('idle:'))).toEqual([]);
+    expect(readFileSync(configPath(), 'utf8')).toBe('[preferences]\ndefault_mode = "plan"\n');
+  });
+});
+
+describe('the startup default, through [s]: the hand-off to the startup-default writer, framed as the confirmation popup', () => {
+  it('auto asks its confirmation on the chat’s native prompt (the Ctrl+Y card, defaulting to No); declining writes nothing, the chat’s mode stays, and the host’s channel says so', async () => {
     let card: ReturnType<typeof nativeCard> | undefined;
     await interactiveChat(async (ctx) => {
       card = nativeCard(ctx);
       const popup = modePopupOver(ctx);
-      popup.press(END, ENTER, DOWN);
-      popup.settle(); // step 2 is a frame of its own, with its own settle
-      popup.press(ENTER);
+      popup.press(END, 's'); // auto highlighted, then the startup default
       expect(popup.host.getSnapshot().open).toBe(false);
-      const question = await card.asking('Save auto as the global startup default?');
-      expect(question.message).toBe(
-        `${MODE_EFFECT.auto.full} Save auto as the global startup default?`,
-      );
-      expect(question.options.map((option) => option.value)).toEqual(['yes', 'no']);
-      expect(question.options[question.selected]?.value).toBe('no');
-      expect(question.note).toBe('Effective startup: ask. Global default: ask.');
-      card.key({ return: true });
+      const question = await card.asking('Save auto as your startup default?');
+      expect(question.message).toBe(`${MODE_EFFECT.auto.full} Save auto as your startup default?`);
+      expect(question.options.map((option) => option.label)).toEqual(['Save it', 'Save nothing']);
+      // no config file exists yet in this operator home: saving creates it, and says so (it would say it rewrites an existing one)
+      expect(question.details).toContain(CONFIRM_CREATES_LINE);
+      expect(question.details).toContain('This chat stays in ask mode.');
+      expect(question.popup).toMatchObject({ origin: 'chat', stepIndex: 1, stepCount: 3 });
+      card.key({ ctrl: true }, 'n'); // Ctrl+N: the explicit No
       await vi.waitFor(() => expect(card?.ui.getSnapshot().active).toBe(false));
       expect(ctx.store.getSnapshot().mode).toBe('ask');
-      // F2: what it came to, in a few words on the host's channel (the flow said nothing on a decline, and the transcript nothing either).
+      // what it came to, in a few words on the host's channel (the transcript says nothing)
       await vi.waitFor(() => expect(popup.announced).toEqual(['Startup default unchanged']));
     });
     expect(existsSync(configPath())).toBe(false);
     expect(modeRecords()).toEqual([]);
-    // The branch's own selection was never drawn: the only question the card asked was the confirmation.
-    expect(card?.kinds.filter((kind) => kind.startsWith('select:'))).toEqual(
-      expect.arrayContaining([expect.stringContaining('Save auto as the global startup default?')]),
-    );
+    // The writer's own selection was never drawn: the only question the card asked was the confirmation.
     expect(card?.kinds.some((kind) => kind.includes('Choose a global startup default'))).toBe(
       false,
     );
   });
 
-  it('confirmed: published through the visibly admitted card, the config written, its result said in a few words on the host’s channel and never in the transcript; the chat’s mode stays', async () => {
+  it('confirmed: published through the visibly admitted card, the config written, the Done step names the file, the chat’s mode stays, nothing in the transcript', async () => {
     let notices: string[] = [];
     let announced: string[] = [];
     await interactiveChat(async (ctx) => {
       const card = nativeCard(ctx);
       const before = transcriptNotices(ctx.store);
       const popup = modePopupOver(ctx);
-      popup.press(DOWN, ENTER, DOWN); // plan, new chats
-      popup.settle(); // step 2 is a frame of its own, with its own settle
-      popup.press(ENTER);
-      await card.asking('Save plan as the global startup default?');
-      card.key({ upArrow: true }); // No → Yes
+      popup.press(DOWN); // plan
+      popup.press('s');
+      await card.asking('Save plan as your startup default?');
+      card.key({ ctrl: true }, 'y');
+      const done = await card.done();
+      expect(done.final).toBe('ok');
+      expect(done.message).toBe('Startup default: plan · applies to new chats');
+      expect(done.details.at(0)).toContain('.relavium/config.toml');
       card.key({ return: true });
       await vi.waitFor(() => expect(card.ui.getSnapshot().active).toBe(false));
       expect(ctx.store.getSnapshot().mode).toBe('ask');
-      await vi.waitFor(() => expect(popup.announced).toHaveLength(1));
       announced = popup.announced;
       notices = transcriptNotices(ctx.store).slice(before.length);
     });
     expect(readFileSync(configPath(), 'utf8')).toContain('default_mode = "plan"');
-    // F2 (the residue rule, ADR-0148 §6): the flow's sentence (`Global startup default saved: plan.`) no longer reaches the transcript.
+    // The Done step said it: no notification repeats it, and the flow's sentence never reaches the transcript (the residue rule, ADR-0148 §6).
     expect(notices).toEqual([]);
-    expect(announced).toEqual(['Startup default: plan · applies to new chats']);
+    expect(announced).toEqual([]);
     expect(modeRecords()).toEqual([]);
+  });
+
+  it('the confirmation says the chat stays in the mode it is in NOW: a chat moved to plan first says plan, not the mode it started in', async () => {
+    await interactiveChat(async (ctx) => {
+      const card = nativeCard(ctx);
+      const member = ctx.settings?.mode;
+      if (member?.scope !== 'chat') throw new Error('no /mode member of a chat');
+      expect(member.apply('plan')).toBe(true);
+      const popup = modePopupOver(ctx);
+      popup.press(END, 's'); // auto: the startup default
+      const question = await card.asking('Save auto as your startup default?');
+      expect(question.details).toContain('This chat stays in plan mode.');
+      card.key({ ctrl: true }, 'n');
+      await vi.waitFor(() => expect(card.ui.getSnapshot().active).toBe(false));
+      expect(ctx.store.getSnapshot().mode).toBe('plan');
+    });
+  });
+
+  it('`Esc` on the confirmation steps back: the list opens again on the mode chosen, nothing is written, and `Esc` there closes it', async () => {
+    await interactiveChat(async (ctx) => {
+      const card = nativeCard(ctx);
+      const popup = modePopupOver(ctx);
+      popup.press(DOWN);
+      popup.press('s');
+      await card.asking('Save plan as your startup default?');
+      card.key({ escape: true });
+      await vi.waitFor(() => expect(popup.host.getSnapshot().open).toBe(true));
+      expect(popup.highlighted()).toBe('plan');
+      popup.settle();
+      popup.press({ escape: true });
+      expect(popup.host.getSnapshot().open).toBe(false);
+      expect(popup.announced).toEqual([]);
+      expect(ctx.store.getSnapshot().mode).toBe('ask');
+    });
+    expect(existsSync(configPath())).toBe(false);
   });
 });

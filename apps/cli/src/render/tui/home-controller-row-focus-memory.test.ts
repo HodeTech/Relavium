@@ -12,6 +12,8 @@ import type { HostedLaunch, HostedLegEnd, RunHostSnapshot } from '../../home/run
 import type { ChatKey } from './chat-input.js';
 import type { ParkedRunRow } from './home-attention.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
+import type { HomePopupKind, HomePopupsPort } from '../../popups/home-port.js';
+import { definedPortOver } from './run-again.test-support.js';
 import {
   CTRL,
   DOWN,
@@ -55,9 +57,15 @@ function rig(ids: readonly string[], snapshot: HomeSnapshot) {
       ended: new Promise(() => undefined),
     });
   });
+  /** What the Home asked its popup host to open (`/workflows` is a popup of the Home since MVP-11 unit 8; its `[h]` is a request the Home carries out). */
+  const popups: { readonly kind: HomePopupKind; readonly port: HomePopupsPort }[] = [];
   const controller = createHomeController({
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => snapshot },
+    defined: definedPortOver().port,
+    openHomePopup: (request) => {
+      popups.push(request);
+    },
     resumeChat: () => Promise.resolve(undefined),
     announce: () => {},
     hostedRuns: { snapshot: () => IDLE_HOST, cancel: () => true, close: () => Promise.resolve() },
@@ -76,6 +84,7 @@ function rig(ids: readonly string[], snapshot: HomeSnapshot) {
   controller.bindGateCardFrame(() => true);
   return {
     controller,
+    popups,
     focus: () => controller.getSnapshot().stripFocus?.id,
     press: (key: ChatKey): void => controller.handleKey('', key),
   };
@@ -215,12 +224,15 @@ describe('a screen opened from a row gives the focus back to that row, or the ne
     expect(r.focus(), 'the card closed with the row still under the focus').toBe('p1');
     r.press(DOWN);
     expect(r.focus(), 'down past the last row is the docked prompt').toBeUndefined();
-    r.controller.handlePaste('/help');
+    // A screen opened from the prompt: `/workflows` typed there, then `[h]` in its popup (the popup closes itself and the Home opens the Runs screen).
+    r.controller.handlePaste('/workflows');
     r.press(ENTER);
-    expect(r.controller.getSnapshot().screen?.kind).toBe('help');
+    expect(r.popups.map((request) => request.kind)).toEqual(['workflows']);
+    r.popups[0]?.port.workflows?.openRuns();
+    expect(r.controller.getSnapshot().screen?.kind).toBe('tab-host');
     r.press(ESC);
     expect(r.controller.getSnapshot().screen).toBeUndefined();
-    expect(r.focus(), 'the help sheet was opened from the prompt').toBeUndefined();
+    expect(r.focus(), 'the Runs screen was opened from the prompt').toBeUndefined();
   });
 
   it('an unrelated change while the card is open (a provider state) does not use the memory up: the answered row still hands the focus on', async () => {

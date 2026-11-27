@@ -18,8 +18,9 @@ import type { Variant } from './surface-matrix/variants.js';
 /**
  * OB7-L2 (the observation of unit 7's chat half): while an approval, command, question or checkpoint card was open, the hint row above it still said
  * `[Ctrl+C] end (twice)` while the card's own legend said `Esc / [Ctrl+C] stops the turn`: two legends on one screen, disagreeing about what the keys
- * do. The card owns the keyboard and draws its legend, so while one is docked the hint row is blank (the row keeps its place: the prompt block is five
- * rows). Cards become sheets in unit 8; this is the minimal honest fix until then. Tested in both hosts and both renderers over each kind of card.
+ * do. Unit 7 blanked the hint row; since unit 8 the card is a SHEET that takes the whole prompt block's place (ADR-0147 §1): while one is docked
+ * neither the status line nor the hint is drawn (its key lines are the legend, its rule the label), and both come back when it is answered. Tested in
+ * both hosts and both renderers over each kind of card.
  */
 afterEach(cleanup);
 
@@ -152,7 +153,7 @@ function hintRowOf(mount: ChatMount): string | undefined {
 describe.each(HOSTS)('the hint row while a card is docked, in the %s host', (host) => {
   describe.each(RENDERERS)('%s renderer', (renderer) => {
     it.each(CARDS)(
-      'is blank under $name, and the chat’s own hints are gone from the screen',
+      'is not drawn under $name, nor is the status line: the sheet takes the prompt block’s place (ADR-0147 §1)',
       async (card) => {
         const m = await mountIn(host, renderer);
         try {
@@ -161,10 +162,9 @@ describe.each(HOSTS)('the hint row while a card is docked, in the %s host', (hos
           const shown = await m.until(() => m.text().includes(card.landmark));
           expect(shown, m.text()).toBe(true);
           await m.settle();
-          const hint = hintRowOf(m);
-          expect(hint, `the row under the status line:\n${m.text()}`).toBeDefined();
-          expect(hint?.trim(), m.text()).toBe('');
+          expect(hintRowOf(m), `no status line with the sheet:\n${m.text()}`).toBeUndefined();
           expect(m.text(), 'no chat hint is on the screen with the card').not.toMatch(CHAT_HINT);
+          expect(m.text(), 'the sheet’s heavy rule is drawn').toMatch(/^== .+ ==$/mu);
         } finally {
           m.unmount();
         }

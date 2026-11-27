@@ -91,7 +91,7 @@ describe('createDefinedPort', () => {
     expect(without.model.rows.map((row) => row.lastRunStatus)).toEqual([undefined, undefined]);
   });
 
-  it('lists the workflow pins of other projects as rows, and says what the store holds in all', () => {
+  it('lists the workflow pins of other projects as rows, the run pins of the store not at all', () => {
     const mine = {
       kind: 'workflow' as const,
       ref: 'beta',
@@ -116,11 +116,6 @@ describe('createDefinedPort', () => {
       ['beta', 'ready'],
       ['x', 'other-project'],
     ]);
-    expect(read.stored).toEqual({ total: 3, elsewhere: 2 });
-    expect(
-      createDefinedPort({ catalog: { list: () => [] }, pins: () => [] }).read().stored,
-      'a port that cannot list every pin knows no total',
-    ).toBeUndefined();
   });
 
   it('lets a failing catalog or a failing pin read throw, so the tab says it cannot list rather than draw half of it', () => {

@@ -39,11 +39,13 @@ import {
 } from './tab-host.js';
 import {
   ACTIVE_EMPTY,
+  ACTIVE_EMPTY_ALL,
   ACTIVE_FOCUS_LEFT,
   ACTIVE_FRESHNESS,
   ACTIVE_HELD_UNREAD,
   ACTIVE_KEYS,
   ACTIVE_LOADING,
+  ACTIVE_SCOPE_WORDS,
   ACTIVE_SELECT_FIRST,
   ACTIVE_STALE_READ,
   ACTIVE_UNREADABLE,
@@ -150,13 +152,15 @@ const textOf = (state: TabHostState, geometry = SIZE): string[] =>
 const lineWith = (lines: readonly string[], needle: string): string =>
   lines.find((line) => line.includes(needle)) ?? '';
 
-/** The Active tab over `last`, with the keys going through the tab host's own fold. */
-function rig(last: ActiveRead | null = read(EVERY_CLASS)) {
+/**
+ * The Active tab over `last`, with the keys going through the tab host's own fold. The tab lists THIS directory's runs by default (OD-24 D4); the
+ * classes of run below include another project's, so the rig widens to `[a] all` first unless a test says `scope: 'project'`
+ * (`tab-host-active-scope.test.ts` owns the scope itself).
+ */
+function rig(last: ActiveRead | null = read(EVERY_CLASS), scope: 'all' | 'project' = 'all') {
   // `null` is a tab entered before any read; `undefined` would take the default.
   const context = (over: Partial<TabHostContext> = {}): TabHostContext => ({
-    port: undefined,
     now: 0,
-    canArm: true,
     active: { last: last ?? undefined },
     ...over,
   });
@@ -166,6 +170,7 @@ function rig(last: ActiveRead | null = read(EVERY_CLASS)) {
     if (step.kind !== 'close') state = step.state;
     return step;
   };
+  if (scope === 'all') press('a');
   return {
     press,
     context,
@@ -238,10 +243,14 @@ describe('every class of run is drawn with a glyph and a word', () => {
   });
 
   it('draws the freshness note under the list until a message or a warning takes its place', () => {
-    expect(textOf(rig().state)).toContain(ACTIVE_FRESHNESS);
+    // The note says what is listed first (this directory's runs, or every project's) and then how fresh the list is.
+    expect(textOf(rig(undefined, 'project').state)).toContain(
+      `${ACTIVE_SCOPE_WORDS.project} · ${ACTIVE_FRESHNESS}`,
+    );
+    expect(textOf(rig().state)).toContain(`${ACTIVE_SCOPE_WORDS.all} · ${ACTIVE_FRESHNESS}`);
     const warned = rig(read(EVERY_CLASS, { heldUnread: true }));
     expect(textOf(warned.state)).toContain(ACTIVE_HELD_UNREAD);
-    expect(textOf(warned.state)).not.toContain(ACTIVE_FRESHNESS);
+    expect(textOf(warned.state).join('\n')).not.toContain(ACTIVE_FRESHNESS);
   });
 });
 
@@ -264,9 +273,10 @@ describe('the "N more" row', () => {
   });
 
   it('is drawn with an empty list too, and the list still fits 23 rows with the markers and a long list', () => {
-    const empty = textOf(rig(read([], { more: more.more })).state);
+    const empty = textOf(rig(read([], { more: more.more }), 'project').state);
     expect(empty).toContain(ACTIVE_EMPTY);
     expect(empty).toContain('… 37 more running not listed');
+    expect(textOf(rig(read([]), 'all').state)).toContain(ACTIVE_EMPTY_ALL);
     const many = classify(
       Array.from({ length: 60 }, (_, index) =>
         run(`many${String(index).padStart(4, '0')}`, 'running'),
@@ -414,12 +424,15 @@ describe('what a key does', () => {
   });
 
   it('names no key it does not answer to: an empty list offers neither select nor open, and the way out is last', () => {
-    const full = tabHostLegendText(rig().state);
-    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Esc / [Ctrl+C] close');
-    const empty = tabHostLegendText(rig(read([])).state);
-    expect(empty).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
+    // The Runs screen's way out says where it goes (OD-24). `Tab` is a key of the screen and not an item of its legend: with two tabs `←/→ tab` says it.
+    const full = tabHostLegendText(rig(undefined, 'project').state);
+    expect(full).toBe('←/→ tab · ↑/↓ select · Enter open · [a] all · Esc / [Ctrl+C] back to Home');
+    const wide = tabHostLegendText(rig().state);
+    expect(wide).toBe('←/→ tab · ↑/↓ select · Enter open · [a] here · Esc / [Ctrl+C] back to Home');
+    const empty = tabHostLegendText(rig(read([]), 'project').state);
+    expect(empty).toBe('←/→ tab · [a] all · Esc / [Ctrl+C] back to Home');
     const loading = tabHostLegendText(rig(null).state);
-    expect(loading).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
+    expect(loading).toBe('←/→ tab · Esc / [Ctrl+C] back to Home');
   });
 });
 
@@ -547,7 +560,7 @@ describe('before a read, and when there is none', () => {
   });
 
   it('says it cannot be read when nothing feeds the tab, and when the first read failed', () => {
-    const none = enterTab(freshTabMemory('active'), 'active', { port: undefined, now: 0 });
+    const none = enterTab(freshTabMemory('active'), 'active', { now: 0 });
     expect(textOf(none)).toContain(ACTIVE_UNREADABLE);
     expect(active(none).phase).toBe('unreadable');
   });
@@ -709,7 +722,13 @@ describe('the controller reads the tab when it is entered, and again only when s
     await openActive(home);
     expect(home.reads).toHaveBeenCalledTimes(1);
     expect(activeOf(home.controller)?.phase).toBe('ready');
+    // This directory's runs: the one paused in another project waits behind `[a] all` (OD-24 D4).
+    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length - 1);
+    home.controller.handleKey('a', {});
     expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length);
+    expect(home.reads, 'the scope changes what is drawn, and reads nothing').toHaveBeenCalledTimes(
+      1,
+    );
     await home.advance(POLL * 10);
     expect(home.reads, 'ten ticks and nothing moved').toHaveBeenCalledTimes(1);
   });
@@ -756,7 +775,7 @@ describe('the controller reads the tab when it is entered, and again only when s
     home.state.readFails = true;
     home.probe.bump();
     await home.advance(POLL);
-    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length);
+    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length - 1);
     expect(activeOf(home.controller)?.message).toBe(ACTIVE_STALE_READ);
   });
 

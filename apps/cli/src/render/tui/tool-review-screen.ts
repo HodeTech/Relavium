@@ -26,6 +26,7 @@ import {
   type ReviewPage,
 } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
+import { popupGeometry } from '../../popups/geometry.js';
 
 /**
  * The wording and arithmetic of the full view and the tool-call list ([ADR-0134](../../../../../docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)).
@@ -454,6 +455,86 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     searching: input.searching,
     rows,
   };
+}
+
+/**
+ * The rows the inspection popup spends on its frame around the screen ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §7): its top edge (the popup's name and where it came from) and its bottom edge. Everything between them is the full view's own screen, its
+ * legends last.
+ */
+export const INSPECTION_EDGE_ROWS = 2;
+
+/** The sizes the inspection popup is drawn at and its page is projected for: one source for the frame, the page, the target and the copy. */
+export interface InspectionGeometry {
+  /** The popup's box (`popupGeometry`, kind `inspection`): `columns − 2` by `rows − 1`, 78 × 23 at 80×24. */
+  readonly box: { readonly width: number; readonly height: number; readonly left: number };
+  /**
+   * The size every page computation is given in place of the terminal's: the terminal's columns, so a row of the screen is the box's width
+   * (`usableColumns` of it: the page is drawn across the whole box, which stands in the body's place with nothing behind it to keep a margin
+   * from), and as tall as the rows the box leaves its screen once its two edges are drawn (with the spare row the page model keeps).
+   */
+  readonly page: { readonly cols: number; readonly rows: number };
+}
+
+/**
+ * The ONE geometry of the inspection popup for a terminal of `size` (ADR-0148 §7: "one function feeds the popup frame, the page model, the
+ * required-target and identity computations and the copy"), or `undefined` below the popup's floor. The page is projected from `page`, so a page
+ * fitted to one geometry is never drawn in another.
+ */
+export function inspectionGeometry(size: {
+  readonly cols: number;
+  readonly rows: number;
+}): InspectionGeometry | undefined {
+  const box = popupGeometry({
+    columns: size.cols,
+    rows: size.rows,
+    kind: 'inspection',
+    placement: 'overlay',
+    rail: false,
+  });
+  if (!box.fits) return undefined;
+  return {
+    box: { width: box.width, height: box.height, left: box.left },
+    page: { cols: box.width + 2, rows: box.height - INSPECTION_EDGE_ROWS + FULL_SPARE_ROWS },
+  };
+}
+
+/** The inspection popup's name on its top edge: what the card's `[v]` called it, or the command that opened the call list. */
+export function inspectionTitle(kind: ScreenKind, command: boolean): string {
+  if (kind !== 'approval') return '/details';
+  return command ? 'Full view' : 'Full diff';
+}
+
+/** Where the inspection popup came from, on its top edge's right. */
+export function inspectionOrigin(kind: ScreenKind): string {
+  return kind === 'approval' ? 'from the approval' : 'from chat';
+}
+
+/**
+ * The inspection popup's top edge, `width` columns: ` ─ <title> ───── <origin> ─ `, a blank cell at each end (the frame's side margin), the
+ * title clipped first. Host text only: the title and the origin are product constants.
+ */
+export function inspectionTopEdge(
+  title: string,
+  origin: string,
+  width: number,
+): { readonly lead: string; readonly title: string; readonly rest: string } {
+  const rule = glyph('thinRule');
+  const inner = Math.max(1, width - 2);
+  const room = Math.max(1, inner - displayWidth(origin) - 7);
+  const shown = displayWidth(title) <= room ? title : `${[...title].slice(0, room - 1).join('')}…`;
+  const lead = ` ${rule} `;
+  const tail = ` ${origin} ${rule} `;
+  const between = Math.max(
+    1,
+    width - displayWidth(lead) - displayWidth(shown) - 1 - displayWidth(tail),
+  );
+  return { lead, title: shown, rest: ` ${rule.repeat(between)}${tail}` };
+}
+
+/** The inspection popup's bottom edge, `width` columns: the rule over the inner width, a blank cell at each end. */
+export function inspectionBottomEdge(width: number): string {
+  return ` ${glyph('thinRule').repeat(Math.max(1, width - 2))} `;
 }
 
 /** The most rows a page of the full view ever holds, however tall the terminal (a page consumes at most 200 display rows). */

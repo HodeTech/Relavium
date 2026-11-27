@@ -8,6 +8,8 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
+  type RefObject,
 } from 'react';
 import type { ChatStoreController, ChatStoreSnapshot } from './chat-store.js';
 import {
@@ -36,8 +38,14 @@ import {
   fullChrome,
   fullBodyRows,
   fullStatusRow,
+  inspectionBottomEdge,
+  inspectionGeometry,
+  inspectionOrigin,
+  inspectionTitle,
+  inspectionTopEdge,
   type CallListRow,
   type FullChrome,
+  type InspectionGeometry,
   type InspectionPending,
 } from './tool-review-screen.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
@@ -54,7 +62,8 @@ import {
 import { rowSegments } from './legend-row.js';
 import { EmphText } from './emphasis-view.js';
 import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
-import type { SheetRole } from './sheet-frame.js';
+import { sheetRule, type SheetRole } from './sheet-frame.js';
+import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   createReviewDocument,
@@ -133,10 +142,23 @@ export function ToolReviewHost(
     clipboard?: ClipboardWriter | undefined;
     /** Whether colour output is on (the card colours additions, removals and warnings). */
     color?: boolean | undefined;
+    /**
+     * How the sheet's wait clock is drawn (ADR-0147 §2): `ticking` in the alternate screen, the static `waiting since HH:MM` inline (the
+     * default: a host that does not say starts no timer).
+     */
+    waitClock?: WaitClockForm | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const review = snapshot.review;
+  // The wait clock: a display value of this host, not of the store's snapshot, re-rendered by the host's own one-second timer while the card
+  // is on screen; no guard reads it (ADR-0147 §2).
+  const clock = useWaitClock(cardWaitOrigin(snapshot), props.waitClock);
+  // The answer lockout as the grants draw it (`(wait)`): the store's display value, beside the snapshot; one repaint when it opens.
+  const locked = useSyncExternalStore(
+    props.store.answerLock.subscribe,
+    props.store.answerLock.read,
+  );
   const app = useApp();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement | null>(null);
@@ -180,12 +202,15 @@ export function ToolReviewHost(
     acknowledgement.invalidate();
     props.store.invalidateToolReview();
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
-  const identity = reviewIdentity(snapshot, props.size.cols);
+  // The size the page is projected for: the terminal's for the card, the inspection popup's for the full view and the call list (ADR-0148 §7),
+  // from the one geometry that also sizes the popup's frame below.
+  const pageSize = reviewPageSize(review, props.size);
+  const identity = reviewIdentity(snapshot, pageSize.cols);
   // The rows the card is built from carry glyphs of the table: the plain forms when colour is explicitly off (an absent `color` is the Unicode
   // form, as a view mounted without the prop always drew), and none of them is wider than its Unicode glyph, so the measured frame is the same.
   const plain = props.color === false;
   const { page, chrome } = withGlyphForm(plain, () =>
-    reviewScreen(snapshot, props.size, props.clipboard !== undefined, identity),
+    reviewScreen(snapshot, props.size, props.clipboard !== undefined, identity, locked),
   );
   pageRef.current = page;
   useLayoutEffect(() => {
@@ -232,18 +257,30 @@ export function ToolReviewHost(
           rows={props.size.rows}
           color={props.color === true}
           plain={plain}
+          clock={clock}
+          locked={locked}
         />
       </Box>
     );
   }
+  // The full view and the call list: the large inspection popup the sheet owns (ADR-0148 §7), the page drawn inside its frame. The terminal
+  // fits (checked above), so the popup's geometry exists.
   return (
-    <Box ref={ref} flexDirection="column" flexShrink={0}>
+    <InspectionFrame
+      geometry={inspectionGeometry(props.size)}
+      columns={props.size.cols}
+      title={inspectionTitle(review.kind, review.facts !== undefined)}
+      origin={inspectionOrigin(review.kind)}
+      color={props.color === true}
+      plain={plain}
+      contentRef={ref}
+    >
       {review.screen === 'list' ? (
         <ReviewCallList
           snapshot={snapshot}
           review={review}
-          columns={props.size.cols}
-          rows={props.size.rows}
+          columns={pageSize.cols}
+          rows={pageSize.rows}
           color={props.color === true}
           plain={plain}
         />
@@ -253,13 +290,77 @@ export function ToolReviewHost(
             review={review}
             page={page}
             chrome={chrome}
-            columns={props.size.cols}
-            rows={props.size.rows}
+            columns={pageSize.cols}
+            rows={pageSize.rows}
             color={props.color === true}
             plain={plain}
           />
         )
       )}
+    </InspectionFrame>
+  );
+}
+
+/**
+ * The size a review's page is projected for (ADR-0148 §7): the terminal's for the docked card, and for the full view and the call list the
+ * inspection popup's page ({@link inspectionGeometry}), so the page, the required target, the identity and the copy all fit the popup they are
+ * drawn in. Below the popup's floor the terminal's (nothing is drawn there but the refusal).
+ */
+export function reviewPageSize(
+  review: ToolReviewState | undefined,
+  size: { readonly cols: number; readonly rows: number },
+): { readonly cols: number; readonly rows: number } {
+  if (review === undefined || review.screen === 'card') return size;
+  return inspectionGeometry(size)?.page ?? size;
+}
+
+/**
+ * The inspection popup's frame (ADR-0148 §7): a box of the popup's size, `columns − 2` by `rows − 1`, centred, with its top edge (the popup's
+ * name and where it came from), the screen across the box's whole width, and its bottom edge. The measured-frame acknowledgement is handed the
+ * CONTENT node (`contentRef`), which has no fixed size of its own: a row one cell too wide wraps and an extra row is an extra row, and either makes
+ * it taller than the box, which the acknowledgement refuses (Allow stays locked). The box is in the flow, in the body's place (the chat is hidden
+ * while it is open), in both renderers: it is as tall as the full screen it replaces was, so nothing can be drawn over it.
+ */
+function InspectionFrame(
+  props: Readonly<{
+    /** Absent below the popup's floor, where the host has drawn the refusal already: nothing is drawn. */
+    geometry: InspectionGeometry | undefined;
+    columns: number;
+    title: string;
+    origin: string;
+    color: boolean;
+    plain: boolean;
+    contentRef: RefObject<DOMElement | null>;
+    children: ReactNode;
+  }>,
+): ReactElement | null {
+  if (props.geometry === undefined) return null;
+  const { box } = props.geometry;
+  const top = withGlyphForm(props.plain, () =>
+    inspectionTopEdge(props.title, props.origin, box.width),
+  );
+  const bottom = withGlyphForm(props.plain, () => inspectionBottomEdge(box.width));
+  return (
+    <Box
+      width={box.width}
+      height={box.height}
+      marginLeft={Math.max(0, Math.floor((props.columns - box.width) / 2))}
+      flexDirection="column"
+      flexShrink={0}
+    >
+      <Box ref={props.contentRef} flexDirection="column" flexGrow={1} flexShrink={0}>
+        <Text wrap="truncate-end">
+          <Text {...dimProps(props.color)}>{top.lead}</Text>
+          <EmphText emphasis="bold">{top.title}</EmphText>
+          <Text {...dimProps(props.color)}>{top.rest}</Text>
+        </Text>
+        <Box flexDirection="column" flexGrow={1}>
+          {props.children}
+        </Box>
+        <Text {...dimProps(props.color)} wrap="truncate-end">
+          {bottom}
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -271,10 +372,17 @@ export function ToolReviewHost(
  */
 export function reviewScreen(
   snapshot: ChatStoreSnapshot,
-  size: { readonly cols: number; readonly rows: number },
+  terminal: { readonly cols: number; readonly rows: number },
   canCopy: boolean,
-  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined = reviewIdentity(snapshot, size.cols),
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined = reviewIdentity(
+    snapshot,
+    reviewPageSize(snapshot.review, terminal).cols,
+  ),
+  /** The answer lockout holds the grants now (the store's `answerLock`): the full view's grants row reads `(wait)`. */
+  locked = false,
 ): { readonly page: ReviewPage | undefined; readonly chrome: FullChrome | undefined } {
+  // The full view's page is projected for the inspection popup it is drawn in (ADR-0148 §7); the card's for the terminal.
+  const size = reviewPageSize(snapshot.review, terminal);
   const review = snapshot.review;
   if (review === undefined) return { page: undefined, chrome: undefined };
   if (review.screen !== 'full')
@@ -283,11 +391,11 @@ export function reviewScreen(
   // do, so it is sized before the page exists and drawn after.
   const requiredTarget = reviewRequiredTarget(review, size.cols, size.rows);
   const pending = inspectionPending(review, requiredTarget);
-  const sizing = buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending);
+  const sizing = buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, locked);
   const page = toolReviewPage(review, size.cols, size.rows, sizing.rows);
   return {
     page,
-    chrome: buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, page),
+    chrome: buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, locked, page),
   };
 }
 
@@ -314,6 +422,7 @@ function buildFullChrome(
   identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined,
   canCopy: boolean,
   pending: InspectionPending,
+  locked: boolean,
   page?: ReviewPage,
 ): FullChrome {
   const document = review.document;
@@ -344,6 +453,8 @@ function buildFullChrome(
           scope: escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
           confirmAlways: snapshot.alwaysConfirm && cacheable,
           ...commandKeys(snapshot, review, page),
+          locked,
+          columns: Math.max(1, columns - 2),
         }
       : undefined,
     searching: review.searching,
@@ -376,7 +487,8 @@ function reviewExitHint(review: ToolReviewState, explanation: string, columns: n
     : rows([because, DENY_KEY, STOP_KEY], exitKey.step());
 }
 
-const RULE_LABEL = ' Approval needed ';
+/** What the approval sheet's rule says it is (ADR-0147 §1): fixed host text. */
+const RULE_LABEL = 'Approval needed';
 
 /** What the card says in place of itself when it cannot be drawn: the identity, a command too large to show, or the screen. */
 export function reviewUnavailableText(why: {
@@ -416,10 +528,66 @@ export function cardTitleRows(input: {
   return targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `${indent}${row}`));
 }
 
-/** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
-function approvalRule(columns: number): string {
-  const rule = glyph('thinRule');
-  return `${rule}${RULE_LABEL}${rule.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+/** The card's wait clock's origin: the moment the person's wait began, while the docked card is on screen (none on the popup or with no card). */
+function cardWaitOrigin(snapshot: ChatStoreSnapshot): number | undefined {
+  return snapshot.review?.screen === 'card' ? snapshot.state.approvalSinceMs : undefined;
+}
+
+/** The card's title rows, bold; the first carries the numbers flush right when they fit beside it (`gap`, {@link titleStatsGap}). */
+function CardTitleRows(
+  props: Readonly<{
+    rows: readonly string[];
+    stats: string;
+    gap: number | undefined;
+    color: boolean;
+  }>,
+): ReactElement {
+  return (
+    <>
+      {keyed(props.rows, (row) => row).map(({ key, item: row, index }) =>
+        index === 0 && props.gap !== undefined ? (
+          <Box key={key}>
+            <EmphText emphasis="bold">{row}</EmphText>
+            <Text {...dimProps(props.color)}>{`${' '.repeat(props.gap)}${props.stats}`}</Text>
+          </Box>
+        ) : (
+          <EmphText key={key} emphasis="bold">
+            {row}
+          </EmphText>
+        ),
+      )}
+    </>
+  );
+}
+
+/** The summary row's words: the tool's identity, and the numbers when the title row could not hold them. */
+function summaryText(identity: string, stats: string, gap: number | undefined): string {
+  return [identity, gap === undefined ? stats : '']
+    .filter((part) => part.length > 0)
+    .join(' \u00b7 ');
+}
+
+/**
+ * The spaces between the card's first title row and its numbers (`+3 -1 · 214 bytes`), when both fit the card's drawable width with at least two
+ * columns between them (ADR-0147 §1: what it is on the left, the numbers on the right); `undefined` when they do not, and the numbers stay on the
+ * summary row. The title row is never shortened for them: the target's rows are fitted by the projection the Allow lock reads.
+ */
+export function titleStatsGap(
+  first: string | undefined,
+  stats: string,
+  columns: number,
+): number | undefined {
+  if (first === undefined || stats === '') return undefined;
+  const gap = Math.max(1, columns - 2) - displayWidth(first) - displayWidth(stats);
+  return gap >= 2 ? gap : undefined;
+}
+
+/**
+ * The heavy rule that opens the approval sheet (ADR-0147 §1): it says the turn is waiting on the person and for how long (`clock`, the host's
+ * display value), and is amber where colour is on. As wide as the thin rule it replaced, so the card's rows do not move.
+ */
+function approvalRule(columns: number, clock: string): string {
+  return sheetRule(RULE_LABEL, clock, Math.max(1, columns - 1)).text;
 }
 
 /** The colour of a key stretch by the role its builder gave it: allow green, deny red, a stop yellow, other keys cyan, the words dim; nothing with colour off. */
@@ -543,6 +711,10 @@ interface ReviewCardProps {
   readonly color: boolean;
   /** The glyph table's plain forms: colour is explicitly off. */
   readonly plain: boolean;
+  /** The wait clock's text (the host's display value, ADR-0147 §2): drawn in the rule, read by nothing else. */
+  readonly clock: string;
+  /** The answer lockout holds the grants (the store's `answerLock`, a display value): they read `(wait)`. */
+  readonly locked: boolean;
 }
 
 /** The card, its rows built in the glyph form the colour setting asks for. */
@@ -559,6 +731,8 @@ function ReviewCardBody({
   rows,
   color,
   plain,
+  clock,
+  locked,
 }: Readonly<ReviewCardProps>): ReactElement {
   const request = snapshot.approval?.request;
   const toolId = request?.toolId ?? '';
@@ -600,20 +774,21 @@ function ReviewCardBody({
       snapshot.alwaysConfirm &&
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     ...commandKeys(snapshot, review, page),
+    locked,
+    columns: Math.max(1, columns - 2),
   };
   const keys = cardKeyLegend(keyInput);
   const questionOpen = keyInput.confirmAlways || keyInput.confirmRemember === true;
   const cut = (page?.hiddenLines ?? 0) > 0;
+  // The title line (ADR-0147 §1): what it is on the left, the numbers on the right, when the first title row has room for them beside it; else
+  // they stay on the summary row. The row count is the same either way (the summary row carries the tool's identity regardless).
+  const statsGap = titleStatsGap(titleRows[0], stats, columns);
   return (
     <>
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-        {approvalRule(columns)}
+        {approvalRule(columns, clock)}
       </Text>
-      {keyed(titleRows, (row) => row).map(({ key, item: row }) => (
-        <EmphText key={key} emphasis="bold">
-          {row}
-        </EmphText>
-      ))}
+      <CardTitleRows rows={titleRows} stats={stats} gap={statsGap} color={color} />
       {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
         const label = page?.labels[index];
@@ -629,9 +804,7 @@ function ReviewCardBody({
       })}
       {review.facts === undefined && (
         <Box justifyContent="space-between">
-          <Text {...dimProps(color)}>
-            {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
-          </Text>
+          <Text {...dimProps(color)}>{summaryText(identityText, stats, statsGap)}</Text>
           {cut && (
             <Text {...dimProps(color)}>
               {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}

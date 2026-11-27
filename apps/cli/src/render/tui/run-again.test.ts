@@ -19,7 +19,7 @@ import {
   decideRunAgain,
   runAgainOffered,
 } from './run-again.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 
 const entries: readonly DefinedEntry[] = [
   { slug: 'code-review', name: 'Code Review', nodeCount: 5, path: 'code-review.yaml', valid: true },

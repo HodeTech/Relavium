@@ -15,6 +15,7 @@ import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import { glyphOf } from './glyphs.js';
+import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 afterEach(cleanup);
@@ -40,6 +41,8 @@ const CTRL_N = '\x0e';
 const CTRL_Y = '\x19';
 
 function mount(options: { size?: { cols: number; rows: number } } = {}) {
+  // The guard's clock: it moves only when `pass` says so (the card's lockout runs from its appearance since unit 8).
+  let t = 0;
   const cancel = vi.fn((): boolean => true);
   const close = vi.fn(() => Promise.resolve());
   const onExit = vi.fn();
@@ -49,6 +52,7 @@ function mount(options: { size?: { cols: number; rows: number } } = {}) {
     hostedRuns: { snapshot: () => RUNNING, cancel, close },
     // The leg never settles and the grace never fires: this file proves the wiring, not the wait.
     schedule: () => () => {},
+    now: () => t,
     onExit,
     onError: vi.fn(),
   });
@@ -62,7 +66,11 @@ function mount(options: { size?: { cols: number; rows: number } } = {}) {
       subscribeResize={() => () => {}}
     />,
   );
-  return { controller, harness, cancel, close, onExit };
+  /** The card has been on screen for its whole lockout with no key: a `Ctrl+Y` now is a deliberate one. */
+  const pass = (): void => {
+    t += APPROVAL_LOCKOUT_MS;
+  };
+  return { controller, harness, cancel, close, onExit, pass };
 }
 
 describe('the exit-guard card through RootApp', () => {
@@ -83,7 +91,7 @@ describe('the exit-guard card through RootApp', () => {
   });
 
   it('the title row has a glyph and the words, so the card reads without colour as the other cards do', async () => {
-    const { controller, harness } = mount();
+    const { controller, harness, pass } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
@@ -94,6 +102,7 @@ describe('the exit-guard card through RootApp', () => {
       `${glyphOf('warning', true)} A workflow run is executing: run-0001.`,
     );
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(
@@ -118,12 +127,13 @@ describe('the exit-guard card through RootApp', () => {
   });
 
   it('Ctrl+Y cancels the run and the card says it is stopping', async () => {
-    const { controller, harness, cancel, onExit } = mount();
+    const { controller, harness, cancel, onExit, pass } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -146,7 +156,7 @@ describe('the exit-guard card through RootApp', () => {
   });
 
   it('Ctrl+Y counts in the loading echo too, once that frame is on screen: the echo is measured like the landing', async () => {
-    const { controller, harness, cancel } = mount();
+    const { controller, harness, cancel, pass } = mount();
     await settleFrames();
     controller.handleKey('h', {});
     controller.handleKey('', { return: true });
@@ -155,6 +165,7 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the echo's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);

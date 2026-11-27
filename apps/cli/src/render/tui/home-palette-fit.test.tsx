@@ -57,9 +57,14 @@ function mount(size: { cols: number; rows: number }, sessions: number, alternate
   const startChat = vi.fn(() => new Promise<never>(() => {}));
   // What the Home says on its notification channel (ADR-0148 §6: a flow that cannot run says so there, never in a Home notice).
   const announced: string[] = [];
+  // What the Home asked its popup host to open (`/help` is a popup of the Home: MVP-11 unit 8).
+  const popups: string[] = [];
   const controller = createHomeController({
     announce: (text) => {
       announced.push(text);
+    },
+    openHomePopup: (request) => {
+      popups.push(request.kind);
     },
     startChat,
     homeStore: { read: () => snapshotWith(sessions) },
@@ -86,7 +91,7 @@ function mount(size: { cols: number; rows: number }, sessions: number, alternate
     plain(harness.lastFrame() ?? '')
       .split('\n')
       .map((row) => (row.startsWith(' '.repeat(margin)) ? row.slice(margin) : row));
-  return { controller, harness, startChat, onExit, frame, announced };
+  return { controller, harness, startChat, onExit, frame, announced, popups };
 }
 type Mounted = ReturnType<typeof mount>;
 
@@ -386,8 +391,9 @@ describe.each([
     await press(m.controller, { return: true });
     const snapshot = m.controller.getSnapshot();
     expect(snapshot.palette, 'the palette is closed').toBeUndefined();
-    // The entry that ran was /help: the Home's help screen is open.
-    expect(snapshot.screen?.kind).toBe('help');
+    // The entry that ran was /help: the Home asked for its help popup, and opened no screen.
+    expect(m.popups).toEqual(['help']);
+    expect(snapshot.screen).toBeUndefined();
     expect(m.startChat).not.toHaveBeenCalled();
     expect(m.onExit).not.toHaveBeenCalled();
   });

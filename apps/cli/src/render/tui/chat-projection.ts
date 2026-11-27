@@ -497,11 +497,6 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
-  /**
-   * Milliseconds an approval card has been open, when one is. The turn is then WAITING FOR THE PERSON, not working:
-   * the line says so (and what Esc does) instead of "Working…", and its timer is the wait, never the turn's.
-   */
-  readonly awaitingApprovalMs?: number | undefined;
   /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
   readonly columns?: number | undefined;
   /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
@@ -524,15 +519,8 @@ export function formatBusyLine(input: {
       dim: true,
     };
   }
-  if (input.awaitingApprovalMs !== undefined) {
-    return {
-      text: legend(
-        [{ text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)}` }],
-        STOP_THE_TURN,
-      ),
-      dim: true,
-    };
-  }
+  // While a card waits for the person there is no busy line: the sheet takes the prompt block's place and its rule carries the wait clock
+  // (ADR-0147 §2: the `Waiting for your answer` row and its spinner retired).
   // The streamed answer is the model's, and this row is drawn above the prompt among the host's own: it cannot draw a marker (ADR-0145 §6). The
   // glyph and the space that replaces it are one column, so the tail's row estimate below is the one it was.
   const sanitized = blankMarkerGlyphs(stripTerminalControls(input.liveTokens));

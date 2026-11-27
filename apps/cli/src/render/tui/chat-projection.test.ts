@@ -369,17 +369,16 @@ describe('chat-projection', () => {
       liveTokensTruncated: false,
     } as const;
 
-    it('says the turn is waiting for the person — not "Working…" — while an approval card is open', () => {
-      const line = formatBusyLine({
-        ...base,
-        liveTokens: 'streamed text that must not hide the wait',
-        elapsedMs: 5_000,
-        awaitingApprovalMs: 83_000,
-      });
-      expect(line.dim).toBe(true);
-      expect(line.text).toBe('⠋ Waiting for your answer 1m23s · Esc stops the turn');
-      expect(line.text).not.toContain('Working');
-      // Without a card the pre-token status is unchanged.
+    it('has no "Waiting for your answer" state: the sheet takes the prompt block’s place and its rule carries the wait (ADR-0147 §2)', () => {
+      // The retired row's words are nowhere in the builder's output, whatever the turn is doing.
+      for (const input of [
+        { ...base, elapsedMs: 5_000 },
+        { ...base, liveTokens: 'streamed text' },
+        { ...base, compacting: true },
+        { ...base, busyCommand: 'npm test' },
+      ])
+        expect(formatBusyLine(input).text).not.toContain('Waiting for your answer');
+      // The pre-token status is unchanged.
       expect(formatBusyLine({ ...base, elapsedMs: 5_000 }).text).toContain('Working… 5s');
     });
 

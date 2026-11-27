@@ -11,13 +11,15 @@ import { describe, expect, it } from 'vitest';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { manualClock } from './doctor.test-support.js';
-import { SCOPE_STEP } from './mode-popup.js';
+import {
+  openGuardedMode,
+  SCOPE_STEP,
+  type GuardedModeMember,
+} from './guarded-form.test-support.js';
 import { createNotificationChannel } from './notifications.js';
 import { POPUP_SELECT_SETTLE_MS } from './opening-guard.js';
 import { createPopupHost } from './popup-host.js';
 import type { PopupKey } from './popup-reducer.js';
-import type { ModeSettingsPort } from './settings-port.js';
-import { openSettingsPopup } from './settings-session.js';
 
 const ENTER: PopupKey = { return: true };
 
@@ -37,7 +39,7 @@ function rig(current: ChatMode) {
   host.bindPageRows(() => 17);
   host.bindInnerWidth(() => 66);
   const applied: ChatMode[] = [];
-  const member: ModeSettingsPort = {
+  const member: GuardedModeMember = {
     current: () => current,
     apply: (mode) => {
       applied.push(mode);
@@ -45,12 +47,7 @@ function rig(current: ChatMode) {
     },
     saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
   };
-  const opened = openSettingsPopup({
-    host,
-    port: { surface: 'standalone-chat', announce: () => {}, mode: member },
-    command: 'mode',
-    origin: 'chat',
-  });
+  const opened = openGuardedMode(host, member);
   expect(opened.opened).toBe(true);
   const ack = (): void => host.shown(host.getSnapshot());
   // Step 1 seen and its settle passed: its `Enter` answers from here.

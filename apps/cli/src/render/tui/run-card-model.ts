@@ -50,19 +50,21 @@ import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
 import {
   createChordGuard,
+  createLockDisplay,
   reduceChordKey,
   type ChordHistory,
   type ChordStamp,
+  type LockDisplay,
 } from './chord-guard.js';
 import type { StatusColor } from './format.js';
 import { blankHostGlyphs, glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { formatUsdExact } from '../notation.js';
 import { deadlinePassed, expiryLabel } from './home-deadline.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-floor.js';
-import { exitKey, legend, type LegendItem } from './legend.js';
+import { exitKey, legend, waitMark, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
-import { clipLine } from './sheet-frame.js';
+import { clipLine, sheetRule } from './sheet-frame.js';
 import { wrapText } from './viewport.js';
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -127,7 +129,18 @@ export interface RunCardDeps {
    * said so can never approve anything.
    */
   readonly painted?: (snapshot: RunCardSnapshot) => boolean;
+  /** The one-shot timer the lock's display opens on (`setTimeout`-shaped, returning its cancel); default an unref'd `setTimeout`. */
+  readonly schedule?: ((callback: () => void, ms: number) => () => void) | undefined;
 }
+
+/** An unref'd one-shot timer: the lock display's opening never keeps the process alive. */
+const unrefTimeout = (callback: () => void, ms: number): (() => void) => {
+  const timer = setTimeout(callback, ms);
+  timer.unref();
+  return () => {
+    clearTimeout(timer);
+  };
+};
 
 export interface RunCard {
   readonly subscribe: (listener: () => void) => () => void;
@@ -142,6 +155,11 @@ export interface RunCard {
   readonly shown: (snapshot: RunCardSnapshot) => void;
   /** The run's gates, read again: the cursor stays on its gate when that is still open. */
   readonly update: (gates: readonly RunCardGate[]) => void;
+  /**
+   * What the card DRAWS of its lockout (ADR-0145 §3, unit 6's `(wait)` rule): whether its guarded keys are held now, read from the one guard
+   * that decides, with one timer at the instant it opens. A display value, never a field of the snapshot, so it changes no frame's identity.
+   */
+  readonly lock: LockDisplay;
   readonly dispose: () => void;
 }
 
@@ -228,6 +246,15 @@ export function createRunCard(deps: RunCardDeps): RunCard {
     lastResolvedAt: Math.max(stamp.lastResolvedAt, openedAt),
   });
   const painted = deps.painted ?? (() => false);
+  // The lockout as the legend draws it (`(wait)`): from whichever came later, the last answer or the card's appearance, as `fromOpening` decides.
+  const lock = createLockDisplay({
+    now,
+    schedule: deps.schedule ?? unrefTimeout,
+    until: () =>
+      snapshot.phase === 'open'
+        ? Math.max(guard.lockedUntil(), guard.lockedUntil({ lastResolvedAt: openedAt }))
+        : Number.NEGATIVE_INFINITY,
+  });
   const listeners = new Set<() => void>();
   let disposed = false;
   let snapshot: RunCardSnapshot = Object.freeze({
@@ -239,9 +266,11 @@ export function createRunCard(deps: RunCardDeps): RunCard {
     refused: false,
   });
   guard.begin();
+  lock.sync(); // the card's appearance starts its lockout: the legend says `(wait)` until it opens
 
   const publish = (next: Omit<RunCardSnapshot, 'runId'>): void => {
     snapshot = Object.freeze({ runId: deps.runId, ...next });
+    lock.sync(); // a card that is no longer open holds no key
     for (const listener of listeners) listener();
   };
   const focused = (): RunCardGate | undefined => snapshot.gates[snapshot.cursor];
@@ -350,6 +379,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
       // A human gate's rejection continues the run (the author routes on it), so it passes every layer an approval does. A budget abort
       // stops the step at the budget, and refusing is the safe answer there: it is never delayed.
       const strict = chord === 'allow' || !isBudgetGate(gate);
+      // A refused press inside the lockout moves its end: the lock display's timer reads the end again when it fires, and holds on.
       if (guard.decide(fromOpening(stamp), chord, painted(snapshot), strict) === undefined)
         return { kind: 'refused' };
       send(gate, decision);
@@ -388,8 +418,10 @@ export function createRunCard(deps: RunCardDeps): RunCard {
         refused: snapshot.phase === 'open' && snapshot.refused,
       });
     },
+    lock,
     dispose: () => {
       disposed = true;
+      lock.dispose();
       listeners.clear();
     },
   };
@@ -515,6 +547,8 @@ export const RUN_CARD_APPEARANCE: Readonly<Record<RunCardState, Appearance>> = {
 };
 
 export type RunCardRole =
+  /** The sheet's heavy rule (ADR-0147 §1): what the card asks and, while it waits, how long it has. */
+  | 'rule'
   | 'title'
   | 'author'
   | 'fact'
@@ -549,6 +583,34 @@ export interface RunCardProjectionInput {
   readonly rows: number;
   /** Wall-clock milliseconds, for the deadline: the only clock the projection reads. */
   readonly nowMs: number;
+  /**
+   * The sheet's wait clock as its host draws it (`waiting 1h 07m`, or inline `waiting since 09:05`): a display value of the host's, drawn in
+   * the rule while the card waits and read by nothing else (ADR-0147 §2). Absent or empty: the rule has no clock.
+   */
+  readonly clock?: string | undefined;
+  /**
+   * The card's lockout holds its guarded keys now (`RunCard.lock`, a display value): `Ctrl+Y` and a human gate's `Ctrl+N` read dim with
+   * `(wait)` (ADR-0145 §3) until it opens. Absent: free.
+   */
+  readonly locked?: boolean | undefined;
+}
+
+/** What the card's rule says while a gate waits for the person (ADR-0147 §1): fixed host text. */
+export const RUN_CARD_RULE_LABEL = 'Waiting for you';
+/** What it says once nothing waits any more (answering, answered, decided, no gate): the card is still the gate card. */
+export const RUN_CARD_RULE_SETTLED = 'Run gate';
+
+/** The card's heavy rule (ADR-0147 §1), as wide as the card's other rows: the clock only while the card waits for an answer. */
+function ruleRow(snapshot: RunCardSnapshot, input: RunCardProjectionInput): RunCardRow {
+  const open = snapshot.phase === 'open';
+  return {
+    role: 'rule',
+    text: sheetRule(
+      open ? RUN_CARD_RULE_LABEL : RUN_CARD_RULE_SETTLED,
+      open ? (input.clock ?? '') : '',
+      Math.max(1, Math.floor(input.columns) - 2),
+    ).text,
+  };
 }
 
 /**
@@ -715,7 +777,12 @@ function policyWords(gate: RunGate): string {
  * The keys the open card offers, in the legend's grammar. Only what the gate accepts, and only host text; below the terminal minimum
  * (`fits` is false) only the way out, because no other key is live there.
  */
-function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined, fits: boolean): string {
+function keysFor(
+  snapshot: RunCardSnapshot,
+  gate: RunCardGate | undefined,
+  fits: boolean,
+  locked: boolean,
+): string {
   switch (snapshot.phase) {
     case 'answering':
       return legend([{ text: 'Answering…' }], exitKey.leave('leaves the view'));
@@ -731,10 +798,16 @@ function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined, fits:
       if (snapshot.gates.length > 1) items.push({ keys: '↑/↓', verb: 'choose a gate' });
       // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
       const budget = gate !== undefined && isBudgetGate(gate);
+      // The guarded keys say `(wait)` while the lockout holds them: an approval, and a human gate's rejection (a budget abort is never delayed).
       if (gate?.accepts.includes('approved') === true)
-        items.push({ keys: 'Ctrl+Y', verb: 'Approve', role: 'ok' });
+        items.push({ keys: 'Ctrl+Y', verb: 'Approve', role: 'ok', ...waitMark(locked) });
       if (gate?.accepts.includes('rejected') === true)
-        items.push({ keys: 'Ctrl+N', verb: budget ? 'Abort' : 'Reject', role: 'danger' });
+        items.push({
+          keys: 'Ctrl+N',
+          verb: budget ? 'Abort' : 'Reject',
+          role: 'danger',
+          ...waitMark(locked && !budget),
+        });
       return legend(items, pending);
     }
   }
@@ -923,7 +996,10 @@ export function projectRunCard(
   const mark = glyph(appearance.role);
   const overdue = state === 'overdue';
   const width = Math.max(1, Math.floor(input.columns) - 2);
-  const keys: RunCardRow = { role: 'keys', text: clipLine(keysFor(snapshot, gate, fits), width) };
+  const keys: RunCardRow = {
+    role: 'keys',
+    text: clipLine(keysFor(snapshot, gate, fits, input.locked === true), width),
+  };
   if (!fits) {
     return {
       fits,
@@ -951,11 +1027,18 @@ export function projectRunCard(
   const message =
     open === undefined || isBudgetGate(open)
       ? []
-      : messageBlock(open, width, messageRoom(input.rows, 2 + facts.length + notice.length));
+      : messageBlock(open, width, messageRoom(input.rows, 3 + facts.length + notice.length));
   const title: RunCardRow = {
     role: 'title',
     text: clipLine(`${mark} ${word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`, width),
   };
-  const rows: readonly RunCardRow[] = [title, ...message, ...facts, ...notice, keys];
+  const rows: readonly RunCardRow[] = [
+    ruleRow(snapshot, input),
+    title,
+    ...message,
+    ...facts,
+    ...notice,
+    keys,
+  ];
   return { fits, tooSmall: undefined, state, glyph: mark, word, tone, rows, overdue };
 }

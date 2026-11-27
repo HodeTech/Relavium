@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildAgentsModel, type AgentsModelItem } from '../../history/agents-model.js';
 import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
+import type { HomePopupKind, HomePopupsPort } from '../../popups/home-port.js';
 import {
   ATTACHMENTS_CLEARED,
   createHomeController,
@@ -136,6 +137,8 @@ function rig(options: RigOptions = {}) {
     options.startChat ?? (() => Promise.resolve(session())),
   );
   const onExit = vi.fn();
+  /** What the Home asked its popup host to open (`/agents` is a popup since MVP-11 unit 8; its `[c] chat` is a request the Home carries out). */
+  const popups: { readonly kind: HomePopupKind; readonly port: HomePopupsPort }[] = [];
   // The Home's clock, moved by hand: an `Enter` inside the lockout after the `Enter` that chose a file is its repeat (`PickEnterLock`).
   let clock = 10_000;
   const c = createHomeController({
@@ -148,6 +151,9 @@ function rig(options: RigOptions = {}) {
     now: () => clock,
     mentionReader: { list, read },
     agents: AGENTS,
+    openHomePopup: (request) => {
+      popups.push(request);
+    },
     announce,
     providerSetup: {
       initialKeyless: options.keyless === true,
@@ -169,6 +175,7 @@ function rig(options: RigOptions = {}) {
     sent,
     announce,
     startChat,
+    popups,
     openProviders,
     onExit,
     type,
@@ -424,9 +431,16 @@ describe('the attachments go with the draft', () => {
     expect(r.c.getSnapshot().attachments, 'gone with its marker').toEqual([]);
     r.c.handleKey('/', {}); // the palette, on the empty prompt
     r.type('agents');
-    r.c.handleKey('', ENTER); // the agents browser
-    r.c.handleKey('', ENTER); // the reviewer's detail
-    r.c.handleKey('c', {}); // a chat bound to it
+    r.c.handleKey('', ENTER); // the agents popup
+    expect(r.popups.map((request) => request.kind)).toEqual(['agents']);
+    // `[c] chat` on the reviewer's detail: the popup hands the Home the catalog's path and the definition it drew, through the port the Home built.
+    const agents = r.popups[0]?.port.agents;
+    const listed = agents?.read();
+    const path = listed?.pathOf(0);
+    const definition = listed?.definitionOf(0);
+    if (agents === undefined || path === undefined || definition === undefined)
+      throw new Error('the Home gave the agents popup no agent to chat with');
+    agents.chat({ path, listed: definition }); // a chat bound to it
     await until(() => r.c.getSnapshot().mode === 'chat');
     expect(r.startChat).toHaveBeenCalledOnce();
     expect(r.c.getSnapshot().attachments).toEqual([]);

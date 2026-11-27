@@ -2,7 +2,11 @@ import { createClient, createRunHistoryReader, runMigrations } from '@relavium/d
 
 import { classifyActiveRuns } from '../../../history/active-model.js';
 import { buildAgentsModel, type AgentsModelItem } from '../../../history/agents-model.js';
-import { buildDefinedModel, type DefinedEntry } from '../../../history/defined-model.js';
+import {
+  buildDefinedModel,
+  type DefinedEntry,
+  type DefinedPort,
+} from '../../../history/defined-model.js';
 import { createHistorySource } from '../../../history/history-source.js';
 import { createNodeDetailLoader } from '../../../history/node-detail-source.js';
 import {
@@ -18,10 +22,8 @@ import type { PermissionsPort } from '../../../permissions/chat-permissions.js';
 import type { ParkedRunRow } from '../home-attention.js';
 import type { HomeActivePort, HomeGateCardsPort } from '../home-controller.js';
 import type { ApprovalGuard } from '../tool-review-model.js';
-import type { AgentsPort } from '../tab-host-agents.js';
+import type { AgentsPort } from '../../../home/agents-port.js';
 import type { HistoryPort } from '../tab-host-history.js';
-import type { SessionsPort } from '../tab-host-sessions.js';
-import type { DefinedPort } from '../tab-host-workflows.js';
 import type { HomeSetup } from './home-host.js';
 
 /**
@@ -177,6 +179,14 @@ export const DEFINED_PORT: DefinedPort = {
       model: buildDefinedModel({
         entries,
         pins: [{ kind: 'workflow', ref: 'beta', rowid: 1, oversized: false }],
+        lastRuns: new Map([
+          ['alpha', 'completed'],
+          ['beta', 'paused'],
+        ]),
+        lastRunTimes: new Map([
+          ['alpha', new Date(NOW_MS - 3 * 3_600_000).toISOString()],
+          ['beta', new Date(NOW_MS - 5 * 60_000).toISOString()],
+        ]),
       }),
       slugOf: (index) => entries[index]?.slug,
       pathOf: (index) => entries[index]?.path,
@@ -214,16 +224,6 @@ export const AGENTS_PORT: AgentsPort = {
     slugOf: (index) => AGENT_ITEMS[index]?.entry.slug,
     pathOf: (index) => AGENT_ITEMS[index]?.entry.path,
     definitionOf: () => undefined,
-  }),
-};
-
-export const SESSIONS_PORT: SessionsPort = {
-  read: () => ({
-    rows: [
-      { id: 's1', title: 'Fix the flaky test', agent: 'chat', age: '5m ago' },
-      { id: 's2', title: 'Untitled', agent: 'reviewer', age: '2h ago' },
-    ],
-    more: true,
   }),
 };
 

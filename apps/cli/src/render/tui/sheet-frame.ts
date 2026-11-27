@@ -126,6 +126,70 @@ export function titleRule(title: string, width: number): SheetLine {
   };
 }
 
+/**
+ * The widest text the wait clock can be ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §2): `waiting since HH:MM` (the inline form) is the longest of both forms, so the room a rule keeps for its clock is this many columns
+ * whichever form it shows and whatever the time is. The label is clipped against it, so a tick never changes what the rule's label shows.
+ */
+export const WAIT_CLOCK_COLUMNS = 19;
+
+/** `n` as two digits. */
+function twoDigits(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * The alternate screen's wait clock for `elapsedMs` of waiting (ADR-0147 §2), quantised to the unit it shows: seconds for the first minute
+ * (`waiting 0:41`), then minutes only (`waiting 2m`), then hours and minutes (`waiting 1h 07m`), then days and hours, and `waiting 99d+`
+ * beyond. A negative or non-finite elapsed time (a display clock stepped back) is `waiting 0:00`. Display only: no guard reads it.
+ */
+export function waitClockText(elapsedMs: number): string {
+  const seconds = Number.isFinite(elapsedMs) && elapsedMs > 0 ? Math.floor(elapsedMs / 1000) : 0;
+  if (seconds < 60) return `waiting 0:${twoDigits(seconds)}`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `waiting ${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `waiting ${String(hours)}h ${twoDigits(minutes % 60)}m`;
+  const days = Math.floor(hours / 24);
+  return days < 100 ? `waiting ${String(days)}d ${twoDigits(hours % 24)}h` : 'waiting 99d+';
+}
+
+/**
+ * The inline renderer's wait clock (ADR-0147 §2): a static `waiting since HH:MM` in local time, because a live region rewritten every second is
+ * hostile to assistive tools and costly over SSH. An origin that is not a time draws `waiting`.
+ */
+export function waitSinceText(sinceMs: number): string {
+  const at = new Date(sinceMs);
+  if (!Number.isFinite(at.getTime())) return 'waiting';
+  return `waiting since ${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}`;
+}
+
+/**
+ * The heavy rule that opens a sheet ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1): `━━ <label> ━━━━━━ <clock> ━━`, `width` columns. The label is what the sheet asks, and the clock is the display value of how long it has
+ * waited (absent: no clock). The label is clipped against {@link WAIT_CLOCK_COLUMNS}, the room reserved for the widest clock, never against the
+ * clock shown, and the run of rule glyphs between them absorbs the clock's length: the rule is the same width and shows the same label whatever
+ * the clock says, so a tick never changes its geometry. Without colour the heavy glyph is `=` and the thin one `-` (the glyph table), so a sheet's
+ * rule and a thin rule stay apart. The label is `strong`; the view colours the whole rule (amber for a decision, cyan for the agent's question).
+ */
+export function sheetRule(label: string, clock: string, width: number): SheetLine {
+  const heavy = glyph('heavyRule');
+  const lead = `${heavy}${heavy} `;
+  const tail = ` ${heavy}${heavy}`;
+  // `━━ ` + label + ` ` + at least two rule glyphs + ` ` + the reserved clock + ` ━━`
+  const room = width - displayWidth(lead) - 1 - 2 - 1 - WAIT_CLOCK_COLUMNS - displayWidth(tail);
+  const shown = clipLine(label, Math.max(1, room));
+  const head = `${lead}${shown} `;
+  // With no clock the rule runs on unbroken to its end.
+  const end = clock === '' ? `${heavy}${heavy}` : ` ${clipLine(clock, WAIT_CLOCK_COLUMNS)}${tail}`;
+  const between = Math.max(2, width - displayWidth(head) - displayWidth(end));
+  return {
+    kind: 'rule',
+    text: `${head}${heavy.repeat(between)}${end}`,
+    spans: [{ from: lead.length, to: lead.length + shown.length, role: 'strong' }],
+  };
+}
+
 /** The gap kept between a row's label and what flushes right. */
 const GAP = 2;
 /** The least room the label keeps before the right-hand value is dropped instead of squeezing it. */

@@ -30,7 +30,12 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
-import { createChordHistory, type ChordHistory } from './chord-guard.js';
+import {
+  createChordHistory,
+  createLockDisplay,
+  type ChordHistory,
+  type LockDisplay,
+} from './chord-guard.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -191,6 +196,13 @@ export interface ChatStoreController extends ChatStore {
    * {@link ChatStoreOptions.history}, or its own. A popup host of the same terminal host stamps it too (ADR-0148 §2: one key history per host).
    */
   readonly keyHistory: ChordHistory;
+  /**
+   * What the cards DRAW of the answer lockout (ADR-0145 §3, unit 6's `(wait)` rule, unit 8): whether an approval's or the checkpoint's
+   * affirmative chords are held by the lockout now, with one timer at the instant it opens. A display value beside the snapshot, never a field of
+   * it: its change re-renders the card's host and makes no new frame. Only the lockout is drawn (the dwell, the quiet gap and the typing window
+   * follow from the person's own keys and are short).
+   */
+  readonly answerLock: LockDisplay;
   bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
   bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
   acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
@@ -302,7 +314,18 @@ export interface ChatStoreOptions {
    * or answered on another card is seen by this store's guards. Absent ⇒ the store keeps one of its own.
    */
   readonly history?: ChordHistory;
+  /** The one-shot timer the answer lock's display opens on (`setTimeout`-shaped, returning its cancel); default an unref'd `setTimeout`. */
+  readonly lockSchedule?: ((callback: () => void, ms: number) => () => void) | undefined;
 }
+
+/** An unref'd one-shot timer: the answer lock's opening never keeps the process alive. */
+const unrefTimeout = (callback: () => void, ms: number): (() => void) => {
+  const timer = setTimeout(callback, ms);
+  timer.unref();
+  return () => {
+    clearTimeout(timer);
+  };
+};
 
 /**
  * @param transcriptBound the RENDERER-injected bound on the text a completed turn bakes into the transcript
@@ -384,10 +407,28 @@ export function createChatStore(
     | undefined;
   // Whether this card has already shown its one refusal note.
   let refusalNoted = false;
+  // When the inspection popup (the full view) last stepped back to the card, on the monotonic clock (ADR-0148 §7): an `Esc` that arrives
+  // inside the settle after it is a mashed key, not a decision, and is ignored instead of rejecting the call and stopping the turn. It only
+  // ever suppresses a rejection; `Ctrl+C` still stops, and an approval keeps every guard of its own.
+  let steppedBackAt = Number.NEGATIVE_INFINITY;
+  const noteStepBack = (previous: ToolReviewState, next: ToolReviewState, now: number): void => {
+    if (previous.kind === 'approval' && previous.screen !== 'card' && next.screen === 'card')
+      steppedBackAt = now;
+  };
+  const mashedEscape = (key: ChatKey, now: number): boolean =>
+    key.escape === true &&
+    review?.kind === 'approval' &&
+    review.screen === 'card' &&
+    now - steppedBackAt < approvalGuard.settleMs;
   const alwaysAsked = (now: number): boolean =>
     alwaysAsk !== undefined &&
     alwaysAsk.review === review &&
     now - alwaysAsk.at <= APPROVAL_CONFIRM_MAX_MS;
+  // A card is open and the turn waits for the person (ADR-0147 §2): the store's tick has nothing of its own to repaint then.
+  const waitingOnPerson = (): boolean =>
+    approval !== undefined || question !== undefined || checkpoint !== undefined;
+  // The frame last flushed still asks the confirmation of a wider grant, which lapses with time: the tick repaints until it is gone.
+  const confirmationShown = (): boolean => snapshot.alwaysConfirm || snapshot.rememberConfirm;
   let toolDisplays = new Map<string, ToolDisplay>();
   let sealed = false;
   let reviewVisible: (() => boolean) | undefined;
@@ -415,7 +456,18 @@ export function createChatStore(
     color,
   };
 
+  // The lockout as the cards draw it: from the last answer, while an approval or the checkpoint is open (the question card has no lockout layer).
+  const answerLock = createLockDisplay({
+    now: () => performance.now(),
+    schedule: options?.lockSchedule ?? unrefTimeout,
+    until: () =>
+      (approval !== undefined || checkpoint !== undefined) && approvalGuard.lockoutMs > 0
+        ? keyHistory.lastResolvedAt + approvalGuard.lockoutMs
+        : Number.NEGATIVE_INFINITY,
+  });
+
   const flush = (): void => {
+    answerLock.sync(); // a card opened or closed: the lock is read again (a listener hears only a change)
     snapshot = {
       state,
       mode,
@@ -563,6 +615,7 @@ export function createChatStore(
 
   return {
     keyHistory,
+    answerLock,
     applyToolLiveEvent: (event) => {
       if (sealed) return;
       state = reduceToolLiveEvent(state, event);
@@ -862,12 +915,15 @@ export function createChatStore(
         case 'state': {
           // A note a move has taken down may be needed again: the refusal is explained once per card, not once ever.
           if (review.message !== '' && action.state.message === '') refusalNoted = false;
+          noteStepBack(review, action.state, now);
           review = transitionReviewState(review, action.state, calls);
           reviewPage = undefined;
           flush();
           break;
         }
         case 'abort':
+          // An `Esc` mashed right after the one that stepped back from the full view: nothing is rejected and the turn goes on.
+          if (mashedEscape(key, now)) return 'handled';
           // Reject FIRST (ADR-0115 §2): the pending call is settled as a rejection by the person — recorded as rejected, which is
           // true, and never as "cancelled, state unknown" — BEFORE the surface signals the abort. The settle resolves the hook's
           // promise and drops the store's own abort listener, so the abort that follows cannot turn it into a cancellation; the
@@ -1014,8 +1070,11 @@ export function createChatStore(
     },
     tick: () => {
       tickCount += 1;
-      // Repaint when there is coalesced state OR a turn is streaming (so the spinner animates live).
-      if (dirty || state.status === 'running') {
+      // Repaint when there is coalesced state, or a turn is streaming and NOT blocked on the person (so the spinner animates live). A card
+      // that waits keeps the turn `running`, and nothing it draws animates: its wait clock is its host's own display value, re-rendered by
+      // the host's one-second timer (ADR-0147 §2), so a pending card no longer repaints twelve times a second. The open confirmation of a
+      // wider grant is the one thing on a card that changes with time (it lapses), so the tick goes on until the frame no longer shows it.
+      if (dirty || (state.status === 'running' && !waitingOnPerson()) || confirmationShown()) {
         flush();
       }
     },

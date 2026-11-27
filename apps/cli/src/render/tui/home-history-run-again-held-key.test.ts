@@ -17,9 +17,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { HostedLaunch, HostedStartRequest, RunHostSnapshot } from '../../home/run-host.js';
-import { createRunLaunch, type LaunchCatalog } from '../../home/run-launch.js';
+import { createRunLaunch, type LaunchCatalog, type LaunchOptions } from '../../home/run-launch.js';
 import { createChordHistory } from './chord-guard.js';
-import { createHomeController, type HomeChatSession } from './home-controller.js';
+import {
+  createHomeController,
+  type HomeChatSession,
+  type HomeControllerDeps,
+} from './home-controller.js';
 import { createNativePromptChannel, type NativePromptSnapshot } from './native-prompt-channel.js';
 import { definedPortOver, historyListOfRun, runDetailRead } from './run-again.test-support.js';
 
@@ -131,6 +135,8 @@ async function mount(
     readonly secret?: boolean;
     /** A launch that opens no flow (a refusal found before anything was asked): the key's record is then still on the history. */
     readonly launch?: (slug?: string, path?: string) => Promise<string>;
+    /** `[r]` of the `/workflows` popup asks for the launch, not `r` on a History detail (the Home carries out what the popup asked for). */
+    readonly via?: 'popup';
   } = {},
 ) {
   let clock = PRESSED_AT - 1_000;
@@ -153,11 +159,13 @@ async function mount(
       options.card === true ? NO_INPUTS : options.secret === true ? SECRET_FIELD : ONE_FIELD,
     ),
   });
-  const open = vi.fn((slug?: string, path?: string) => {
+  /** What the Home asked its popup host to open (`/workflows`: the popup is the host's, and its `[r]` is a request the Home carries out). */
+  const popups: Parameters<NonNullable<HomeControllerDeps['openHomePopup']>>[0][] = [];
+  const open = vi.fn((slug?: string, path?: string, launchOptions?: LaunchOptions) => {
     if (options.launch !== undefined) return options.launch(slug, path);
     // A Home whose controller left no opener on the history: a flow no key opened (`/run` typed, a palette entry).
     if (options.recordOpener === false) chordHistory.openedBy = undefined;
-    return launch.open(slug, path);
+    return launch.open(slug, path, launchOptions);
   });
   const controller = createHomeController({
     startChat: () => new Promise<HomeChatSession>(() => {}),
@@ -170,6 +178,9 @@ async function mount(
       { slug: 'nightly', name: undefined, nodeCount: 2, path: 'nightly.yaml', valid: true },
     ]).port,
     launchRun: open,
+    openHomePopup: (request) => {
+      popups.push(request);
+    },
     chordHistory,
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => IDLE, cancel: () => true, close: () => Promise.resolve() },
@@ -183,12 +194,18 @@ async function mount(
   expect(controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
   controller.handleKey('', ENTER);
   await new Promise((resolve) => setTimeout(resolve, 0));
+  if (options.via === 'popup') {
+    controller.closeScreen();
+    for (const letter of '/workflows') controller.handleKey(letter, {});
+    controller.handleKey('', ENTER);
+  }
   const rig = {
     controller,
     channel,
     chordHistory,
     host,
     open,
+    popups,
     at: (time: number): void => {
       clock = time;
     },
@@ -202,7 +219,8 @@ async function mount(
     /** `r` pressed, and the form's first text field up for it. */
     pressR: async (): Promise<void> => {
       clock = PRESSED_AT;
-      controller.handleKey('r', {});
+      if (options.via === 'popup') popups[0]?.port.workflows?.run('nightly', 'nightly.yaml');
+      else controller.handleKey('r', {});
       const first = options.card === true ? 'chord' : options.secret === true ? 'password' : 'text';
       for (let turn = 0; turn < 50 && channel.ui.getSnapshot().kind !== first; turn += 1)
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -267,6 +285,39 @@ describe('a `r` held down on the detail types nothing into the form’s first fi
         expect(m.display()).toBe('r');
         m.key(last + 700, 'x');
         expect(m.display()).toBe('rx');
+      });
+    }
+  }
+});
+
+describe('a `r` held down in the /workflows popup types nothing into the form’s first field either (MVP-11 unit 8)', () => {
+  for (const initial of INITIAL_DELAYS_MS) {
+    for (const interval of REPEAT_INTERVALS_MS) {
+      it(`first repeat after ${String(initial)} ms, then every ${String(interval)} ms: the popup closed itself on the first press, so the field is empty once the key is known to be held`, async () => {
+        const m = await mount({ via: 'popup' });
+        await m.pressR();
+        expect(m.open).toHaveBeenCalledWith('nightly', 'nightly.yaml', {
+          opener: { origin: 'workflows' },
+        });
+        expect(m.snapshot().popup?.origin, 'the `/run` popup is stacked from /workflows').toBe(
+          'workflows',
+        );
+        let shown = false;
+        let peak = 0;
+        for (let at = PRESSED_AT + initial; at <= PRESSED_AT + initial + HOLD_MS; at += interval) {
+          if (!shown && at >= PRESSED_AT + FRAME_AFTER_MS) {
+            m.at(PRESSED_AT + FRAME_AFTER_MS);
+            m.show();
+            shown = true;
+          }
+          m.key(at, 'r');
+          peak = Math.max(peak, m.display().length);
+        }
+        expect(peak, 'at most the one character the first repeat typed, ever').toBeLessThanOrEqual(
+          1,
+        );
+        expect(m.display(), 'taken back, and nothing typed after it').toBe('');
+        expect(m.host.start).not.toHaveBeenCalled();
       });
     }
   }
@@ -466,16 +517,19 @@ describe('the key that opened the form is left on the Home’s key history, and 
     expect(m.open).not.toHaveBeenCalled();
   });
 
-  it('the Defined tab’s own `r` leaves the same record: the one rule covers both keys that open the form', async () => {
+  it('the `/workflows` popup’s `[r]` leaves the same record: the one rule covers every key that opens the form', async () => {
     const refused = await mount({ launch: () => Promise.resolve('A run is already executing.') });
-    expect(refused.controller.openScreen('tab-host', { tab: 'defined' })).toBe(true);
-    const screen = refused.controller.getSnapshot().screen;
-    expect(screen?.kind === 'tab-host' ? screen.host.tab : undefined, 'the Defined tab').toBe(
-      'defined',
-    );
+    refused.controller.closeScreen();
+    for (const letter of '/workflows') refused.controller.handleKey(letter, {});
+    refused.controller.handleKey('', ENTER);
+    expect(refused.popups.map((request) => request.kind)).toEqual(['workflows']);
+    // The popup closed itself and handed the Home its request; the key that made it is the popup's `[r]`, at this moment.
     refused.at(PRESSED_AT);
-    refused.controller.handleKey('r', {});
+    refused.popups[0]?.port.workflows?.run('nightly', 'nightly.yaml');
     expect(refused.chordHistory.openedBy).toEqual({ input: 'r', at: PRESSED_AT });
+    expect(refused.open).toHaveBeenCalledWith('nightly', 'nightly.yaml', {
+      opener: { origin: 'workflows' },
+    });
   });
 });
 

@@ -178,8 +178,9 @@ describe('the legend golden', () => {
     expect(row('approval-host', 'card: a command colour=off [1]')).toBe(
       '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember',
     );
+    // The full view is the inspection popup now: its legend sits one column in, like every popup legend in this file.
     expect(row('approval-host', 'full view colour=off [4]')).toBe(
-      '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back',
+      ' [Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back',
     );
     expect(row('question-card-view', 'size=80x24 colour=off [2]')).toBe(
       'Esc / [Ctrl+C] stops the turn',

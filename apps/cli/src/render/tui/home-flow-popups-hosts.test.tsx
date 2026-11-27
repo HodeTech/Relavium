@@ -186,6 +186,17 @@ function homeWithFlows(variant: Variant) {
             pathOf: (index) => (index === 0 ? 'nightly.relavium.yaml' : undefined),
           }),
         },
+        // What the `/workflows` popup's detail reads (MVP-11 unit 8): its `[x]` is the export's opener.
+        workflowReads: {
+          describe: () => ({
+            description: undefined,
+            inputs: [],
+            inputsMore: 0,
+            nodes: [{ id: 'start' }],
+            nodesMore: 0,
+          }),
+          lastRuns: () => [],
+        },
       };
     },
   });
@@ -229,6 +240,11 @@ async function toChord(m: HomeMount, name: FlowName): Promise<void> {
     await typed(m, '/workflows');
     await m.until(() => m.text().includes('nightly'));
     await m.settle();
+    await pause(PAST_THE_SETTLE_MS);
+    m.key(KEYS.enter); // the detail: `[x]` lives there
+    await m.until(() => m.text().includes('Last runs'));
+    await m.settle();
+    await pause(PAST_THE_SETTLE_MS);
     m.key('x');
   } else await typed(m, `/${name}`);
   if (name === 'import') {
@@ -330,10 +346,6 @@ describe.each(VARIANTS)('the Home’s flows that write, $renderer at 80×24', (v
           expect(now.current.text).toMatch(
             /^(Nothing was written\.|Project initialization cancelled\.)$/u,
           );
-        if (name === 'export') {
-          const screen = m.controller.getSnapshot().screen;
-          expect(screen?.kind === 'tab-host' && screen.host.defined?.message).toBeUndefined();
-        }
       } finally {
         m.unmount();
       }

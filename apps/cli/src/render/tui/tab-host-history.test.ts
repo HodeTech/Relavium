@@ -228,11 +228,9 @@ function detailRead(
 function rig(script: Script = {}) {
   const fake = scripted(script);
   const context = (): TabHostContext => ({
-    port: undefined,
     history: fake.port,
     ...(script.pinStore === undefined ? {} : { pins: pinPortOver(script.pinStore) }),
     now: 10_000,
-    canArm: true,
   });
   let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
   const press = (input: string, key: ChatKey = {}): TabHostStep => {
@@ -321,11 +319,10 @@ describe('the rows say what they are, in a glyph and a word', () => {
     expect(rig({ total: 0 }).text()).toContain(
       'No finished run in this project yet. Run a workflow from the Defined tab.',
     );
-    const none = enterTab(freshTabMemory('history'), 'history', { port: undefined, now: 0 });
+    const none = enterTab(freshTabMemory('history'), 'history', { now: 0 });
     const drawn = tabHostLines(none, { columns: 80, terminalRows: 24 }).map((l) => l.text);
     expect(drawn.join('\n')).toContain(HISTORY_UNREADABLE);
     const broken = enterTab(freshTabMemory('history'), 'history', {
-      port: undefined,
       history: {
         read: () => {
           throw new Error('PRIVATE');
@@ -531,20 +528,19 @@ describe('the run detail says what it could not read, and keeps what identifies 
       if (phase !== 'loading')
         r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: phase });
       const items = tabHostLegendText(r.state);
-      expect(items, phase).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc back');
+      expect(items, phase).toBe('←/→ tab · [Ctrl+C] close · Esc back');
       expect(items).not.toContain('scroll');
     }
   });
 
-  it('names Tab where the legend still fits the floor, and leaves it out of the two that would not', () => {
+  it('does not name Tab in any legend: with two tabs `←/→ tab` says it, and every legend fits the floor', () => {
     const r = rig({ total: 3 });
-    expect(tabHostLegendText(r.state), 'the list is full').not.toContain('Tab cycle');
     const empty = rig({ total: 0 });
-    expect(tabHostLegendText(empty.state)).toContain('Tab cycle');
     const detail = opened(detailRead());
-    expect(tabHostLegendText(detail.state), 'the detail is full').not.toContain('Tab cycle');
-    for (const state of [r.state, empty.state, detail.state])
+    for (const state of [r.state, empty.state, detail.state]) {
+      expect(tabHostLegendText(state)).not.toContain('Tab cycle');
       expect(displayWidth(tabHostLegendText(state))).toBeLessThanOrEqual(usableColumns(80));
+    }
   });
 });
 
@@ -740,11 +736,9 @@ describe('the keys of the list', () => {
     };
     const fake = scripted({ total: 30, detail: { kind: 'ready', detail: detailRead() } });
     const context = (): TabHostContext => ({
-      port: undefined,
       history: fake.port,
       pins,
       now: 10_000,
-      canArm: true,
     });
     let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
     const press = (input: string, key: ChatKey = {}): void => {
@@ -821,12 +815,13 @@ describe('the keys of the list', () => {
 
   it('names exactly the keys it answers to, with the way out last', () => {
     const r = rig({ total: 3 });
+    // The way out says where it goes, and at 80 columns `[f] filter` is the key that gives way for it (the way out is never cut).
     expect(tabHostLegendText(r.state)).toBe(
-      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc close',
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · Esc back to Home',
     );
     expect(tabHostLegend(r.state).exit).toMatchObject({
-      keys: 'Esc',
-      verb: 'close',
+      keys: ['Esc'],
+      verb: 'back to Home',
       class: 'close',
     });
     r.press('a');
@@ -843,7 +838,7 @@ describe('the keys of the list', () => {
       ...r.state,
       history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0, pinned: false } },
     };
-    expect(tabHostLegendText(inDetail)).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc back');
+    expect(tabHostLegendText(inDetail)).toBe('←/→ tab · [Ctrl+C] close · Esc back');
   });
 
   it('a chord or a meta key moves nothing, and an unnamed key is nothing', () => {
@@ -878,7 +873,7 @@ describe('the 80×24 budget', () => {
         expect(lines[0]?.text).toContain('› History');
         expect(lines.at(-1)?.kind).toBe('legend');
         expect(lines.some((line) => line.kind === 'selected')).toBe(true);
-        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(/Esc close$/u);
+        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(/Esc back to Home$/u);
       }
     },
   );
@@ -997,10 +992,8 @@ describe('a page can be short, or empty, and still not be the last (the store is
       },
     };
     const context = (): TabHostContext => ({
-      port: undefined,
       history: port,
       now: 10_000,
-      canArm: true,
     });
     let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
     const press = (input: string, key: ChatKey = {}): TabHostStep => {

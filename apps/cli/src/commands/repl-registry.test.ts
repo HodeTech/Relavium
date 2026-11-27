@@ -125,12 +125,12 @@ const groupsOf = (surface: PaletteSurface): CommandGroup[] => [
 
 /** What each placement is when it is chosen (ADR-0145 §1; MVP-11 Appendix A as refined). `chat` covers the Home-hosted chat as well. */
 const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceClass>>>> = {
-  help: { home: 'screen', chat: 'popup' },
+  help: { home: 'popup', chat: 'popup' },
   exit: { home: 'instant', chat: 'instant' },
   cancel: { chat: 'instant' },
   export: { chat: 'popup' },
   agent: { chat: 'popup' },
-  workflows: { home: 'screen', chat: 'popup' },
+  workflows: { home: 'popup', chat: 'popup' },
   cost: { chat: 'popup' },
   doctor: { home: 'popup', chat: 'popup' },
   mode: { home: 'popup', chat: 'popup' },
@@ -138,7 +138,7 @@ const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceCl
   thinking: { chat: 'instant' },
   details: { chat: 'popup' },
   compact: { chat: 'instant' },
-  permissions: { home: 'screen', chat: 'popup' },
+  permissions: { home: 'popup', chat: 'popup' },
   trim: { chat: 'instant' },
   clear: { home: 'instant', chat: 'instant' },
   models: { home: 'popup', chat: 'popup' },
@@ -149,7 +149,7 @@ const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceCl
   init: { home: 'popup' },
   resume: { home: 'popup', chat: 'popup' },
   run: { home: 'popup' },
-  agents: { home: 'screen' },
+  agents: { home: 'popup' },
   import: { home: 'popup' },
   pricing: { home: 'popup' },
 };
@@ -161,6 +161,10 @@ const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceCl
  * the list has an increment that owes it ({@link BUILT_BY}).
  */
 const POPUP_NOT_BUILT_YET: readonly string[] = [
+  'home:help',
+  'home:agents',
+  'home:workflows',
+  'home:permissions',
   'home:doctor',
   'home:mode',
   'home:models',
@@ -202,7 +206,7 @@ const POPUP_NOT_BUILT_YET: readonly string[] = [
 const POPUP_MODULES: Readonly<Record<string, string>> = {};
 
 /** The increment of MVP-11 Step 4 (or Step 5b) that builds each command's popup (`docs/roadmap/phases/mvp-11.md`, Step 4 and Appendix A). */
-const BUILT_BY: Readonly<Record<string, '4b' | '4c' | '4d' | '5b'>> = {
+const BUILT_BY: Readonly<Record<string, '4b' | '4c' | '4d' | '5b' | '8'>> = {
   // 4b · reports
   doctor: '4b',
   agent: '4b',
@@ -224,6 +228,8 @@ const BUILT_BY: Readonly<Record<string, '4b' | '4c' | '4d' | '5b'>> = {
   export: '4d',
   // 5b · the inspection popup
   details: '5b',
+  // 8 · the Home's management popups (MVP-11 unit 8): `/agents` is a popup of the Home only
+  agents: '8',
 };
 
 describe('the command table: one definition per name, with the fields every command declares', () => {

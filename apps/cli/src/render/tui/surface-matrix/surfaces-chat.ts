@@ -380,8 +380,9 @@ function chatModelsSurface(state: ModelsState, title: string): ChatSurfaceDefini
 const SETTINGS_SELECTED_ROW: Readonly<Partial<Record<SettingsState, string>>> = {
   effort: 'medium',
   effect: 'auto',
-  // `/mode`'s first step opens on the mode in force, `ask` (its row's own words: `ask` alone is also the status line's); its second is a form.
-  mode: 'every action asks first · current',
+  // `/mode` opens on the mode in force, `ask` (its row's own words: `ask` alone is also the status line's); with `plan` highlighted its row is `plan`'s.
+  mode: 'every action asks first',
+  'mode-use': 'read-only, nothing is changed',
 };
 
 /**
@@ -406,8 +407,8 @@ function chatSettingsSurface(state: SettingsState, title: string): ChatSurfaceDe
     notes:
       state === 'effort'
         ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /effort, through the chat host’s routing'
-        : state === 'mode' || state === 'mode-apply'
-          ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /mode, through the chat host’s routing (its second step: auto chosen, Enter)'
+        : state === 'mode' || state === 'mode-use'
+          ? 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the popup is opened by typing /mode, through the chat host’s routing (mode-use: plan highlighted after one ↓)'
           : 'the body behind the popup: one short exchange (a strong word in the answer) and the prompt; the test layer opens the popup on the host’s popup host',
     open: async (m) => {
       recordBaseline(m);
@@ -488,11 +489,11 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
   ),
   chatSettingsSurface(
     'mode',
-    'The /mode popup over the chat: the modes, the one in force marked, its effect stated',
+    'The /mode popup over the chat: the modes, the one in force marked (also the startup default), its effect stated',
   ),
   chatSettingsSurface(
-    'mode-apply',
-    'The /mode popup over the chat: where auto applies, its effect stated before Enter',
+    'mode-use',
+    'The /mode popup over the chat: another mode highlighted, its effect stated before Enter, `Enter use in this chat` and `[s]`',
   ),
   {
     name: 'popup',

@@ -11,6 +11,7 @@ import {
   type ModelsState,
 } from './models-fixture.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
+import { HOME_MANAGE_SURFACES } from './home-manage-fixture.js';
 import { MODE_HOME_SURFACES } from './mode-home-fixture.js';
 import { MENTION_HINT } from '../home-pages.js';
 import type { MentionReader } from '../mention.js';
@@ -21,17 +22,13 @@ import { RESUME_RUN_SURFACES } from './resume-run-fixture.js';
 import { UNREADABLE_RUN_SURFACES } from './unreadable-run-fixture.js';
 import {
   ACTIVE_PORT,
-  AGENTS_PORT,
   APPROVAL_RUN,
   BUDGET_RUN,
-  DEFINED_PORT,
   FIXTURE_RUN_IDS,
   historySetup,
   POPULATED_SNAPSHOT,
-  PROJECT_PERMISSIONS_PORT,
   RUN,
   RUNNING_HOST,
-  SESSIONS_PORT,
   TWO_GATES_RUN,
   parkedRunSetup,
 } from './home-fixtures.js';
@@ -168,7 +165,7 @@ function homeDoctorSurface(state: DoctorState, title: string): HomeSurface {
 }
 
 const openTab =
-  (tab: 'defined' | 'active' | 'history' | 'agents' | 'sessions' | 'permissions') =>
+  (tab: 'active' | 'history') =>
   async (m: HomeMount): Promise<void> => {
     m.controller.openScreen('tab-host', { tab });
     await m.settle();
@@ -503,17 +500,6 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   },
   {
     host: 'home',
-    id: 'home.help',
-    title: 'The /help screen',
-    exitKey: 'Esc',
-    landmark: 'Keys of the Home',
-    open: async (m) => {
-      m.controller.openScreen('help');
-      await settleOn(m, 'Keys of the Home');
-    },
-  },
-  {
-    host: 'home',
     id: 'home.notice',
     // `/doctor` is a popup now (ADR-0148 §8) and writes no notice; a command that answers in a line still does.
     title: 'A command’s one-line answer as the Home’s notice (`/clear` with no conversation)',
@@ -531,16 +517,6 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   homeDoctorSurface('done', 'The /doctor popup: the deep result, with its age'),
   homeDoctorSurface('empty', 'The /doctor popup: a line with nothing to send'),
   homeDoctorSurface('error', 'The /doctor popup: checks that could not run'),
-  {
-    host: 'home',
-    id: 'home.tab-defined',
-    title: 'The Defined tab (workflows)',
-    exitKey: 'Esc',
-    landmark: 'alpha',
-    selectedRow: ['beta  1 node', 'Defined'],
-    setup: { deps: { defined: DEFINED_PORT } },
-    open: openTab('defined'),
-  },
   {
     host: 'home',
     id: 'home.tab-active',
@@ -599,36 +575,6 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
       m.key(KEYS.enter);
       await settleOn(m, 'Order in the workflow');
     },
-  },
-  {
-    host: 'home',
-    id: 'home.tab-agents',
-    title: 'The Agents tab (the project’s agents)',
-    exitKey: 'Esc',
-    landmark: 'reviewer',
-    selectedRow: ['reviewer  Reviewer', 'Defined'],
-    setup: { deps: { agents: AGENTS_PORT } },
-    open: openTab('agents'),
-  },
-  {
-    host: 'home',
-    id: 'home.tab-sessions',
-    title: 'The Sessions tab (saved conversations)',
-    exitKey: 'Esc',
-    landmark: 'Fix the flaky test',
-    selectedRow: ['Fix the flaky test  chat', 'Sessions'],
-    setup: { deps: { sessions: SESSIONS_PORT } },
-    open: openTab('sessions'),
-  },
-  {
-    host: 'home',
-    id: 'home.tab-permissions',
-    title: 'The Permissions tab (remembered commands)',
-    exitKey: 'Esc',
-    landmark: 'npm, 1 argument',
-    selectedRow: ['npm, 1 argument', 'Permissions'],
-    setup: { deps: { permissions: PROJECT_PERMISSIONS_PORT } },
-    open: openTab('permissions'),
   },
   {
     host: 'home',
@@ -755,5 +701,6 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   ...PROVIDER_FLOW_SURFACES,
   // The card of an unreadable run, opened by `Enter` on its row of the work page (MVP-11 unit 7).
   ...UNREADABLE_RUN_SURFACES,
+  ...HOME_MANAGE_SURFACES,
   ...NATIVE_POPUP_KINDS.map(homeNativePopupSurface),
 ];

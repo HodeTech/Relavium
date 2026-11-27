@@ -396,6 +396,10 @@ describe('the one predicate: what the slot draws is what the hosts dim behind', 
 // native prompt of the matrix (`.native-popup-*`: a field, a wait or a chord step has no selected row for the check below to find).
 const FRAMED_FLOW_SURFACE =
   /^home\.(provider-|native-|init-|import-|export-|pricing-|resume-|run-launch|mode-(flow|confirm|done))/u;
+// The Home's management popups (MVP-11 unit 8: `/help`, `/agents` and `/workflows`; `/permissions` is `.permissions-` above) are product popups
+// too: each draws the frame its host has open, the box exists only while a surface has one open, and the matrix's own backdrop check covers every
+// cell of each (`checkBackdropDim`, run in every alternate-screen colour cell). The rule is the one every other product popup here is left out by.
+const HOME_MANAGE_SURFACE = /^home\.(help|agents-|workflows-)/u;
 const POPUP_SURFACES = ALL_SURFACES.filter(
   (surface) =>
     surface.popup !== undefined &&
@@ -410,7 +414,8 @@ const POPUP_SURFACES = ALL_SURFACES.filter(
     !surface.id.includes('.unreadable-run-card') &&
     // The flows of unit 6 are framed native prompts too (a field, a wait, a chord step or a Done step): their box is where the live flow
     // draws it, so it exists only while a surface has the flow open, and the matrix's own backdrop check covers every cell of each.
-    !FRAMED_FLOW_SURFACE.test(surface.id),
+    !FRAMED_FLOW_SURFACE.test(surface.id) &&
+    !HOME_MANAGE_SURFACE.test(surface.id),
 );
 
 /** Where the popup of `entry` is drawn in `ALT`, and the cells inside it. */

@@ -98,6 +98,8 @@ export interface FakeModelsOptions {
   readonly defaultModel?: string | undefined;
   /** The provider the default is persisted with (`[chat].default_provider`; absent ⇒ none persisted). */
   readonly defaultProvider?: string | undefined;
+  /** The tier new chats start with (a chat's port reads it; absent ⇒ the port cannot say, and a save is never known to change nothing). */
+  readonly defaultEffort?: ReasoningEffort | undefined;
   readonly effort?: ReasoningEffort | undefined;
   /** The catalog read throws. */
   readonly loadThrows?: boolean;
@@ -149,6 +151,7 @@ export function fakeModels(options: FakeModelsOptions = {}) {
     currentProvider: () => ('provider' in options ? options.provider : 'anthropic'),
     ...('defaultModel' in options ? { defaultModel: () => options.defaultModel } : {}),
     ...('defaultProvider' in options ? { defaultProvider: () => options.defaultProvider } : {}),
+    ...('defaultEffort' in options ? { defaultEffort: () => options.defaultEffort } : {}),
     currentEffort: () => {
       if (options.currentThrows === true) throw new Error('the config does not parse');
       return effort;

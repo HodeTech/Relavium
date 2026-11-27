@@ -16,7 +16,14 @@
  */
 
 import { chordOf, reduceChordKey } from '../render/tui/chord-guard.js';
-import { exitKey, waitMark, type LegendExit, type LegendItem } from '../render/tui/legend.js';
+import {
+  exitKey,
+  legend,
+  waitMark,
+  type LegendExit,
+  type LegendItem,
+} from '../render/tui/legend.js';
+import { displayWidth } from '../render/tui/viewport.js';
 import { POPUP_FLOOR, popupGeometry, popupInnerWidth, type PopupKind } from './geometry.js';
 import {
   bodyPageRows,
@@ -44,6 +51,11 @@ export interface PopupControl {
    * `/permissions`' `[d] / Del withdraw`. The legend names both keys.
    */
   readonly deleteKey?: true | undefined;
+  /**
+   * The verb written where the whole legend does not fit its row (`[s] startup` for `[s] startup default`): the legend builder swaps it in for
+   * every control that has one, when and only when the legend with the full verbs is wider than the row (`shortenToFit`); nothing is dropped.
+   */
+  readonly short?: string | undefined;
 }
 
 /**
@@ -414,9 +426,21 @@ export function currentStep(frame: PopupFrame): {
   const spec = frame.spec.steps[frame.stepIndex] ?? frame.spec.steps[0];
   const state = frame.steps[frame.stepIndex] ?? frame.steps[0];
   if (spec === undefined || state === undefined) throw new Error('a popup has no steps');
-  if (state.controls === undefined && state.enter === undefined) return { spec, state };
-  const controls = state.controls === undefined ? {} : { controls: state.controls };
-  return { spec: { ...spec, ...controls, ...enterOverride(state.enter) }, state };
+  // The highlighted row's own `Enter` and letters, where it names them, come before the step's (`/mode`: `Enter use in this chat` on another
+  // mode, `Enter keep` on the one in force, `[s]` only where saving it would change something).
+  const row = state.content.kind === 'list' ? visibleRows(state)[state.selected] : undefined;
+  const rowControls = row?.controls;
+  const enter = row?.enterVerb ?? state.enter;
+  const controls = rowControls ?? state.controls;
+  if (controls === undefined && enter === undefined) return { spec, state };
+  return {
+    spec: {
+      ...spec,
+      ...(controls === undefined ? {} : { controls }),
+      ...enterOverride(enter),
+    },
+    state,
+  };
 }
 
 /** What a step's state sets over its spec's `enter` ({@link PopupStepState.enter}): nothing when it sets none, no `Enter` for `false`. */
@@ -918,8 +942,12 @@ export function popupLegend(
   if (spec.chord !== undefined) return chordLegend(spec, state, back, page, width, locked);
   const items = stepItems(spec, state, page, width, locked);
   const keep = spec.legendKeep;
-  const finish = (exit: LegendExit): PopupLegend =>
-    keep === undefined ? { items, exit } : { items, exit, priority: legendPriority(items, keep) };
+  const finish = (exit: LegendExit): PopupLegend => {
+    const fitted = shortenToFit(items, exit, spec.controls, width());
+    return keep === undefined
+      ? { items: fitted, exit }
+      : { items: fitted, exit, priority: legendPriority(fitted, keep) };
+  };
   // Where `Esc` does not close, `Ctrl+C` is named as the key that does, and `Esc` is still the way back the legend ends with: a step (ADR-0145
   // §2). With a filter typed `Esc` clears it first; otherwise it goes back.
   const filtered = state.filter.length > 0;
@@ -928,6 +956,30 @@ export function popupLegend(
     return finish(exitKey.step(POPUP_KEYS.leave, filtered ? 'clear the filter' : 'back'));
   }
   return finish(exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state)));
+}
+
+/**
+ * `items` with the SHORT verb of every control that has one ({@link PopupControl.short}) when, and only when, the legend with the full verbs is
+ * wider than a row of `width` columns: the whole row is judged once, so either every control says its full verb or every one its short, and a
+ * key that fits whole is never shortened for the sake of another. Nothing is dropped here: what still does not fit is the frame's fit.
+ */
+function shortenToFit(
+  items: readonly LegendItem[],
+  exit: LegendExit,
+  controls: readonly PopupControl[] | undefined,
+  width: number,
+): LegendItem[] {
+  const shorts = new Map(
+    (controls ?? []).flatMap((control) =>
+      control.short === undefined ? [] : [[control.key, control.short] as const],
+    ),
+  );
+  if (shorts.size === 0 || displayWidth(legend(items, exit)) <= width) return [...items];
+  return items.map((item) => {
+    const short =
+      'keys' in item && typeof item.keys === 'string' ? shorts.get(item.keys) : undefined;
+    return short === undefined || !('keys' in item) ? item : { ...item, verb: short };
+  });
 }
 
 /** A popup step's legend: its items, the way back, and how long each item is kept when the row does not fit. */
@@ -1068,7 +1120,9 @@ export function withContent(
       if (content.kind === 'form') return { ...next, ...formChoices(content, state), offset: 0 };
       // The highlight stays on the row it was on, by id: rows that land (a refreshed catalog) may sort before it, and a highlight kept by index
       // would slide off the model in force onto another (a bare `Enter` chain would then choose it). A row that is gone leaves it at its index.
-      const heldId = visibleRows(state)[state.selected]?.id;
+      const heldId =
+        visibleRows(state)[state.selected]?.id ??
+        (state.content.kind !== 'list' && content.kind === 'list' ? content.initialRow : undefined);
       const rows = visibleRows(next);
       const sameRow = heldId === undefined ? -1 : rows.findIndex((row) => row.id === heldId);
       const selected =

@@ -28,6 +28,7 @@ import type { ChatMode } from '@relavium/shared';
 import type {
   PermissionEntry,
   PermissionsSnapshot,
+  RepoAllowlist,
   WithdrawAnswer,
 } from '../permissions/chat-permissions.js';
 import { keyToken } from '../render/tui/legend.js';
@@ -39,11 +40,17 @@ import {
   sheetEntries,
   sheetNote,
   withdrawHint,
+  type PermissionsSheetState,
 } from '../render/tui/permissions-sheet.js';
 import { clipLine } from '../render/tui/sheet-frame.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
-import type { PopupContent, PopupListRow, PopupOrigin } from './frame-model.js';
+import {
+  HOME_EXIT_VERB,
+  type PopupContent,
+  type PopupListRow,
+  type PopupOrigin,
+} from './frame-model.js';
 import { POPUP_NOTICE_MAX_COLUMNS } from './geometry.js';
 import type { ChordRefusal } from './popup-host.js';
 import { POPUP_KEYS, type PopupControl, type PopupSpec } from './popup-reducer.js';
@@ -131,7 +138,7 @@ function resultRows(result: WithdrawAnswer | undefined): PopupListRow[] {
 /** The project's remembered commands: the heading, then the rows (dates in one column), the empty sentence or why it cannot be read. */
 function projectRows(
   snapshot: PermissionsSnapshot,
-  mode: ChatMode,
+  state: PermissionsSheetState,
   entries: readonly PermissionEntry[],
 ): PopupListRow[] {
   const { project } = snapshot;
@@ -143,13 +150,7 @@ function projectRows(
   const rows: PopupListRow[] = [
     section('project', `This project · remembered (${String(project.rows.length)})`),
   ];
-  if (project.rows.length === 0)
-    rows.push(
-      ...sentence(
-        'project-text',
-        emptyProjectText(initialPermissionsSheetState(snapshot, 'chat', mode, 0)),
-      ),
-    );
+  if (project.rows.length === 0) rows.push(...sentence('project-text', emptyProjectText(state)));
   const labels = project.rows.map((row) => permissionText(row.label));
   const pad = Math.min(MAX_LABEL_PAD, Math.max(0, ...labels.map((label) => displayWidth(label))));
   project.rows.forEach((row, at) => {
@@ -211,11 +212,84 @@ export function permissionsContent(
       ...sentence('note', `${mode} mode · ${sheetNote(state)}`),
       ...resultRows(result),
       section('blank-project', ''),
-      ...projectRows(snapshot, mode, entries),
+      ...projectRows(snapshot, state, entries),
       section('blank-session', ''),
       ...sessionRows(snapshot, entries),
     ],
   };
+}
+
+/** The most entries of the repository's allowlist the Home's popup draws: its heading, its note and these (the last a count when there are more). */
+const ALLOWLIST_ENTRY_ROWS = 4;
+
+/** `count` and its noun: `1 command`, `2 commands`. */
+const plural = (count: number, noun: string): string =>
+  `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
+
+/**
+ * The repository's `[chat]` allowlist, read-only, under the remembered commands (the Home's variant): a heading with the counts, the one note
+ * that a listed command still asks in a chat, and at most {@link ALLOWLIST_ENTRY_ROWS} entries (the last a count of the rest). The entries are the
+ * repository's words (the snapshot masked and bounded them), so each is escaped as a command is and passes the popups' one scrub as a row does.
+ */
+function allowlistRows(list: RepoAllowlist | undefined): PopupListRow[] {
+  if (list === undefined) return [];
+  if (!list.ok)
+    return [
+      section('allowlist', 'This repository · allowlist, read-only'),
+      ...sentence('allowlist-text', list.text),
+    ];
+  const entries = [
+    ...list.commands.map((text) => ({ label: 'command', text })),
+    ...list.globs.map((text) => ({ label: 'pattern', text })),
+  ];
+  const counts = `${plural(list.commands.length, 'command')}, ${plural(list.globs.length, 'pattern')}`;
+  const heading = section('allowlist', `This repository · allowlist, read-only (${counts})`);
+  if (entries.length === 0)
+    return [
+      heading,
+      ...sentence('allowlist-text', 'Nothing is listed in the repository’s [chat] config.'),
+    ];
+  const total = entries.length + list.omitted;
+  const shown =
+    total <= ALLOWLIST_ENTRY_ROWS ? entries : entries.slice(0, ALLOWLIST_ENTRY_ROWS - 1);
+  return [
+    heading,
+    ...sentence('allowlist-note', 'A listed command still asks in a chat; its card only says so.'),
+    ...shown.map((entry, at) =>
+      section(
+        `allowlist-entry:${String(at)}`,
+        `${entry.label.padEnd(8)}${permissionText(entry.text)}`,
+      ),
+    ),
+    ...(total > shown.length
+      ? [section('allowlist-more', `… ${String(total - shown.length)} more in the config`)]
+      : []),
+  ];
+}
+
+/**
+ * The lists of the bare Home's `/permissions` popup (MVP-11 unit 8, OD-24 D1): the project's remembered commands (a date each, `[d]` withdraws one
+ * behind the same two-step line as a chat's), the repository's allowlist read-only, and the one note that only auto mode runs a remembered command
+ * unasked. There is no session on the Home, so no *This session* section and no mode: the note is the project surface's own sentence. With
+ * nothing remembered it is a report of the same lines (there is no row to select), and says how a command becomes remembered.
+ */
+export function homePermissionsContent(
+  snapshot: PermissionsSnapshot,
+  result?: WithdrawAnswer,
+): PopupContent {
+  const entries = sheetEntries(snapshot);
+  const state = initialPermissionsSheetState(snapshot, 'project', undefined, 0);
+  const rows: PopupListRow[] = [
+    ...sentence('note', sheetNote(state)),
+    ...resultRows(result),
+    section('blank-project', ''),
+    ...projectRows(snapshot, state, entries),
+    ...(snapshot.allowlist === undefined
+      ? []
+      : [section('blank-allowlist', ''), ...allowlistRows(snapshot.allowlist)]),
+  ];
+  if (entries.length === 0) return { kind: 'report', lines: rows.map((row) => row.label) };
+  return { kind: 'list', rows };
 }
 
 /** The letters the lists answer to: `[d]` only while there is a row to withdraw. */
@@ -274,7 +348,13 @@ export function permissionsSpec(
     origin,
     rail: 'path',
     steps: [
-      { name: 'Permissions', content, controls },
+      {
+        name: 'Permissions',
+        content,
+        controls,
+        // On the Home the way back names where it goes (OD-24); a chat's popup says `close`, as it did.
+        ...(origin === 'home' ? { exitVerb: HOME_EXIT_VERB } : {}),
+      },
       {
         name: 'Withdraw',
         content: { kind: 'report', lines: [] },

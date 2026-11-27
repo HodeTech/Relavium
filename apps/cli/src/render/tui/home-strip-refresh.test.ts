@@ -348,7 +348,7 @@ describe('the tick is paused while anything else has the screen', () => {
   const FRONT: readonly (readonly [string, (r: Rig) => void, (r: Rig) => void])[] = [
     [
       'the help sheet',
-      (r) => expect(r.controller.openScreen('help')).toBe(true),
+      (r) => expect(r.controller.openScreen('tab-host', { tab: 'history' })).toBe(true),
       (r) => r.controller.closeScreen(),
     ],
     [
@@ -496,7 +496,7 @@ describe('the tick is paused while anything else has the screen', () => {
 
   it('reads the strip once when the landing comes back from a screen, without waiting for a tick', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
-    r.controller.openScreen('help');
+    r.controller.openScreen('tab-host', { tab: 'history' });
     const next = strip([], ['s1', 's2']);
     r.show(next);
     r.moveToken();

@@ -33,6 +33,10 @@ export interface RunCardViewProps {
   readonly rows: number;
   /** Wall-clock milliseconds: the only clock the card reads, for the overdue words. */
   readonly nowMs: number;
+  /** The sheet's wait clock (the host's display value, ADR-0147 §2), drawn in the rule while the card waits. Absent: none. */
+  readonly clock?: string | undefined;
+  /** The card's lockout holds its guarded keys (`RunCard.lock`, a display value): their legend reads `(wait)`. Absent: free. */
+  readonly locked?: boolean | undefined;
   readonly color: boolean;
   readonly onFrame?: ((node: DOMElement | null) => void) | undefined;
 }
@@ -45,6 +49,8 @@ function rowProps(
 ): Record<string, unknown> {
   const role: RunCardRole = row.role;
   switch (role) {
+    case 'rule':
+      return colorProps(color, 'yellow');
     case 'title':
       return color ? { color: projection.tone } : {};
     case 'warn':
@@ -86,6 +92,8 @@ export function RunCardView(props: Readonly<RunCardViewProps>): ReactElement {
       columns: props.columns,
       rows: props.rows,
       nowMs: props.nowMs,
+      clock: props.clock,
+      locked: props.locked,
     }),
   );
   const { color } = props;

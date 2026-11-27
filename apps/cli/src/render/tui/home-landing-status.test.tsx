@@ -203,20 +203,44 @@ describe('the status facts are read at construction and at the events, and publi
     expect(c.getSnapshot().submitBusy).toBe(false);
   });
 
-  it('the `/mode` default of new chats reads it again when its popup is over, however it ended', async () => {
+  it('the `/mode` default of new chats reads it again when its hand-off is over, however it ended; the composer is busy meanwhile (MVP-11 unit 8, OD-25)', async () => {
     for (const outcome of ['resolves', 'rejects'] as const) {
       const facts = reader();
-      const openModeSettings = vi.fn(() =>
+      const save = vi.fn(() =>
         outcome === 'resolves'
-          ? Promise.resolve(undefined)
+          ? Promise.resolve({ kind: 'said' } as const)
           : Promise.reject(new Error('the card failed')),
       );
-      const { c } = home({ statusFacts: { read: facts.read }, openModeSettings });
+      const openSettings = vi.fn();
+      const { c } = home({
+        statusFacts: { read: facts.read },
+        announce: () => {},
+        openSettings,
+        startupMode: { read: () => 'ask', save },
+      });
       type(c, '/mode');
       c.handleKey('', ENTER);
+      // the popup's list is the host's: the controller opens it over the Home's own settings port, and starts nothing itself
+      expect(openSettings, outcome).toHaveBeenCalledOnce();
+      expect(save, outcome).not.toHaveBeenCalled();
+      const request = openSettings.mock.calls[0]?.[0] as {
+        command: string;
+        chat: {
+          surface: string;
+          mode?: { scope: string; saveStartupDefault: (m: 'plan') => Promise<unknown> };
+        };
+      };
+      expect(request.command).toBe('mode');
+      expect(request.chat.surface).toBe('home');
+      expect(request.chat.mode?.scope).toBe('home');
       facts.set({ ...FIRST, mode: 'plan' });
+      const handOff = request.chat.mode?.saveStartupDefault('plan');
+      expect(c.getSnapshot().submitBusy, 'busy while the flow is open').toBe(true);
+      if (outcome === 'resolves') await expect(handOff).resolves.toEqual({ kind: 'said' });
+      else await expect(handOff).rejects.toThrow('the card failed');
       await flush();
-      expect(openModeSettings, outcome).toHaveBeenCalledOnce();
+      expect(save, outcome).toHaveBeenCalledWith('plan');
+      expect(c.getSnapshot().submitBusy, outcome).toBe(false);
       expect(facts.read, outcome).toHaveBeenCalledTimes(2);
       expect(c.getSnapshot().status?.mode, outcome).toBe('plan');
     }

@@ -21,8 +21,6 @@ import { createActivePoll, type ActivePoll } from '../../history/active-poll.js'
 import type { ActiveRead } from '../../history/active-source.js';
 import type { ChangeToken } from '../../history/change-probe.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { sheetCanArm } from './permissions-sheet.js';
-import { PERMISSIONS_UNREADABLE } from './permissions-sheet-port.js';
 import {
   disarmTabHost,
   enterHistoryAtDetail,
@@ -33,11 +31,9 @@ import {
   withActiveFailure,
   withActiveNote,
   withActiveRead,
-  withDefinedNote,
   withHistoryLoad,
   withHistoryLoadFailure,
   withHistoryNote,
-  withSessionsNote,
   type TabEntry,
   type TabHostState,
   type TabId,
@@ -45,8 +41,7 @@ import {
 } from './tab-host.js';
 import type { HistoryPort } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
-import { SESSIONS_RESUME_UNAVAILABLE, type SessionsPort } from './tab-host-sessions.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
@@ -62,7 +57,16 @@ import {
   type ModelsSettingsPort,
   type SettingsKind,
   type SettingsPort,
+  type StartupDefaultMember,
+  type StartupDefaultOutcome,
 } from '../../popups/settings-port.js';
+import {
+  type HomePopupKind,
+  type HomePopupsPort,
+  type HomeWorkflowRun,
+} from '../../popups/home-port.js';
+import { LAUNCH_CANCELLED, type LaunchOptions } from '../../home/run-launch.js';
+import type { WorkflowDetail } from '../../home/workflow-detail.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
   agentStartNotice,
@@ -204,10 +208,18 @@ import {
 import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
+import { HOME_KEYS } from './help-sheet.js';
 import { hostedEndNotice, showsRelativeWords, type ParkedRunRow } from './home-attention.js';
 import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
-import { chordOf, createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
+import {
+  chordOf,
+  createChordGuard,
+  createChordHistory,
+  createLockDisplay,
+  type ChordHistory,
+  type LockDisplay,
+} from './chord-guard.js';
 import { keyHint, keyToken } from './legend.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
 import { looksLikeProviderKey } from '../provider-key-shape.js';
@@ -468,6 +480,9 @@ export interface RunViewProps {
   readonly from?: ScreenOrigin | undefined;
 }
 
+/** What the Home says when it cannot resume a conversation: nothing was opened. */
+export const RESUME_UNAVAILABLE = 'Session resume is unavailable here.';
+
 /** Where a screen was opened from, and so where its `Esc` returns to. */
 export type ScreenOrigin = 'landing' | 'tab-host';
 
@@ -505,6 +520,11 @@ export interface GateCardScreen {
   readonly back: 'landing' | 'run-view';
   /** Where the screen the card came from (a view, or the card itself from a browser) returns to, once the card is closed. */
   readonly from: ScreenOrigin;
+  /**
+   * Since when the run has waited, on the display clock (wall-clock ms): when it parked (`parkedSince`), else when the card opened. The origin
+   * of the sheet's wait clock (ADR-0147 §2): display only, never in the card's snapshot, and read by no guard. Absent: no clock is drawn.
+   */
+  readonly waitingSinceMs?: number | undefined;
   /** A card has no live output and no notice ring: both read as `undefined`, so a reader of the slot needs no narrowing to ask. */
   readonly store?: undefined;
   readonly notices?: undefined;
@@ -524,21 +544,8 @@ export interface TabHostScreen {
   readonly notices?: undefined;
 }
 
-/**
- * The landing's `/help` sheet ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §3): the commands the Home answers to and the keys of the landing, drawn by `help-sheet.ts`. It has nothing to remember, so the kind
- * carries nothing; `Esc` and `Ctrl+C` close it, every other key does nothing and a paste is dropped.
- */
-export interface HelpScreen {
-  readonly kind: 'help';
-  /** A sheet has no run, no live output and no notice ring: all three read as `undefined`, so a reader of the slot needs no narrowing to ask. */
-  readonly runId?: undefined;
-  readonly store?: undefined;
-  readonly notices?: undefined;
-}
-
 /** The slot's contents. */
-export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen | HelpScreen;
+export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen;
 
 /**
  * What the Active tab reads and is told by ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -645,6 +652,8 @@ export interface HomeControllerDeps {
   readonly homeStore: HomeStore;
   /** The monotonic clock the interrupt keymap's arming window runs on (ADR-0115 §1). Default `performance.now`; a test injects its own. */
   readonly now?: () => number;
+  /** The wall clock (epoch ms) the management popups tell the age of a run against (`/workflows`). Default `Date.now`; a test injects its own. */
+  readonly epochNow?: () => number;
   /** Original Home invocation; observe publication before local recovery and retain entered work (a native action, a write). */
   readonly workOwner?: Pick<InvocationWorkOwner, 'enter' | 'failure'>;
   /** The Home exited cleanly (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) → `driveHome` resolves with exit 0. */
@@ -678,11 +687,18 @@ export interface HomeControllerDeps {
    */
   readonly mentionReader?: MentionReader;
   /**
-   * `/mode` at the landing (ADR-0148 §1, §3, §6): the startup-default writer's flow drawn as the `/mode` popup (its choice, its `Ctrl+Y`
-   * confirmation, its Done step). It resolves with the ONE notification the Home shows (a declined confirmation), or `undefined` when the popup
-   * said what happened or was closed before it asked. Absent ⇒ `/mode` says the startup settings are unavailable.
+   * `/mode` at the landing (ADR-0148 §1, §3, §6; MVP-11 unit 8, OD-25): the saved startup default (`read`, what the popup's list marks `startup`
+   * and opens on; `undefined` where it could not be read) and the startup-default writer's flow framed as the confirmation popup (`save`: the
+   * chord card, the Done step; what it came to as an outcome, never a word for the Home's notice). The controller opens the popup over the Home's
+   * own settings port and brackets `save` with the busy mark and the status line read again. Absent ⇒ `/mode` says the startup settings are
+   * unavailable.
    */
-  readonly openModeSettings?: () => Promise<string | undefined>;
+  readonly startupMode?:
+    | {
+        readonly read: StartupDefaultMember['startup'];
+        readonly save: StartupDefaultMember['saveStartupDefault'];
+      }
+    | undefined;
   /**
    * `/init` at the landing (ADR-0148 §1, §6): the popup that shows what it would create, asks with `Ctrl+Y` and ends in its Done step. It
    * resolves with the ONE notification the Home shows (a cancel, a folder that is already a project), or `undefined` when the popup said what
@@ -697,7 +713,7 @@ export interface HomeControllerDeps {
    * Absent ⇒ `/run` says it is unavailable. With a `slug` the picker is skipped (the Defined tab's `r`), and with the catalog `path` the
    * row was listed from the flow refuses a slug whose file is another one by then.
    */
-  readonly launchRun?: (slug?: string, path?: string) => Promise<string>;
+  readonly launchRun?: (slug?: string, path?: string, options?: LaunchOptions) => Promise<string>;
   /**
    * The Defined tab's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §2): read again every time the tab is entered. Absent ⇒ the tab says it cannot list, and a typed `/workflows` at the Home says the
@@ -711,26 +727,49 @@ export interface HomeControllerDeps {
    */
   readonly history?: HistoryPort | undefined;
   /**
-   * What `p` pins and unpins through, on the Defined and the History tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * What `p` pins and unpins through, in the `/workflows` popup and on the History tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §5). Absent ⇒ `p` says pinning is unavailable.
    */
   readonly pins?: PinPort | undefined;
   /**
-   * The `/agents` strip's Defined tab: the project's agent catalog, read again every time the tab is entered ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   * §3). Absent ⇒ a typed `/agents` says the agents are not available here.
+   * The `/agents` popup's catalog: the project's agent catalog, read again every time the popup is opened ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §3, MVP-11 unit 8). Absent ⇒ a typed `/agents` says the agents are not available here. The saved conversations are `/resume`'s.
    */
   readonly agents?: AgentsPort | undefined;
-  /**
-   * The `/agents` strip's Sessions tab: this project's saved conversations, the list the `/resume` picker offers, read again every time the
-   * tab is entered. `Enter` on a row resumes it through {@link HomeControllerDeps.resumeChat}. Absent ⇒ the tab says it cannot list.
-   */
-  readonly sessions?: SessionsPort | undefined;
   /**
    * The Defined tab's export popup: prepare the export of one catalog workflow, show where it would be written, write it only on a Yes and
    * end in its Done step (ADR-0148 §6). It resolves with the ONE notification the Home shows (nothing was written), or `undefined` when the
    * popup said what happened; it holds the native action while the popup is open. Absent ⇒ `x` says export is unavailable.
    */
-  readonly exportDefined?: ((slug: string) => Promise<string | undefined>) | undefined;
+  readonly exportDefined?:
+    | ((slug: string, origin?: 'home' | 'workflows') => Promise<string | undefined>)
+    | undefined;
+  /**
+   * What the `/workflows` popup's detail step reads beyond the catalogue (MVP-11 unit 8, OD-24 D1): one workflow's description, inputs and nodes
+   * (`describe`, the catalog port's own read of its file) and its last runs for this directory (`lastRuns`, the history reader's summaries by
+   * workflow). Both may throw, and either may be absent: the detail then says it cannot be read, or lists no runs.
+   */
+  readonly workflowReads?:
+    | {
+        readonly describe?: ((path: string) => WorkflowDetail) | undefined;
+        readonly lastRuns?:
+          | ((slug: string, limit: number) => readonly HomeWorkflowRun[])
+          | undefined;
+      }
+    | undefined;
+  /**
+   * Open one of the Home's management popups (`/help`, `/agents`, `/workflows`; [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10 as amended 2026-11-27, MVP-11 unit 8) on the Home's popup host, with the port the controller built from what it holds. The controller only
+   * routes the word and builds the port (the host adds the clipboard); nothing reaches the Home's notice. `at` opens `/workflows` on the detail of one
+   * workflow (the flow it handed that workflow to is over). Absent (a test's Home) ⇒ the word says the popup is not available here.
+   */
+  readonly openHomePopup?:
+    | ((request: {
+        readonly kind: HomePopupKind;
+        readonly port: HomePopupsPort;
+        readonly at?: { readonly slug: string } | undefined;
+      }) => void)
+    | undefined;
   /**
    * `/import` at the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §9): ask for a path, show what the import would write, write the file only on a Yes and end in its Done step (ADR-0148 §6). It resolves
@@ -826,7 +865,12 @@ export interface HomeControllerDeps {
    * Absent ⇒ a chat's bare settings lines are dispatched, as before.
    */
   readonly openSettings?:
-    | ((request: { readonly command: SettingsKind; readonly chat: SettingsPort }) => void)
+    | ((request: {
+        readonly command: SettingsKind;
+        readonly chat: SettingsPort;
+        /** Told when the popup closes, however it closed (a bare `relavium permissions` ends with its popup: MVP-11 unit 8). */
+        readonly closed?: (() => void) | undefined;
+      }) => void)
     | undefined;
   /**
    * Open the read-only card of a run whose log could not be read (MVP-11 unit 7): `Enter` on an `unreadable` row of the work page. The controller
@@ -852,6 +896,11 @@ export interface HomeControllerDeps {
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
    */
   readonly schedule?: (callback: () => void, delayMs: number) => () => void;
+  /**
+   * The one-shot timer the exit guard's `(wait)` display opens on (`setTimeout`-shaped, returning its cancel); default an unref'd `setTimeout`.
+   * A seam of its own, apart from {@link schedule}: the display's one timer is no part of the Home's own timers (the run watch, the grace).
+   */
+  readonly lockSchedule?: (callback: () => void, delayMs: number) => () => void;
   /**
    * A change of the Home's page SLIDES (MVP-11 unit 7): the alternate screen's renderer, where the view draws a window onto the two pages. Its
    * frames are timed by {@link schedule}. Absent or `false` (inline, or a test of the keys alone): the pages swap at once.
@@ -935,7 +984,6 @@ export interface HomeController {
   readonly openScreen: {
     (kind: 'run-view', props: RunViewProps): boolean;
     (kind: 'tab-host', props: TabHostProps): boolean;
-    (kind: 'help'): boolean;
   };
   /**
    * Close the screen, if one is open, and drop the interrupt state it armed and what the tab host remembers of its tabs: the one reset
@@ -955,6 +1003,11 @@ export interface HomeController {
    * on mount.
    */
   readonly bindHomeFrame: (visible: ((state: HomeControllerState) => boolean) | undefined) => void;
+  /**
+   * What the exit guard DRAWS of its lockout (ADR-0145 §3, unit 8): whether its `Ctrl+Y` is held now, from the card's appearance or the last
+   * answer, with one timer at the instant it opens. A display value beside the controller's state, never a field of it.
+   */
+  readonly exitGuardLock: LockDisplay;
   /**
    * The host's word that a frame of the Home's pages holding `state` was measured and flushed (the same evidence {@link bindHomeFrame} reads):
    * the keys that waited while the pages slid are applied once the arrival is on screen (MVP-11 unit 7). Optional: a host without it gets them
@@ -1387,15 +1440,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return status === state.status ? {} : { status };
   };
   /**
-   * {@link statusPatch} for a caller with no state change of its own, and only on the bare Home: while a chat is live the Home is not drawn
-   * (its end reads the facts, `endChat`), and a read of the configuration there would be one more strict reload under a running conversation.
-   */
-  const refreshStatus = (): void => {
-    if (exiting || state.mode !== 'home') return;
-    const patch = statusPatch();
-    if ('status' in patch) set(patch);
-  };
-  /**
    * The rows were replaced (a read of the strip): the strip's focus is the identity of a row (`strip-focus.ts`), so it follows its row and is
    * dropped when the row is gone, never left naming nothing; and with nothing left to continue there is no work page, so the Home is its landing
    * again (a slide in progress ends on its own, and the view draws the landing meanwhile).
@@ -1474,8 +1518,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    */
   const activePollPaused = (): boolean =>
     activePollPausedByOverlay(overlayFlags()) ||
-    (terminal !== undefined &&
-      !sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }));
+    (terminal !== undefined && !homeFitsTerminal(terminal.columns, terminal.rows));
   const onActiveRead = (read: ActiveRead): void => {
     lastActiveRead = read;
     const screen = state.screen;
@@ -1796,6 +1839,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
     }, HOSTED_RUN_POLL_MS);
   };
+  // When the exit guard appeared, on its guard's clock: its lockout runs from here too, so a key held down as it opened cannot stop the run with
+  // its first auto-repeat (the rule of every chord surface since unit 7: the card's APPEARANCE counts as an answer just before the first key).
+  let exitGuardOpenedAt = Number.NEGATIVE_INFINITY;
   const requestExit = (): void => {
     if (exiting || state.exitGuard !== undefined) return;
     const snapshot = deps.hostedRuns?.snapshot();
@@ -1803,12 +1849,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       exitHome();
       return;
     }
+    exitGuardOpenedAt = (deps.now ?? ((): number => performance.now()))();
     set({
       exitGuard: 'confirm',
       hostedRun: snapshot,
       palette: undefined,
       stripFocus: undefined,
     });
+    exitGuardLock.sync(); // the card's appearance starts its lockout: its `Ctrl+Y` says `(wait)` until it opens
     watchHostedRun(); // the card names the run's state, so it follows it until the card is closed
   };
   const confirmExit = (): void => {
@@ -1865,70 +1913,36 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // screen object, because a run view opened from the tab host replaces that screen in the one slot and `Esc` must bring it back as it was;
   // and it dies with the screen, in `closeScreen`, so a tab host opened again starts every tab at its top.
   let tabMemory: TabMemory = freshTabMemory();
-  // A bare `relavium permissions` opens the tab host as the run's whole job: closing it ends the run (ADR-0137 §3, ADR-0140 §1).
-  let tabHostIsTheCommand = false;
   /** What entering the Active tab starts from: the last read this Home kept, or `undefined` when nothing feeds the tab. */
   const activeEntry = (): { readonly last: ActiveRead | undefined } | undefined =>
     deps.active === undefined ? undefined : { last: lastActiveRead };
   /** What entering a tab reads from, as it is now. */
   const tabEntry = (): TabEntry => ({
-    port: deps.permissions,
     defined: deps.defined,
     active: activeEntry(),
     history: deps.history,
     pins: deps.pins,
-    agents: deps.agents,
-    sessions: deps.sessions,
     now: interruptNow(),
   });
-  /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
-  const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
-    const host = enterTab(memory, memory.tab, tabEntry());
-    // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
-    // a typed `/workflows` asked for, and the other tabs are one key away.
-    return host.unreadable && host.tab === 'permissions' ? undefined : { kind: 'tab-host', host };
-  };
+  /** The Runs screen on `memory`'s tab, each tab read again as it is entered. */
+  const tabHostScreen = (memory: TabMemory): TabHostScreen => ({
+    kind: 'tab-host',
+    host: enterTab(memory, memory.tab, tabEntry()),
+  });
   const openTabHost = (tab: TabId): boolean => {
     if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
     const screen = tabHostScreen({ ...tabMemory, tab });
-    // The port could not be read: nothing opens, and the Home says why where the person who asked is looking.
-    if (screen === undefined) {
-      set({ notice: PERMISSIONS_UNREADABLE });
-      return false;
-    }
     tabMemory = tabHostMemory(screen.host);
     putScreen(screen);
     return true;
   };
-  /** The tab host back in front after a screen opened from it is left with `Esc`: the tab and the row it came from, read again. */
+  /** The Runs screen back in front after a screen opened from it is left with `Esc`: the tab and the row it came from, read again. */
   const reopenTabHost = (): void => {
-    const screen = tabHostScreen(tabMemory);
-    if (screen === undefined) {
-      // The permissions cannot be read on the way back: the tab host is gone, and the reason is said where the person is looking. As
-      // `leaveTabHost` does for a fault with a note, a bare command then keeps the Home open with the note instead of ending silently.
-      leaveTabHost(PERMISSIONS_UNREADABLE);
-      return;
-    }
-    putScreen(screen, parkedPatch());
-  };
-  /** The landing's `/help` sheet (ADR-0140 §3): it opens from the landing only, like the browsers, and tells the screen nothing. */
-  const openHelp = (): boolean => {
-    // A screen already in the slot is never replaced by the help sheet: a gate card would lose its dispose.
-    if (state.screen !== undefined || !slotAdmits() || state.submitBusy || state.nativeActionBusy)
-      return false;
-    tabMemory = freshTabMemory(); // nothing a tab host remembered is kept for a screen that cannot come back to it
-    putScreen({ kind: 'help' });
-    return true;
+    putScreen(tabHostScreen(tabMemory), parkedPatch());
   };
   function openScreen(kind: 'run-view', props: RunViewProps): boolean;
   function openScreen(kind: 'tab-host', props: TabHostProps): boolean;
-  function openScreen(kind: 'help'): boolean;
-  function openScreen(
-    kind: 'run-view' | 'tab-host' | 'help',
-    props?: RunViewProps | TabHostProps,
-  ): boolean {
-    if (kind === 'help') return openHelp();
-    if (props === undefined) return false;
+  function openScreen(kind: 'run-view' | 'tab-host', props: RunViewProps | TabHostProps): boolean {
     if (kind === 'tab-host') return 'tab' in props && openTabHost(props.tab);
     if (!('runId' in props) || !slotAdmits()) return false;
     const from = props.from ?? 'landing';
@@ -1941,19 +1955,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const screen = state.screen;
     if (screen === undefined) return;
     if (screen.kind === 'gate-card') screen.card.dispose();
-    tabMemory = freshTabMemory(); // the tab host's life ends with the screen (ADR-0140 §1)
-    // A bare `relavium permissions` is the tab host as the command's whole job. A screen that is closed here is the whole chain leaving (the
-    // tab host through `leaveTabHost`, which has cleared the flag and asked for the exit itself; or a card's `Ctrl+C`, or a run view's
-    // close, opened from the tab host: the one slot closes and the tab host goes with them), so the flag is read before it is cleared and
-    // the command ends with the screen by any way out. A flag left set made an `Esc` on a later `/workflows` leave the Home.
-    const asCommand = tabHostIsTheCommand;
-    tabHostIsTheCommand = false;
+    tabMemory = freshTabMemory(); // the Runs screen's life ends with the screen (ADR-0140 §1)
     disarmInterrupt();
-    if (asCommand) {
-      // The exit guard may hold the Home open (a leg is live): the screen is closed behind its card, as `leaveTabHost` closes it.
-      requestExit();
-      if (exiting) return; // the last frame such a run leaves is the screen's, not a Home prompt
-    }
     // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
     set({ screen: undefined, ...parkedPatch() });
   };
@@ -2083,7 +2086,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       painted: (snapshot) => gateCardVisible?.(snapshot) === true,
     });
     // The Attention rows are read again as the card opens: what put the person here may be a moment old.
-    putScreen({ kind: 'gate-card', runId: run.runId, card, back, from }, parkedPatch());
+    // The wait clock's origin (display only, ADR-0147 §2): when the run parked, else now.
+    const parked = run.parkedSince === undefined ? Number.NaN : Date.parse(run.parkedSince);
+    const waitingSinceMs = Number.isFinite(parked) ? parked : Date.now();
+    putScreen(
+      { kind: 'gate-card', runId: run.runId, card, back, from, waitingSinceMs },
+      parkedPatch(),
+    );
     return true;
   };
   /** `Esc` and `Ctrl+C` on a card: it closes and decides nothing; the run view it came from, if any, is back in front. */
@@ -2127,26 +2136,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'tab-host':
         routeTabHostKey(screen, input, key);
         return;
-      case 'help':
-        // The sheet owns every key and answers to `Esc` alone (`Ctrl+C` is the interrupt keymap's, before this): every other key does nothing.
-        if (key.escape === true) closeScreen();
-        return;
     }
   };
-  /**
-   * The tab host closes: the screen with it, and the run with it when this tab host is a bare `relavium permissions`. The last frame such
-   * a run leaves (the scrollback of the inline renderer) is the screen's, not a Home prompt, so the closed state is never published on
-   * the way out; unless the screen closed because of a fault (`note`): then the Home stays with the note, so that it can be read.
-   */
+  /** The Runs screen closes: the screen with it, and the Home is as it was (with `note`, when it closed because of a fault, so that it can be read). */
   const leaveTabHost = (note?: string): void => {
-    const asCommand = tabHostIsTheCommand;
-    tabHostIsTheCommand = false; // the command is over either way: a tab host opened later is an ordinary one
-    if (asCommand && note === undefined) {
-      requestExit();
-      // The exit guard may have held the Home open (a leg is live): the screen it was closed from must not stay open behind the card.
-      if (!exiting) closeScreen();
-      return;
-    }
     closeScreen();
     if (note !== undefined) set({ notice: note });
   };
@@ -2161,40 +2154,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
   /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
   const routeTabHostKey = (screen: TabHostScreen, input: string, key: HomeKeyEvent): void => {
-    const step = foldTabHostKey(screen.host, input, key, {
-      port: deps.permissions,
-      defined: deps.defined,
-      active: activeEntry(),
-      history: deps.history,
-      pins: deps.pins,
-      agents: deps.agents,
-      sessions: deps.sessions,
-      canArm:
-        terminal === undefined ||
-        sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
-      now: interruptNow(),
-    });
+    const step = foldTabHostKey(screen.host, input, key, tabEntry());
     if (step.kind === 'close') {
       leaveTabHost(step.note);
       return;
     }
-    // `Enter` on a conversation of the Sessions tab: the screen closes and the resume begins in ONE state change (`resumeFromSessions`).
-    if (step.kind === 'resume') {
-      resumeFromSessions(step.sessionId, step.state);
-      return;
-    }
-    // `c` on an agent's detail: the screen closes and the chat bound to that agent begins in ONE state change (`startAgentChat`).
-    if (step.kind === 'chat') {
-      startAgentChat(step.agent);
-      return;
-    }
     tabMemory = tabHostMemory(step.state);
     if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
-    // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
+    // `r` on a History detail: the tab is left as the key left it, and the native flow takes the keyboard for the form and its confirmation.
     if (step.kind === 'run') {
       noteOpeningKey(input, key);
       openDefinedRun(step.slug, step.path);
-    } else if (step.kind === 'export') openDefinedExport(step.slug);
+    }
     // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
     else if (step.kind === 'open-view') openActiveView(step.runId);
     else if (step.kind === 'open-gate') openGateCard(step.runId, 'landing', 'tab-host');
@@ -2216,6 +2187,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     history: chordHistory,
   });
+  // The exit guard's lockout as its legend draws it (`(wait)`): the same origin the answer is held to, the later of the last answer and the
+  // card's appearance; nothing once the card no longer asks. Its timer is its own (`lockSchedule`), never the Home's `schedule`.
+  const exitGuardLock = createLockDisplay({
+    now: deps.now ?? ((): number => performance.now()),
+    schedule:
+      deps.lockSchedule ??
+      ((callback: () => void, delayMs: number): (() => void) => {
+        const timer = setTimeout(callback, delayMs);
+        timer.unref();
+        return () => clearTimeout(timer);
+      }),
+    until: () =>
+      state.exitGuard === 'confirm'
+        ? Math.max(
+            exitGuardChord.lockedUntil(),
+            exitGuardChord.lockedUntil({ lastResolvedAt: exitGuardOpenedAt }),
+          )
+        : Number.NEGATIVE_INFINITY,
+  });
   /**
    * The keys the landing takes (its composer, and the lists and sheets that open over it), stamped on the Home's one key history as KEYS,
    * never as resolutions, as a chat's store stamps every key of a chat. A popup that opens on its confirmation line (`/doctor --deep` typed
@@ -2233,10 +2223,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (phase === 'stopping') return; // the wait is bounded and cannot be taken back: no key changes it
     const answer = pressExitGuardKey(input, key);
     if (answer === 'confirm') {
-      if (exitGuardChord.decide(stamp, 'allow', homeFrameVisible?.(state) === true) === undefined)
+      // The lockout runs from the last answer or the card's appearance, whichever came later.
+      const fromOpening = {
+        ...stamp,
+        lastResolvedAt: Math.max(stamp.lastResolvedAt, exitGuardOpenedAt),
+      };
+      if (
+        exitGuardChord.decide(fromOpening, 'allow', homeFrameVisible?.(state) === true) ===
+        undefined
+      )
         return; // refused: the card is still open and nothing is decided
       confirmExit();
     } else if (answer === 'stay') set({ exitGuard: undefined });
+    exitGuardLock.sync(); // a card that no longer asks holds no key
   };
 
   const endChat = (ended: HomeChatSession): void => {
@@ -2503,11 +2502,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * Refused when a popup could not open now ({@link homeNativeActionRefusal}): one notification on the Home's channel says so, in the words a
    * refused popup uses, and nothing is written to the Home's notice or to a transcript. Of the caller's change only a cleared editor is kept
    * (a draft that looks like a provider key is never left in the prompt); the rest belongs to an action that did not start.
+   *
+   * `after` runs once the action is over and the keyboard is the Home's again (the busy mark cleared), however it ended and only while the Home is
+   * not leaving: the `/workflows` popup brings itself back on a workflow once the flow it handed that workflow to is over (MVP-11 unit 8). A popup
+   * cannot open before then: the host's gate refuses one while a native action holds the keyboard.
    */
   const openNativeAction = (
     operation: () => Promise<void>,
     label: string,
     patch: Partial<HomeControllerState> = {},
+    after?: () => void,
   ): void => {
     if (exiting || state.nativeActionBusy) return;
     const refusal = homeNativeActionRefusal(state, patch, deps.popupOpen?.() === true);
@@ -2517,7 +2521,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     set({ nativeActionBusy: true, palette: undefined, ...patch });
-    void driveNativeAction(operation, label).catch(failHome);
+    void driveNativeAction(operation, label)
+      .then(() => {
+        if (!exiting) after?.();
+      })
+      .catch(failHome);
   };
 
   /**
@@ -2647,26 +2655,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * A sentence for the person who is looking at the Defined tab: the tab's message row, which the next key drops. With another screen in
-   * front (or none) it is the landing's notice, which is where such a person would look.
-   */
-  const noteOnDefinedTab = (text: string): void => {
-    const screen = state.screen;
-    if (screen?.kind !== 'tab-host' || screen.host.defined === undefined) {
-      set({ notice: text });
-      return;
-    }
-    set({ screen: { kind: 'tab-host', host: withDefinedNote(screen.host, text) } });
-  };
-
-  /**
-   * A sentence for the person who asked for a run from a tab: the History tab's message row when a run's detail (`r`) asked, which the next key
-   * drops, else the Defined tab's. With another screen in front (or none) it is the landing's notice, as {@link noteOnDefinedTab} says.
+   * A sentence for the person who asked for a run from a run's detail (`r`): the History tab's message row, which the next key drops. With another
+   * screen in front (or none) it is the landing's notice, which is where such a person would look.
    */
   const noteOnRunTab = (text: string): void => {
     const screen = state.screen;
     if (screen?.kind !== 'tab-host' || screen.host.history === undefined) {
-      noteOnDefinedTab(text);
+      set({ notice: text });
       return;
     }
     const host = withHistoryNote(screen.host, text);
@@ -2708,19 +2703,117 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (!opening || !state.nativeActionBusy) forgetOpener();
   };
 
-  /**
-   * `x` on a Defined row: the export popup. What it writes, it writes only on a Yes; its Done step says what happened, and a No is one
-   * notification (ADR-0148 §6). The tab is left as the key left it: nothing is written to its message row.
-   */
-  const openDefinedExport = (slug: string): void => {
-    const exportDefined = deps.exportDefined;
-    if (exportDefined === undefined) {
-      noteOnDefinedTab('Export is unavailable in this session.');
+  // ---- The management popups: `/help`, `/agents`, `/workflows` (ADR-0148 §10 as amended 2026-11-27; MVP-11 unit 8, OD-24) -------------------------
+  // The popups' code is `popups/home-session.ts`, loaded by the host the first time one opens. The controller routes the word, builds the port the
+  // popup reads and asks through, and carries out what the popup asks for AFTER the popup has closed itself: a chat, a run, an export, the Runs
+  // screen. A popup never opens another surface; it hands the host the request, and the request is the one the old tab did make.
+
+  /** The Home's popup port: what the three popups read from this controller's dependencies, and the requests they make of it. Built when asked. */
+  const homePopupsPort = (): HomePopupsPort => ({
+    ...(deps.workOwner === undefined ? {} : { workOwner: deps.workOwner }),
+    ...(deps.plainGlyphs === undefined ? {} : { plainGlyphs: deps.plainGlyphs }),
+    help: { keys: Object.values(HOME_KEYS).map((key) => ({ keys: key.keys, verb: key.short })) },
+    ...(deps.agents === undefined
+      ? {}
+      : { agents: { read: deps.agents.read, chat: (request) => startAgentChat(request) } }),
+    ...(deps.defined === undefined
+      ? {}
+      : {
+          workflows: {
+            read: deps.defined.read,
+            describe: deps.workflowReads?.describe,
+            lastRuns: deps.workflowReads?.lastRuns,
+            pins: deps.pins,
+            now: deps.epochNow ?? ((): number => Date.now()),
+            run: (slug, path) => openWorkflowRun(slug, path),
+            export: (slug) => openWorkflowExport(slug),
+            openRuns: (runId) => openRunsScreen(runId),
+          },
+        }),
+  });
+
+  /** Open the popup `kind` over the Home through the host's one adapter; a Home that wired none says so, in the notice a word with no port uses. */
+  const openManagePopup = (kind: HomePopupKind, at?: { readonly slug: string }): void => {
+    const open = deps.openHomePopup;
+    if (open === undefined) {
+      set({ notice: `/${kind} is not available here.` });
       return;
     }
-    openNativeAction(async () => {
-      announceFlowResult(await exportDefined(slug));
-    }, 'Export');
+    open({ kind, port: homePopupsPort(), at });
+  };
+
+  /** `/workflows` brought back on the detail of `slug`, once the flow it handed that workflow to is over. */
+  const reopenWorkflows = (slug: string): void => {
+    if (!exiting) openManagePopup('workflows', { slug });
+  };
+
+  /**
+   * `[r]` in the `/workflows` popup (the popup is already closed): the `/run` popup started at that workflow, saying it came from `/workflows`
+   * (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own). A run that started is shown at once.
+   * The popup comes back on the workflow's detail when the flow ends without one, except for a cancel (`Run cancelled.`: `Ctrl+C` closes the whole
+   * stack, and `Ctrl+N` is the person's own No). What the launch says is one notification, as it is anywhere. The `r` that opened it is the flow's
+   * to take: a held key's repeats are dropped there (`noteOpeningKey`).
+   */
+  const openWorkflowRun = (slug: string, path: string): void => {
+    const forgetOpener = (): void => {
+      chordHistory.openedBy = undefined;
+    };
+    const launch = deps.launchRun;
+    if (launch === undefined) {
+      deps.announce?.('Running a workflow is unavailable in this session.');
+      reopenWorkflows(slug);
+      return;
+    }
+    noteOpeningKey('r', {});
+    let started = false;
+    let cancelled = false;
+    const opening = !state.nativeActionBusy;
+    openNativeAction(
+      async () => {
+        const before = deps.hostedRuns?.snapshot();
+        const said = await launch(slug, path, { opener: { origin: 'workflows' } }).finally(
+          forgetOpener,
+        );
+        if (exiting) return;
+        set({ ...parkedPatch() });
+        started = launchStartedRun(before);
+        cancelled = said === LAUNCH_CANCELLED;
+        if (started) openRunView();
+        if (said !== '') deps.announce?.(said);
+      },
+      'Run workflow',
+      {},
+      () => {
+        if (!started && !cancelled) reopenWorkflows(slug);
+      },
+    );
+    if (!opening || !state.nativeActionBusy) forgetOpener();
+  };
+
+  /** `[x]` in the `/workflows` popup (already closed): the export confirmation, from `/workflows`; the popup comes back on the workflow when it ends. */
+  const openWorkflowExport = (slug: string): void => {
+    const exportDefined = deps.exportDefined;
+    if (exportDefined === undefined) {
+      deps.announce?.('Export is unavailable in this session.');
+      reopenWorkflows(slug);
+      return;
+    }
+    openNativeAction(
+      async () => {
+        announceFlowResult(await exportDefined(slug, 'workflows'));
+      },
+      'Export',
+      {},
+      () => {
+        reopenWorkflows(slug);
+      },
+    );
+  };
+
+  /** `[h]` and `Enter` on a last run in the `/workflows` popup (already closed): the Runs screen, on that run's detail when one is named. */
+  const openRunsScreen = (runId?: string): void => {
+    const opened = runId === undefined ? openTabHost('history') : openRunDetail(runId);
+    if (!opened && !exiting) deps.announce?.('The Runs screen could not be opened now.');
   };
 
   /**
@@ -2838,7 +2931,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
-      deps.announce?.(SESSIONS_RESUME_UNAVAILABLE);
+      deps.announce?.(RESUME_UNAVAILABLE);
       return;
     }
     const operation = async (): Promise<void> => {
@@ -2947,28 +3040,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * `Enter` on a conversation of the `/agents` Sessions tab: the resume the strip's session row makes (`openResume`), and the screen goes in
-   * the same state change that starts it, so the chat that opens is never under the tab host and the landing is never drawn between the two.
-   * What closing the screen would reset is reset here and published with it: the tab host's memory, the interrupt window and the parked rows.
-   * A Home that cannot resume says so on the tab, which stays. A conversation that cannot be resumed leaves the landing with the resume's own
-   * notice (the screen is already gone), and a tab host opened again starts at its top.
-   */
-  const resumeFromSessions = (sessionId: string, host: TabHostState): void => {
-    if (deps.resumeChat === undefined) {
-      const next = withSessionsNote(host, SESSIONS_RESUME_UNAVAILABLE);
-      tabMemory = tabHostMemory(next);
-      set({ screen: { kind: 'tab-host', host: next } });
-      return;
-    }
-    // No guard on `exiting` or `nativeActionBusy` here: a key reaches a screen only through `handleKey`, which drops every key in either state,
-    // and `openNativeAction` refuses both itself.
-    tabMemory = freshTabMemory();
-    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no Sessions tab
-    disarmInterrupt();
-    openResume(sessionId, { screen: undefined, ...parkedPatch() });
-  };
-
-  /**
    * The Home's own words, ONE record keyed by command name ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7:
    * the real open bindings of the commands the registry marks `opener: 'home'`, and of the Home's `/workflows`, `/permissions` and `/mode`).
    * Both ways to name a word, a line typed at the prompt ({@link managementCommand}) and a row chosen in the `/` palette
@@ -3000,8 +3071,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       {
         argsNotice: '/agents accepts no arguments.',
         unavailable: () =>
-          deps.agents === undefined ? 'The project’s agents are not available here.' : undefined,
-        open: () => void openTabHost('agents'),
+          deps.agents === undefined || deps.openHomePopup === undefined
+            ? 'The project’s agents are not available here.'
+            : undefined,
+        open: () => {
+          openManagePopup('agents');
+        },
       },
     ],
     [
@@ -3009,10 +3084,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       {
         argsNotice: '/workflows accepts no arguments.',
         unavailable: () =>
-          deps.defined === undefined
+          deps.defined === undefined || deps.openHomePopup === undefined
             ? 'The project’s workflows are not available here.'
             : undefined,
-        open: () => void openTabHost('defined'),
+        open: () => {
+          openManagePopup('workflows');
+        },
       },
     ],
     [
@@ -3020,10 +3097,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       {
         argsNotice: '/permissions accepts no arguments.',
         unavailable: () =>
-          deps.permissions === undefined
+          deps.permissions === undefined || homeSettings() === undefined
             ? 'Remembered commands are not available here.'
             : undefined,
-        open: () => void openTabHost('permissions'),
+        open: () => {
+          openLandingSetting('/permissions');
+        },
       },
     ],
     [
@@ -3031,21 +3110,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       {
         argsNotice: 'No conversation is active. Use /mode to set the startup default.',
         unavailable: () =>
-          deps.openModeSettings === undefined
+          deps.startupMode === undefined || deps.announce === undefined
             ? 'Startup mode settings are unavailable here.'
             : undefined,
+        // The popup host's list over the Home's own settings port (ADR-0148 §3): never a native action, which a popup may not open over.
         open: () => {
-          const settings = deps.openModeSettings;
-          if (settings === undefined) return;
-          // The popup saves the startup default the status line names: read again when it is over, however it ended. What it says is its
-          // Done step or ONE notification (a declined confirmation), never the Home's notice (ADR-0148 §6).
-          openNativeAction(async () => {
-            try {
-              announceFlowResult(await settings());
-            } finally {
-              refreshStatus();
-            }
-          }, 'Startup mode settings');
+          if (!openLandingSetting('/mode'))
+            set({ notice: 'Startup mode settings are unavailable here.' });
         },
       },
     ],
@@ -3095,7 +3166,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const name = word.slice(1);
     if (name === 'help') {
       if (withArguments) set({ notice: '/help accepts no arguments.' });
-      else openScreen('help');
+      else openManagePopup('help');
       return;
     }
     const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
@@ -3385,7 +3456,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // in front or one already building has no agent detail to come from, and is not disturbed all the same.
     if (exiting || state.session !== undefined || state.mode !== 'home') return;
     tabMemory = freshTabMemory();
-    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no agent detail
     disarmInterrupt();
     // The Home's pending `@` attachments are its draft's: they never ride into a chat the draft did not start (a read on its way is dropped).
     submitEpoch += 1;
@@ -3456,6 +3526,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return result;
   };
 
+  /**
+   * The bare Home's `/mode` hand-off (ADR-0148 §3, §6; MVP-11 unit 8): the startup-default writer's flow, started as the popup's work once its
+   * list has closed. The composer is busy for as long as the flow is open (its keys are the flow's), and the status line is read again however
+   * it ended: the startup default is what the bare Home's status line names. What it came to is the outcome the popup settles, never a word for
+   * the Home's notice. Never rejects (the adapter reports its own faults).
+   */
+  const saveStartupMode: StartupDefaultMember['saveStartupDefault'] = async (
+    mode,
+  ): Promise<StartupDefaultOutcome> => {
+    const port = deps.startupMode;
+    if (port === undefined || exiting) return { kind: 'closed' };
+    const present = (patch: Partial<HomeControllerState>): boolean => {
+      try {
+        set(patch);
+        return true;
+      } catch (cause) {
+        failHome(cause);
+        return false;
+      }
+    };
+    if (!present({ submitBusy: true })) return { kind: 'closed' };
+    try {
+      return await port.save(mode);
+    } finally {
+      if (!exiting) present({ submitBusy: false, ...(state.mode === 'home' ? statusPatch() : {}) });
+    }
+  };
+
   /** The catalog half of a `/models` member: the Home's one catalog port (the chats the Home hosts read the same catalog). */
   const catalogOf = (
     port: HomeModelsPort,
@@ -3473,20 +3571,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const homeSettings = (): SettingsPort | undefined => {
     const port = deps.models;
     const announce = deps.announce;
-    if (port === undefined || announce === undefined) return undefined;
+    if (announce === undefined) return undefined;
+    const startupMode = deps.startupMode;
+    const members: Pick<SettingsPort, 'models' | 'mode' | 'permissions'> = {
+      // `/permissions` on the bare Home (MVP-11 unit 8, OD-24): the project's remembered commands and the repository's allowlist, over the
+      // project's port (no session, so no mode: the popup draws the Home's lists).
+      ...(deps.permissions === undefined ? {} : { permissions: { port: deps.permissions } }),
+      ...(port === undefined
+        ? {}
+        : {
+            models: {
+              scope: 'home',
+              ...catalogOf(port),
+              current: port.currentDefault,
+              // The provider of the effective default is its catalog row's (the popup reads it there).
+              currentProvider: () => undefined,
+              currentEffort: port.currentEffort,
+              saveDefault: saveNextSessionDefault,
+            },
+          }),
+      ...(startupMode === undefined
+        ? {}
+        : {
+            mode: {
+              scope: 'home',
+              startup: startupMode.read,
+              saveStartupDefault: saveStartupMode,
+            },
+          }),
+    };
+    if (
+      members.models === undefined &&
+      members.mode === undefined &&
+      members.permissions === undefined
+    )
+      return undefined;
     return {
       surface: 'home',
       announce,
       ...(deps.workOwner === undefined ? {} : { workOwner: deps.workOwner }),
-      models: {
-        scope: 'home',
-        ...catalogOf(port),
-        current: port.currentDefault,
-        // The provider of the effective default is its catalog row's (the popup reads it there).
-        currentProvider: () => undefined,
-        currentEffort: port.currentEffort,
-        saveDefault: saveNextSessionDefault,
-      },
+      ...members,
     };
   };
 
@@ -3510,6 +3634,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         currentProvider: () => active.provider,
         defaultModel: port.currentDefault,
         defaultProvider: port.currentDefaultProvider,
+        defaultEffort: port.currentEffort,
         currentEffort: () => active.store.getSnapshot().reasoningEffort,
         setEffort: active.onSetEffort,
         switchModel: (choice) => {
@@ -3524,13 +3649,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * A setting the bare Home answers with a popup (`/models`; ADR-0148 §3), routed by the one routing over the Home's own settings port: whether
    * it opened one. A setting it has no popup for (or a Home that wires none) goes on to the word's own answer.
    */
-  const openLandingSetting = (word: string): boolean => {
+  const openLandingSetting = (word: string, closed?: () => void): boolean => {
     const port = homeSettings();
     const open = deps.openSettings;
     if (port === undefined || open === undefined) return false;
     const route = routePopupLine(word, { doctor: false, settings: port });
     if (route?.kind !== 'settings') return false;
-    open({ command: route.command, chat: port });
+    open({ command: route.command, chat: port, ...(closed === undefined ? {} : { closed }) });
     return true;
   };
 
@@ -3547,7 +3672,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     exportSession: () => undefined,
     // `/help` is on the Home's palette (ADR-0145 §7.3): chosen there it opens the same screen the typed word does.
     help: () => {
-      openScreen('help');
+      openManagePopup('help');
     },
     showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens the Defined tab from the controller (MVP-8 step 4)
     // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
@@ -4152,12 +4277,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       closeScreen();
       return;
     }
-    if (screen.kind === 'help') {
-      // The sheet is not a run: `Ctrl+C` closes it, arms nothing and cancels nothing, even with a leg executing behind it.
-      showInterruptHint(false);
-      closeScreen();
-      return;
-    }
     const leg = runScreenLeg(screen.runId, deps.hostedRuns?.snapshot() ?? state.hostedRun);
     const decision = pressRunViewInterrupt(interrupt, leg, interruptNow());
     interrupt = decision.state;
@@ -4724,14 +4843,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     bindHomeFrame(visible) {
       homeFrameVisible = visible;
     },
+    exitGuardLock,
     homeFrameShown(shown) {
       // The arrival of a slide is on screen: what waited for it is applied now (MVP-11 unit 7).
       if (settlingSlide && shown === state && !exiting) drainSlideQueue();
     },
     openPermissionsAsCommand() {
       if (exiting || deps.permissions === undefined) return;
-      tabHostIsTheCommand = openTabHost('permissions');
-      // It did not open (the port could not be read): stay in the Home, whose notice says why.
+      // The popup is the run's whole job: it ends with it, whichever way it closes. A popup that could not open leaves the Home as it is, with the
+      // reason on its own channel (the host's gate says one sentence).
+      if (!openLandingSetting('/permissions', () => requestExit()))
+        set({ notice: 'Remembered commands are not available here.' });
     },
     handlePaste(text) {
       // While the pages slide the paste waits its turn behind the keys that came before it (MVP-11 unit 7).

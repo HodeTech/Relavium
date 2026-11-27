@@ -1,11 +1,12 @@
 /**
- * A typed `/word` on the landing, and the `/help` sheet it opens
- * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5),
+ * A typed `/word` on the landing, and the `/help` popup it opens
+ * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5;
+ * [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §10 as amended 2026-11-27, MVP-11 unit 8),
  * through the real Home controller: a line that starts with a slash is a command line and is always answered, never a message (the chat reads
  * every such line as a slash command, so a chat started for it could only say `unknown command`): a registry word is answered whatever
- * follows it, a word the registry does not know is said to be unknown, a line that is not a word is said to be unknown as the chat says it,
- * and the sheet owns every key while it is open. The pure
- * model of the sheet is `help-sheet.test.ts`; what is drawn is `home-help-sheet-app.test.tsx`. The run host, the ports and the timers are
+ * follows it, a word the registry does not know is said to be unknown, a line that is not a word is said to be unknown as the chat says it.
+ * `/help` is a popup (the popup host owns its keys: `popups/home-help-popup.test.ts`, `popups/home-session-hosts.test.tsx`); the controller only
+ * routes the word and builds the port, which this file reads through a scripted `openHomePopup`. The run host, the ports and the timers are
  * scripted: no engine is built and no operator home is read.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -19,7 +20,7 @@ import {
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { createChatStore } from './chat-store.js';
-import { HELP_SHEET_KEYS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
+import { HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -82,9 +83,14 @@ const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 
 /** A Home over scripted ports, with no timers and a chat build that never finishes (so a started chat is a `startChat` call). */
 function mount(
-  options: { readonly snapshot?: HomeSnapshot; readonly hosted?: RunHostSnapshot } = {},
+  options: {
+    readonly snapshot?: HomeSnapshot;
+    readonly hosted?: RunHostSnapshot;
+    readonly popups?: boolean;
+  } = {},
 ) {
   const onExit = vi.fn();
+  const openHomePopup = vi.fn();
   const startChat = vi.fn(() => new Promise<HomeChatSession>(() => {}));
   const deps: HomeControllerDeps = {
     startChat,
@@ -99,6 +105,7 @@ function mount(
             close: () => Promise.resolve(),
           },
         }),
+    ...(options.popups === true ? { openHomePopup } : {}),
     schedule: () => () => {},
     now: () => 1_000,
     onExit,
@@ -106,7 +113,7 @@ function mount(
       throw cause;
     },
   };
-  return { controller: createHomeController(deps), onExit, startChat };
+  return { controller: createHomeController(deps), onExit, startChat, openHomePopup };
 }
 type Home = ReturnType<typeof mount>;
 
@@ -134,7 +141,8 @@ const WORKS_IN_A_CHAT = (word: string): string =>
  */
 const ANSWERS: Readonly<Record<string, (home: Home) => void | Promise<void>>> = {
   help: (home) => {
-    expect(home.controller.getSnapshot().screen?.kind).toBe('help');
+    // A popup `driveHome` always wires; with none, the one line every word with no port says.
+    expect(home.controller.getSnapshot().notice).toBe('/help is not available here.');
   },
   exit: (home) => {
     expect(home.onExit).toHaveBeenCalledOnce();
@@ -237,7 +245,7 @@ describe('a registry word at the landing is answered, and never starts a chat', 
     await flush();
     const snapshot = home.controller.getSnapshot();
     expect(snapshot.notice).toBe(notice);
-    expect(snapshot.screen, 'no sheet opens for a line with arguments').toBeUndefined();
+    expect(snapshot.screen, 'no popup opens for a line with arguments').toBeUndefined();
     expect(home.startChat).not.toHaveBeenCalled();
     expect(home.onExit).not.toHaveBeenCalled();
     expect(snapshot.input.text).toBe('');
@@ -248,7 +256,7 @@ describe('a registry word at the landing is answered, and never starts a chat', 
 /**
  * The Home's own words that the registry does not hold (`/import` and `/pricing`, ADR-0140 §9): `ANSWERS` above is the registry's, and its
  * first test fails for a key that is not a registry word, so these have their own table. Each is a command of the bare Home's palette and so
- * a row of the help sheet; at the landing it is answered by its own route (`home-import-pricing-route.test.ts` owns the cards), and it is
+ * a row of the help popup; at the landing it is answered by its own route (`home-import-pricing-route.test.ts` owns the cards), and it is
  * never a message, so it starts no chat, however it reaches the prompt.
  */
 describe.each([
@@ -257,8 +265,8 @@ describe.each([
 ] as const)('the Home word %s', (word, unavailable) => {
   const name = word.slice(1);
 
-  it('is a command of the bare Home’s palette and a row of the help sheet, and is not a word of the registry', () => {
-    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name); // the sheet lists exactly the palette's commands
+  it('is a command of the bare Home’s palette and a row of the help popup, and is not a word of the registry', () => {
+    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name); // the popup lists exactly the palette's commands
     expect(REPL_COMMANDS.map((command) => command.name)).not.toContain(name);
   });
 
@@ -291,10 +299,12 @@ describe.each([
 });
 
 describe('Enter on a palette query that matches nothing, at the landing', () => {
-  it('opens the sheet for help, answers a chat’s word and says a stranger is unknown', () => {
-    const help = mount();
+  it('opens the popup for help, answers a chat’s word and says a stranger is unknown', () => {
+    const help = mount({ popups: true });
     typed(help, '/help');
-    expect(help.controller.getSnapshot().screen?.kind).toBe('help');
+    expect(help.openHomePopup).toHaveBeenCalledOnce();
+    expect(help.openHomePopup.mock.calls[0]?.[0]).toMatchObject({ kind: 'help' });
+    expect(help.controller.getSnapshot().screen).toBeUndefined();
     expect(help.controller.getSnapshot().palette).toBeUndefined();
 
     const cost = mount();
@@ -309,7 +319,7 @@ describe('Enter on a palette query that matches nothing, at the landing', () => 
     for (const home of [help, cost, stranger]) expect(home.startChat).not.toHaveBeenCalled();
   });
 
-  it('a palette query that is a sentence is answered as its first word is: it opens no sheet and starts no chat', () => {
+  it('a palette query that is a sentence is answered as its first word is: it opens no popup and starts no chat', () => {
     const home = mount();
     typed(home, '/help me');
     expect(home.startChat).not.toHaveBeenCalled();
@@ -418,7 +428,7 @@ describe('a word the registry does not know', () => {
       pasted(home, line);
       const snapshot = home.controller.getSnapshot();
       expect(snapshot.notice).toBe(notice);
-      expect(snapshot.screen, 'no sheet opens for a line with text after the word').toBeUndefined();
+      expect(snapshot.screen, 'no popup opens for a line with text after the word').toBeUndefined();
       expect(snapshot.mode).toBe('home');
       expect(snapshot.input.text).toBe('');
       expect(
@@ -431,7 +441,7 @@ describe('a word the registry does not know', () => {
 
   it('shows a line that is not a word as the chat does: printable ASCII only, and at most 64 characters', () => {
     const control = mount();
-    pasted(control, '/Users/x\u001b[31mred');
+    pasted(control, `/Users/x${String.fromCharCode(27)}[31mred`);
     // The escape never enters the draft (a paste drops every C0, DEL and C1 control but TAB and LF: `draftText`, round 2 F6), so the notice has no `?`
     // where it stood; what the notice itself does with a character it cannot show is pinned by the next case (`é` and the line break).
     expect(control.controller.getSnapshot().notice).toBe(
@@ -469,13 +479,6 @@ describe('a word the registry does not know', () => {
       'Unknown command: /zzqqx. /help lists the commands.',
     );
     expect(home.startChat).not.toHaveBeenCalled();
-  });
-
-  it('a help sheet is never opened over a screen that is already open', () => {
-    const home = mount();
-    expect(home.controller.openScreen('help')).toBe(true);
-    expect(home.controller.openScreen('help')).toBe(false);
-    expect(home.controller.getSnapshot().screen?.kind).toBe('help');
   });
 
   it('answers a word of any length: it is never sent either', () => {
@@ -528,107 +531,17 @@ describe('a word the registry does not know', () => {
       controller.handleKey('', ENTER);
       await vi.waitFor(() => expect(lines).toContain(line));
     }
-    expect(controller.getSnapshot().screen, 'no sheet opens over a chat').toBeUndefined();
+    expect(controller.getSnapshot().screen, 'no screen opens over a chat').toBeUndefined();
     expect(controller.getSnapshot().notice).toBeUndefined();
-    expect(controller.openScreen('help'), 'the slot admits no screen over a chat').toBe(false);
     await controller.teardownActive();
   });
 });
 
-describe('the sheet owns every key while it is open', () => {
-  const open = (home: Home): void => {
-    expect(home.controller.openScreen('help')).toBe(true);
-    expect(home.controller.getSnapshot().screen?.kind).toBe('help');
-  };
-  const same = (a: HelpKeyPress, b: HelpKeyPress): boolean =>
-    a.input === b.input && JSON.stringify(a.key) === JSON.stringify(b.key);
-  const closing = (key: HelpKeyPress): boolean =>
-    HELP_SHEET_KEYS.close.presses.some((candidate) => same(candidate, key));
-
-  it.each(HELP_SHEET_KEYS.close.presses)(
-    'closes with %j, and leaves no screen, no armed interrupt and no exit behind',
-    (key) => {
-      const home = mount();
-      open(home);
-      press(home.controller, key);
-      const snapshot = home.controller.getSnapshot();
-      expect(snapshot.screen, 'the slot is empty again').toBeUndefined();
-      expect(snapshot.interruptArmed).toBe(false);
-      expect(home.onExit).not.toHaveBeenCalled();
-      expect(home.startChat).not.toHaveBeenCalled();
-      // The landing is back: its own keys work again.
-      home.controller.handleKey('/', {});
-      expect(home.controller.getSnapshot().palette).toBeDefined();
-    },
-  );
-
-  it('names exactly the two closing presses: Esc and Ctrl+C', () => {
-    expect(HELP_SHEET_KEYS.close.presses).toEqual([
-      { input: '', key: { escape: true } },
-      { input: 'c', key: { ctrl: true } },
-    ]);
-  });
-
-  const homeKeyPresses = Object.entries(HOME_KEYS).flatMap(([id, key]) =>
-    key.presses.map((keyPress) => [id, keyPress] as const),
-  );
-  it.each(homeKeyPresses)(
-    'a key of the Home (%s: %j) does what it does only on the landing: here it leaves the sheet as it was, unless it is one that closes it',
-    (_id, key) => {
-      const home = mount({ snapshot: WITH_SESSION });
-      open(home);
-      press(home.controller, key);
-      const snapshot = home.controller.getSnapshot();
-      if (closing(key)) {
-        expect(snapshot.screen).toBeUndefined();
-      } else {
-        expect(snapshot.screen?.kind, 'the sheet stays').toBe('help');
-      }
-      expect(snapshot.palette, 'no palette opens behind it').toBeUndefined();
-      expect(snapshot.input.text, 'nothing is typed into the prompt').toBe('');
-      expect(snapshot.stripFocus?.id, 'no row is moved onto').toBeUndefined();
-      expect(snapshot.interruptArmed, 'no interrupt is armed').toBe(false);
-      expect(home.startChat).not.toHaveBeenCalled();
-      expect(home.onExit).not.toHaveBeenCalled();
-    },
-  );
-
-  it('does nothing for a letter, an arrow or a paste, and Ctrl+D does not exit from it', () => {
-    const home = mount({ snapshot: WITH_SESSION });
-    open(home);
-    for (const key of [
-      { input: 'x', key: {} },
-      { input: '', key: { upArrow: true } },
-      { input: '', key: { leftArrow: true } },
-      { input: 'd', key: { ctrl: true } },
-      { input: '\t', key: {} },
-    ] as const)
-      press(home.controller, key);
-    home.controller.handlePaste('typed behind the sheet');
-    const snapshot = home.controller.getSnapshot();
-    expect(snapshot.screen?.kind).toBe('help');
-    expect(snapshot.input.text).toBe('');
-    expect(home.onExit).not.toHaveBeenCalled();
-    expect(home.startChat).not.toHaveBeenCalled();
-  });
-
-  it('opens from the landing only: not over an overlay, and not twice from a screen that is already open', () => {
-    const home = mount();
-    home.controller.handleKey('/', {});
-    expect(home.controller.getSnapshot().palette).toBeDefined();
-    expect(home.controller.openScreen('help'), 'refused while the palette is open').toBe(false);
-    home.controller.handleKey('', ESC);
-    expect(home.controller.openScreen('help')).toBe(true);
-    home.controller.closeScreen();
-    expect(home.controller.getSnapshot().screen, 'closeScreen is the one reset').toBeUndefined();
-  });
-});
-
 /**
- * The keys the sheet names are the landing's own, and each does what its verb says there. This is the half of the claim the sheet's
- * Keys section makes (a hint cannot name a key that does not do it): the other half, that the sheet itself ignores them, is above.
+ * The keys the `/help` popup names are the landing's own, and each does what its verb says there (a hint cannot name a key that does not do
+ * it): the popup draws its Keys section from `HOME_KEYS`, and this presses every one of them on a mounted Home.
  */
-describe('every key the sheet names does what it says on the landing', () => {
+describe('every key the popup names does what it says on the landing', () => {
   type Id = keyof typeof HOME_KEYS;
   const pressAll = (home: Home, id: Id): void => {
     for (const key of HOME_KEYS[id].presses) press(home.controller, key);
@@ -725,7 +638,7 @@ describe('every key the sheet names does what it says on the landing', () => {
     },
   };
 
-  it('has a check for every key the sheet names', () => {
+  it('has a check for every key the popup names', () => {
     expect(Object.keys(landing).sort()).toEqual(Object.keys(HOME_KEYS).sort());
   });
   it.each(Object.keys(HOME_KEYS) as Id[])('%s', (id) => {

@@ -31,6 +31,7 @@ import {
 import { clipLine } from '../render/tui/sheet-frame.js';
 import { displayWidth } from '../render/tui/viewport.js';
 import { workflowSourceDigest } from '../run-core/source-digest.js';
+import { buildWorkflowDetail, type WorkflowDetail } from './workflow-detail.js';
 import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import { framedFlow, type FramedChordFlow, type FramedFlowOptions } from './framed-flow.js';
@@ -335,13 +336,26 @@ function reduceAnswer(
   return toField(state, state.choices, { ...state.form, values }, state.index + 1, []);
 }
 
-function reduceBack(state: Extract<LaunchState, { kind: 'asking' | 'confirming' }>): LaunchStep {
+function reduceBack(
+  state: Extract<LaunchState, { kind: 'asking' | 'confirming' }>,
+  options: LaunchReduceOptions,
+): LaunchStep {
   const index = state.kind === 'asking' ? state.index : state.form.fields.length;
   const previous = state.form.fields[index - 1];
-  if (previous === undefined) return toPicker(state, { kind: 'forget', names: 'all' });
+  if (previous === undefined) {
+    // Started from the `/workflows` popup the picker was skipped, and `Esc` at the first thing asked goes back to THAT popup, not to a list
+    // the person never opened (OD-24 D1): the flow ends, saying nothing, and the host that started it puts the popup back.
+    if (options.toOpener === true) return closeWith(state, '');
+    return toPicker(state, { kind: 'forget', names: 'all' });
+  }
   // The field being returned to is asked again from nothing: its earlier value (a masked one above all) is dropped.
   const form = { ...state.form, values: withoutValue(state.form.values, previous.name) };
   return toField(state, state.choices, form, index - 1, [previous.name]);
+}
+
+/** What changes the machine's answer to an event beyond the state: the launch was started from another popup, which `Esc` goes back to. */
+export interface LaunchReduceOptions {
+  readonly toOpener?: boolean;
 }
 
 type EventOf<Kind extends LaunchEvent['kind']> = Extract<LaunchEvent, { readonly kind: Kind }>;
@@ -373,10 +387,14 @@ function reduceAnswered(state: LaunchState, event: EventOf<'answered'>): LaunchS
   return reduceAnswer(state, event.value);
 }
 
-function reduceBackEvent(state: LaunchState, event: EventOf<'back'>): LaunchStep {
+function reduceBackEvent(
+  state: LaunchState,
+  event: EventOf<'back'>,
+  options: LaunchReduceOptions,
+): LaunchStep {
   if ((state.kind !== 'asking' && state.kind !== 'confirming') || event.turn !== state.turn)
     return IGNORED(state);
-  return reduceBack(state);
+  return reduceBack(state, options);
 }
 
 function reduceConfirmed(state: LaunchState, event: EventOf<'confirmed'>): LaunchStep {
@@ -401,7 +419,11 @@ function reduceLaunched(state: LaunchState, event: EventOf<'launched'>): LaunchS
  * clock, a prompt, a file or a host. An event for a prompt that is no longer the current one is ignored. Each event has its own small
  * reducer above, so what one answers is read in one place.
  */
-export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep {
+export function reduceLaunch(
+  state: LaunchState,
+  event: LaunchEvent,
+  options: LaunchReduceOptions = {},
+): LaunchStep {
   if (state.kind === 'closed') return IGNORED(state);
   switch (event.kind) {
     case 'opened':
@@ -414,7 +436,7 @@ export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep
     case 'answered':
       return reduceAnswered(state, event);
     case 'back':
-      return reduceBackEvent(state, event);
+      return reduceBackEvent(state, event, options);
     case 'confirmed':
       return reduceConfirmed(state, event);
     case 'launched':
@@ -466,6 +488,12 @@ export interface LaunchCatalog {
    * the confirmation built from the first are bound by the second. Throws a {@link CliError} for a path that no longer resolves or parses.
    */
   readonly load: (path: string) => LoadedWorkflow;
+  /**
+   * What the `/workflows` popup's detail step shows of the file at `path` (its description, its inputs, the chain of its nodes), from the same
+   * read and parse {@link load} makes but with no digest, no file scope and no configuration read: nothing here is bound to a start. Absent on a
+   * catalog that has none (a stub): the popup then says the workflow could not be read. Throws a {@link CliError} as {@link load} does.
+   */
+  readonly describe?: ((path: string) => WorkflowDetail) | undefined;
 }
 
 /**
@@ -486,6 +514,22 @@ export function createProjectCatalog(options: {
       return projectConfigDir === undefined
         ? []
         : discoverCatalog({ projectConfigDir, cwd, kind: 'workflows', homeDir });
+    },
+    describe: (path) => {
+      const source = resolveWorkflowSource(path, {
+        cwd,
+        projectConfigDir: options.projectConfigDir(),
+        homeDir,
+      });
+      try {
+        return buildWorkflowDetail(
+          parseWorkflow(source.yaml, { source: sourceLabel(cwd, source.path) }),
+        );
+      } catch (cause) {
+        if (cause instanceof WorkflowParseError)
+          throw new CliError('invalid_invocation', cause.message, { cause });
+        throw cause;
+      }
     },
     load: (path) => {
       const source = resolveWorkflowSource(path, {
@@ -972,6 +1016,22 @@ export interface LaunchSession {
   readonly dispatch: (event: LaunchEvent) => void;
 }
 
+/**
+ * The popup a launch was started from, when it was started from one ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §5, the 2026-11-27 note; MVP-11 unit 8, OD-24 D1: `[r]` in the `/workflows` popup). The `/run` frame then says it came from `/workflows`, and
+ * `Esc` at the first thing it asks (the picker is skipped) leaves the flow with no word instead of stepping back to a list the person never
+ * opened, and it is the caller's to bring the opener back. Anything else that ends the flow (a start, a cancel, a refusal, a failed start) is told
+ * as it always was.
+ */
+export interface LaunchOpener {
+  readonly origin: 'workflows';
+}
+
+/** What a caller may say about how a launch is opened. */
+export interface LaunchOptions {
+  readonly opener?: LaunchOpener | undefined;
+}
+
 export interface RunLaunch {
   /**
    * Run the launch flow once and resolve with what the Home says of it: one notification's words (a run that started, a cancel, a refusal
@@ -986,7 +1046,7 @@ export interface RunLaunch {
    * workflow by its label) are never shown for a file the person did not see. It is compared with the fresh catalog's own path and is
    * never read or resolved. The file the flow then reads must still declare the id it was listed under ({@link launchChanged}).
    */
-  readonly open: (slug?: string, path?: string) => Promise<string>;
+  readonly open: (slug?: string, path?: string, options?: LaunchOptions) => Promise<string>;
   /** The launch in flight, if any. */
   readonly session: () => LaunchSession | undefined;
 }
@@ -1070,14 +1130,38 @@ function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | und
     : { kind: 'refused', notice: refusal, empty: false };
 }
 
+/**
+ * The frames a launch draws in, over the Home's raw channel: the Home's own `/run` popup, and, made when first asked for, the same popup saying it
+ * came from the popup that started it (`from /workflows`). Every prompt of the launch is drawn in the frame it is given, on the step it names.
+ */
+function launchFrames(channel: RunLaunchDeps['flow']): (opener?: LaunchOpener) => FramedChordFlow {
+  const home = framedFlow(channel, RUN_FRAME);
+  const stacked = new Map<LaunchOpener['origin'], FramedChordFlow>();
+  return (opener) => {
+    if (opener === undefined) return home;
+    const known = stacked.get(opener.origin);
+    if (known !== undefined) return known;
+    const made = framedFlow(channel, { ...RUN_FRAME, origin: opener.origin });
+    stacked.set(opener.origin, made);
+    return made;
+  };
+}
+
 export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
-  // The `/run` popup over the Home's raw channel: every prompt of the launch is drawn in its frame, on the step it names.
-  const flow = framedFlow(deps.flow, RUN_FRAME);
+  const frameOf = launchFrames(deps.flow);
   let current: { readonly session: LaunchSession; readonly done: Promise<string> } | undefined;
 
-  const open = async (slug?: string, path?: string): Promise<string> => {
+  const open = async (
+    slug?: string,
+    path?: string,
+    options: LaunchOptions = {},
+  ): Promise<string> => {
     if (current !== undefined) return current.done;
     deps.assertAdmitting?.();
+    const { opener } = options;
+    // Only a launch that names a workflow skips the picker, so only it can go back to the popup that named it.
+    const from = slug === undefined ? undefined : opener;
+    const flow = frameOf(from);
     const busy = deps.host.snapshot === undefined ? undefined : launchBusy(deps.host.snapshot());
     if (busy !== undefined) return refusedBusy(busy, slug);
     const admission = admit(deps, slug, path);
@@ -1086,7 +1170,15 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
 
     const signal = flow.begin();
     const hold = createSecretHold();
-    const running = runSession({ flow, deps, hold, signal, preselect: slug, skipped });
+    const running = runSession({
+      flow,
+      deps,
+      hold,
+      signal,
+      preselect: slug,
+      skipped,
+      ...(from === undefined ? {} : { opener: from }),
+    });
     current = { session: running.session, done: running.done };
     try {
       if (skipped !== undefined) flow.note(skipped, 'Run workflow');
@@ -1177,8 +1269,10 @@ function runSession(options: {
   readonly preselect?: string | undefined;
   /** The line the picker showed about the files it did not offer: put back when a card that replaced it is left. */
   readonly skipped?: string | undefined;
+  /** The popup this launch was started from: `Esc` at the first thing asked leaves to it ({@link LaunchOpener}). */
+  readonly opener?: LaunchOpener | undefined;
 }): SessionRun {
-  const { flow, deps, hold, signal, preselect, skipped } = options;
+  const { flow, deps, hold, signal, preselect, skipped, opener } = options;
   const { host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
   /** The workflow the person chose last: the list a step back returns to opens on it, not on its first row. */
@@ -1213,7 +1307,7 @@ function runSession(options: {
   }
 
   function dispatch(event: LaunchEvent): void {
-    const step = reduceLaunch(state, event);
+    const step = reduceLaunch(state, event, { toOpener: opener !== undefined });
     if (step.state !== state) {
       state = step.state;
       deps.observe?.(state);
@@ -1326,6 +1420,8 @@ function runSession(options: {
     const message = field.label;
     const validate = (value: string): string | undefined => fieldIssue(def, field, value);
     // Every input is asked on the popup's second step; a masked one keeps the channel's own field (its private editor, a resize that clears it).
+    // `Esc` on the FIRST field of a launch started from `/workflows` goes back to that popup (its frame's origin says so, and the legend's `Esc back`
+    // is the one every step has: a longer verb does not fit the confirmation's legend at the floor); a later field steps back to the one before.
     const inputs = flow.at(STEP.inputs);
     let answer: string | symbol;
     if (field.type === 'boolean') {

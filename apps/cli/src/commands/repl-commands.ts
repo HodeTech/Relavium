@@ -324,7 +324,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'help',
     label: 'Help',
-    // `/help` is a screen on the Home (the keys and the commands, ADR-0140 §3) and, until Step 4's popup, a text list in a chat.
+    // `/help` is a popup on the Home (the keys and the commands on one page, ADR-0148 §10 as amended 2026-11-27, MVP-11 unit 8) and in a chat.
     effect: 'read',
     run: (ctx) => ctx.help(),
     placements: {
@@ -332,7 +332,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
         group: 'check',
         rank: 20,
         description: 'List the available slash commands.',
-        surface: 'screen',
+        surface: 'popup',
       },
       ...inChats({
         group: 'inspect',
@@ -396,7 +396,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'workflows',
     label: 'Workflows',
-    // Two behaviours under one name: a chat lists what the project holds; the Home opens the tab host on its Defined tab (ADR-0140 §2).
+    // Two behaviours under one name: a chat lists what the project holds; the Home opens the catalogue popup, with a detail step (ADR-0148 §10 as amended 2026-11-27).
     effect: 'read',
     run: (ctx) => ctx.showWorkflows(),
     placements: {
@@ -404,7 +404,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
         group: 'work',
         rank: 30,
         description: 'The workflows of this project: run or export one.',
-        surface: 'screen',
+        surface: 'popup',
       },
       ...inChats({
         group: 'inspect',
@@ -545,12 +545,12 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     rejectHint: `Open /permissions and press ${keyToken('d')} on a row to withdraw it.`,
     run: (ctx) => ctx.managePermissions(),
     placements: {
-      // The bare Home's `/permissions` (ADR-0137 §3): the Permissions tab, with the project's remembered commands only; the controller opens it.
+      // The bare Home's `/permissions` (ADR-0137 §3, MVP-11 unit 8): a popup with the project's remembered commands and the repository's allowlist.
       home: {
         group: 'setup',
         rank: 40,
         description: `Remembered commands for this project; ${keyToken('d')} withdraws one.`,
-        surface: 'screen',
+        surface: 'popup',
       },
       ...inChats({
         group: 'model',
@@ -764,15 +764,15 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'agents',
     label: 'Agents',
-    // The tab host on its two-tab strip, Defined and Sessions (ADR-0140 §3). A Home command only: a live chat has no `/agents`.
+    // The agents popup, a list and a detail (ADR-0148 §10 as amended 2026-11-27). A Home command only: a live chat has no `/agents`.
     effect: 'read',
     opener: 'home',
     placements: {
       home: {
         group: 'work',
         rank: 40,
-        description: 'The agents of this project, and its saved conversations.',
-        surface: 'screen',
+        description: 'The agents of this project: start a chat with one.',
+        surface: 'popup',
       },
     },
   },

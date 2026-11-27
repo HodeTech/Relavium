@@ -1,10 +1,11 @@
 /**
  * The `/mode` popup in the chat the Home hosts ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
- * §3, §6; the 2026-11-25 ruling): the session's own line handler gives the chat a `/mode` member whose "this chat" is the session's one mode
- * setter (recorded in the session, announced on the Home's own channel) and whose "new chats" hands off to the startup-default writer on the
- * HOME's native prompt (`driveHome` wires it with the same prompt flow and publication the Home's own `/mode` uses). A typed bare `/mode` opens
- * the popup over the chat through the Home's routing; nothing is written into the conversation. Real Home, controller, builders, SQLite and
- * Ink, on owned handle-free streams.
+ * §3, §6; MVP-11 unit 8, OD-25: one list, two actions) and on the bare Home: the session's own line handler gives the chat a `/mode` member whose
+ * `Enter` is the session's one mode setter (recorded in the session, announced on the Home's own channel) and whose `[s]` hands off to the
+ * startup-default writer on the HOME's native prompt, framed as the confirmation popup (`driveHome` wires it with the same prompt flow and publication
+ * the Home's own `/mode` uses). On the bare Home the list is the startup default: `Enter` on the saved one says so, `Enter` on another hands it to the
+ * same confirmation. A typed bare `/mode` opens the popup through the Home's routing; nothing is written into the conversation. Real Home,
+ * controller, builders, SQLite and Ink, on owned handle-free streams.
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +23,6 @@ import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { PopupKey } from '../popups/popup-reducer.js';
 import { acknowledgeWrite } from '../process/io.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
-import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
@@ -177,20 +177,16 @@ async function fixture() {
     return frame === undefined ? undefined : `${frame.spec.id}:${String(frame.stepIndex)}`;
   };
   /**
-   * Press `key` on the popup until it leaves `from` (a key on a frame not yet acknowledged, or inside the settle, is dropped by design). The
-   * presses are a quiet gap apart (350 ms): a form's `Enter` inside the quiet gap of the key before it is a held key's repeat, which never
-   * applies a form (`popup-host.ts`, "A held key never applies a form").
+   * Press `key` (or type the letter) on the popup until it leaves `from` (a key on a frame not yet acknowledged, or inside the settle, is dropped by
+   * design). The presses are a quiet gap apart (350 ms): the clock is real time here.
    */
-  const pressFrom = async (from: string, key: PopupKey): Promise<void> => {
-    // A guarded form (`auto`) waits out the approval's lockout after the answer that reached it, and an `Enter` refused inside it restarts it:
-    // the press is a patient one, after the wait, never a retry inside it (the clock is real time here).
-    if (from === 'mode:1')
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, APPROVAL_LOCKOUT_MS + 200);
-      });
+  const pressFrom = async (from: string, key: PopupKey | string): Promise<void> => {
     await vi.waitFor(
       () => {
-        if (popupStep() === from) mounted.popups?.input('', key);
+        if (popupStep() === from) {
+          if (typeof key === 'string') mounted.popups?.input(key, {});
+          else mounted.popups?.input('', key);
+        }
         expect(popupStep()).not.toBe(from);
       },
       { ...WAIT, interval: 350 },
@@ -251,7 +247,7 @@ async function fixture() {
 }
 
 describe('/mode in the chat the Home hosts', () => {
-  it('this chat: the popup opens from the Home’s routing, applies through the session’s setter (recorded, announced on the Home’s channel), and writes nothing into the conversation', async () => {
+  it('this chat: the popup opens from the Home’s routing, one Enter applies through the session’s setter (recorded, announced on the Home’s channel), and nothing is written into the conversation', async () => {
     const f = await fixture();
     try {
       f.command('first message');
@@ -260,9 +256,7 @@ describe('/mode in the chat the Home hosts', () => {
       f.command('/mode');
       await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
       f.press({ end: true }); // → auto
-      await f.pressFrom('mode:0', ENTER);
-      expect(f.popupStep()).toBe('mode:1');
-      await f.pressFrom('mode:1', ENTER);
+      await f.pressFrom('mode:0', ENTER); // ONE list, ONE key: there is no second screen
       expect(f.mounted.popups?.getSnapshot().open).toBe(false);
       expect(f.mode()).toBe('auto');
       expect(f.modeRecords()).toEqual(['ask→auto']);
@@ -274,7 +268,7 @@ describe('/mode in the chat the Home hosts', () => {
     expect(f.error()).toBeUndefined();
   });
 
-  it('new chats: the popup closes and the startup-default writer asks on the Home’s native prompt, defaulting to No; declining writes nothing, the chat’s mode stays, and the Home’s channel says so', async () => {
+  it('[s]: the popup closes and the startup-default writer asks on the Home’s native prompt (the Ctrl+Y card, defaulting to No); declining writes nothing, the chat’s mode stays, and the Home’s channel says so', async () => {
     const f = await fixture();
     try {
       f.command('first message');
@@ -283,28 +277,111 @@ describe('/mode in the chat the Home hosts', () => {
       f.command('/mode');
       await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
       f.press({ end: true }); // → auto
-      await f.pressFrom('mode:0', ENTER);
-      f.press({ downArrow: true }); // → new chats
-      await f.pressFrom('mode:1', ENTER);
+      await f.pressFrom('mode:0', 's');
       expect(f.mounted.popups?.getSnapshot().open).toBe(false);
       const prompt = f.mounted.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt');
       await vi.waitFor(() => {
         const snapshot = prompt.getSnapshot();
-        expect(snapshot.kind).toBe('select');
+        expect(snapshot.kind).toBe('chord');
         expect(snapshot.message).toBe(
-          `${MODE_EFFECT.auto.full} Save auto as the global startup default?`,
+          `${MODE_EFFECT.auto.full} Save auto as your startup default?`,
         );
-        expect(snapshot.options[snapshot.selected]?.value).toBe('no');
+        expect(snapshot.popup).toMatchObject({ origin: 'chat', stepIndex: 1, stepCount: 3 });
+        expect(snapshot.details).toContain('This chat stays in ask mode.');
       }, WAIT);
-      prompt.input('', { ...NONE, return: true });
+      prompt.input('n', { ...NONE, ctrl: true }); // Ctrl+N: the explicit No, never delayed
       await vi.waitFor(() => expect(prompt.getSnapshot().active).toBe(false), WAIT);
       expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);
       expect(f.mode()).toBe('ask');
       expect(f.modeRecords()).toEqual([]);
-      // F2: what the flow came to, in a few words on the Home's channel, and nothing of it in the conversation.
+      // What the flow came to, in a few words on the Home's channel, and nothing of it in the conversation.
       await vi.waitFor(() => expect(f.notified).toContain('Startup default unchanged'), WAIT);
       expect(f.transcriptNotices()).toEqual(before);
+    } finally {
+      await f.close();
+    }
+    expect(f.error()).toBeUndefined();
+  });
+});
+
+describe('/mode on the bare Home', () => {
+  it('Enter on the saved startup default closes with ONE notification and writes nothing: no second screen, no card', async () => {
+    const f = await fixture();
+    try {
+      await vi.waitFor(() => expect(f.mounted.controller.getSnapshot().mode).toBe('home'), WAIT);
+      f.command('/mode');
+      await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
+      await f.pressFrom('mode:0', ENTER); // opened on the saved default (`ask`): keep
+      expect(f.mounted.popups?.getSnapshot().open).toBe(false);
+      expect(f.mounted.nativePrompt?.getSnapshot().active).toBe(false);
+      expect(f.notified).toEqual(['Startup default is already ask']);
+      expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);
+    } finally {
+      await f.close();
+    }
+    expect(f.error()).toBeUndefined();
+  });
+
+  it('Enter on another mode hands it to the confirmation framed from Home; declining writes nothing and says so in one notification, and the composer is free again', async () => {
+    const f = await fixture();
+    try {
+      await vi.waitFor(() => expect(f.mounted.controller.getSnapshot().mode).toBe('home'), WAIT);
+      f.command('/mode');
+      await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
+      f.press({ downArrow: true }); // → plan
+      await f.pressFrom('mode:0', ENTER);
+      const prompt = f.mounted.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt');
+      await vi.waitFor(() => {
+        const snapshot = prompt.getSnapshot();
+        expect(snapshot.kind).toBe('chord');
+        expect(snapshot.message).toBe('Save plan as your startup default?');
+        expect(snapshot.popup).toMatchObject({ origin: 'home', stepIndex: 1, stepCount: 3 });
+        expect(snapshot.details).toEqual(
+          expect.not.arrayContaining(['This chat stays in ask mode.']),
+        );
+      }, WAIT);
+      expect(f.mounted.controller.getSnapshot().submitBusy, 'the composer is busy meanwhile').toBe(
+        true,
+      );
+      prompt.input('n', { ...NONE, ctrl: true });
+      await vi.waitFor(() => expect(prompt.getSnapshot().active).toBe(false), WAIT);
+      await vi.waitFor(() => expect(f.notified).toEqual(['Startup default unchanged']), WAIT);
+      await vi.waitFor(
+        () => expect(f.mounted.controller.getSnapshot().submitBusy).toBe(false),
+        WAIT,
+      );
+      expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);
+    } finally {
+      await f.close();
+    }
+    expect(f.error()).toBeUndefined();
+  });
+
+  it('Esc on the confirmation steps back to the list, opened on the mode chosen; Esc there closes without a word', async () => {
+    const f = await fixture();
+    try {
+      await vi.waitFor(() => expect(f.mounted.controller.getSnapshot().mode).toBe('home'), WAIT);
+      f.command('/mode');
+      await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
+      f.press({ downArrow: true });
+      await f.pressFrom('mode:0', ENTER);
+      const prompt = f.mounted.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt');
+      await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), WAIT);
+      // An `Esc` that arrived before the card's frame was on screen is a cancel (the opening guard's rule), so the step back waits for the frame.
+      await vi.waitFor(
+        () => expect(() => prompt.assertVisible(prompt.getSnapshot())).not.toThrow(),
+        WAIT,
+      );
+      prompt.input('', { ...NONE, escape: true });
+      await vi.waitFor(() => expect(f.popupStep()).toBe('mode:0'), WAIT);
+      const frame = f.mounted.popups?.getSnapshot().frame;
+      expect(frame?.steps[0]?.selected).toBe(2); // the intro is row 0: `plan` is row 2
+      await f.pressFrom('mode:0', { escape: true });
+      expect(f.notified).toEqual([]);
+      expect(readFileSync(f.configPath, 'utf8')).toBe(CONFIG);
     } finally {
       await f.close();
     }

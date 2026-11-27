@@ -82,7 +82,7 @@ import {
 } from '../../../../popups/models-popup.js';
 import { providerDisplayName } from '../../../../engine/providers.js';
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
-import { modeScopeForm, modeSpec, SCOPE_STEP } from '../../../../popups/mode-popup.js';
+import { modeSpec, type ModeListFacts } from '../../../../popups/mode-popup.js';
 import type { PopupForm } from '../../../../popups/frame-model.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
@@ -186,7 +186,7 @@ export const POPUP_PRODUCERS: readonly Producer[] = [
     id: 'mode-popup',
     file: 'popups/mode-popup.ts',
     describe:
-      'the /mode popup in a chat (ADR-0148 §3, §6): the modes with the one in force marked and the highlighted one’s effect (`Enter next`), then where the chosen mode applies, with its effect stated for a mode that approves without a card (`↑/↓ apply to · Enter apply`)',
+      'the /mode popup (ADR-0148 §3, §6; MVP-11 unit 8, OD-25): one list whose legend follows the highlighted row: in a chat `Enter use in this chat` or `Enter keep`, and `[s] startup` (absent on the mode that already is the startup default); on the Home `Enter set as startup default` or `Enter keep`',
   },
 ];
 
@@ -1008,17 +1008,29 @@ const recordEffect: Recorder = (): StateRows => {
   };
 };
 
-/** The `/mode` popup: its first step on the mode in force, and its second for a mode that states its effect (`auto`) and one that does not. */
+/**
+ * The `/mode` popup (MVP-11 unit 8, OD-25): ONE list whose legend follows the highlighted row. In a chat: the mode in force (`Enter keep`), another
+ * mode (`Enter use in this chat`, `[s] startup`), the mode that already is the startup default (no `[s]`); on the Home: another mode
+ * (`Enter set as startup default`) and the saved one (`Enter keep`). The state words are drawn in the rows, not in the legend.
+ */
 const recordMode: Recorder = (): StateRows => {
-  const opened = openFrame(modeSpec('chat', 'ask'), 1);
-  const second = (mode: 'auto' | 'plan'): PopupFrame => ({
-    ...withContent(opened, SCOPE_STEP, modeScopeForm(mode)),
-    stepIndex: SCOPE_STEP,
-  });
+  const on = (facts: ModeListFacts, row: 1 | 2 | 3 | 4): PopupFrame => {
+    const opened = openFrame(modeSpec(facts.surface === 'chat' ? 'chat' : 'home', facts), 1);
+    return { ...opened, steps: opened.steps.map((step) => ({ ...step, selected: row })) };
+  };
+  const chat: ModeListFacts = { surface: 'chat', current: 'ask', startup: 'plan' };
   return {
-    ...frameStates(label({ step: 'mode', current: 'ask' }), opened),
-    ...frameStates(label({ step: 'apply-to', mode: 'auto' }), second('auto')),
-    ...frameStates(label({ step: 'apply-to', mode: 'plan' }), second('plan')),
+    ...frameStates(label({ surface: 'chat', highlighted: 'in-force' }), on(chat, 1)),
+    ...frameStates(label({ surface: 'chat', highlighted: 'other' }), on(chat, 4)),
+    ...frameStates(label({ surface: 'chat', highlighted: 'startup-default' }), on(chat, 2)),
+    ...frameStates(
+      label({ surface: 'home', highlighted: 'other' }),
+      on({ surface: 'home', startup: 'ask' }, 2),
+    ),
+    ...frameStates(
+      label({ surface: 'home', highlighted: 'saved' }),
+      on({ surface: 'home', startup: 'ask' }, 1),
+    ),
   };
 };
 

@@ -3,7 +3,15 @@ import type { ToolPreview } from '@relavium/core';
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { DisplayPathRoots } from '../notation.js';
 import { glyph } from './glyphs.js';
-import { exitKey, keyToken, legendItems, type LegendItem, type LegendRender } from './legend.js';
+import { frameRows } from './home-layout.js';
+import {
+  exitKey,
+  keyToken,
+  legendItems,
+  waitMark,
+  type LegendItem,
+  type LegendRender,
+} from './legend.js';
 import { exitRow, sentenceRow } from './legend-row.js';
 import {
   keepEnd,
@@ -26,8 +34,26 @@ import { displayWidth } from './viewport.js';
 
 /** The transcript rows that stay on screen above the card, whatever the terminal size. */
 export const CARD_MIN_TRANSCRIPT_ROWS = 8;
-/** Rows the live region needs besides the card (the busy line, the footer, the hint). */
-const LIVE_REGION_ROWS = 4;
+/**
+ * The chat header's rows (the wordmark and its blank row), which the full-screen frame draws above the transcript whatever is docked. It is
+ * `CHAT_HEADER_ROWS` of `chat-layout.ts` (a test pins the two equal): that module cannot be imported here without an import cycle through the
+ * run card's guards.
+ */
+export const CARD_FRAME_HEADER_ROWS = 2;
+/**
+ * The row the retired busy line gives back ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §2): a sheet does not grow into it, the conversation keeps it, so a 12-row sheet at 80×24 leaves nine transcript rows, not eight.
+ */
+export const CARD_BUSY_ROW_RETURNED = 1;
+
+/**
+ * The rows a frame of `terminalRows` spends besides the transcript and a docked sheet: the terminal row the full-screen frame leaves empty
+ * ({@link frameRows}) and the header. The sheet takes the whole prompt block's place (ADR-0147 §1: the status line and the hint are not drawn
+ * while it is open), so nothing else is drawn beside it.
+ */
+function cardFrameRows(terminalRows: number): number {
+  return terminalRows - frameRows(terminalRows) + CARD_FRAME_HEADER_ROWS;
+}
 /** The most body rows the card ever shows: a longer change is cut with an exact count. */
 export const CARD_MAX_BODY_ROWS = 60;
 /** The answer-key rows and the stop hint: always these two rows, so the budget never depends on the labels. */
@@ -37,15 +63,19 @@ export const CARD_RULE_ROWS = 1;
 
 /**
  * The most rows the docked card may take: three fifths of the terminal, and never so many that fewer than
- * {@link CARD_MIN_TRANSCRIPT_ROWS} transcript rows remain. At the 80×24 floor that is twelve rows, so a short
- * change is shown whole on a larger terminal while the conversation stays in view on a small one.
+ * {@link CARD_MIN_TRANSCRIPT_ROWS} transcript rows remain beside the frame's own rows ({@link cardFrameRows}) and the row the busy line gave
+ * back ({@link CARD_BUSY_ROW_RETURNED}). At the 80×24 floor that is twelve rows and nine transcript rows (a 23-row frame: the header, nine
+ * transcript rows and a 12-row sheet), so a short change is shown whole on a larger terminal while the conversation stays in view on a small one.
  */
 export function cardRowBudget(terminalRows: number): number {
   return Math.max(
     8,
     Math.min(
       Math.floor((terminalRows * 3) / 5),
-      terminalRows - CARD_MIN_TRANSCRIPT_ROWS - LIVE_REGION_ROWS,
+      terminalRows -
+        CARD_MIN_TRANSCRIPT_ROWS -
+        cardFrameRows(terminalRows) -
+        CARD_BUSY_ROW_RETURNED,
     ),
   );
 }
@@ -349,6 +379,13 @@ export interface CardKeyInput {
   readonly remember?: boolean;
   /** The first `Ctrl+O` was pressed and the card is waiting for ENTER. */
   readonly confirmRemember?: boolean;
+  /**
+   * The answer lockout holds the grants now (the store's `answerLock`, a display value): each reads dim with `(wait)` (ADR-0145 §3) until it
+   * opens. Absent: free.
+   */
+  readonly locked?: boolean;
+  /** The columns the grants row has, for the fit rule of a row that `(wait)` makes longer. Absent: not fitted. */
+  readonly columns?: number;
 }
 
 /** The sentence that ends a command card's "rows not shown" warning: what stays unavailable while a row is off screen. */
@@ -381,6 +418,20 @@ function allowItems(input: CardKeyInput): readonly LegendItem[] {
     });
   if (input.remember === true) items.push({ keys: 'Ctrl+O', verb: 'Allow + remember', role: 'ok' });
   return items;
+}
+
+/**
+ * The grants as the row draws them: each marked `(wait)` while the lockout holds it, and, when the marks make the row wider than `columns`, the
+ * wider grants dropped from the end until it fits (the fit rule of unit 6: the part that waits keeps the key that matters most; `Allow` is never
+ * dropped). Once the lock opens the row is whole again.
+ */
+function grantItems(input: CardKeyInput): readonly LegendItem[] {
+  const locked = input.locked === true;
+  const items = allowItems(input).map((item) => ({ ...item, ...waitMark(locked) }));
+  if (!locked || input.columns === undefined) return items;
+  const kept = [...items];
+  while (kept.length > 1 && displayWidth(legendItems(kept).text) > input.columns) kept.pop();
+  return kept;
 }
 
 /** The first key row while Allow is locked: what the person has to do first. */
@@ -423,7 +474,7 @@ export function cardKeyLegend(input: CardKeyInput): readonly [LegendRender, Lege
       ),
     ];
   const command = input.command === true;
-  const grants = input.inspected ? legendItems(allowItems(input)) : lockedAllowRow(command);
+  const grants = input.inspected ? legendItems(grantItems(input)) : lockedAllowRow(command);
   return [
     grants,
     exitRow(

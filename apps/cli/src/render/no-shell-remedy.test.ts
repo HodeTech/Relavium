@@ -469,9 +469,10 @@ const FILE_SURFACES: Readonly<Record<string, readonly PaletteSurface[]>> = {
   'render/hatches.ts': ['standalone-chat', 'home-chat'],
   'render/tui/chat-projection.ts': ['standalone-chat', 'home-chat'],
   'render/tui/pricing-card.ts': ['home'],
-  'render/tui/tab-host-agents.ts': ['home'],
-  'render/tui/tab-host-sessions.ts': ['home'],
-  'render/tui/tab-host-workflows.ts': ['home'],
+  // The Home's management popups (MVP-11 unit 8): opened on the bare Home only, and what they name next is read there.
+  'popups/home-agents-popup.ts': ['home'],
+  'popups/home-help-popup.ts': ['home'],
+  'popups/home-workflows-popup.ts': ['home'],
 };
 
 /**

@@ -87,6 +87,8 @@ export interface DefinedRow {
   /** The status of the workflow's latest run in this project, when one is known. */
   readonly lastRunStatus?: RunStatus;
   readonly lastRunGlyph?: string;
+  /** When that latest run was last written (an ISO time, the store's `updated_at`): its age, and for a parked run how long it has waited. */
+  readonly lastRunAt?: string;
   /** The catalog file the entry was read from, as `discoverCatalog` returned it; absent on a `not-in-catalog` row. */
   readonly path?: string;
   /** Why the row is not plain: the parse error of an `invalid` row, {@link NOT_IN_CATALOG} for a pin with no entry, {@link OTHER_PROJECT}. */
@@ -99,6 +101,23 @@ export interface DefinedRow {
   readonly pinRowid?: number;
   /** `true` when the pin's text was over its bound, so {@link DefinedRow.slug} is a preview that ends with `…`. */
   readonly pinOversized?: boolean;
+}
+
+/** What the host reads when `/workflows` opens: the rows, and the slug and the path each catalog row stands for. */
+export interface DefinedRead {
+  readonly model: DefinedModel;
+  /** The slug of the catalog entry a row's `entryIndex` names, or `undefined` when no entry sits at that index. */
+  readonly slugOf: (entryIndex: number) => string | undefined;
+  /**
+   * The catalog path of that same entry, as the catalog read it (the raw path, not the row's sanitized label), or `undefined` when no entry
+   * sits there. A `run` request carries it, so the launch can refuse when the file that holds the slug is no longer this one.
+   */
+  readonly pathOf: (entryIndex: number) => string | undefined;
+}
+
+/** The catalogue's read, behind a port so the popup is testable without a project or a database. May throw: the popup then says it cannot list. */
+export interface DefinedPort {
+  readonly read: () => DefinedRead;
 }
 
 export interface DefinedModel {
@@ -124,6 +143,8 @@ export interface DefinedModelInput {
   readonly otherPins?: readonly DefinedOtherPin[];
   /** Workflow slug to the status of its latest run in this project. */
   readonly lastRuns?: ReadonlyMap<string, RunStatus>;
+  /** Workflow slug to when that latest run was last written (an ISO time); absent for a slug the map does not hold. */
+  readonly lastRunTimes?: ReadonlyMap<string, string>;
   /** What another project's root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
   readonly paths?: DisplayPathRoots;
 }
@@ -137,11 +158,16 @@ interface Ranked {
 function lastRunOf(
   slug: string,
   lastRuns: ReadonlyMap<string, RunStatus> | undefined,
-): Pick<DefinedRow, 'lastRunStatus' | 'lastRunGlyph'> {
+  lastRunTimes?: ReadonlyMap<string, string>,
+): Pick<DefinedRow, 'lastRunStatus' | 'lastRunGlyph' | 'lastRunAt'> {
   const status = lastRuns?.get(slug);
-  return status === undefined
-    ? {}
-    : { lastRunStatus: status, lastRunGlyph: RUN_STATUS_GLYPH[status] };
+  if (status === undefined) return {};
+  const at = lastRunTimes?.get(slug);
+  return {
+    lastRunStatus: status,
+    lastRunGlyph: RUN_STATUS_GLYPH[status],
+    ...(at === undefined ? {} : { lastRunAt: at }),
+  };
 }
 
 function pinPart(pin: DefinedPin | undefined): Pick<DefinedRow, 'pinned' | 'pinWord' | 'pinRowid'> {
@@ -155,6 +181,7 @@ function catalogRow(
   entryIndex: number,
   pin: DefinedPin | undefined,
   lastRuns: ReadonlyMap<string, RunStatus> | undefined,
+  lastRunTimes: ReadonlyMap<string, string> | undefined,
 ): DefinedRow {
   const count = entry.nodeCount;
   return {
@@ -166,7 +193,7 @@ function catalogRow(
     ...(entry.valid && count !== undefined && Number.isSafeInteger(count) && count >= 0
       ? { nodeCount: count }
       : {}),
-    ...(entry.valid ? lastRunOf(entry.slug, lastRuns) : {}),
+    ...(entry.valid ? lastRunOf(entry.slug, lastRuns, lastRunTimes) : {}),
     path: scrubbedBounded(entry.path, MAX_DETAIL_CHARS),
     ...(entry.valid
       ? {}
@@ -229,6 +256,7 @@ export function buildDefinedModel(input: DefinedModelInput): DefinedModel {
         index,
         pinIndex === undefined ? undefined : pins[pinIndex],
         input.lastRuns,
+        input.lastRunTimes,
       ),
     });
   });

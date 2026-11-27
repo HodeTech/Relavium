@@ -94,22 +94,23 @@ describe('the docked prompt: its chrome and the editor’s rows', () => {
   });
 });
 
-describe('the exit guard: a blank row and the card’s lines', () => {
+describe('the exit guard: a blank row, the sheet’s heavy rule and the card’s lines', () => {
   const guard = (
     phase: 'confirm' | 'stopping',
     hostedRun: RunHostSnapshot | undefined,
     color = false,
   ): number => workBottomBlock({ ...BASE, hostedRun, exitGuard: phase, color }).rows;
 
-  it('asking about a live run is the blank row and three lines; stopping it is two lines; a card with no run to name is two', () => {
-    expect(guard('confirm', HOSTED)).toBe(4);
-    expect(guard('stopping', HOSTED)).toBe(3);
-    expect(guard('confirm', undefined)).toBe(3);
+  // Since unit 8 the card wears the sheet's frame (ADR-0147 §1): its heavy rule is one more row above the lines it had.
+  it('asking about a live run is the blank row, the rule and three lines; stopping it is two lines; a card with no run to name is two', () => {
+    expect(guard('confirm', HOSTED)).toBe(5);
+    expect(guard('stopping', HOSTED)).toBe(4);
+    expect(guard('confirm', undefined)).toBe(4);
   });
 
   it('with colour on it is the same card in the same rows', () => {
-    expect(guard('confirm', HOSTED, true)).toBe(4);
-    expect(guard('stopping', HOSTED, true)).toBe(3);
+    expect(guard('confirm', HOSTED, true)).toBe(5);
+    expect(guard('stopping', HOSTED, true)).toBe(4);
   });
 });
 
@@ -169,13 +170,13 @@ describe('the block, the notice and the list on the drawn page', () => {
       name: 'the exit guard asking',
       guard: 'confirm',
       first: '',
-      second: /^! A workflow run is executing/u,
+      second: /^== Leaving the Home =+$/u,
     },
     {
       name: 'the exit guard stopping',
       guard: 'stopping',
       first: '',
-      second: /^# Stopping the run/u,
+      second: /^== Leaving the Home =+$/u,
     },
     { name: 'a palette of three', palette: palette(3), text: '/', first: /^\/|^>/u, second: /\S/u },
     { name: 'a palette of twelve', palette: palette(12), text: '/', first: /\S/u, second: /\S/u },

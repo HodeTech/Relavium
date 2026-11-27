@@ -1,6 +1,6 @@
 /**
  * The loading echo of a chat that starts with no typed message ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §3, MVP-8 step 5): `c` on an agent's detail builds a chat bound to that agent, and while it builds the Home says so without echoing a
+ * §3, MVP-8 step 5; the agent's detail is the `/agents` popup since MVP-11 unit 8): `[c] chat` on an agent's detail builds a chat bound to that agent, and while it builds the Home says so without echoing a
  * message nobody typed (no bare `>`). A typed first message is still echoed as before. The controller is real, its build never settles, and
  * the view is the mounted `RootApp`.
  */
@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildAgentsModel, type AgentsModelItem } from '../../history/agents-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
+import type { HomePopupKind, HomePopupsPort } from '../../popups/home-port.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { settleFrames, waitFor } from './harness-util.js';
@@ -43,7 +44,12 @@ const ITEMS: readonly AgentsModelItem[] = [
 ];
 
 function mount() {
+  /** What the Home asked its popup host to open: the popup is the host's, and its `[c] chat` is a request the Home carries out. */
+  const opened: { readonly kind: HomePopupKind; readonly port: HomePopupsPort }[] = [];
   const controller = createHomeController({
+    openHomePopup: (request) => {
+      opened.push(request);
+    },
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => EMPTY },
     agents: {
@@ -70,17 +76,25 @@ function mount() {
       subscribeResize={() => () => {}}
     />,
   );
-  return { controller, harness };
+  return { controller, harness, opened };
 }
 
 describe('the loading echo', () => {
   it('draws no bare `>` for a chat that starts with no typed message, and says it is starting', async () => {
-    const { controller, harness } = mount();
+    const { controller, harness, opened } = mount();
     await settleFrames();
     for (const ch of '/agents') controller.handleKey(ch, {});
     controller.handleKey('', { return: true });
-    controller.handleKey('', { return: true }); // the detail of the only agent
-    controller.handleKey('c', {});
+    expect(opened.map((request) => request.kind)).toEqual(['agents']);
+    // `[c] chat` on the detail of the only agent: the popup hands the Home the catalog's path and the definition it drew, through the port the
+    // Home built for it (the popup session's own `agents.chat({ path, listed })`).
+    const agents = opened[0]?.port.agents;
+    const read = agents?.read();
+    const path = read?.pathOf(0);
+    const listed = read?.definitionOf(0);
+    if (agents === undefined || path === undefined || listed === undefined)
+      throw new Error('the Home gave the agents popup no agent to chat with');
+    agents.chat({ path, listed });
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     await waitFor(() => (harness.lastFrame() ?? '').includes('Starting chat…'));
     const lines = (harness.lastFrame() ?? '').split('\n').map((line) => line.trim());

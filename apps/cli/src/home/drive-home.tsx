@@ -36,6 +36,7 @@ import {
   createRunHistoryReader,
   createRunPinStore,
   loadRunSnapshot,
+  MAX_RUN_SUMMARY_PAGE,
 } from '@relavium/db';
 import {
   RUN_LEASE_TTL_MS,
@@ -79,7 +80,7 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
-import { saveStartupDefaultForPopup } from '../chat/mode-settings.js';
+import { readStartupDefault } from '../chat/startup-default.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { faultForTranscript } from '../config/config-error-text.js';
@@ -110,6 +111,7 @@ import {
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
+import { openHomePopup } from '../popups/home-port.js';
 import { openReport } from '../popups/report-port.js';
 import { openSettings } from '../popups/settings-port.js';
 import { openUnreadableRun } from '../popups/unreadable-run-port.js';
@@ -194,7 +196,6 @@ import { createNativeConsentPrompter } from './consent-card.js';
 import { resolveHomeChatAgent, type HomeAgentRequest, type HomeChatAgent } from './agent-start.js';
 import { createAgentsPort } from './agents-port.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
-import { createSessionsPort } from './sessions-port.js';
 import { createPinPort } from './pin-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { runExportCard } from '../render/tui/export-card.js';
@@ -1092,16 +1093,23 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...deps,
             surface: 'home-chat', // `/help` and the unknown-slash hint list this chat's own commands, as its palette does
             hatchPorts,
-            // The `/mode` popup's "New chats" (ADR-0148 §3, §6): the startup-default writer's own flow on the Home's native prompt, as the
-            // `/mode` flow ran it in this chat, while this conversation is the one in front; what it came to is returned for the popup to
-            // say on the Home's channel, and a fault after it is this chat's work owner's.
-            saveStartupDefault: (mode) =>
-              saveStartupDefaultForPopup(
+            // The `/mode` popup's `[s]` (ADR-0148 §3, §6; MVP-11 unit 8, OD-25): the startup-default writer's own flow on the Home's native
+            // prompt, framed as the popup's confirmation (`Mode · Confirm · Done`), while this conversation is the one in front; what it came
+            // to is returned for the popup to say or draw, and a fault after it is this chat's work owner's. Loaded when first asked for.
+            saveStartupDefault: async (mode, inChat) => {
+              const { saveChatStartupDefault } = await import('../popups/mode-confirm.js');
+              return saveChatStartupDefault(
                 {
                   runtime: startingModes,
                   cwd: built.context.workingDir,
                   interactive: true,
                   flow: promptFlow,
+                  target: flowText(
+                    displayPath(
+                      startingModes.configPath,
+                      displayRoots(built.context.workingDir, homeDir),
+                    ),
+                  ),
                   failure: (cause) => built.workOwner?.failure(cause),
                   assertAdmitting: () => {
                     assertHomeAdmitting();
@@ -1115,7 +1123,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   publish: publishPreference,
                 },
                 mode,
-              ),
+                inChat,
+              );
+            },
+            readStartupDefault: () => readStartupDefault(startingModes, built.context.workingDir),
           },
         );
         // The session's announcements (its typed settings, its mode control and its settings popups) are the Home's own notifications
@@ -1985,6 +1996,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               .loadLatestRunPerWorkflowInProject(here)
               .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
           ),
+        // ... and when each was last written, for the age the catalogue draws beside its status.
+        lastRunTimes: () =>
+          new Map(
+            runReader
+              .loadLatestRunPerWorkflowInProject(here)
+              .map((summary): [string, string] => [summary.slug, summary.lastRun.updatedAt]),
+          ),
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
         // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
         allPins: () => definedPins.listPins(),
@@ -2072,13 +2090,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // The settings popups (ADR-0148 §3, §6) open on the Home's host: over the chat in front with its port, or (`/models`) over the bare
         // Home with the Home's own, the origin said by the port's surface.
-        openSettings: ({ command, chat }) => {
+        openSettings: ({ command, chat, closed }) => {
           openOnHome((host) =>
             openSettings({
               host,
               port: chat,
               command,
               origin: chat.surface === 'home' ? 'home' : 'chat',
+              ...(closed === undefined ? {} : { closed }),
             }),
           );
         },
@@ -2104,21 +2123,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         withdrawAnnouncements: () => {
           notifications.discard(homeAnnouncements);
         },
-        launchRun: (slug, path) => runLaunch.open(slug, path),
+        launchRun: (slug, path, options) => runLaunch.open(slug, path, options),
         defined,
         history,
         pins,
-        // The `/agents` strip (ADR-0140 §3, MVP-8 step 5): the project's agent catalog, found afresh and read every time its tab is entered, and
-        // this project's saved conversations, the very page the `/resume` picker lists (the same store and working directory).
+        // The `/agents` popup (ADR-0140 §3, MVP-11 unit 8): the project's agent catalog, found afresh and read every time the popup is opened.
+        // The saved conversations are `/resume`'s (the strip's Sessions tab went with the strip).
         agents: createAgentsPort({
           projectConfigDir: currentProjectConfigDir,
           cwd: deps.global.cwd,
           homeDir,
-        }),
-        sessions: createSessionsPort({
-          store: opened.store,
-          cwd: fsPolicyWorkspace(fsPolicy),
-          now,
         }),
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
@@ -2141,11 +2155,46 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // The strip's idle refresh (ADR-0140 §6): the same probe, so a tick that finds the token where the last read left it reads nothing.
         strip: { token: changeToken, isClosed: () => dbClosed },
-        exportDefined: (slug) =>
+        exportDefined: (slug, origin) =>
           runExportCard(
             { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },
             slug,
+            origin,
           ),
+        // What the `/workflows` popup's detail reads beyond the catalogue (MVP-11 unit 8): one file's description, inputs and nodes through the
+        // very catalog `/run` offers, and the workflow's last runs for THIS directory (the summaries index, the canonical root the runs recorded).
+        workflowReads: {
+          describe: launchCatalog.describe,
+          lastRuns: (slug, limit) => {
+            // A run holds its workflow's UUID, never the slug, and the summaries index has no page per slug: the project's newest page is read
+            // and the runs whose workflow carries this slug are kept (so a workflow whose last runs are all older than that page shows none).
+            const page = runReader.listRunSummaries({
+              projectRoot: here,
+              limit: MAX_RUN_SUMMARY_PAGE,
+            });
+            const slugs = runReader.loadWorkflowSlugs([
+              ...new Set(page.map((run) => run.workflowId)),
+            ]);
+            return page
+              .filter((run) => slugs.get(run.workflowId) === slug)
+              .slice(0, limit)
+              .map((run) => ({ runId: run.id, status: run.status, at: run.updatedAt }));
+          },
+        },
+        epochNow: now,
+        // The Home's management popups (`/help`, `/agents`, `/workflows`; ADR-0148 §10, MVP-11 unit 8) open on the Home's popup host with the port
+        // the controller built; the host adds the clipboard `[c] copy` writes through and the glyph form.
+        openHomePopup: ({ kind, port, at }) => {
+          openOnHome((host) =>
+            openHomePopup({
+              host,
+              port: { ...port, clipboard, plainGlyphs: !deps.global.color },
+              kind,
+              origin: 'home',
+              at,
+            }).then(() => undefined),
+          );
+        },
         importDefined: () =>
           runImportCard({
             flow: promptFlow,
@@ -2236,22 +2285,30 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             fsPolicy,
           }),
         ),
-        // The bare Home's `/mode` (ADR-0148 §1, §3, §6): the startup-default writer's own flow, drawn as the `/mode` popup (its rail, the chord
-        // confirmation, the Done step that names the file). Loaded when first asked for, as the popups are. What it resolves with is the ONE
-        // notification the controller says (a declined confirmation); nothing of it goes into the Home's notice.
-        openModeSettings: async () => {
-          const { runHomeModeSettings } = await import('../popups/mode-home.js');
-          return runHomeModeSettings({
-            runtime: startingModes,
-            cwd: deps.global.cwd,
-            interactive: true,
-            flow: promptFlow,
-            target: flowText(
-              displayPath(startingModes.configPath, displayRoots(deps.global.cwd, homeDir)),
-            ),
-            assertAdmitting: assertHomeAdmitting,
-            publish: publishPreference,
-          });
+        // The bare Home's `/mode` (ADR-0148 §1, §3, §6; MVP-11 unit 8, OD-25): the list is the popup host's (the saved startup default marked
+        // `startup`, read through the invocation's own runtime); saving is the startup-default writer's own flow, framed as the confirmation
+        // popup (`Mode · Confirm · Done`: the chord confirmation, the Done step that names the file). Loaded when first asked for, as the
+        // popups are. What it resolves with is what the popup says: its Done step, ONE notification (a declined confirmation) or a step back.
+        startupMode: {
+          read: () => readStartupDefault(startingModes, deps.global.cwd),
+          save: async (mode) => {
+            const { saveHomeStartupDefault } = await import('../popups/mode-home.js');
+            return saveHomeStartupDefault(
+              {
+                runtime: startingModes,
+                cwd: deps.global.cwd,
+                interactive: true,
+                flow: promptFlow,
+                target: flowText(
+                  displayPath(startingModes.configPath, displayRoots(deps.global.cwd, homeDir)),
+                ),
+                failure: (cause) => ownership?.surface.work.failure(cause),
+                assertAdmitting: assertHomeAdmitting,
+                publish: publishPreference,
+              },
+              mode,
+            );
+          },
         },
         initializeProject: () => {
           if (flushVisible === undefined)
@@ -2291,8 +2348,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
-      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1): the Home opens with the Permissions tab open and ends when it is closed.
-      if (deps.openPermissions === true) controller.openPermissionsAsCommand();
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1; MVP-11 unit 8): the Home opens with the `/permissions` popup open and
+      // ends when it is closed. A popup opens on a host that is mounted (it refuses every open before its gate is bound), so it is asked for
+      // once the renderer is ready (`onRendererReady`), not here.
+      let permissionsCommandOpened = false;
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
@@ -2427,6 +2486,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
+          if (deps.openPermissions === true && !permissionsCommandOpened && !homeInputSealed) {
+            permissionsCommandOpened = true;
+            // After this commit, so the popup host's gate (bound as the view mounts) is in place when the popup asks to open.
+            setImmediate(() => {
+              if (!homeInputSealed) actualController.openPermissionsAsCommand();
+            });
+          }
           if (!mayOfferFirstRunSetup()) return;
           if (nativePromptFits(getSize())) openAutomaticSetup();
           else waitForRoom();

@@ -10,8 +10,8 @@
  *   Home; the picker's fold, its view and the tier list only its effort sub-step drew are gone, with the residue it wrote and the stale
  *   non-interactive sentence that named the project layer.
  * - **chat-sheet-retired**: in a chat `/permissions` is a settings popup; the chat has no sheet slot at all. What must stay: the bare Home's
- *   Permissions TAB over the same pure model (`permissions-sheet.ts`), the registry's chat placement as a popup, and the text a plain,
- *   `--json` or one-shot chat prints, byte for byte.
+ *   Home's `/permissions` popup over the same pure model (`permissions-sheet.ts`; MVP-11 unit 8: the tab is retired), the registry's
+ *   placements as a popup, and the text a plain, `--json` or one-shot chat prints, byte for byte.
  *
  * Each block fails on: a symbol of the overlay written again, a module of it that comes back or is imported, a flag of it in the record of what
  * owns the keyboard or in the paste gate, a golden producer or a matrix surface of it, and the popup's surfaces missing from a host.
@@ -264,18 +264,21 @@ describe('model-picker-retired: what is particular to it', () => {
 });
 
 describe('chat-sheet-retired: what stays', () => {
-  it('the bare Home’s Permissions tab, over the same pure model', () => {
-    const tabHost = PRODUCTION.find((entry) => entry.file === 'render/tui/tab-host.ts')?.text ?? '';
-    expect(tabHost).toContain("from './permissions-sheet.js'");
+  it('the bare Home’s Permissions popup, over the same pure model; the tab that drew it is gone', () => {
+    const popup =
+      PRODUCTION.find((entry) => entry.file === 'popups/permissions-popup.ts')?.text ?? '';
+    expect(popup).toContain("from '../render/tui/permissions-sheet.js'");
     expect(existsSync(join(SRC, 'render/tui/permissions-sheet.ts'))).toBe(true);
-    expect(ROWS).toContain('home.tab-permissions');
-    expect(PRODUCER_IDS).toContain('permissions-sheet');
+    const tabHost = PRODUCTION.find((entry) => entry.file === 'render/tui/tab-host.ts')?.text ?? '';
+    expect(tabHost, 'the tab host no longer draws the sheet').not.toContain('permissions-sheet');
+    expect(ROWS).toContain('home.permissions-popup');
+    expect(ROWS).not.toContain('home.tab-permissions');
   });
 
-  it('the registry’s chat placement of /permissions is a popup, and the Home’s a screen', () => {
+  it('the registry’s placement of /permissions is a popup on the Home, as in both chats (MVP-11 unit 8)', () => {
     expect(placementOf('permissions', 'standalone-chat')?.surface).toBe('popup');
     expect(placementOf('permissions', 'home-chat')?.surface).toBe('popup');
-    expect(placementOf('permissions', 'home')?.surface).toBe('screen');
+    expect(placementOf('permissions', 'home')?.surface).toBe('popup');
   });
 
   it('a plain, `--json` or one-shot chat prints the same sentence, byte for byte, from the same dispatch line', () => {

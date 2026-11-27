@@ -57,6 +57,7 @@ import {
   type CommandGrantStore,
 } from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
@@ -73,6 +74,7 @@ import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
 import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
+import type { PopupHost } from '../popups/popup-host.js';
 import { PRICING_ACTION_SET, PRICING_NOT_RECORDED } from '../render/tui/pricing-card.js';
 import {
   defaultSubscribeProcessExit,
@@ -181,11 +183,6 @@ function capturingResolver(scripts: StreamChunk[][]): {
     requests,
   };
 }
-/** The Permissions tab's sheet, while the Home's tab host is open on it (the bare Home's `/permissions`, ADR-0140 §3); `undefined` otherwise. */
-const tabSheetOf = (props: RootAppProps) => {
-  const screen = props.controller.getSnapshot().screen;
-  return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
-};
 const type = (props: RootAppProps, text: string): void => {
   for (const ch of text) props.controller.handleKey(ch, {});
 };
@@ -702,22 +699,30 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       'the picker offers this directory’s conversation and not the other one',
     ).toEqual([first.sessionId]);
 
-    // What the /agents strip lists: the agent of the project, and the picker's conversations.
+    // What the /agents popup lists: the agents of the project, read through the Home's own port. The strip's Sessions tab went with it: a saved
+    // conversation is `/resume`'s, and the popup's detail points there.
     type(home, '/agents');
     home.controller.handleKey('', ENTER);
-    const screen = home.controller.getSnapshot().screen;
-    const defined = screen?.kind === 'tab-host' ? screen.host.agents : undefined;
-    expect(defined?.read.model.rows.map((row) => [row.slug, row.state])).toEqual([
-      ['reviewer', 'ready'],
-    ]);
-    home.controller.handleKey('', { rightArrow: true });
-    const next = home.controller.getSnapshot().screen;
-    const sessions = next?.kind === 'tab-host' ? next.host.sessions : undefined;
+    const popups = home.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('agents'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(
+      () => expect(popups.getSnapshot().frame?.steps[0]?.content.kind).toBe('list'),
+      { timeout: WAIT_MS },
+    );
+    const listed = popups.getSnapshot().frame?.steps[0]?.content;
     expect(
-      sessions?.read.rows.map((row) => row.id),
-      'the Sessions tab lists what the picker offers, in the same working directory',
-    ).toEqual(offered);
-    home.controller.handleKey('', { escape: true });
+      listed?.kind === 'list'
+        ? listed.rows
+            .filter((row) => row.section !== true)
+            .map((row) => [row.label.trim(), row.tail?.words])
+        : [],
+    ).toEqual([['reviewer', 'ready']]);
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open, 'Esc closes the popup to the Home').toBe(false);
+    expect(home.controller.getSnapshot().mode).toBe('home');
     home.controller.handleKey('c', { ctrl: true });
     home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     expect(await running).toBe(0);
@@ -920,6 +925,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(settled, 'the Home is still there').toBe(false);
     expect(cancel).not.toHaveBeenCalled();
     props.controller.bindHomeFrame(() => true); // the host measured the card on screen (this mount paints nothing)
+    // The person reads the card for its lockout, which runs from its appearance since MVP-11 unit 8: the guards' monotonic clock steps
+    // forward by it (restored after the test).
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + APPROVAL_LOCKOUT_MS);
     props.controller.handleKey('y', { ctrl: true }); // Ctrl+Y
     expect(cancel).toHaveBeenCalledOnce();
     expect(await running).toBe(0);
@@ -1984,7 +1993,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: the bare Home is wired to the Permissions tab over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
+  it('ADR-0137 §3 as a popup (MVP-11 unit 8): a bare `relavium permissions` opens the project popup over the real store with no chat behind it, and ends the run when it is closed', async () => {
     // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
     // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.
     let captured: RootAppProps | undefined;
@@ -1992,39 +2001,90 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const drivePromise = driveHome({ ...deps, openPermissions: true });
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    // The tab is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
-    expect(props.controller.getSnapshot().mode).toBe('home');
-    expect(tabSheetOf(props)?.surface).toBe('project');
-    expect(tabSheetOf(props)?.snapshot.project).toEqual({
-      ok: true,
-      rows: [],
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
+      timeout: WAIT_MS,
     });
-    expect(tabSheetOf(props)?.snapshot.session).toBeUndefined();
-    props.controller.handleKey('', { escape: true });
+    // The popup is the Home's own (from the Home, no session behind it): the project's list is empty and readable, so it is a report of the
+    // same lines, with no "This session" section (there is no session) and the note that says how a command becomes remembered.
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    expect(props.controller.getSnapshot().session, 'no chat behind it').toBeUndefined();
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    const content = popups.getSnapshot().frame?.steps[0]?.content;
+    const lines =
+      content?.kind === 'report'
+        ? content.lines
+        : content?.kind === 'list'
+          ? content.rows.map((row) => row.label)
+          : [];
+    expect(lines.join('\n')).not.toContain('This session');
+    // Esc closes it, and the run ends with it: the popup was the whole job.
+    popups.input('', { escape: true });
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: an ordinary Home opens no tab of its own, and the typed command opens the project list without ending the Home', async () => {
+  it('ADR-0137 §3 as a popup: an ordinary Home opens no popup of its own, and the typed command opens the project list without ending the Home', async () => {
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    expect(tabSheetOf(props)).toBeUndefined();
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    expect(popups.getSnapshot().open).toBe(false);
     props.controller.handleKey('/', {});
     for (const ch of 'permissions') props.controller.handleKey(ch, {});
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(tabSheetOf(props)).toBeDefined(), {
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
       timeout: WAIT_MS,
     });
-    props.controller.handleKey('', { escape: true });
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
     expect(props.controller.getSnapshot().mode).toBe('home');
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  describe('ADR-0140 §2: the bare Home’s `/workflows` is the Defined tab over the project’s own catalog and pins', () => {
+  it('ADR-0148 §10 as amended (MVP-11 unit 8): `/help` on the bare Home is a popup of the Home’s keys and commands, and its `[c] copy` rides the Home’s one clipboard', async () => {
+    // The wired-but-dead field once more: a Home that handed the popup no clipboard would still open and draw it, and `[c]` would write nowhere.
+    let captured: RootAppProps | undefined;
+    const { deps, writeControl } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    props.controller.handlePaste('/help');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('help'), {
+      timeout: WAIT_MS,
+    });
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    popups.bindVisibility(() => true);
+    popups.bindPageRows(() => 17);
+    popups.bindInnerWidth(() => 66);
+    popups.shown(popups.getSnapshot());
+    await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    popups.input('c', {});
+    await vi.waitFor(() => expect(writeControl).toHaveBeenCalled(), { timeout: WAIT_MS });
+    const written = String(writeControl.mock.calls.at(-1)?.[0]);
+    const decoded = Buffer.from(
+      written.replace(/^.*52;c;/su, '').replace(/[^A-Za-z0-9+/=].*$/su, ''),
+      'base64',
+    ).toString('utf8');
+    expect(decoded, 'what was copied is the popup’s own text').toContain('Commands');
+    expect(popups.getSnapshot().open, 'copying leaves the popup open').toBe(true);
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  describe('ADR-0148 §10 as amended (MVP-11 unit 8): the bare Home’s `/workflows` is a popup over the project’s own catalog and pins', () => {
     const WORKFLOW = (id: string): string => `schema_version: '1.0'
 workflow:
   id: ${id}
@@ -2034,10 +2094,6 @@ workflow:
   edges:
     - { from: start, to: out }
 `;
-    const definedOf = (props: RootAppProps) => {
-      const screen = props.controller.getSnapshot().screen;
-      return screen?.kind === 'tab-host' ? screen.host.defined : undefined;
-    };
     /** A project with two workflows, `beta` pinned in the Home's own `history.db`. */
     function project(): void {
       mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
@@ -2078,6 +2134,65 @@ workflow:
       props.controller.handlePaste(line);
       props.controller.handleKey('', ENTER);
     };
+    /** The popup host of a Home that was rendered with one. */
+    const hostOf = (props: RootAppProps): PopupHost => {
+      if (props.popups === undefined) throw new Error('the Home was rendered without a popup host');
+      return props.popups;
+    };
+    /** What the popup shows on the step it is on. */
+    const contentOf = (popups: PopupHost) => {
+      const frame = popups.getSnapshot().frame;
+      return frame?.steps[frame.stepIndex]?.content;
+    };
+    /** The catalogue's own rows (not its heading), as the popup lists them. */
+    const catalogueRows = (popups: PopupHost) => {
+      const content = contentOf(popups);
+      return content?.kind === 'list'
+        ? content.rows.filter((row) => row.id.startsWith('wf:') || row.id.startsWith('pin:'))
+        : [];
+    };
+    /**
+     * The popup is open on the Home's host and its rows are on it. No Home root is mounted, so nothing measures the frame as the popup slot does:
+     * the test is the slot and says the frame is on screen, then waits out the opening guard's settle (real time), as `/models` does.
+     */
+    async function openCatalogue(props: RootAppProps): Promise<PopupHost> {
+      const popups = hostOf(props);
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('workflows'), {
+        timeout: WAIT_MS,
+      });
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await vi.waitFor(() => expect(catalogueRows(popups).length).toBeGreaterThan(0), {
+        timeout: WAIT_MS,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      return popups;
+    }
+    /** `Enter` on the highlighted row, then the detail's read has landed and the step's own quiet time has passed. */
+    async function intoDetail(popups: PopupHost): Promise<void> {
+      popups.input('', { return: true });
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(1), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(
+        () => {
+          const content = contentOf(popups);
+          expect(
+            content?.kind === 'list' && content.rows.some((row) => row.label.startsWith('File')),
+          ).toBe(true);
+        },
+        { timeout: WAIT_MS },
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    }
+    const leaveHome = async (props: RootAppProps, drivePromise: Promise<unknown>) => {
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    };
 
     it('lists the catalog the Home’s `/run` offers with the pins the Home’s database holds, pinned first, and starts no chat', async () => {
       project();
@@ -2086,22 +2201,22 @@ workflow:
       const drivePromise = driveHome(deps);
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      expect(definedOf(props)?.read.model.rows.map((row) => [row.slug, row.pinWord])).toEqual([
+      const popups = await openCatalogue(props);
+      expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+      expect(catalogueRows(popups).map((row) => [row.label.trim(), row.tail?.after])).toEqual([
         ['beta', 'pinned'],
-        ['alpha', 'unpinned'],
+        ['alpha', undefined],
       ]);
       expect(props.controller.getSnapshot().session, 'no chat began').toBeUndefined();
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc closes the popup to the Home').toBe(false);
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      await leaveHome(props, drivePromise);
     });
 
-    it('lists a workflow pinned under ANOTHER project as an `other-project` row, and names the pins the store holds: the Home hands the tab every pin, not only this project’s', async () => {
-      // The wired-but-dead field once more: a Home built without the all-pins read would list this project's pins alone, the store's cap
-      // would count pins the tab never showed, and every controller test would still pass.
+    it('lists a workflow pinned under ANOTHER project as an `other project` row, and no run pin: the Home hands the popup every workflow pin, not only this project’s', async () => {
+      // The wired-but-dead field once more: a Home built without the all-pins read would list this project's pins alone, and every popup test
+      // (which scripts the read) would still pass.
       project();
       const otherRoot = mkdtempSync(join(tmpdir(), 'relavium-other-project-'));
       try {
@@ -2111,8 +2226,7 @@ workflow:
           ref: 'elsewhere',
           at: 2,
         });
-        // A run pin holds a slot of the store's cap too, and the tab lists none of it: the stored total must count it, so a read that fed the
-        // tab only the workflow pins (the kind filtered away) would name two stored pins where the store holds three.
+        // A run pin holds a slot of the store's cap too, and the popup lists none of it: a read that fed it every pin unfiltered would list it.
         createRunPinStore(client.db).pinItem({
           kind: 'run',
           projectRoot: '',
@@ -2124,26 +2238,22 @@ workflow:
         const drivePromise = driveHome(deps);
         const props = captured;
         if (props === undefined) throw new Error('the injected render was never invoked');
-        typeLine(props, '/workflows');
-        await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-        const rows = definedOf(props)?.read.model.rows ?? [];
-        expect(rows.map((row) => [row.slug, row.state, row.pinned])).toEqual([
-          ['beta', 'ready', true],
-          ['elsewhere', 'other-project', true],
-          ['alpha', 'ready', false],
+        const popups = await openCatalogue(props);
+        expect(
+          catalogueRows(popups).map((row) => [row.label.trim(), row.tail?.words.trim()]),
+        ).toEqual([
+          ['beta', 'no run yet'],
+          ['elsewhere', 'other project'],
+          ['alpha', undefined],
         ]);
-        // The pin of the other project is a row that can be removed from here, and the store's own total is what the read names.
-        expect(definedOf(props)?.read.stored).toEqual({ total: 3, elsewhere: 2 });
-        props.controller.handleKey('', { escape: true });
-        props.controller.handleKey('c', CTRL_C);
-        props.controller.handleKey('c', CTRL_C);
-        expect(await drivePromise).toBe(EXIT_CODES.success);
+        popups.input('', { escape: true });
+        await leaveHome(props, drivePromise);
       } finally {
         rmSync(otherRoot, { recursive: true, force: true });
       }
     });
 
-    it('names the root of a pin of another project from ~ when it lies under the operator’s home: the Home gives the tab its directory and its home (ADR-0145 §8)', async () => {
+    it('names the root of a pin of another project from ~ when it lies under the operator’s home: the Home gives the popup its directory and its home (ADR-0145 §8)', async () => {
       // The wired-but-dead field again: the model shortens only when it is handed the roots, so a Home that forgot to hand them would
       // list the absolute path and every model test would still pass.
       project();
@@ -2159,20 +2269,52 @@ workflow:
       const drivePromise = driveHome(deps);
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      const row = definedOf(props)?.read.model.rows.find(
-        (candidate) => candidate.slug === 'elsewhere',
-      );
-      expect(row?.projectRoot).toBe(`~${sep}elsewhere-project`);
-      expect(row?.projectRoot).not.toContain(testHomeDir);
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      const popups = await openCatalogue(props);
+      const row = catalogueRows(popups).find((candidate) => candidate.label.trim() === 'elsewhere');
+      expect(row?.effect).toContain(`~${sep}elsewhere-project`);
+      expect(row?.effect).not.toContain(testHomeDir);
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
     });
 
-    it('x opens the export card over the real prepare, naming the destination in this directory; a No writes nothing', async () => {
+    it('a detail lists the last runs of THIS directory for that workflow, newest first, and none of another project’s: the Home reads them through its own database and root', async () => {
+      // The wired-but-dead field once more: the popup's `lastRuns` is a closure of `driveHome`, and a Home that read every project's runs (or
+      // none) would pass every popup test, which scripts the read.
+      project();
+      const mine = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000a1',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 120_000,
+      });
+      const foreign = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000a2',
+        state: 'failed',
+        atMs: 1_750_000_000_000 - 60_000,
+      });
+      const set = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+      set.run(realpathSync.native(cwd), mine);
+      set.run(join(testHomeDir, 'other-app'), foreign);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((row) => row.id.startsWith('run:')) : [];
+      expect(runs.map((row) => row.detail)).toEqual([mine.slice(0, 8)]);
+      expect(runs.map((row) => row.statusWord)).toEqual(['done']);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    });
+
+    it('[x] on a detail opens the export confirmation over the real prepare, naming the destination in this directory; a No writes nothing and the popup comes back on the workflow', async () => {
       project();
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
@@ -2181,29 +2323,37 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      props.controller.handleKey('x', {}); // the cursor is on `beta`, the pinned row
+      const popups = await openCatalogue(props);
+      await intoDetail(popups); // the highlight starts on `beta`, the pinned row
+      popups.input('x', {});
       await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
       const card = prompt.getSnapshot();
       expect(card.message).toBe("Write workflow 'beta' to a file in this directory?");
       expect(card.details[0]).toBe('destination beta.relavium.yaml');
-      // a popup (MVP-11 unit 6, 6.3): `Export`, its Review step; a No is one notification on the Home's channel, never the tab's row
+      // a popup stacked on the catalogue: `Export`, its Review step; a No is one notification on the Home's channel
       expect(card.popup?.title).toBe('Export');
       prompt.input('n', channelKey({ ctrl: true }));
       await vi.waitFor(
         () => expect(props.notifications?.getSnapshot().current?.text).toBe('Nothing was written.'),
         { timeout: WAIT_MS },
       );
-      expect(definedOf(props)?.message).toBeUndefined();
+      // the catalogue comes back on the workflow the export was asked from
+      await vi.waitFor(
+        () => {
+          expect(popups.getSnapshot().frame?.spec.id).toBe('workflows');
+          expect(popups.getSnapshot().frame?.stepIndex).toBe(1);
+        },
+        { timeout: WAIT_MS },
+      );
       expect(() => readFileSync(join(cwd, 'beta.relavium.yaml'), 'utf8')).toThrow();
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc, Esc closes to the Home').toBe(false);
+      await leaveHome(props, drivePromise);
     });
 
-    it('r opens the launch flow at that workflow, skipping the picker: its first card is the confirmation, and Ctrl+C leaves it with nothing started', async () => {
+    it('[r] on the catalogue opens the `/run` popup at that workflow, skipping the picker: its first card is the confirmation, and Ctrl+C leaves the whole stack with nothing started', async () => {
       project();
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
@@ -2212,10 +2362,9 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      props.controller.handleKey('', { downArrow: true }); // `alpha`
-      props.controller.handleKey('r', {});
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`
+      popups.input('r', {});
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toContain('Run alpha'), {
         timeout: WAIT_MS,
       });
@@ -2225,18 +2374,19 @@ workflow:
         'Start it',
         'Cancel',
       ]);
-      expect(prompt.getSnapshot().popup).toMatchObject({ title: '/run', stepIndex: 2 });
+      expect(prompt.getSnapshot().popup).toMatchObject({ title: '/run', origin: 'workflows' });
       prompt.input('c', channelKey({ ctrl: true }));
-      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Run cancelled.'), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      await vi.waitFor(
+        () => expect(props.notifications?.getSnapshot().current?.text).toBe('Run cancelled.'),
+        { timeout: WAIT_MS },
+      );
+      expect(popups.getSnapshot().open, 'Ctrl+C closes the whole stack').toBe(false);
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      expect(props.controller.getSnapshot().session, 'nothing was started').toBeUndefined();
+      await leaveHome(props, drivePromise);
     });
 
-    it('r refuses a workflow whose file moved since the tab was read, through the Home’s own wiring: the row’s catalog path reaches the launch, and no prompt opens', async () => {
+    it('[r] refuses a workflow whose file moved since the popup was read, through the Home’s own wiring: the row’s catalog path reaches the launch, and no prompt opens', async () => {
       // The wired-but-dead field once more: a Home that passed the slug alone (`launchRun: (slug) => runLaunch.open(slug)`) would find the
       // slug in its new file and open the form for it, and every controller test (which scripts the launch) would still pass.
       project();
@@ -2247,28 +2397,32 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      // The tab has read `alpha` from `alpha.relavium.yaml`; the same workflow id is now declared by a file of another name.
+      const popups = await openCatalogue(props);
+      // The popup has read `alpha` from `alpha.relavium.yaml`; the same workflow id is now declared by a file of another name.
       const workflows = join(cwd, '.relavium', 'workflows');
       renameSync(
         join(workflows, 'alpha.relavium.yaml'),
         join(workflows, 'alpha-moved.relavium.yaml'),
       );
-      props.controller.handleKey('', { downArrow: true }); // `alpha`
-      props.controller.handleKey('r', {});
+      popups.input('', { downArrow: true }); // `alpha`
+      popups.input('r', {});
       await vi.waitFor(
-        () => expect(definedOf(props)?.message).toMatch(/is now in alpha-moved\.relavium\.yaml\./u),
-        {
-          timeout: WAIT_MS,
-        },
+        () =>
+          expect(props.notifications?.getSnapshot().current?.text).toMatch(
+            /alpha-moved\.relavium\.yaml/u,
+          ),
+        { timeout: WAIT_MS },
       );
-      expect(definedOf(props)?.message).toMatch(/^Not started\. Open the list again: alpha /u);
       expect(prompt.getSnapshot().active, 'no prompt was opened for the moved file').toBe(false);
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      expect(props.controller.getSnapshot().session, 'nothing was started').toBeUndefined();
+      // The popup comes back on the workflow `r` was asked for (its detail), and `Esc` steps back out of it, to the Home.
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('workflows'), {
+        timeout: WAIT_MS,
+      });
+      for (let presses = 0; presses < 3 && popups.getSnapshot().open; presses += 1)
+        popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc leaves to the Home').toBe(false);
+      await leaveHome(props, drivePromise);
     });
   });
 
@@ -2462,12 +2616,33 @@ workflow:
       const props = captured;
       type(props, '/agents');
       props.controller.handleKey('', ENTER);
-      props.controller.handleKey('', ENTER);
-      const screen = props.controller.getSnapshot().screen;
-      expect(screen?.kind === 'tab-host' ? screen.host.agents?.detail?.slug : undefined).toBe(
-        'reviewer',
+      const popups = props.popups;
+      if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('agents'), {
+        timeout: WAIT_MS,
+      });
+      // No Home root is mounted, so the test is the popup slot: the frame is measured and flushed, and the opening settle is waited out.
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await vi.waitFor(
+        () => expect(popups.getSnapshot().frame?.steps[0]?.content.kind).toBe('list'),
+        { timeout: WAIT_MS },
       );
-      return { props, running, builds };
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      popups.input('', { return: true }); // the detail of `reviewer`
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(1), {
+        timeout: WAIT_MS,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      const frame = popups.getSnapshot().frame;
+      const detail = frame?.steps[1]?.content;
+      expect(
+        detail?.kind === 'report' ? detail.lines.join('\n') : '',
+        'the detail is the one of the agent the list held',
+      ).toContain('reviewer');
+      return { props, running, builds, popups };
     }
     const leaveHome = async (props: RootAppProps, running: Promise<number>): Promise<void> => {
       props.controller.handleKey('c', CTRL_C);
@@ -2481,8 +2656,8 @@ workflow:
       // cwd-relative path finds the file only because the build resolves it against the same one.
       expect(process.cwd()).not.toBe(cwd);
       const { providers, requests } = capturingResolver([textTurn('first'), textTurn('second')]);
-      const { props, running, builds } = await onDetail({ providers });
-      props.controller.handleKey('c', {});
+      const { props, running, builds, popups } = await onDetail({ providers });
+      popups.input('c', {});
       await settledChat(props);
 
       // The build is the ordinary one with the agent the file declares: no reference to re-resolve, and the file named for the consent prompt.
@@ -2525,8 +2700,8 @@ workflow:
     it('the `/agent` popup of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
       writeProjectAgent(['  - invoke_agent']);
       const { providers } = capturingResolver([textTurn('first')]);
-      const { props, running } = await onDetail({ providers });
-      props.controller.handleKey('c', {});
+      const { props, running, popups } = await onDetail({ providers });
+      popups.input('c', {});
       await settledChat(props);
 
       // The label is the catalog's own, relative to the Home's working directory: never the absolute path the consent prompt names.
@@ -2612,9 +2787,9 @@ workflow:
       'an agent that %s between the list and `c` starts nothing: the landing says why, and nothing is half-open',
       async (_name, change, sentence) => {
         const file = writeProjectAgent();
-        const { props, running, builds } = await onDetail();
+        const { props, running, builds, popups } = await onDetail();
         change(file);
-        props.controller.handleKey('c', {});
+        popups.input('c', {});
         await vi.waitFor(() => expect(props.controller.getSnapshot().notice).toBe(sentence), {
           timeout: WAIT_MS,
         });
@@ -2632,9 +2807,9 @@ workflow:
     it('a refusal through an OWNED Home is a refusal and not an infrastructure failure: the Home goes on, and leaves cleanly', async () => {
       const f = invocationFixture();
       const file = writeProjectAgent();
-      const { props, running, builds } = await onDetail({ invocation: f.invocation });
+      const { props, running, builds, popups } = await onDetail({ invocation: f.invocation });
       rmSync(file);
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2651,11 +2826,11 @@ workflow:
 
     it('an agent edited between the list and `c` to a DIFFERENT, still valid definition starts nothing: the page the person read is no longer the file', async () => {
       const file = writeProjectAgent();
-      const { props, running, builds } = await onDetail();
+      const { props, running, builds, popups } = await onDetail();
       // The same id and the same file, parsing as an agent: only the tool grant is wider than the page showed.
       writeProjectAgent(['  - write_file', '  - run_command']);
       expect(readFileSync(file, 'utf8')).toContain('run_command');
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2679,10 +2854,10 @@ workflow:
       try {
         const target = join(outside, 'reviewer.agent.yaml');
         copyFileSync(file, target); // byte for byte the definition the page showed: only where it lives is wrong
-        const { props, running, builds } = await onDetail();
+        const { props, running, builds, popups } = await onDetail();
         rmSync(file);
         symlinkSync(target, file);
-        props.controller.handleKey('c', {});
+        popups.input('c', {});
         await vi.waitFor(
           () =>
             expect(props.controller.getSnapshot().notice).toBe(
@@ -2703,11 +2878,11 @@ workflow:
       writeProjectAgent();
       let keyed = true;
       const resolver = scriptedResolver([textTurn('never')]);
-      const { props, running, builds } = await onDetail({
+      const { props, running, builds, popups } = await onDetail({
         providers: { ...resolver, hasKey: () => keyed },
       });
       keyed = false;
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2742,12 +2917,12 @@ workflow:
       const startMcpClient = vi.fn(() =>
         Promise.reject(new Error('a declined server must not start')),
       );
-      const { props, running, builds } = await onDetail({}, (options) => ({
+      const { props, running, builds, popups } = await onDetail({}, (options) => ({
         ...options,
         consentGate: gate,
         startMcpClient,
       }));
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2926,6 +3101,9 @@ workflow:
       expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
       await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
       expect(classOf(props, hosted), 'the leg this Home executes').toBe('hosted');
+      // The seeded run records no directory, so it is not this directory's and the tab lists it only under `[a] all` (OD-24 D4).
+      expect(classOf(props, held), 'this directory’s runs only, by default').toBeUndefined();
+      props.controller.handleKey('a', {});
       expect(classOf(props, held), 'a run whose terminal sits in the Home’s own outbox').toBe(
         'held',
       );
@@ -2960,6 +3138,9 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
       await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
+      // Another project's run is not listed by default (OD-24 D4): `[a] all` lists it, read-only, with its root shortened from ~.
+      expect(activeOf(props)?.rows.find((row) => row.runId === runId)).toBeUndefined();
+      props.controller.handleKey('a', {});
       expect(activeOf(props)?.rows.find((row) => row.runId === runId)?.projectRoot).toBe(
         `~${sep}other-app`,
       );
@@ -2971,7 +3152,7 @@ workflow:
     });
   });
 
-  describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {
+  describe('ADR-0137 §3 as a popup (MVP-11 unit 8): the bare Home’s `/permissions` reads the project’s own store, afresh every time', () => {
     const memoryKeychain = (): KeychainStore => {
       const entries = new Map<string, string>();
       return {
@@ -2988,9 +3169,39 @@ workflow:
         keychain,
         findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
       });
-    const rowLabels = (props: RootAppProps): readonly string[] => {
-      const project = tabSheetOf(props)?.snapshot.project;
-      return project?.ok === true ? project.rows.map((row) => row.label) : [];
+    const hostOf = (props: RootAppProps): PopupHost => {
+      if (props.popups === undefined) throw new Error('the Home was rendered without a popup host');
+      return props.popups;
+    };
+    const contentOf = (popups: PopupHost) => {
+      const frame = popups.getSnapshot().frame;
+      return frame?.steps[frame.stepIndex]?.content;
+    };
+    /** The remembered commands the popup lists, as its rows say them. */
+    const rowLabelsOf = (popups: PopupHost): readonly string[] => {
+      const content = contentOf(popups);
+      return content?.kind === 'list'
+        ? content.rows.filter((row) => row.id.startsWith('entry:')).map((row) => row.label.trim())
+        : [];
+    };
+    /**
+     * The popup is on the Home's host. No Home root is mounted, so the test is the popup slot: the frame is on screen, and the opening guard's
+     * settle (real time) is waited out, as the other popups of this file do.
+     */
+    async function settledPopup(popups: PopupHost): Promise<void> {
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
+        timeout: WAIT_MS,
+      });
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    }
+    const openFromPalette = (props: RootAppProps): void => {
+      props.controller.handleKey('/', {});
+      for (const ch of 'permissions') props.controller.handleKey(ch, {});
+      props.controller.handleKey('', ENTER);
     };
 
     it('lists the grants remembered for THIS project under THIS home: a wrong root or home would list nothing, silently', async () => {
@@ -3001,8 +3212,10 @@ workflow:
       const drivePromise = driveHome({ ...deps, openPermissions: true });
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
@@ -3014,24 +3227,19 @@ workflow:
       const drivePromise = driveHome(deps);
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      const openFromPalette = (): void => {
-        props.controller.handleKey('/', {});
-        for (const ch of 'permissions') props.controller.handleKey(ch, {});
-        props.controller.handleKey('', ENTER);
-      };
-      openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open).toBe(false);
       // Another terminal: `relavium permissions revoke --all` (the file and the digest key go), then a chat remembers something new.
       projectStore(keychain).revokeAll();
       await projectStore(keychain).remember(['node', '--version']);
-      openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['node, 1 argument']);
+      popups.input('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -3049,25 +3257,23 @@ workflow:
       const drivePromise = driveHome({ ...deps, openPermissions: true });
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      // The controller runs on the real clock here. The sheet answers an early `d` with its own wait note (which is not typing) and arms
-      // on the first one that lands after it settled, so `d` is pressed until the sheet says the question is up. An `Enter` that comes
-      // before the question's dwell drops the question instead, so it cannot be retried: it is waited out on a timer, past the constant.
-      await vi.waitFor(
-        () => {
-          props.controller.handleKey('d', {});
-          expect(tabSheetOf(props)?.armed).toBe(true);
-        },
-        { timeout: WAIT_MS, interval: 25 },
-      );
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      // The controller runs on the real clock here. `[d]` arms the line of its own step; the line counts an `Enter` only on its exact frame
+      // seen on screen, after the confirmation's dwell (800 ms), so the test is the slot that says the frame is on screen and waits it out.
+      popups.input('d', {});
+      expect(popups.getSnapshot().frame?.stepIndex, '[d] arms the withdrawal line').toBe(1);
+      popups.shown(popups.getSnapshot());
       await new Promise((resolve) =>
         setTimeout(resolve, SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS),
       );
-      props.controller.handleKey('', ENTER);
-      expect(tabSheetOf(props)?.message?.tone).toBe('done');
-      expect(rowLabels(props)).toEqual([]);
+      popups.input('', ENTER);
       expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });
-      props.controller.handleKey('', { escape: true });
+      expect(popups.getSnapshot().frame?.stepIndex, 'back on the list').toBe(0);
+      expect(rowLabelsOf(popups)).toEqual([]);
+      expect(props.notifications?.getSnapshot().current?.text).toBe('Withdrawn: npm, 1 argument');
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
@@ -3092,19 +3298,17 @@ workflow:
         keychain,
         findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
       }).remember(['npm', 'test']);
-      props.controller.handleKey('/', {});
-      for (const ch of 'permissions') props.controller.handleKey(ch, {});
-      props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
-    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the sheet', async () => {
+    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the popup', async () => {
       const keylessResolver: ProviderResolver = {
         resolveProvider: () => undefined,
         keyFor: () => {
@@ -3124,10 +3328,11 @@ workflow:
       const drivePromise = driveHome({ ...production, openPermissions: true });
       const props = capture.props;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      await flush();
-      expect(props.nativePrompt?.getSnapshot().active, 'no card over the sheet').toBe(false);
-      expect(tabSheetOf(props)).toBeDefined();
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(props.nativePrompt?.getSnapshot().active, 'no card over the popup').toBe(false);
+      expect(popups.getSnapshot().frame?.spec.id).toBe('permissions');
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
   });

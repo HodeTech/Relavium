@@ -5,7 +5,6 @@ import '../../../popups/settings-session.js';
 import type { ChatMode, ReasoningEffort } from '@relavium/shared';
 
 import { effortTiersFor } from '../../../chat/effort-notice.js';
-import { MODE_EFFECT } from '../../../chat/mode-effects.js';
 import type { PopupOrigin } from '../../../popups/frame-model.js';
 import type { PopupFrame, PopupSpec } from '../../../popups/popup-reducer.js';
 import type { SettingsPort, SettingsSurface } from '../../../popups/settings-port.js';
@@ -31,8 +30,10 @@ export const SETTINGS_LANDMARKS = {
   effort: 'balanced reasoning · current',
   form: 'Reasoning effort',
   effect: 'Granted actions are approved',
-  mode: 'every action asks first · current',
-  'mode-apply': 'Mode: auto',
+  // `/mode` (MVP-11 unit 8, OD-25): one list; the state words of the first row (the mode in force is also the startup default)
+  mode: 'this chat · startup',
+  // ... and the same list with `plan` highlighted: its whole effect under the list, `Enter use in this chat` and `[s]` in the legend
+  'mode-use': 'Read-only: nothing is changed',
 } as const;
 
 export type SettingsState = keyof typeof SETTINGS_LANDMARKS;
@@ -42,11 +43,11 @@ export const SETTINGS_LEGEND_ROW: Readonly<Record<SettingsState, string | readon
   effort: '↑/↓ select · Enter apply · Esc close',
   form: '←/→ effort · ↑/↓ scope · Enter apply · [Ctrl+C] close · Esc back',
   effect: '↑/↓ select · Enter apply · Esc close',
-  mode: '↑/↓ select · Enter next · Esc close',
-  // A guarded form: its `Enter` waits (`(wait)`, dim) for the lockout after the `Enter` that reached it, then reads as it always did.
-  'mode-apply': [
-    '↑/↓ apply to · Enter apply (wait) · [Ctrl+C] close · Esc back',
-    '↑/↓ apply to · Enter apply · [Ctrl+C] close · Esc back',
+  mode: '↑/↓ select · Enter keep · Esc close',
+  // The whole legend (69 columns) is wider than a popup's row at 80 columns (66): `[s] startup` there, `[s] startup default` at 100.
+  'mode-use': [
+    '↑/↓ select · Enter use in this chat · [s] startup · Esc close',
+    '↑/↓ select · Enter use in this chat · [s] startup default · Esc close',
   ],
 };
 
@@ -65,14 +66,16 @@ export function settingsPortFor(surface: SettingsSurface): SettingsPort {
         current = effort;
       },
     },
-    // `/mode` (the two steps of `popup-mode-chat-80x24.png`): the mode in force `ask`; applying moves it, the hand-off does nothing here.
+    // `/mode` (one list, MVP-11 unit 8): the mode in force `ask`, which is also the saved startup default; applying moves it, the hand-off does nothing.
     mode: {
+      scope: 'chat',
       current: () => mode,
       apply: (next) => {
         mode = next;
         return true;
       },
-      saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
+      startup: () => 'ask',
+      saveStartupDefault: () => Promise.resolve({ kind: 'closed' }),
     },
   };
 }
@@ -181,7 +184,7 @@ export async function driveSettings(
   state: SettingsState,
   origin: PopupOrigin,
 ): Promise<void> {
-  if (state === 'mode' || state === 'mode-apply') {
+  if (state === 'mode' || state === 'mode-use') {
     await driveMode(m, type, state);
     return;
   }
@@ -192,13 +195,13 @@ export async function driveSettings(
 }
 
 /**
- * `/mode` typed and routed by the host: its first step on the mode in force (`ask`), or its second for `auto` (three `↓`, then `Enter` once
- * the popup has settled), the step that states the effect it applies under.
+ * `/mode` typed and routed by the host: the list on the mode in force (`ask`, also the startup default), or (`mode-use`) with `plan` highlighted
+ * after one `↓` once the popup has settled: its whole effect under the list and `Enter use in this chat` in the legend.
  */
 async function driveMode(
   m: Parameters<typeof driveSettings>[0],
   type: (line: string) => Promise<void>,
-  state: 'mode' | 'mode-apply',
+  state: 'mode' | 'mode-use',
 ): Promise<void> {
   const shows = (text: string) => (): boolean => m.frame().join('\n').includes(text);
   await type('/mode');
@@ -207,12 +210,7 @@ async function driveMode(
   if (state === 'mode') return;
   m.skip(600);
   // One key per read: keys written together reach the renderer as one read, which is one key.
-  for (let press = 0; press < 3; press += 1) {
-    m.key(KEYS.down);
-    await m.settle();
-  }
-  await m.until(shows(MODE_EFFECT.auto.full.slice(0, 40)));
-  m.key(KEYS.enter);
-  await m.until(shows(SETTINGS_LANDMARKS['mode-apply']));
+  m.key(KEYS.down);
+  await m.until(shows(SETTINGS_LANDMARKS['mode-use']));
   await m.settle();
 }

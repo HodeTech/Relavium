@@ -513,14 +513,15 @@ describe('the keyless journey', () => {
       }
     });
 
-    it('does not open over a screen (the help sheet), either', async () => {
+    it('does not open over a screen (the Runs screen), either', async () => {
       const j = journey({ cols: 70, rows: 20 });
       const p = await j.ready();
       try {
         await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
-        type(p, '/help');
-        p.controller.handleKey('', { return: true }); // the palette is open over the typed word: Enter runs its row
-        expect(p.controller.getSnapshot().screen?.kind, 'the help sheet is in front').toBe('help');
+        expect(p.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
+        expect(p.controller.getSnapshot().screen?.kind, 'the Runs screen is in front').toBe(
+          'tab-host',
+        );
         j.resize({ cols: 80, rows: 24 });
         expect(ui(p).getSnapshot().active).toBe(false);
         expect(j.resizeListeners.size, 'still waiting').toBeGreaterThan(0);

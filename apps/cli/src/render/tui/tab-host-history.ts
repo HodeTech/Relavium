@@ -68,7 +68,7 @@ import {
   type PinPort,
   type PinToggle,
 } from './tab-host-pin.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
 import { displayWidth } from './viewport.js';
 
 /**
@@ -1372,32 +1372,29 @@ function listLegendItems(read: HistoryRead | undefined, named: NamedLegend): rea
 }
 
 /**
- * The legend's items: the detail's, or the list's (the tab host's tab item first). The key that leaves is the host's `exit`, which the
- * fit needs to measure: `Esc close` on the list, {@link HISTORY_KEYS.back} or the node page's on a detail. A tab that could not be read
- * names the tab keys the other tabs without a list name. `Tab` (cycle) is named wherever the legend still fits the 80-column floor with it
- * ({@link fitLegend}), so a long legend (the list's, the detail's) keeps its own keys instead.
+ * The legend's items: the detail's, or the list's (the Runs screen's tab item first). The key that leaves is the host's `exit`, which the
+ * fit needs to measure: `Esc back to Home` on the list, {@link HISTORY_KEYS.back} or the node page's on a detail. A tab that could not be read
+ * names the tab key alone. The list's `[f] filter` is named where the legend still fits the 80-column floor with it ({@link fitLegend}).
  */
 export function historyLegendItems(
   state: HistoryTabState,
   tabItems: readonly LegendItem[],
   exit: LegendExit,
 ): readonly LegendItem[] {
-  const [tabItem, cycleItem] = tabItems;
+  const [tabItem] = tabItems;
   if (state.phase !== 'ready' || tabItem === undefined) return tabItems;
-  const named: NamedLegend = (...rest) => {
-    const plain: readonly LegendItem[] = [tabItem, ...rest];
-    if (cycleItem === undefined) return plain;
-    // The cycle item is the one optional item: it is kept when the whole fits, and then it goes between the tab item and the rest.
-    const fitted = fitLegend(
-      plain,
-      [{ item: cycleItem, priority: 1 }],
-      exit,
-      usableColumns(LEGEND_FLOOR_COLUMNS),
-      displayWidth,
-    );
-    return fitted.length > plain.length ? [tabItem, cycleItem, ...rest] : plain;
-  };
-  return state.detail === undefined
-    ? listLegendItems(state.read, named)
-    : detailLegendItems(state.detail, named, tabItem);
+  const named: NamedLegend = (...rest) => [tabItem, ...rest];
+  if (state.detail !== undefined) return detailLegendItems(state.detail, named, tabItem);
+  const items = listLegendItems(state.read, named);
+  // The list's `[f] filter` is the one optional item (MVP-11 unit 8, the Runs screen): its way out names where it goes (`Esc back to Home`), which
+  // is seven columns longer than `Esc close` was, so at the 80-column floor the filter key is the first to go, and the way out is never cut.
+  const last = items.at(-1);
+  if (last !== HISTORY_KEYS.filter) return items;
+  return fitLegend(
+    items.slice(0, -1),
+    [{ item: last, priority: 1 }],
+    exit,
+    usableColumns(LEGEND_FLOOR_COLUMNS),
+    displayWidth,
+  );
 }

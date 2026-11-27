@@ -88,6 +88,8 @@ function view(options: ViewOptions = {}) {
 }
 
 const linesOf = (frame: string | undefined): string[] => (frame ?? '').split('\n');
+/** The card's title row: under the sheet's heavy rule, which is the card's first row since unit 8 (ADR-0147 §1). */
+const TITLE = 1;
 
 describe('at 80×24', () => {
   it('shows the title, the author`s message behind the gutter, the gate`s facts and the keys it accepts', () => {
@@ -95,7 +97,10 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a', { message: 'Ship build 42 to production?' })] }),
     });
     const lines = linesOf(lastFrame());
-    expect(lines[0]).toBe('|| waiting for you  ·  run run-0001');
+    expect(lines[0], 'the sheet’s heavy rule, `=` without colour').toMatch(
+      /^== Waiting for you =+$/u,
+    );
+    expect(lines[TITLE]).toBe('|| waiting for you  ·  run run-0001');
     expect(lines).toContain(`${RUN_CARD_GUTTER}Ship build 42 to production?`);
     expect(lines).toContain('node node-a · approval gate');
     expect(lines).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
@@ -107,7 +112,7 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a'), gate('b'), gate('c')], cursor: 1 }),
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('|| waiting for you  ·  gate 2 of 3  ·  run run-0001');
+    expect(linesOf(frame)[TITLE]).toBe('|| waiting for you  ·  gate 2 of 3  ·  run run-0001');
     expect(frame).toContain('> b · approval · node node-b');
     expect(frame).toContain('  a · approval · node node-a');
     expect(frame).toContain('  c · approval · node node-c');
@@ -123,7 +128,7 @@ describe('at 80×24', () => {
       nowMs: Date.parse(at) + 1000,
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('! expired  ·  run run-0001');
+    expect(linesOf(frame)[TITLE]).toBe('! expired  ·  run run-0001');
     expect(frame).toContain('node node-a · approval gate · expired');
     expect(frame).not.toContain('Overdue');
     expect(frame, 'the stored timestamp is never drawn').not.toContain(at);
@@ -282,7 +287,7 @@ describe('a glyph and a word for every state', () => {
     (name, state, nowMs) => {
       const appearance = RUN_CARD_APPEARANCE[name];
       const { lastFrame } = view({ snapshot: state, nowMs, color: false });
-      expect(linesOf(lastFrame())[0]).toContain(
+      expect(linesOf(lastFrame())[TITLE]).toContain(
         `${glyphOf(appearance.role, true)} ${appearance.word}`,
       );
       expect(projectRunCard(state, { columns: 80, rows: 24, nowMs }).state).toBe(name);

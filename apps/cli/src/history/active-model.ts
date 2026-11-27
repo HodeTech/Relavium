@@ -79,6 +79,11 @@ export interface ActiveRow {
   readonly createdAt: string;
   /** Through the one-line floor: for display, never for comparison (the class decision used the stored value). */
   readonly projectRoot?: string;
+  /**
+   * Present (`true`) when the run was NOT started in this directory: its recorded root is not this directory's canonical root (`isProjectRootHere`), or
+   * none was recorded. The Runs screen lists this directory's runs by default (MVP-11 unit 8, OD-24 D4) and these only under `[a] all`, read-only.
+   */
+  readonly elsewhere?: true;
 }
 
 export interface ClassifyActiveInput {
@@ -247,6 +252,10 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       actionable: verdict.actionable,
       enter: verdict.enter,
       ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
+      ...(run.id !== input.hostedRunId &&
+      !isProjectRootHere(run.projectRoot, input.currentProjectRoot)
+        ? { elsewhere: true as const }
+        : {}),
       stalled,
       ...(stalled ? { stalledReason: STALLED_REASON } : {}),
       createdAt: run.createdAt,

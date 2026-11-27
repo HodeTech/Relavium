@@ -1,11 +1,13 @@
 /**
  * A form settles on its own frame ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3;
  * MVP-11 step 5, F1; `popup-host.ts`, "A form settles on its own frame"). The opening guard runs once per popup, so a form reached by a step
- * would otherwise take an `Enter` the moment it is drawn: `/mode`'s `↓↓↓ Enter Enter` typed fast would widen the session to `auto` before the
+ * would otherwise take an `Enter` the moment it is drawn: the former `/mode`'s `↓↓↓ Enter Enter` typed fast would widen the session to `auto` before the
  * effect step 2 states had been on screen. The host holds a form's `Enter` until the opening guard's settle (500 ms) has passed since THAT
  * frame was acknowledged whole: a too-early `Enter` is dropped without a word and is no resolution; the first step's `Enter`, the navigation
  * keys and `Esc` act as before; a new frame of the form starts the settle again, and a re-acknowledgement of the same frame does not. Every
- * case runs at the real opening-guard timings (no `settleMs` override), and through the host, so it holds for `/mode` and `/models` alike.
+ * case runs at the real opening-guard timings (no `settleMs` override), and through the host, so it holds for every guarded form. Since MVP-11 unit 8
+ * (OD-25) `/mode` has no second screen: its two-step shape lives on as the test fixture `guarded-form.test-support.ts`, and `/models`' second step is
+ * the product's guarded form (its case below).
  *
  * A form's `Enter` has a second clock: the approval's lockout after the answer that reached it (`APPROVAL_LOCKOUT_MS`, 2 s), which is what stops a
  * held `Enter`'s FIRST repeat (it comes after the terminal's initial repeat delay, longer than the settle and the quiet gap) from applying what
@@ -18,14 +20,17 @@ import { describe, expect, it } from 'vitest';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import { APPROVAL_LOCKOUT_MS, APPROVAL_QUIET_MS } from '../render/tui/tool-review-model.js';
 import { manualClock } from './doctor.test-support.js';
-import { modeScopeForm, SCOPE_STEP } from './mode-popup.js';
+import {
+  guardedScopeForm,
+  openGuardedMode,
+  SCOPE_STEP,
+  type GuardedModeMember,
+} from './guarded-form.test-support.js';
 import { fakeModels, modelsRig, OPENAI } from './models.test-support.js';
 import { createNotificationChannel } from './notifications.js';
 import { POPUP_SELECT_SETTLE_MS } from './opening-guard.js';
 import { createPopupHost } from './popup-host.js';
 import type { PopupFormValues, PopupKey, PopupSpec } from './popup-reducer.js';
-import type { ModeSettingsPort } from './settings-port.js';
-import { openSettingsPopup } from './settings-session.js';
 
 const ENTER: PopupKey = { return: true };
 const DOWN: PopupKey = { downArrow: true };
@@ -75,7 +80,7 @@ function rig() {
 function modeOver(r: ReturnType<typeof rig>) {
   const applied: ChatMode[] = [];
   const saved: ChatMode[] = [];
-  const member: ModeSettingsPort = {
+  const member: GuardedModeMember = {
     // In force `auto`: its `Enter` on step 1 reaches the `auto` form, the one that widens authority and is guarded (`PopupForm.guarded`).
     current: () => 'auto',
     apply: (mode) => {
@@ -87,12 +92,7 @@ function modeOver(r: ReturnType<typeof rig>) {
       return Promise.resolve({ kind: 'unchanged' });
     },
   };
-  const opened = openSettingsPopup({
-    host: r.host,
-    port: { surface: 'standalone-chat', announce: () => {}, mode: member },
-    command: 'mode',
-    origin: 'chat',
-  });
+  const opened = openGuardedMode(r.host, member);
   expect(opened.opened).toBe(true);
   return { applied, saved };
 }
@@ -493,7 +493,7 @@ describe('a form that only narrows has the settle and the quiet gap, no lockout 
   function narrowing() {
     const r = rig();
     const applied: ChatMode[] = [];
-    const member: ModeSettingsPort = {
+    const member: GuardedModeMember = {
       current: () => 'plan',
       apply: (mode) => {
         applied.push(mode);
@@ -501,12 +501,7 @@ describe('a form that only narrows has the settle and the quiet gap, no lockout 
       },
       saveStartupDefault: () => Promise.resolve({ kind: 'unchanged' }),
     };
-    const opened = openSettingsPopup({
-      host: r.host,
-      port: { surface: 'standalone-chat', announce: () => {}, mode: member },
-      command: 'mode',
-      origin: 'chat',
-    });
+    const opened = openGuardedMode(r.host, member);
     expect(opened.opened).toBe(true);
     r.ack();
     r.clock.advance(POPUP_SELECT_SETTLE_MS);
@@ -540,10 +535,10 @@ describe('a form that only narrows has the settle and the quiet gap, no lockout 
   });
 
   it('a form for `auto` is guarded and one for `accept-edits` too; `plan` and `ask` are not; `/models` is guarded when the provider changes', () => {
-    expect(modeScopeForm('auto').guarded).toBe(true);
-    expect(modeScopeForm('accept-edits').guarded).toBe(true);
-    expect(modeScopeForm('ask').guarded).toBeUndefined();
-    expect(modeScopeForm('plan').guarded).toBeUndefined();
+    expect(guardedScopeForm('auto').guarded).toBe(true);
+    expect(guardedScopeForm('accept-edits').guarded).toBe(true);
+    expect(guardedScopeForm('ask').guarded).toBeUndefined();
+    expect(guardedScopeForm('plan').guarded).toBeUndefined();
   });
 });
 

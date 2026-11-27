@@ -51,6 +51,14 @@ const LAZY = [
   'permissions-session',
   'permissions-popup',
   'unreadable-run-card',
+  // The Home's management popups (MVP-11 unit 8): `home-port.ts` is the eager half; the session and the three popups' words load on first use.
+  'home-session',
+  'home-text',
+  'home-help-popup',
+  'home-agents-popup',
+  'home-agents-session',
+  'home-workflows-popup',
+  'home-workflows-session',
 ].map((name) => `popups/${name}.ts`);
 
 /** Every source file of the CLI (tests and their support excluded), by its path under `src`. */
@@ -207,11 +215,15 @@ describe('the popups load on first use', () => {
     expect(readFileSync(join(SRC, 'popups/unreadable-run-port.ts'), 'utf8')).toContain(
       "import('./unreadable-run-card.js')",
     );
+    expect(readFileSync(join(SRC, 'popups/home-port.ts'), 'utf8')).toContain(
+      "import('./home-session.js')",
+    );
     const reached = closure('render/tui/home-controller.ts');
     expect(reached.has('popups/doctor-port.ts')).toBe(true);
     expect(reached.has('popups/report-port.ts')).toBe(true);
     expect(reached.has('popups/settings-port.ts')).toBe(true);
     expect(closure('home/drive-home.tsx').has('popups/unreadable-run-port.ts')).toBe(true);
+    expect(closure('home/drive-home.tsx').has('popups/home-port.ts')).toBe(true);
   });
 
   it.each(ENTRIES)('%s reaches no lazy module through a static value import', (entry) => {

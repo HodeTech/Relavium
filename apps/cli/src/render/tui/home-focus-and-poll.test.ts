@@ -221,7 +221,7 @@ describe('the Enter after a refresh dropped the focused row', () => {
     r.anotherTerminalShows(EMPTY);
     await r.time.advance(STRIP_REFRESH_MS);
     expect(r.controller.getSnapshot().stripFocus).toBeUndefined();
-    expect(r.controller.openScreen('help')).toBe(true);
+    expect(r.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
     r.controller.closeScreen();
     r.controller.handleKey('', ENTER);
     expect(r.controller.getSnapshot().screen).toMatchObject({ kind: 'run-view' });

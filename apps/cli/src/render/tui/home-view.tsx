@@ -58,6 +58,7 @@ import {
   paletteRowBudget,
 } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
+import { sheetRule } from './sheet-frame.js';
 import { homeContentColumns, homePromptRows, layoutHomeNotice } from './home-notice.js';
 import { stripReach, stripRows, isFocused, type StripFocus } from './strip-focus.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
@@ -115,6 +116,8 @@ interface HomeViewProps {
   readonly hostedRun?: RunHostSnapshot | undefined;
   /** The exit-guard card (ADR-0139 §6): it takes the place of the prompt block of the page in front and holds the notice back. */
   readonly exitGuard?: ExitGuardPhase | undefined;
+  /** The exit guard's lockout holds its `Ctrl+Y` (the controller's `exitGuardLock`, a display value): it reads `(wait)` (ADR-0145 §3). */
+  readonly exitGuardLocked?: boolean | undefined;
   /** The runs of THIS project that are parked ([ADR-0139] §3, §7): one Attention row each on the work page. */
   readonly parkedRuns?: readonly ParkedRunRow[] | undefined;
   /** The work page's focused row (ADR-0140 §6), by its identity: marked `›` and always one of the rows drawn. `undefined`: no row. */
@@ -137,18 +140,38 @@ const NOTHING_TO_COUNT: WorkCounts = { attention: 0, sessions: 0, runs: 0 };
  * The exit-guard card (ADR-0139 §6): a title line, what leaving does and the keys, each in words so it reads with colour off. It is
  * the same card on both pages, in the loading echo and in the below-minimum degrade.
  */
+/** What the exit guard's rule says it is (ADR-0147 §1): fixed host text. */
+export const EXIT_GUARD_RULE_LABEL = 'Leaving the Home';
+
 export function ExitGuardCard(
   props: Readonly<{
     phase: ExitGuardPhase;
     hostedRun: RunHostSnapshot | undefined;
     color: boolean;
+    /** The columns the card's rule is drawn across (the content column it stands in). Default: the 80-column floor's. */
+    columns?: number | undefined;
+    /** Its lockout holds `Ctrl+Y` now (a display value): the key reads `(wait)`. */
+    locked?: boolean | undefined;
   }>,
 ): ReactElement {
   const lines = withGlyphForm(!props.color, () =>
-    exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000),
+    exitGuardLines(
+      props.phase,
+      props.hostedRun,
+      HOSTED_RUN_EXIT_BOUND_MS / 1000,
+      props.locked === true,
+    ),
+  );
+  // The sheet's heavy rule (ADR-0147 §1): the exit guard takes the prompt block's place and wears the frame the other sheets wear.
+  const rule = withGlyphForm(
+    !props.color,
+    () => sheetRule(EXIT_GUARD_RULE_LABEL, '', Math.max(1, (props.columns ?? 80) - 2)).text,
   );
   return (
     <Box flexDirection="column">
+      <Text {...colorProps(props.color, 'yellow')} wrap="truncate-end">
+        {rule}
+      </Text>
       {lines.map((line, row) => (
         <EmphText
           key={line}
@@ -417,7 +440,13 @@ function landingPage(
         promptShown={promptShown}
       >
         {exitGuard !== undefined && (
-          <ExitGuardCard phase={exitGuard} hostedRun={view.hostedRun} color={color} />
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={view.hostedRun}
+            color={color}
+            columns={homeContentColumns(cols)}
+            locked={view.exitGuardLocked}
+          />
         )}
         {mention !== undefined && exitGuard === undefined && (
           <LandingMention
@@ -561,7 +590,13 @@ function workPage(input: PageInput, frame: RefObject<DOMElement | null> | undefi
       bottom={bottom}
       guardCard={
         exitGuard === undefined ? undefined : (
-          <ExitGuardCard phase={exitGuard} hostedRun={view.hostedRun} color={color} />
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={view.hostedRun}
+            color={color}
+            columns={homeContentColumns(cols)}
+            locked={view.exitGuardLocked}
+          />
         )
       }
       cols={cols}
@@ -602,7 +637,13 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
             {legend([], interruptArmed ? EXIT_AGAIN : EXIT_TWICE)}
           </Text>
         ) : (
-          <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={props.hostedRun}
+            color={color}
+            columns={cols}
+            locked={props.exitGuardLocked}
+          />
         )}
       </Box>
     );

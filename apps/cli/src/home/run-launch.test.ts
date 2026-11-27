@@ -1137,6 +1137,100 @@ describe('open(slug) starts the form for one workflow (the Defined tab’s r)', 
   });
 });
 
+describe('a launch started from the /workflows popup (MVP-11 unit 8, OD-24 D1)', () => {
+  const FROM_WORKFLOWS = { opener: { origin: 'workflows' } } as const;
+
+  it('says on its frame that it came from `/workflows`, with the legend every step has (`Esc back`: a longer verb does not fit the confirmation at 80 columns); a plain launch says it came from the Home', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const stacked = rig();
+    const opened = stacked.launch.open('host-happy', undefined, FROM_WORKFLOWS);
+    const first = await shows(stacked, 'text', 'Input 1 of 1: n');
+    expect(first.popup).toMatchObject({ title: '/run', origin: 'workflows' });
+    expect(first.popup?.escapeVerb, 'the default `back`').toBeUndefined();
+    keys(stacked).esc();
+    await opened;
+
+    const plain = rig();
+    const plainOpened = plain.launch.open('host-happy');
+    const plainFirst = await shows(plain, 'text', 'Input 1 of 1: n');
+    expect(plainFirst.popup?.origin).toBe('home');
+    keys(plain).esc();
+    keys(plain).esc();
+    await plainOpened;
+  });
+
+  it('`Esc` on the first field leaves the flow with no word, no picker and no run: the popup it came from comes back, not a list nobody opened', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('host-happy', undefined, FROM_WORKFLOWS);
+    await shows(r, 'text', 'Input 1 of 1: n');
+    keys(r).esc();
+    expect(await opened, 'nothing is said: the person went back').toBe('');
+    expect(r.snapshots.some((snapshot) => snapshot.includes('Run which workflow?'))).toBe(false);
+    expect(r.startCalls).toHaveLength(0);
+    expect(runCount()).toBe(0);
+    expect(r.channel.ui.getSnapshot().active, 'the flow ended').toBe(false);
+  });
+
+  it('`Esc` on the confirmation of a workflow with no inputs (the first thing it asks) goes back too, and starts nothing', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('no-inputs', undefined, FROM_WORKFLOWS);
+    const card = await shows(r, 'chord', 'Run no-inputs');
+    expect(card.popup).toMatchObject({ origin: 'workflows' });
+    keys(r).esc();
+    expect(await opened).toBe('');
+    expect(r.startCalls).toHaveLength(0);
+    expect(runCount()).toBe(0);
+  });
+
+  it('a later field’s `Esc` still steps back one field, and `Ctrl+C` closes the whole stack as a cancel', async () => {
+    writeWorkflow('secret.relavium.yaml', SECRET_RUN);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open('host-secret', undefined, FROM_WORKFLOWS);
+    await shows(r, 'text', 'Input 1 of 2: n');
+    k.type('4');
+    k.enter();
+    const second = await untilPrompt(
+      r,
+      (snapshot) => snapshot.message.includes('Input 2 of 2: token'),
+      'the second field',
+    );
+    expect(
+      second.popup?.escapeVerb,
+      'a later field steps back to the one before it',
+    ).toBeUndefined();
+    k.esc();
+    await shows(r, 'text', 'Input 1 of 2: n');
+    k.ctrlC();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    expect(r.startCalls).toHaveLength(0);
+  });
+
+  it('a launch that names no workflow (the picker) is the plain `/run`, whatever opener it was given: the picker is its first thing', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const opened = r.launch.open(undefined, undefined, FROM_WORKFLOWS);
+    const picker = await shows(r, 'select', 'Run which workflow?');
+    expect(picker.popup?.origin).toBe('home');
+    keys(r).esc();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
+
+  it('a start from the popup is the flow’s own: one Ctrl+Y, one run', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('no-inputs', undefined, FROM_WORKFLOWS);
+    await shows(r, 'chord', 'Run no-inputs');
+    keys(r).ctrlY();
+    expect(await opened).toMatch(/^Started no-inputs · run /u);
+    expect(r.startCalls).toHaveLength(1);
+    await idle(r);
+  });
+});
+
 describe('open(slug, path) refuses a slug whose file is not the one the row was listed from', () => {
   /** The path the Defined row carried: the catalog's own, as it listed `none.relavium.yaml` before the file changed. */
   const listed = join('.relavium', 'workflows', 'none.relavium.yaml');

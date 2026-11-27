@@ -41,6 +41,7 @@ import {
   sessionLabel,
   splitRowId,
   unreadableRunLabel,
+  EXIT_GUARD_RULE_ROWS,
   type ExitGuardPhase,
 } from './home-projection.js';
 import { allocateWorkList, type SectionWindow } from './home-work-budget.js';
@@ -431,9 +432,10 @@ export function workBottomBlock(input: {
     return {
       kind: 'guard',
       phase: exitGuard,
-      // the card's rows: a blank row and its lines (counted in the form they are drawn in)
+      // the card's rows: a blank row, its heavy rule (ADR-0147 §1) and its lines (counted in the form they are drawn in)
       rows:
         1 +
+        EXIT_GUARD_RULE_ROWS +
         withGlyphForm(!input.color, () =>
           exitGuardLines(exitGuard, input.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000),
         ).length,

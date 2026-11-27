@@ -56,6 +56,8 @@ beforeEach(async () => {
     state: 'running',
     atMs: BASE - 5 * RUN_LEASE_TTL_MS,
   });
+  // The Active tab lists THIS directory's runs by default (MVP-11 unit 8, OD-24 D4): the run was started in the project the Home is in.
+  client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(HERE, RUN);
   client.sqlite
     .prepare(
       'INSERT INTO run_leases (run_id, owner_id, generation, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',

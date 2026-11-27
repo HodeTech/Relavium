@@ -27,7 +27,7 @@ import {
 } from '../render/tui/export-card.js';
 import { createHomeController, type HomeController } from '../render/tui/home-controller.js';
 import type { HomeSnapshot } from './home-store.js';
-import type { TabHostState } from '../render/tui/tab-host.js';
+import type { HomePopupsPort } from '../popups/home-port.js';
 import { createExportPort } from './defined-port.js';
 
 vi.mock('../commands/export.js', async (importOriginal) => ({
@@ -226,7 +226,10 @@ function mountHome() {
         pathOf: (index) => (index === 0 ? 'code-review.relavium.yaml' : undefined),
       }),
     },
-    exportDefined: (slug) => runExportCard({ flow: yes, port }, slug),
+    exportDefined: (slug, origin) => runExportCard({ flow: yes, port }, slug, origin),
+    openHomePopup: (request) => {
+      workflowsPort = request.port.workflows;
+    },
     startChat: () => new Promise<never>(() => {}),
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},
@@ -236,18 +239,15 @@ function mountHome() {
   return { controller, failure, entered, onError, onExit };
 }
 
-const messageOf = (c: HomeController): string | undefined => {
-  const screen = c.getSnapshot().screen;
-  const host: TabHostState | undefined = screen?.kind === 'tab-host' ? screen.host : undefined;
-  return host?.defined?.message;
-};
+/** The `/workflows` popup's request, kept: its port's `[x]` is the export's opener (MVP-11 unit 8). */
+let workflowsPort: HomePopupsPort['workflows'];
 
-/** `/workflows`, then `x` on the first row: the card is answered Yes, and the commit runs. */
+/** `/workflows`, then `[x]` on the first row (the popup's port, once it has closed itself): the card is answered Yes, and the commit runs. */
 async function exportFirstRow(controller: HomeController): Promise<void> {
   controller.handlePaste('/workflows');
   controller.handleKey('', ENTER);
   await flush();
-  controller.handleKey('x', {});
+  workflowsPort?.export('code-review');
   await flush();
   await flush();
 }
@@ -266,12 +266,11 @@ describe('in a Home with a work owner, an errno from the write does not end the 
       expect(shownSteps).toEqual([
         { message: 'Not exported.', details: [sentence], final: 'failed' },
       ]);
-      expect(messageOf(m.controller), 'nothing is left on the tab’s row').toBeUndefined();
       expect(m.failure, 'the work owner was not told of a fault').not.toHaveBeenCalled();
       expect(m.onError).not.toHaveBeenCalled();
       expect(m.onExit).not.toHaveBeenCalled();
       expect(m.controller.getSnapshot().nativeActionBusy).toBe(false);
-      expect(m.controller.getSnapshot().screen?.kind, 'the tab is still there').toBe('tab-host');
+      expect(m.controller.getSnapshot().screen, 'no screen is left open').toBeUndefined();
       expect(JSON.stringify(m.controller.getSnapshot())).not.toContain('SECRET');
     },
   );

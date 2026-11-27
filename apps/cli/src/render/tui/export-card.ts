@@ -113,12 +113,14 @@ export interface ExportCardDeps {
 export async function runExportCard(
   deps: ExportCardDeps,
   slug: string,
+  /** Where the popup says it was opened from: the Home, or `/workflows` (its `[x]`, whose popup waits behind this one: MVP-11 unit 8). */
+  origin: 'home' | 'workflows' = 'home',
 ): Promise<string | undefined> {
   deps.assertAdmitting?.();
   const prepared = deps.port.prepare(slug);
   const flow = framedFlow(deps.flow, {
     title: EXPORT_TITLE,
-    origin: 'home',
+    origin,
     stepNames: EXPORT_STEPS,
     progress: 'manual',
   });

@@ -32,6 +32,7 @@ import {
   legendItems,
 } from './legend.js';
 import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
+import { sheetRule } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
@@ -61,7 +62,7 @@ export interface QuestionCardView {
   readonly keys: readonly [string, string];
 }
 
-const RULE_LABEL = ' Question from the agent · not an approval ';
+const RULE_LABEL = 'Question from the agent · not an approval';
 const OWN_PLACEHOLDER = 'Type your own answer…';
 const OWN_DESCRIPTION = 'Just start typing — it is sent to the model.';
 /** `Esc` and `Ctrl+C` both stop the turn: the key that leaves says so, and what it does. */
@@ -86,10 +87,12 @@ const GUTTER = '│ ';
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const ASCII_LINE = /^[\x20-\x7e]*$/u;
 
-/** The thin rule that opens the card, fixed host text the model cannot touch. */
-export function questionRule(columns: number): string {
-  const rule = glyph('thinRule');
-  return `${rule}${RULE_LABEL}${rule.repeat(Math.max(1, columns - 2 - displayWidth(RULE_LABEL)))}`;
+/**
+ * The heavy rule that opens the card (ADR-0147 §1), fixed host text the model cannot touch, with the wait clock on its right (`clock`, the host's
+ * display value; empty: none). As wide as the thin rule it replaced, so the card's rows do not move; the label survives word for word.
+ */
+export function questionRule(columns: number, clock = ''): string {
+  return sheetRule(RULE_LABEL, clock, Math.max(1, columns - 1)).text;
 }
 
 /**
@@ -393,6 +396,20 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   return rows;
 }
 
+/**
+ * The card's title line (ADR-0147 §1): the header behind the gutter on the left and the question strip (host text: the dots and `Review`) flush
+ * right, when both fit `width` with two columns between them; otherwise the strip follows the header as before, on the header's first row.
+ */
+function headerRow(state: QuestionCardState, header: string, width: number): string {
+  const gutterWidth = displayWidth(GUTTER);
+  if (!hasReview(state)) return `${GUTTER}${hardWrap(header, width - gutterWidth)[0] ?? ''}`;
+  const strip = tabs(state);
+  const left = `${GUTTER}${header}`;
+  const gap = width - displayWidth(left) - displayWidth(strip);
+  if (gap >= 2) return `${left}${' '.repeat(gap)}${strip}`;
+  return `${GUTTER}${hardWrap(`${header}  ${strip}`, width - gutterWidth)[0] ?? ''}`;
+}
+
 /** Project the card. `columns` is the terminal width; the drawable width is two less (the card's own margin). */
 export function projectQuestionCard(
   state: QuestionCardState,
@@ -406,12 +423,8 @@ export function projectQuestionCard(
     return { rule: questionRule(columns), body: projectReview(state, width), keys };
   const question = currentQuestion(state);
   const entry = currentEntry(state);
-  const progress = hasReview(state) ? `  ${tabs(state)}` : '';
   const body: QuestionCardRow[] = [
-    {
-      text: `${GUTTER}${hardWrap(`${blankHostMarks(question.header)}${progress}`, width - gutterWidth)[0] ?? ''}`,
-      tone: 'header',
-    },
+    { text: headerRow(state, blankHostMarks(question.header), width), tone: 'header' },
     ...hardWrap(blankHostMarks(question.question), width - gutterWidth).map(
       (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),

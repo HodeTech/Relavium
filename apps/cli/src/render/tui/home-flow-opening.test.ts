@@ -1,6 +1,6 @@
 /**
  * The Home's half of the flows that write (MVP-11 unit 6, 6.3; ADR-0148 §3, §6): the key that opens `/init`, `/import`, `/pricing` or the
- * Defined tab's `x` export is NOT stamped as an answer on the Home's one key history (unit 6 round 1: a chord card's lockout runs from the moment
+ * `/workflows` popup's `[x]` export is NOT stamped as an answer on the Home's one key history (unit 6 round 1: a chord card's lockout runs from the moment
  * the card opened, so a flow whose first prompt is its `Ctrl+Y` card is armed by the card itself; a held key that never answers it is
  * `home-flow-popups.test.ts` and `native-prompt-framed.test.ts`); and what the flow resolves with is one notification on the Home's channel,
  * never the Home's notice or a transcript line.
@@ -13,7 +13,8 @@ import { buildDefinedModel } from '../../history/defined-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { createChordHistory } from './chord-guard.js';
 import { createHomeController, type HomeControllerDeps } from './home-controller.js';
-import type { DefinedPort } from './tab-host-workflows.js';
+import type { DefinedPort } from '../../history/defined-model.js';
+import type { HomePopupsPort } from '../../popups/home-port.js';
 
 const EMPTY: HomeSnapshot = {
   failedRuns: [],
@@ -62,6 +63,7 @@ function mount(resolveWith: string | undefined = undefined) {
         release = () => resolve(resolveWith);
       }),
   );
+  let workflowsPort: HomePopupsPort['workflows'];
   const deps: HomeControllerDeps = {
     now: () => clock,
     chordHistory: history,
@@ -76,6 +78,10 @@ function mount(resolveWith: string | undefined = undefined) {
     announce: (text) => {
       announced.push(text);
     },
+    // The `/workflows` popup's request, kept: its `[x]` is the export's opener (MVP-11 unit 8).
+    openHomePopup: (request) => {
+      workflowsPort = request.port.workflows;
+    },
     onExit: () => undefined,
     onError: (cause) => {
       throw cause;
@@ -88,7 +94,7 @@ function mount(resolveWith: string | undefined = undefined) {
       controller.handleKey('', ENTER);
       await flush();
       clock += 3000;
-      controller.handleKey('x', {});
+      workflowsPort?.export('nightly');
       return;
     }
     controller.handlePaste(`/${opener}`);
@@ -118,15 +124,14 @@ describe.each(['init', 'import', 'pricing', 'export'] as const)('%s', (opener) =
     expect(m.history.lastResolvedAt).toBe(Number.NEGATIVE_INFINITY);
   });
 
-  it('what it resolves with is ONE notification; the Home’s notice and the tab’s row stay as they were', async () => {
+  it('what it resolves with is ONE notification; the Home’s notice stays as it was', async () => {
     const m = mount('Nothing was written.');
     await m.open(opener);
     m.release();
     await flush();
     expect(m.announced).toEqual(['Nothing was written.']);
     expect(m.controller.getSnapshot().notice).toBeUndefined();
-    const screen = m.controller.getSnapshot().screen;
-    if (screen?.kind === 'tab-host') expect(screen.host.defined?.message).toBeUndefined();
+    expect(m.controller.getSnapshot().screen).toBeUndefined();
   });
 
   it('a flow whose Done step said what happened leaves nothing to say', async () => {

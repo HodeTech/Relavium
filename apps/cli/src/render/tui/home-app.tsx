@@ -86,6 +86,7 @@ import { ExitGuardCard, HomeView } from './home-view.js';
 import { exitKey, keyToken, legend } from './legend.js';
 import { RunScreenView } from './run-screen-view.js';
 import { RunCardView } from './run-card-view.js';
+import { useWaitClock, waitClockForm, type WaitClockForm } from './wait-clock.js';
 import { createGateCardFrame } from './gate-card-frame.js';
 import {
   homeFitsTerminal,
@@ -100,9 +101,7 @@ import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
-import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
-import { helpSheetLines } from './help-sheet.js';
 import { chatPaletteRows } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
@@ -255,12 +254,24 @@ function ChatRegion(
     toolDisplays,
     markdown,
     displaySuspended,
+    approval,
+    question,
+    checkpoint,
   } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  // Whether a sheet is docked, read from the store this region renders (ADR-0147 §1: the sheet takes the prompt block's place). The host's own
+  // flags are computed when the HOME renders, which a card that the store publishes on its own does not cause, so they can be a frame behind it.
+  const sheetDocked = dockedCardOpen({
+    approval: approval !== undefined,
+    question: question !== undefined,
+    checkpoint: checkpoint !== undefined,
+  });
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   const viewport = props.viewport;
   // The rows the region is bounded to: the viewport's own, else the room a native card leaves, else none.
   const boundedRows = viewport === undefined ? props.promptHeight : viewport.rows;
+  // A sheet's wait clock ticks in the alternate screen (the viewport is present exactly there) and is static inline (ADR-0147 §2).
+  const waitClock = waitClockForm(viewport !== undefined);
   return (
     // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
@@ -314,7 +325,7 @@ function ChatRegion(
               }
         }
         notification={props.notification}
-        cardDocked={dockedCardOpen(props.overlays)}
+        cardDocked={sheetDocked}
         terminalRows={props.reviewSize.rows}
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -324,6 +335,7 @@ function ChatRegion(
         hasCustody={props.reviewCustody}
         clipboard={props.reviewClipboard}
         color={color}
+        waitClock={waitClock}
       />
       {/* The docked `ask_user` question card (ADR-0132) — where the approval card sits, never both at once. */}
       <QuestionCardHost
@@ -331,6 +343,7 @@ function ChatRegion(
         size={props.reviewSize}
         hasCustody={props.reviewCustody}
         color={color}
+        waitClock={waitClock}
       />
       {/* The docked continue checkpoint (ADR-0136 §4) — the same place, never together with another card. */}
       <CheckpointCardHost
@@ -338,6 +351,7 @@ function ChatRegion(
         size={props.reviewSize}
         hasCustody={props.reviewCustody}
         color={color}
+        waitClock={waitClock}
       />
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
@@ -483,6 +497,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   );
   /** What owned the keyboard at this render: every render-time gate below asks it, and the prompt's rows are `prompt`'s own. */
   const flags = hostOverlayFlags(state, prompt, popupSnapshot, placement);
+  // The exit guard's lockout as its legend draws it (`(wait)`): the controller's display value, beside its state; one repaint when it opens.
+  const exitGuardLocked = useSyncExternalStore(
+    controller.exitGuardLock.subscribe,
+    controller.exitGuardLock.read,
+  );
   const [acknowledgement] = useState(() =>
     createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
   );
@@ -1187,7 +1206,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
               {STARTING_CHAT_LINE}
             </Text>
           ) : (
-            <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
+            <ExitGuardCard
+              phase={state.exitGuard}
+              hostedRun={state.hostedRun}
+              color={color}
+              columns={size.cols}
+              locked={exitGuardLocked}
+            />
           )}
           {nativeAcknowledgement && (
             <NativePromptView
@@ -1241,6 +1266,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             rows={size.rows}
             nowMs={props.nowMs()}
             color={color}
+            waitClock={waitClockForm(props.alternateScreen)}
           />
         )}
         {!occupiesRows(flags) && state.screen?.kind === 'tab-host' && (
@@ -1249,12 +1275,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             color={color}
             columns={size.cols}
             rows={size.rows}
-          />
-        )}
-        {!occupiesRows(flags) && state.screen?.kind === 'help' && (
-          <SheetLinesView
-            lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
-            color={color}
           />
         )}
         {!occupiesRows(flags) && state.screen === undefined && (
@@ -1284,6 +1304,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             interruptArmed={state.interruptArmed}
             hostedRun={state.hostedRun}
             exitGuard={state.exitGuard}
+            exitGuardLocked={exitGuardLocked}
             notification={hintNotification}
           />
         )}
@@ -1351,16 +1372,28 @@ function GateCardScreenView(
     rows: number;
     nowMs: number;
     color: boolean;
+    /** The sheet's wait clock: ticking in the alternate screen, static inline (ADR-0147 §2). */
+    waitClock: WaitClockForm;
   }>,
 ): ReactElement {
   const { card } = props.screen;
   const snapshot = useSyncExternalStore(card.subscribe, card.getSnapshot);
+  // The card's own one-second timer (it has no store tick): a display value of this view, in no snapshot and read by no guard, so a re-render
+  // it causes re-commits the same snapshot, which the measured-frame evidence does not count as a new frame (ADR-0147 §2).
+  const clock = useWaitClock(
+    snapshot.phase === 'open' ? props.screen.waitingSinceMs : undefined,
+    props.waitClock,
+  );
+  // The lockout as the legend draws it (`(wait)`): the card's display value, one repaint when it opens; no frame's identity changes.
+  const locked = useSyncExternalStore(card.lock.subscribe, card.lock.read);
   return (
     <RunCardView
       snapshot={snapshot}
       columns={props.columns}
       rows={props.rows}
       nowMs={props.nowMs}
+      clock={clock}
+      locked={locked}
       color={props.color}
       onFrame={(node) => {
         props.frame.commit(snapshot, node, props.flush);
