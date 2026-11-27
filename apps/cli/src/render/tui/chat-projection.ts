@@ -5,7 +5,9 @@ import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
 import { formatReportedCost, formatTokens } from './format.js';
 import { blankMarkerGlyphs, glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
-import { guardEntryRows, logicalLineStarts, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
+import { noticeLines, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
+import type { ChatGrid, MarginRole } from './chat-grid.js';
+import { selectionText, type SelectionRange } from './selection.js';
 import { formatDuration, formatElapsed, formatUsd } from '../notation.js';
 import type {
   SessionViewState,
@@ -15,7 +17,7 @@ import type {
 } from './session-view-model.js';
 import { exitKey, keyToken, legend } from './legend.js';
 import type { ScrollGeometry } from './scroll.js';
-import { wrapText, type DisplayLine } from './viewport.js';
+import { wrapText, type DisplayLine, type LineStyle } from './viewport.js';
 import { clipLine } from './sheet-frame.js';
 
 /**
@@ -283,11 +285,11 @@ export function errorRecoveryHint(
  * never disagree about what the conversation said.
  *
  * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}` (the TEXT FORM's own prefix,
- * {@link TEXT_FORM_YOUR_TURN}, in every form of the screen: the screen draws the host's marker over it in {@link wrapEntry},
- * and the `/edit`, `/copy` and `/scrollback` documents keep this one); a `notice` its text; an `assistant` entry its
- * text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional recovery-hint line.
- * The marker glyphs of the screen's rows are guarded in {@link wrapEntry}, not here: the documents are the text forms,
- * whose `> ` is the host's own and cannot be blanked (ADR-0145 §6).
+ * {@link TEXT_FORM_YOUR_TURN}, in every form of the screen: the `/edit`, `/copy` and `/scrollback` documents keep it, and
+ * the screen takes it off and draws the host's marker in the margin instead, {@link wrapEntry}); a `notice` its text; an
+ * `assistant` entry its text, then the one-line summary (a leading space), then the optional recovery-hint line (the
+ * screen draws both at the content column without the space). A `tools` entry is up to four calls joined per row (the
+ * screen draws one call per row, {@link wrapEntry}). These are the documents, byte for byte (ADR-0145 §6).
  */
 export function entryLines(
   entry: TranscriptEntry,
@@ -332,41 +334,89 @@ export function entryLines(
   return lines;
 }
 
-/** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
+/** The parsed markdown of a reply, per entry: a re-wrap at a new width lays the same blocks out again. */
 const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>();
 
+/**
+ * `text` wrapped at `cols` as rows of `style`: the first row carries `margin` (absent: a blank margin) and every later row, a wrapped row or a line
+ * after a newline, HANGS under it with a blank margin. The one way a row gets a mark: from the host's role, never from the text.
+ */
+function hangingRows(
+  text: string,
+  style: LineStyle,
+  cols: number,
+  margin?: MarginRole,
+): DisplayLine[] {
+  return wrapText(text, cols).map((row, index) =>
+    index === 0 && margin !== undefined ? { text: row, style, margin } : { text: row, style },
+  );
+}
+
+/** A reply's own rows: the markdown laid out at `cols` with colour, the plain text wrapped at `cols` without. */
+function replyBodyRows(
+  entry: TranscriptEntry,
+  source: string,
+  cols: number,
+  color: boolean,
+): DisplayLine[] {
+  if (!color) return hangingRows(source, 'assistant', cols);
+  let blocks = entryParseCache.get(entry);
+  if (blocks === undefined) {
+    blocks = parseMarkdown(source);
+    entryParseCache.set(entry, blocks);
+  }
+  return layoutMarkdown(blocks, cols).map((line): DisplayLine => ({ ...line, style: 'assistant' }));
+}
+
+/** The screen's form of a reply's summary or hint line: the document's leading space is the content column's job on the grid (OQ8). */
+function screenLine(line: DisplayLine): string {
+  return line.text.startsWith(' ') ? line.text.slice(1) : line.text;
+}
+
+/** The rows of one call per row, `▸` in the margin and the call's words in the content; the omitted tail is a row of its own, unmarked. */
+function toolCallRows(
+  entry: Extract<TranscriptEntry, { role: 'tools' }>,
+  cols: number,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): DisplayLine[] {
+  const rows = entry.calls.flatMap((call) =>
+    hangingRows(toolCallText(call, displays?.get(call.id)), 'notice', cols, 'toolCall'),
+  );
+  if ((entry.omitted ?? 0) > 0)
+    rows.push(...hangingRows(`${entry.omitted} omitted calls`, 'notice', cols));
+  return rows;
+}
+
+/**
+ * Wrap ONE transcript entry to its rows on the grid ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6,
+ * MVP-11 unit 9): every row's text is CONTENT at most `cols` (the content column) wide, and the host's mark is the row's `margin`, a role of the
+ * closed set, set here and nowhere else. The person's turn is the document's line without its text-form prefix, `yourTurn` on its first row; a
+ * reply's first row is `agent` (drawn only as the inline renderer's word); a tool entry is one call per row with `toolCall`; a notice line the host
+ * leads ({@link noticeLines}) carries the lead's role. A wrapped row hangs. Built in the form the colour setting asks for (ADR-0145 §5). The
+ * per-entry unit {@link wrapTranscript} caches.
+ */
 function wrapEntry(
   entry: TranscriptEntry,
   cols: number,
   color: boolean,
   displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
-  const wrapped: DisplayLine[] = [];
-  // The rows are built in the form the colour setting asks for: the plain glyph forms when colour is off (ADR-0145 §5).
-  const source = withGlyphForm(!color, () => entryLines(entry, displays));
-  let offset = 0;
-  if (color && entry.role === 'assistant') {
-    let blocks = entryParseCache.get(entry);
-    if (blocks === undefined) {
-      blocks = parseMarkdown(source[0]?.text ?? '');
-      entryParseCache.set(entry, blocks);
-    }
-    for (const line of layoutMarkdown(blocks, cols)) {
-      wrapped.push({ ...line, style: 'assistant' });
-    }
-    offset = 1;
-  }
-  for (const line of source.slice(offset)) {
-    for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
-  }
-  // The speaker marker's guard (ADR-0145 §6), on the FINISHED rows: after the markdown layout and the wrap, so a row that starts with a marker
-  // glyph by wrapping or by layout is guarded as one that started with it in the source; the glyph and the space that replaces it are one column,
-  // so no row changes width and the row count is the one the scroll and the selection were built on. The person's own first row gets the host's
-  // marker as data.
-  const hostNotice = entry.role === 'notice' && entry.hostLead !== undefined;
-  return guardEntryRows(entry, wrapped, {
-    ascii: !color,
-    lineStarts: hostNotice ? logicalLineStarts(source[0]?.text ?? '', cols) : undefined,
+  return withGlyphForm(!color, () => {
+    if (entry.role === 'tools') return toolCallRows(entry, cols, displays);
+    const source = entryLines(entry, displays);
+    const first = source[0]?.text ?? '';
+    if (entry.role === 'user')
+      return hangingRows(first.slice(TEXT_FORM_YOUR_TURN.length), 'user', cols, 'yourTurn');
+    if (entry.role === 'notice')
+      return noticeLines(first, entry.hostLead).flatMap((line) =>
+        hangingRows(line.text, 'notice', cols, line.margin),
+      );
+    const rows = replyBodyRows(entry, first, cols, color);
+    for (const line of source.slice(1))
+      rows.push(...hangingRows(screenLine(line), line.style, cols));
+    const head = rows[0];
+    if (head !== undefined) rows[0] = { ...head, margin: 'agent' };
+    return rows;
   });
 }
 
@@ -396,41 +446,153 @@ const entryWrapCache = new WeakMap<
   { cols: number; color: boolean; lines: readonly DisplayLine[] }
 >();
 
+/** One entry's rows, from the per-entry cache when its width and colour match (a tool entry with live displays is never cached). */
+function cachedEntryRows(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): readonly DisplayLine[] {
+  if (entry.role === 'tools' && displays !== undefined)
+    return wrapEntry(entry, cols, color, displays);
+  const cached = entryWrapCache.get(entry);
+  if (cached?.cols === cols && cached.color === color) return cached.lines;
+  const lines = wrapEntry(entry, cols, color);
+  entryWrapCache.set(entry, { cols, color, lines });
+  return lines;
+}
+
 /**
- * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
- * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
- * Reproduces `TranscriptLine`'s CONTENT + prefixes + styles + sanitization: a `user` entry becomes `> {text}` (style
- * `user`); a `notice` its dim text; an `assistant` entry its text, then the gray one-line summary (a leading space,
- * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
- * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
- * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
- * math is defined over the returned line count). Inline and full-screen share these word-wrapped rows and semantic
- * spans; color-disabled output wraps the sanitized source, preserving its markers.
+ * Whether one blank row separates `entry` from the entry drawn before it (OQ3, the frame `chat-idle-80x24.png`): before each turn of the person
+ * and each reply, except the first entry of all; a tool entry and a notice hug the entry above. The separator is drawn, not cached: it depends on
+ * the neighbour, not on the entry.
+ */
+export function entryGap(previous: TranscriptEntry | undefined, entry: TranscriptEntry): boolean {
+  return previous !== undefined && (entry.role === 'user' || entry.role === 'assistant');
+}
+
+/** The separator row {@link entryGap} asks for: no content, no mark. */
+const GAP_ROW: DisplayLine = Object.freeze({ text: '', style: 'assistant' });
+
+/** One step of {@link walkTranscript}: an entry, whether a separator row precedes it, and its own rows. */
+interface TranscriptStep {
+  readonly gap: boolean;
+  readonly rows: readonly DisplayLine[];
+}
+
+/** The transcript's entries in order, each with its separator and its rows at `cols`: the ONE walk that rows, counts and spans read. */
+function* walkTranscript(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+  previous: TranscriptEntry | undefined,
+): Generator<TranscriptStep> {
+  let before = previous;
+  for (const entry of transcript) {
+    yield { gap: entryGap(before, entry), rows: cachedEntryRows(entry, cols, color, displays) };
+    before = entry;
+  }
+}
+
+/**
+ * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s at `cols` (the low-level form: the chat's callers
+ * pass a grid to {@link transcriptRows}, which calls this at the content column's width). Every entry's rows are {@link wrapEntry}'s (content
+ * only, the host's mark as the row's `margin`, a wrapped row hanging), with one blank row before a turn and a reply ({@link entryGap}).
+ * `previous` is the entry drawn before `transcript[0]` (the inline renderer prints one entry at a time). Every text is sanitized at the display
+ * boundary ({@link entryLines}), so a streamed or pasted control sequence can neither forge a row nor inject ANSI. The scroll math is defined
+ * over the returned line count: one line is one terminal row.
  */
 export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
   color = false,
   displays?: ReadonlyMap<string, ToolDisplay>,
+  previous?: TranscriptEntry,
 ): DisplayLine[] {
   if (!Number.isFinite(cols) || cols < 1) return [];
   const out: DisplayLine[] = [];
-  for (const entry of transcript) {
-    if (entry.role === 'tools' && displays !== undefined) {
-      out.push(...wrapEntry(entry, cols, color, displays));
-      continue;
-    }
-    const cached = entryWrapCache.get(entry);
-    let lines: readonly DisplayLine[];
-    if (cached?.cols === cols && cached.color === color) {
-      lines = cached.lines;
-    } else {
-      lines = wrapEntry(entry, cols, color);
-      entryWrapCache.set(entry, { cols, color, lines });
-    }
-    for (const line of lines) out.push(line);
+  for (const step of walkTranscript(transcript, cols, color, displays, previous)) {
+    if (step.gap) out.push(GAP_ROW);
+    for (const line of step.rows) out.push(line);
   }
   return out;
+}
+
+/**
+ * The transcript's rows on the chat's grid (MVP-11 unit 9): wrapped at the content column ({@link ChatGrid.content}). The ONE function the
+ * viewport's rows, the scroll geometry, the drag-copy and the inline renderer read, so the width they lay the transcript out at cannot differ
+ * (a source-pin test holds every other caller off {@link wrapTranscript} and {@link liveScrollGeometry}). A suspended grid has no rows.
+ */
+export function transcriptRows(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+  previous?: TranscriptEntry,
+): DisplayLine[] {
+  return wrapTranscript(transcript, grid.content, color, displays, previous);
+}
+
+/** The live scroll geometry ({@link liveScrollGeometry}) of the transcript on the chat's grid. */
+export function transcriptScrollGeometry(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  measuredHeight: number,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): ScrollGeometry {
+  return liveScrollGeometry(transcript, grid.content, measuredHeight, color, displays);
+}
+
+/**
+ * What a drag-copy of `range` puts on the clipboard (OQ9): the selected cells of the transcript's rows on the grid, the CONTENT a person sees
+ * and nothing of the margin (the rows' text is content only), so the person's turn copies as their words without a `> ` (the `/copy` document
+ * is the text form with it). The one copy path of both chat hosts.
+ */
+export function transcriptSelectionText(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  range: SelectionRange,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): string {
+  return selectionText(
+    transcriptRows(transcript, grid, color, displays).map((line) => line.text),
+    range,
+  );
+}
+
+/**
+ * The rows `transcript[index]` occupies in {@link transcriptRows} on `grid`, its separator row excluded: `[start, end)`. Counted in ONE walk
+ * over the prefix that includes the entry, so the separator before it is counted where it is drawn and the entry's rows are the very rows
+ * drawn (the measured-frame acknowledgement reads it: a two-pass count that wraps the entry alone loses its separator and claims one row too
+ * few). `undefined` for an index outside the transcript or a suspended grid.
+ */
+export function transcriptEntrySpan(
+  transcript: readonly TranscriptEntry[],
+  index: number,
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): { readonly start: number; readonly end: number } | undefined {
+  if (!Number.isInteger(index) || index < 0 || index >= transcript.length) return undefined;
+  if (!Number.isFinite(grid.content) || grid.content < 1) return undefined;
+  let row = 0;
+  let at = 0;
+  for (const step of walkTranscript(
+    transcript.slice(0, index + 1),
+    grid.content,
+    color,
+    displays,
+    undefined,
+  )) {
+    if (step.gap) row += 1;
+    if (at === index) return { start: row, end: row + step.rows.length };
+    row += step.rows.length;
+    at += 1;
+  }
+  return undefined;
 }
 
 /**
@@ -522,9 +684,9 @@ export function formatBusyLine(input: {
   }
   // While a card waits for the person there is no busy line: the sheet takes the prompt block's place and its rule carries the wait clock
   // (ADR-0147 §2: the `Waiting for your answer` row and its spinner retired).
-  // The streamed answer is the model's, and this row is drawn above the prompt among the host's own: it cannot draw a marker (ADR-0145 §6). The
-  // glyph and the space that replaces it are one column, so the tail's row estimate below is the one it was.
-  const sanitized = blankMarkerGlyphs(stripTerminalControls(input.liveTokens));
+  // The streamed answer is the model's, drawn in the content column of the grid above the prompt (unit 9): the margin beside it is the host's and
+  // blank, so these words cannot stand where a marker does, and are not blanked of a glyph they start with (ADR-0145 §6, plan section 4).
+  const sanitized = stripTerminalControls(input.liveTokens);
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
@@ -604,6 +766,7 @@ const DOCKED_REASONING_INDENT = '  ';
  */
 export function dockedTurnRows(input: {
   readonly warnings: readonly string[];
+  /** The words of each call ({@link toolCallText}): the mark is the margin's, drawn by the host's `MarginRow` (unit 9), so a row here has none. */
   readonly toolLines: readonly string[];
   readonly reasoning: ReasoningPanel | undefined;
   readonly interrupt: string | undefined;
@@ -772,9 +935,9 @@ export function formatReasoningPanel(input: {
   if (!input.visible) {
     return { header };
   }
-  // The reasoning is the model's words in the live region: it cannot draw a marker either (ADR-0145 §6).
+  // The reasoning is the model's words in the live region, drawn in the content column like the streamed answer: no margin of the grid is its to draw.
   const { body, tailed } = tailToRenderedRows(
-    blankMarkerGlyphs(stripTerminalControls(input.liveReasoning)),
+    stripTerminalControls(input.liveReasoning),
     input.columns,
   );
   const elided = input.liveReasoningTruncated || tailed;

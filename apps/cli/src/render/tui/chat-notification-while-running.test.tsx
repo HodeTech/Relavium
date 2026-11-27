@@ -12,6 +12,7 @@ import { buildChatSession } from '../../chat/session-host.js';
 import { scriptedResolver } from '../../chat/test-support.js';
 import { createChatModeControl } from '../../commands/chat.js';
 import { resolveConfig } from '../../config/resolve.js';
+import { chatGrid } from './chat-grid.js';
 import { MODE_CHANGE_RUNNING_NOTICE } from './chat-input.js';
 import {
   mountHostedChat,
@@ -68,12 +69,21 @@ async function mountIn(host: Host, renderer: 'alt' | 'inline'): Promise<ChatMoun
   return mount;
 }
 
-/** The last row of the live frame: the hint row of the prompt block. */
-const hintRow = (mount: ChatMount): string =>
+/** The last row of the live frame, as it is drawn: the hint row of the prompt block. */
+const lastRow = (mount: ChatMount): string =>
   mount
     .frame()
     .filter((row) => row.trim() !== '')
     .at(-1) ?? '';
+
+/** The hint row stands in the content column of the grid (unit 9): the margin to its left is blank, 8 columns at the 100 of these mounts. */
+const GAP = ' '.repeat(chatGrid(100).margin);
+
+/** The hint row's words: the last row of the live frame without the margin it begins after (a row that does not begin with one is returned whole). */
+const hintRow = (mount: ChatMount): string => {
+  const row = lastRow(mount);
+  return row.startsWith(GAP) ? row.slice(GAP.length) : row;
+};
 
 describe.each(HOSTS)('a notification raised while a turn runs, in the %s host', (host) => {
   it.each(['alt', 'inline'] as const)(
@@ -86,6 +96,7 @@ describe.each(HOSTS)('a notification raised while a turn runs, in the %s host', 
         expect(hintRow(m), 'the running hint is the hint row before the notification').toMatch(
           /^\[Ctrl\+C\] /u,
         );
+        expect(lastRow(m), 'the hint row starts at the content column').toMatch(/^ {8}\[Ctrl/u);
         m.notifications.notify(MODE_CHANGE_RUNNING_NOTICE, undefined, 'mode');
         const shown = await m.until(() => hintRow(m).includes('Mode changes apply between turns'));
         expect(shown, m.text()).toBe(true);

@@ -1,6 +1,6 @@
 import stringWidth from 'string-width';
 import type { MarkdownSpan } from '../markdown/types.js';
-import type { SpeakerMarker } from './glyphs.js';
+import type { MarginRole } from './chat-grid.js';
 
 /**
  * Pure line-wrapping + windowing math for the full-screen alt-screen transcript **viewport** (2.6.F Step 4b,
@@ -26,23 +26,25 @@ import type { SpeakerMarker } from './glyphs.js';
  */
 
 /** The per-entry render style a display line inherits from its transcript entry (mirrors `TranscriptLine`'s styles:
- *  user = bold words with the host's marker in the accent on the first row, assistant = default, notice = dim,
- *  summary = gray, hint = yellow). */
+ *  user = bold words, assistant = default, notice = dim, summary = gray, hint = yellow). */
 export type LineStyle = 'user' | 'assistant' | 'notice' | 'summary' | 'hint';
 
-/** One rendered display line (already ≤ cols wide) tagged with its source entry's {@link LineStyle}. */
+/**
+ * One rendered display line of the transcript, on the chat's grid (`chat-grid.ts`, MVP-11 unit 9), tagged with its source entry's
+ * {@link LineStyle}. `text` (and `spans`) is the row's CONTENT only, already at most the content column wide: every word a person or a model
+ * wrote, and never a marker.
+ */
 export interface DisplayLine {
   readonly text: string;
   readonly style: LineStyle;
   readonly spans?: readonly MarkdownSpan[];
   /**
-   * The HOST's own speaker marker, which is the start of `text` (ADR-0145 §6): the glyph the host drew at the start of the first row of the
-   * person's turn (`›`, or `>` with colour off). It is DATA the host sets where it builds the row (`wrapEntry`); a renderer reads it and never
-   * looks for a marker in the row's text, so a reply row whose text starts with the same glyph is drawn as the plain text it is. Absent on every
-   * other row, a wrapped row of the same turn included. `text.startsWith(marker)` holds by construction; a renderer that finds it false draws
-   * the row as plain text rather than trust a marker it cannot place.
+   * What the margin of the row says (ADR-0145 §6): a role of the closed {@link MarginRole} set, set only by the host where it builds the row
+   * (`wrapEntry`), on the first row of the person's turn, of a tool call, of a reply and of a notice line the host leads. A renderer draws it with
+   * `marginCell`, which takes no text, so nothing a model or a person wrote can occupy the margin. Absent on every other row: a wrapped row hangs
+   * under the text with a blank margin.
    */
-  readonly marker?: SpeakerMarker;
+  readonly margin?: MarginRole;
 }
 
 /**

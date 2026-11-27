@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import {
   mountHostedChat,
   mountStandaloneChat,
@@ -31,6 +32,15 @@ const variant = (renderer: 'alt' | 'inline', cols: number, rows: number): Varian
 
 const LEGEND = '↑/↓ select · Enter run · Esc close';
 
+/**
+ * The block stands in the content column of the grid (unit 9): every row of it begins `margin` columns from the left edge (6 at 80 columns, 8 from
+ * 100), and the rule is the content column wide. `at(cols, pattern)` is a row that begins there with `pattern`; `indent` is the same as text.
+ */
+const at = (cols: number, pattern: string): RegExp =>
+  new RegExp(`^ {${String(chatGrid(cols).margin)}}${pattern}`, 'u');
+const indent = (cols: number, text: string): string =>
+  `${' '.repeat(chatGrid(cols).margin)}${text}`;
+
 /** A conversation of 30 turns, so the full-screen transcript has more than its viewport can show. */
 const LONG: ChatSetup = {
   prepare: (store) => {
@@ -56,7 +66,7 @@ async function openPalette(
 }
 
 const isListRow = (row: string): boolean =>
-  /^(?:> |\s{2})\/[a-z]+ {2,}\S/u.test(row) || /^\s*[▲▼^v] \d+ more/u.test(row);
+  /^ +(?:> |\s{2})\/[a-z]+ {2,}\S/u.test(row) || /^\s*[▲▼^v] \d+ more/u.test(row);
 
 describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
   describe.each([
@@ -68,7 +78,7 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
       try {
         const frame = m.frame();
         const shown = frame.map((row, index) => `${String(index)}|${row}`).join('\n');
-        const promptAt = frame.findIndex((row) => /^> \/ ?$/u.test(row));
+        const promptAt = frame.findIndex((row) => at(cols, '> \\/ ?$').test(row));
         expect(promptAt, shown).toBeGreaterThan(0);
         // The list: contiguous list rows from its first row to the row above the prompt.
         const first = frame.findIndex(isListRow);
@@ -77,10 +87,10 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
           expect(isListRow(frame[row] ?? ''), `row ${String(row)} of ${shown}`).toBe(true);
         expect(promptAt - first, `the window: ${shown}`).toBe(listLines);
         // Nothing separates the list from the prompt: the row above the prompt is the first entry, highlighted.
-        expect(frame[promptAt - 1], shown).toMatch(/^> \/models {2,}/u);
-        // The rule, then the legend as the hint row, the last row of the frame.
-        expect(frame[promptAt + 1], shown).toBe('-'.repeat(cols));
-        expect(frame[promptAt + 2], shown).toBe(LEGEND);
+        expect(frame[promptAt - 1], shown).toMatch(at(cols, '> \\/models {2,}'));
+        // The rule (the content column wide), then the legend as the hint row, the last row of the frame.
+        expect(frame[promptAt + 1], shown).toBe(indent(cols, '-'.repeat(chatGrid(cols).content)));
+        expect(frame[promptAt + 2], shown).toBe(indent(cols, LEGEND));
         expect(frame, shown).toHaveLength(promptAt + 3);
       } finally {
         m.unmount();
@@ -93,13 +103,13 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
         const frame = m.frame();
         const shown = frame.join('\n');
         expect(frame, shown).toHaveLength(rows - 1);
-        expect(frame.includes('/'), 'no line of the query by itself').toBe(false);
+        expect(frame.includes(indent(cols, '/')), 'no line of the query by itself').toBe(false);
         expect(
           frame.some((row) => / · \d+ turns? · /u.test(row)),
           'no status line while it is open',
         ).toBe(false);
         expect(
-          frame.filter((row) => row === LEGEND),
+          frame.filter((row) => row === indent(cols, LEGEND)),
           'the legend once, as the hint row',
         ).toHaveLength(1);
         // The transcript gives way and keeps the rows the header, the list and the prompt block leave: 23 − 2 − list − 3.
@@ -118,14 +128,14 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
       const frame = m.frame();
       const shown = frame.join('\n');
       expect(frame.length, shown).toBeLessThanOrEqual(23);
-      const promptAt = frame.findIndex((row) => /^> \/ ?$/u.test(row));
+      const promptAt = frame.findIndex((row) => at(80, '> \\/ ?$').test(row));
       const first = frame.findIndex(isListRow);
       expect(promptAt - first, `a window of 9 list lines: ${shown}`).toBe(9);
       expect(
         frame.some((row) => /^\s*[▲^] \d+ more/u.test(row)),
         shown,
       ).toBe(true);
-      expect(frame.at(-1)).toBe(LEGEND);
+      expect(frame.at(-1)).toBe(indent(80, LEGEND));
     } finally {
       m.unmount();
     }
@@ -135,11 +145,11 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
     const m = await openPalette(host, variant('alt', 80, 24));
     try {
       m.key('co');
-      await m.until(() => m.frame().some((row) => /^> \/co ?$/u.test(row)));
+      await m.until(() => m.frame().some((row) => at(80, '> \\/co ?$').test(row)));
       const frame = m.frame();
-      const promptAt = frame.findIndex((row) => /^> \/co ?$/u.test(row));
-      expect(frame[promptAt - 1], frame.join('\n')).toMatch(/^> \/[a-z]+ {2}/u);
-      expect(frame.at(-1)).toBe(LEGEND);
+      const promptAt = frame.findIndex((row) => at(80, '> \\/co ?$').test(row));
+      expect(frame[promptAt - 1], frame.join('\n')).toMatch(at(80, '> \\/[a-z]+ {2}'));
+      expect(frame.at(-1)).toBe(indent(80, LEGEND));
     } finally {
       m.unmount();
     }
@@ -151,9 +161,9 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
       m.key('zzz');
       await m.until(() => m.text().includes('no matching command'));
       const frame = m.frame();
-      const promptAt = frame.findIndex((row) => /^> \/zzz ?$/u.test(row));
-      expect(frame[promptAt - 1], frame.join('\n')).toBe('no matching command');
-      expect(frame.at(-1)).toBe('Esc close');
+      const promptAt = frame.findIndex((row) => at(80, '> \\/zzz ?$').test(row));
+      expect(frame[promptAt - 1], frame.join('\n')).toBe(indent(80, 'no matching command'));
+      expect(frame.at(-1)).toBe(indent(80, 'Esc close'));
     } finally {
       m.unmount();
     }
@@ -170,12 +180,12 @@ describe.each(HOSTS)('the palette over a chat, in the %s host', (host) => {
       });
       await m.settle();
       const frame = m.frame();
-      expect(frame.at(-1)).toMatch(/^\[\/\] commands · \[Ctrl\+C\] /u);
+      expect(frame.at(-1)).toMatch(at(80, '\\[/\\] commands · \\[Ctrl\\+C\\] '));
       expect(
         frame.some((row) => /ask mode · /u.test(row)),
         'the status line is back',
       ).toBe(true);
-      expect(frame.some((row) => /^> reply to continue/u.test(row))).toBe(true);
+      expect(frame.some((row) => at(80, '> reply to continue').test(row))).toBe(true);
     } finally {
       m.unmount();
     }

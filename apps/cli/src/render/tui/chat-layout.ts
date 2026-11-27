@@ -15,7 +15,8 @@ import { displayWidth } from './viewport.js';
  * - **The frame is `rows − 1` tall** ({@link chatFrameRows}): a frame as tall as the terminal makes Ink treat it as full-screen and clear
  *   the whole terminal when it is left for a shorter one (`shouldClearTerminalForFrame`), so both hosts leave the last row alone.
  * - **The header is {@link CHAT_HEADER_ROWS} rows**: the wordmark on the left with the session title right-aligned to the width, and a
- *   blank row. At 80×24 that is 23 rows = 2 (header) + 16 (transcript, at rest) + 5 ({@link PROMPT_BLOCK_ROWS}).
+ *   blank row. At 80×24 that is 23 rows = 2 (header) + 16 (transcript, at rest) + 5 ({@link PROMPT_BLOCK_ROWS}). The header stands on the chat's
+ *   grid (`chat-grid.ts`, unit 9): the host draws it from the content column, so the width it is laid for here is the content column's.
  * - **The title is untrusted persistent text** (the person's own first message): scrubbed whole by the one pass of a Home flow ({@link flowLine}:
  *   secrets, control and bidirectional characters, host glyphs, chord tokens and ` · ` made inert), THEN cut to one line of 40 code points
  *   ({@link deriveSessionTitle}), then cut at its end to the columns the wordmark leaves, so a title can never wrap the header or push the
@@ -139,7 +140,8 @@ const trailingEllipsis = (title: string): string => title.replace(/\.{3}$/u, PAT
 
 /**
  * The header row for `columns` columns: the wordmark at the left edge and the title ENDING at the last column, so the row is exactly
- * `columns` wide with a title and the wordmark's width without one. The title is cut at its end to what the wordmark and
+ * `columns` wide with a title and the wordmark's width without one. `columns` is the width of the row the host draws: the chat's content column
+ * (`ChatGrid.content`), at which the wordmark starts where the Home's does and the title ends where the rail ends. The title is cut at its end to what the wordmark and
  * {@link HEADER_TITLE_GAP} leave; with no room for even one column of it there is no title. `title` is passed through {@link flowLine}
  * here too, so a caller that did not scrub it cannot draw an unscrubbed one, and a trailing `...` is drawn as the host's ellipsis
  * ({@link trailingEllipsis}).

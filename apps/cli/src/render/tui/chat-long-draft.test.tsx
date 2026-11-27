@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import {
   chatEditorRows,
   MIN_TRANSCRIPT_ROWS,
@@ -38,6 +39,9 @@ const variant = (renderer: 'alt' | 'inline'): Variant => ({
   size: { cols: 80, rows: 24 },
 });
 
+/** The editor and the rows under it stand in the content column of the grid (unit 9): `GAP` columns from the left edge at 80 columns. */
+const GAP = chatGrid(80).margin;
+
 const LINES = Array.from({ length: 30 }, (_unused, index) => `draft line ${String(index + 1)}`);
 const DRAFT = LINES.join('\n');
 
@@ -64,7 +68,8 @@ async function mountWithDraft(
 /** The rows of the prompt block: from the first draft row to the last row of the frame (rule, status, hint). */
 function blockOf(mount: ChatMount): { readonly rows: string[]; readonly rule: number } {
   const rows = mount.frame();
-  const rule = rows.findLastIndex((row) => /^-{40,}$/u.test(row));
+  // the rule is the content column wide (68 at 80 columns), starting at the content column
+  const rule = rows.findLastIndex((row) => new RegExp(`^ {${String(GAP)}}-{40,}$`, 'u').test(row));
   expect(rule, mount.text()).toBeGreaterThan(0);
   return { rows, rule };
 }
@@ -89,7 +94,8 @@ describe.each(HOSTS)('a 30-line draft at 80×24, in the %s host', (host) => {
         expect(cursor, 'one cursor block, above the rule').toHaveLength(1);
         expect(cursor[0], m.text()).toBeLessThan(rule);
         expect(
-          rows.some((row) => /^ {2}\^ 2\d more$/u.test(row)),
+          // the marker is set in under the prompt's glyph, inside the content column
+          rows.some((row) => new RegExp(`^ {${String(GAP + 2)}}\\^ 2\\d more$`, 'u').test(row)),
           m.text(),
         ).toBe(true);
       } finally {

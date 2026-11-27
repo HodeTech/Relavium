@@ -237,7 +237,10 @@ describe('MVP-2 truthful feedback', () => {
           </Box>,
         );
         await waitFor(() => (capture.lastFrame() ?? '').includes('second'));
-        expect(stripTerminalControls(capture.lastFrame() ?? '')).toMatch(/first\n *\nsecond/);
+        // the streamed answer stands in the content column of the grid (unit 9): the blank row is a real row between two rows that begin 6 columns in
+        expect(stripTerminalControls(capture.lastFrame() ?? '')).toMatch(
+          / {6}first\n *\n {6}second/,
+        );
         capture.unmount();
       }
     },

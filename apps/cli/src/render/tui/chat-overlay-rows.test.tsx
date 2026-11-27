@@ -6,6 +6,7 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ReplCommand } from '../../commands/repl-commands.js';
+import { chatGrid } from './chat-grid.js';
 import { settleFrames } from './harness-util.js';
 import { MentionView } from './mention-view.js';
 import { filterPaletteEntries, type PaletteEntry } from './palette-entries.js';
@@ -114,7 +115,8 @@ describe.each(OVERLAY_SURFACES)('$id', (entry) => {
 describe('the / palette over a conversation, as observed', () => {
   const LEGEND_ROW = '↑/↓ select · Enter run · Esc close';
   // the names are padded to the widest in view (OB7-L8), so the words start after two spaces or more
-  const ENTRY_ROW = /^[› ] \/[a-z]+ {2,}\S/u;
+  // and every row of the palette begins at the content column of the grid (unit 9), so the entry's marker is preceded by the margin
+  const ENTRY_ROW = /^ +[› ] \/[a-z]+ {2,}\S/u;
 
   it.each(
     CHAT_SURFACES.filter((entry) => entry.id.endsWith('.palette')).flatMap((entry) =>
@@ -127,7 +129,7 @@ describe('the / palette over a conversation, as observed', () => {
       const frame = await frameWithTranscript(entry, variant, 3);
       const shown = frame.join('\n');
       expect(
-        frame.filter((line) => line === LEGEND_ROW),
+        frame.filter((line) => line === `${' '.repeat(chatGrid(size.cols).margin)}${LEGEND_ROW}`),
         shown,
       ).toHaveLength(1);
       const entries = frame.filter((line) => ENTRY_ROW.test(line));

@@ -54,7 +54,10 @@ export function PromptEditor(
     cursor?: boolean | undefined;
     /** The most rows the editor may take, markers included; a longer draft is drawn as a window around the cursor. Absent ⇒ unbounded. */
     maxRows?: number | undefined;
-    /** The terminal's width, which a windowed draft's rows are cut to (the lead's columns are taken off); absent ⇒ 80. Read only with `maxRows`. */
+    /**
+     * The width a windowed draft's rows are cut to (the lead's columns are taken off); absent ⇒ 80. Read only with `maxRows`. A host that draws the
+     * editor in a box of its own width (the chat on the grid: the content column, unit 9) gives that width, so the cut and Ink's wrap are one.
+     */
     columns?: number | undefined;
   }>,
 ): ReactElement {

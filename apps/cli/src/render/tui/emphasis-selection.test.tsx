@@ -17,6 +17,7 @@ import { SheetLinesView } from './sheet-lines-view.js';
 import { INITIAL_SCROLL } from './scroll.js';
 import type { SheetLine } from './sheet-frame.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import { chatGrid } from './chat-grid.js';
 import type { DisplayLine } from './viewport.js';
 
 /**
@@ -226,6 +227,7 @@ describe('the transcript’s mouse selection', () => {
         <Box flexDirection="column" height={6}>
           <TranscriptViewport
             lines={rows}
+            grid={chatGrid(100)}
             color={color}
             scroll={INITIAL_SCROLL}
             selection={{ start: { line: 2, column: 4 }, end: { line: 2, column: 4 } }}

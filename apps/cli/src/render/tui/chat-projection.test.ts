@@ -884,16 +884,15 @@ describe('chat-projection', () => {
   });
 
   describe('wrapTranscript (2.6.F Step 4b — alt-screen viewport flattening, ADR-0068 §c)', () => {
-    it('flattens a user entry to a `> `-prefixed line whose first row carries the host marker as data, wrapped at cols', () => {
-      // Step 7a (ADR-0145 §6): the first row of the person's turn carries the host's own marker as DATA (`marker`, here the plain `>` of the
-      // colour-off form), so a renderer never looks for it in the text; the rest of the turn is unprefixed rows, as it always was.
+    it('flattens a user entry to its words (content only) whose first row carries the `yourTurn` margin role, wrapped at cols', () => {
+      // Unit 9 (ADR-0145 §6, the grid): the text form's `> ` is not part of the screen's row; the host's mark is the row's `margin` role, drawn in
+      // the margin by `marginCell`, and the rest of the turn hangs under the text with no role (moved from Step 7a's `marker` data in the text).
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
       const lines = wrapTranscript(entries, 80);
-      expect(lines).toEqual([{ text: '> hello world', style: 'user', marker: '>' }]);
+      expect(lines).toEqual([{ text: 'hello world', style: 'user', margin: 'yourTurn' }]);
       // Full-screen wraps at words, falling back to characters for long tokens.
       expect(wrapTranscript(entries, 6)).toEqual([
-        { text: '> ', style: 'user', marker: '>' },
-        { text: 'hello ', style: 'user' },
+        { text: 'hello ', style: 'user', margin: 'yourTurn' },
         { text: 'world', style: 'user' },
       ]);
     });
@@ -913,9 +912,14 @@ describe('chat-projection', () => {
         summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 5 } },
       };
       const okLines = wrapTranscript([okEntry], 80);
-      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant' });
-      expect(okLines[1]?.style).toBe('summary'); // the ` {summary}` line (leading space, mirrors TranscriptLine)
-      expect(okLines[1]?.text.startsWith(' ')).toBe(true);
+      // The reply's first row carries the `agent` role (drawn only as the inline renderer's word; the full-screen margin of a reply is blank).
+      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant', margin: 'agent' });
+      expect(okLines[1]?.style).toBe('summary');
+      // On the grid the summary stands at the content column without the document's leading space (OQ8; `entryLines` keeps it).
+      expect(okLines[1]?.text.startsWith(' ')).toBe(false);
+      expect(okLines[1]?.text).toBe(
+        formatTurnSummary({ stopReason: 'stop', tokensUsed: { input: 10, output: 5 } }),
+      );
       expect(okLines).toHaveLength(2); // a successful turn has NO recovery-hint line
 
       // A failed turn (a code with an actionable hint) appends the yellow hint line.
@@ -930,13 +934,13 @@ describe('chat-projection', () => {
       };
       const failLines = wrapTranscript([failEntry], 200);
       expect(failLines.at(-1)?.style).toBe('hint');
-      expect(failLines.at(-1)?.text).toContain('→'); // the ` → {hint}` marker, mirroring TranscriptLine
+      expect(failLines.at(-1)?.text.startsWith('→ ')).toBe(true); // the document's ` → {hint}` at the content column
     });
 
     it('strips terminal control sequences at the display boundary (no ANSI/OSC injection through the viewport)', () => {
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'a\x1b[31mred\x1b[0mb' }];
       const lines = wrapTranscript(entries, 80);
-      expect(lines[0]?.text).toBe('> aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
+      expect(lines[0]?.text).toBe('aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
       expect(lines[0]?.text).not.toContain('\x1b');
     });
 
@@ -950,8 +954,16 @@ describe('chat-projection', () => {
         },
         { role: 'notice', text: 'n' },
       ];
-      const styles = wrapTranscript(entries, 80).map((l) => l.style);
-      expect(styles).toEqual(['user', 'assistant', 'summary', 'notice']);
+      const rows = wrapTranscript(entries, 80);
+      // One blank row before the reply (OQ3: before a turn and a reply, not before the first entry; a notice hugs the entry above).
+      expect(rows.map((l) => l.style)).toEqual([
+        'user',
+        'assistant',
+        'assistant',
+        'summary',
+        'notice',
+      ]);
+      expect(rows[1]).toEqual({ text: '', style: 'assistant' });
     });
   });
 
@@ -962,8 +974,8 @@ describe('chat-projection', () => {
         { role: 'user', text: 'two' },
         { role: 'user', text: 'three' },
       ];
-      // Each short user entry is one wrapped line at width 80 → totalLines === entry count; height passes through.
-      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 3, height: 12 });
+      // Each short user entry is one wrapped line at width 80, and a blank row separates two turns → 3 + 2; height passes through.
+      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 5, height: 12 });
       // The count is the WRAPPED count, not the entry count: a line wider than cols wraps to multiple rows.
       const long: TranscriptEntry[] = [{ role: 'user', text: 'x'.repeat(30) }];
       expect(liveScrollGeometry(long, 10, 8)).toEqual({
@@ -985,7 +997,11 @@ describe('chat-projection', () => {
       const first = wrapTranscript([e1], 80);
       const second = wrapTranscript([e1, e2], 80);
       expect(second.slice(0, first.length)).toEqual(first); // the appended entry only extends — history is stable
-      expect(second).toEqual([...wrapTranscript([e1], 80), ...wrapTranscript([e2], 80)]); // == the concatenation
+      // == the concatenation, the appended entry drawn after its neighbour (its separator row is the neighbour's business, `previous`)
+      expect(second).toEqual([
+        ...wrapTranscript([e1], 80),
+        ...wrapTranscript([e2], 80, false, undefined, e1),
+      ]);
     });
 
     it('reuses the cached wrap for an unchanged entry (same object on a hit) and re-wraps on a cols change', () => {
@@ -1008,7 +1024,7 @@ describe('chat-projection', () => {
       const once = wrapTranscript(big, 40);
       const twice = wrapTranscript(big, 40);
       expect(twice).toEqual(once); // stable across re-wraps of a transcript larger than any fixed cache (no thrash)
-      expect(once).toHaveLength(big.length); // each short `> msg N` line is exactly one row at cols 40
+      expect(once).toHaveLength(2 * big.length - 1); // each short turn is one row at cols 40, and a blank row separates two turns
     });
   });
 });

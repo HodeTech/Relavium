@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import { emitChatHeader } from './chat-ink.js';
 import { WORDMARK } from './home-layout.js';
 import { mountHostedChat, mountStandaloneChat } from './surface-matrix/chat-host.js';
@@ -23,6 +24,9 @@ const variant = (renderer: 'alt' | 'inline'): Variant => ({
   size: { cols: 100, rows: 30 },
 });
 
+/** The header stands on the grid (unit 9): the wordmark starts at the content column, 8 columns from the left edge at the 100 columns of these mounts. */
+const GAP = chatGrid(100).margin;
+
 /** The cells of the wordmark's letters on the row that holds it, with how each was drawn. */
 function wordmarkStyles(
   cells: ReturnType<Awaited<ReturnType<typeof mountHostedChat>>['cells']>,
@@ -31,11 +35,11 @@ function wordmarkStyles(
     line
       .map((cell) => cell.char)
       .join('')
-      .startsWith(WORDMARK),
+      .startsWith(`${' '.repeat(GAP)}${WORDMARK}`),
   );
   expect(row, 'the wordmark is on a row').toBeDefined();
   return (row ?? [])
-    .slice(0, WORDMARK.length)
+    .slice(GAP, GAP + WORDMARK.length)
     .filter((cell) => cell.char.trim() !== '')
     .map((cell) => ({ bold: cell.style.bold, fg: cell.style.fg }));
 }
@@ -58,7 +62,7 @@ describe('the inline header is bold and has no colour, in both hosts', () => {
 
   it('the stand-alone chat writes it bold, with no colour sequence', () => {
     const written: string[] = [];
-    emitChatHeader(false, {}, (text) => written.push(text));
+    emitChatHeader(false, {}, (text) => written.push(text), 100);
     const bytes = written.join('');
     expect(bytes).toContain(`${ESC}[1m`);
     expect(bytes).toContain(WORDMARK);

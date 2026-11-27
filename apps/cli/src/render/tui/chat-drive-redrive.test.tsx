@@ -8,6 +8,7 @@ import type { CliIo } from '../../process/io.js';
 import { invocationFixture } from '../../process/invocation.test-support.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import { createSuspendPort } from '../suspend.js';
+import { chatGrid } from './chat-grid.js';
 import { driveInk } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND, type SessionViewSeed } from './session-view-model.js';
@@ -130,8 +131,10 @@ async function driveOnce(
   }
 }
 
-const PROMPT_ROW = /^> (?:type a message|reply to continue)/u;
-const RULE_ROW = /^-{40,}$/u;
+// The chat stands on the grid (unit 9): its prompt, rule, status line and hint begin at the content column, `GAP` columns from the left edge at 80.
+const GAP = chatGrid(WIDTH).margin;
+const PROMPT_ROW = new RegExp(`^ {${String(GAP)}}> (?:type a message|reply to continue)`, 'u');
+const RULE_ROW = new RegExp(`^ {${String(GAP)}}-{40,}$`, 'u');
 
 const countRows = (lines: readonly string[], pattern: RegExp): number =>
   lines.filter((line) => pattern.test(line)).length;
@@ -178,15 +181,32 @@ async function twoChats(
   return { first: first.idle, second: second.idle };
 }
 
-/** The rows of the intro as the terminal shows them: from the row that starts with its first word to the blank row after it. */
-function introRowsOf(lines: readonly string[], intro: string): string[] {
-  const [firstWord = ''] = intro.split(' ');
-  const start = lines.findIndex((line) => line.startsWith(firstWord));
+const SWITCH = String.fromCodePoint(0x21c4);
+
+/**
+ * The rows of the intro as the terminal shows them, from the row that holds its first word to the blank row after it: the raw rows, and their
+ * content (the row without its margin). The intro is written in the content column of the grid (unit 9): the margin is blank, except on the first
+ * row of the model-switch notice, where the inline renderer's word `model` stands in place of the glyph that led the sentence.
+ */
+function introRowsOf(
+  lines: readonly string[],
+  intro: string,
+  width: number,
+): { readonly raw: string[]; readonly content: string[]; readonly body: string } {
+  const grid = chatGrid(width);
+  const switched = intro.startsWith(`${SWITCH} `);
+  const body = switched ? intro.slice(`${SWITCH} `.length) : intro;
+  const [firstWord = ''] = body.split(' ');
+  const start = lines.findIndex((line) => line.slice(grid.margin).startsWith(firstWord));
   expect(start, lines.join('\n')).toBeGreaterThanOrEqual(0);
-  const rows: string[] = [];
+  const raw: string[] = [];
   for (let at = start; at < lines.length && (lines[at] ?? '') !== ''; at += 1)
-    rows.push(lines[at] ?? '');
-  return rows;
+    raw.push(lines[at] ?? '');
+  for (const [index, row] of raw.entries())
+    expect(row.slice(0, grid.margin), `row ${String(index)} of ${lines.join('\n')}`).toBe(
+      index === 0 && switched ? 'model'.padEnd(grid.margin) : ' '.repeat(grid.margin),
+    );
+  return { raw, content: raw.map((row) => row.slice(grid.margin)), body };
 }
 
 describe.each(CASES)(
@@ -207,12 +227,14 @@ describe.each(CASES)(
       'writes the intro word-wrapped to a terminal of %i columns: no row wider than it, and no word cut',
       async (width) => {
         const { second } = await twoChats(width, reason, intro, seed);
-        const rows = introRowsOf(second, intro);
-        expect(rows.length, second.join('\n')).toBeGreaterThan(1);
-        for (const row of rows)
+        const { raw, content, body } = introRowsOf(second, intro, width);
+        expect(raw.length, second.join('\n')).toBeGreaterThan(1);
+        for (const row of raw)
           expect(row.length, `${row}\n---\n${second.join('\n')}`).toBeLessThanOrEqual(width);
+        // the text is the content column wide at most
+        for (const row of content) expect(row.length).toBeLessThanOrEqual(chatGrid(width).content);
         // joined with single spaces the rows are the sentence again: every break fell at a space, never inside a word
-        expect(rows.join(' ')).toBe(intro);
+        expect(content.join(' ')).toBe(body);
       },
     );
 
@@ -232,7 +254,9 @@ describe('a chat that ends the session keeps its last frame', () => {
     const lines = output.screen.lines();
     // `/exit` is a submit in flight when the chat ends, so the last frame is the busy form: its rule, its status line and its hint are what stays
     expect(countRows(lines, RULE_ROW), lines.join('\n')).toBe(1);
-    expect(lines.filter((line) => /^ask mode · /u.test(line))).toHaveLength(1);
+    expect(
+      lines.filter((line) => new RegExp(`^ {${String(GAP)}}ask mode · `, 'u').test(line)),
+    ).toHaveLength(1);
     expect(lines.filter((line) => /\[Ctrl\+C\] end/u.test(line))).toHaveLength(1);
   });
 });

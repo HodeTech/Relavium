@@ -4,6 +4,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { useLayoutEffect } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import { settleFrames } from './harness-util.js';
 import { INITIAL_SCROLL } from './scroll.js';
 import type { ViewportGeometry } from './scroll.js';
@@ -25,6 +26,9 @@ import type { DisplayLine } from './viewport.js';
 
 afterEach(cleanup);
 
+/** The grid of the harness's 100 columns (MVP-11 unit 9): each row is an 8-column margin cell and the content. */
+const GRID = chatGrid(100);
+
 const lines = (n: number): DisplayLine[] =>
   Array.from({ length: n }, (_, i) => ({ text: `L${i}`, style: 'assistant' as const }));
 
@@ -43,6 +47,7 @@ function mountAt(
       ))}
       <TranscriptViewport
         lines={lines(40)}
+        grid={GRID}
         color={false}
         scroll={INITIAL_SCROLL}
         onMeasure={(g) => {
@@ -59,7 +64,7 @@ function mountAt(
 
 /** The frame row at which the viewport's FIRST rendered line appears — the ground truth `top` must match. */
 const firstViewportRow = (frame: string): number =>
-  frame.split('\n').findIndex((line) => /^L\d+/.test(line.trimEnd()));
+  frame.split('\n').findIndex((line) => /^L\d+/.test(line.trim())); // a row's text starts after the grid's margin
 
 describe('TranscriptViewport — the reported frame offset', () => {
   it('publishes current geometry during a keyed remount layout commit', async () => {
@@ -78,6 +83,7 @@ describe('TranscriptViewport — the reported frame offset', () => {
           <TranscriptViewport
             key={identity}
             lines={lines(40)}
+            grid={GRID}
             color={false}
             scroll={INITIAL_SCROLL}
             terminalRows={rows}
@@ -157,6 +163,7 @@ describe('TranscriptViewport — the reported frame offset', () => {
           <Text>SUB0</Text>
           <TranscriptViewport
             lines={lines(40)}
+            grid={GRID}
             color={false}
             scroll={INITIAL_SCROLL}
             onMeasure={(g) => {
@@ -178,8 +185,9 @@ describe('TranscriptViewport — the reported frame offset', () => {
     const g = geometry();
     expect(g?.totalLines).toBe(40); // every wrapped line, not just the visible window
     expect(g?.height).toBe(10); // 12 rows − 2 live rows
-    expect(g?.width).toBeGreaterThan(0);
-    expect(g?.left).toBe(0);
+    expect(g?.width).toBe(100); // the box is the terminal's full width: the grid's margin is drawn inside it
+    // The left edge of the rows' TEXT (unit 9): the box's frame column 0 plus the grid's margin, so a mouse cell maps onto a content column.
+    expect(g?.left).toBe(GRID.margin);
   });
 });
 
@@ -209,6 +217,7 @@ describe('TranscriptViewport — the rendered highlight', () => {
       <Box flexDirection="column" height={6}>
         <TranscriptViewport
           lines={lines(40)}
+          grid={GRID}
           color={false}
           scroll={scroll}
           selection={selection}
@@ -265,7 +274,8 @@ describe('TranscriptViewport — the rendered highlight', () => {
       { start: { line: 12, column: 1 }, end: { line: 12, column: 1 } },
     );
     const row = frame.split('\n')[2] ?? '';
-    expect(row.trimEnd()).toBe('L\x1b[7m1\x1b[27m2');
+    // The margin is blank and outside the highlight (unit 9): the row is the margin cell, then the content's three pieces.
+    expect(row.trimEnd()).toBe(`${' '.repeat(GRID.margin)}L\x1b[7m1\x1b[27m2`);
   });
 
   it('NO selection means no inverse anywhere — the attribute is not left on', async () => {
@@ -273,6 +283,7 @@ describe('TranscriptViewport — the rendered highlight', () => {
       <Box flexDirection="column" height={6}>
         <TranscriptViewport
           lines={lines(40)}
+          grid={GRID}
           color={false}
           scroll={INITIAL_SCROLL}
           onMeasure={() => undefined}

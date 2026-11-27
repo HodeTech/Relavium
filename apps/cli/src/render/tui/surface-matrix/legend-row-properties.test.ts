@@ -174,7 +174,7 @@ describe('through the cells of the chat the maintainers saw red: /help and /agen
     ['standalone-chat.report-help', ALT_80],
     ['standalone-chat.report-agent', ALT_80_COLOUR],
   ])(
-    '%s (%j): the box covers the prompt block, the backdrop is on the legend row, and the legend is alone in the box',
+    '%s (%j): the box covers the prompt block, and the legend is alone in the box (and, on the grid, alone on its row)',
     async (id, variant) => {
       const entry = surface(id);
       const { observation, box, violations } = await withSurface(entry, variant, {}, (mount) => {
@@ -196,18 +196,22 @@ describe('through the cells of the chat the maintainers saw red: /help and /agen
           .trim();
       const wholeRow = observation.lines.findIndex((line) => named.includes(line.trim()));
       const boxRow = observation.lines.findIndex((line) => named.includes(inBox(line)));
+      // Moved in unit 9: the chat's prompt block stands in the content column of the grid (6 columns in, 68 wide at 80), which is exactly the popup's
+      // box (`min(columns − 2 × margin, 76)`: columns 6–73). The box now covers the prompt row and the rule WHOLE, so the margin to its left is blank
+      // and nothing of them is beside it on the legend's row: the row is the legend and nothing else. (The refinement that reads the legend in the
+      // box's columns stays pinned by the frames drawn by hand above, where the backdrop is beside the box.)
       expect(
         wholeRow,
-        'no row is the legend and nothing else: the backdrop is beside the box on its row',
-      ).toBe(-1);
+        'the legend row is drawn, and on the grid no backdrop is beside the box on it',
+      ).toBeGreaterThanOrEqual(0);
       expect(boxRow, 'the legend is alone in the box on one of its rows').toBeGreaterThanOrEqual(
         box.top,
       );
       expect(boxRow).toBeLessThan(box.top + box.height);
       expect(
         checkLegendRow(observation, named),
-        'read as a whole row the same frame fails: the refinement is what turns the cell green',
-      ).toHaveLength(1);
+        'read as a whole row the same frame holds: the box and the content column coincide, so there is no backdrop beside the legend',
+      ).toEqual([]);
       expect(checkLegendRow(observation, named, box)).toEqual([]);
     },
   );

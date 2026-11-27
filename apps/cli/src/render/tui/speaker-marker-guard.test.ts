@@ -1,38 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
 import { modelSwitchNotice } from '../../chat/repl-info.js';
-import { MarkdownStream } from '../markdown/index.js';
 import { commandResultPreview } from './attachments.js';
 import {
   entryLines,
   formatBusyLine,
   formatReasoningPanel,
   formatToolCall,
+  stripTerminalControls,
+  toolCallText,
   transcriptDocument,
   wrapTranscript,
 } from './chat-projection.js';
 import { GLYPHS, MARKER_GLYPHS, withGlyphForm } from './glyphs.js';
 import type { TranscriptEntry } from './session-view-model.js';
-import {
-  guardEntryRows,
-  guardMarkdownLine,
-  logicalLineStarts,
-  markYourTurn,
-  TEXT_FORM_YOUR_TURN,
-} from './transcript-guard.js';
+import { noticeLines, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
 import { displayWidth, wrapText, type DisplayLine } from './viewport.js';
 
 /**
- * The speaker marker in the transcript's rows and its interim guard (MVP-11 step 7a, [ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
- * §6, [ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) §4).
+ * The speaker marker on the transcript's grid (MVP-11 unit 9, [ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md)
+ * §6; this file held step 7a's interim guard, and every assertion that moved says so).
  *
- * THE UNTRUSTED-TEXT SINK. The marker (`›`) is the host's mark of who spoke, the `▸` leads a tool call and the `⇄` a model switch. A model's reply,
- * a command's output or a pasted line that could draw one of them at the start of a row would put words in the person's mouth or invent a call, so
- * every row that is not the host's is guarded after it is laid out. These tests are the control: each one names the requirement it holds and was
- * proved against a mutant of the production code (the report of the increment lists them).
+ * THE UNTRUSTED-TEXT SINK. The marker (`›`) is the host's mark of who spoke, the `▸` leads a tool call and the `⇄` a model switch. Step 7a blanked
+ * them from every row that was not the host's, because the marker was then the start of a row's text. On the grid the guard is STRUCTURAL: a row's
+ * mark is its `margin`, a role the host sets where it builds the row (`wrapEntry`) and that `marginCell` draws from product constants, and every
+ * word of the row is CONTENT, laid out in the content column. So the requirement these tests hold is "no row of a reply, a command's output, a
+ * pasted line or a name carries a mark the host did not set", and the glyphs themselves are no longer blanked: they are text in the content
+ * column (blanking them would damage ordinary output; `transcript-grid-margin.test.tsx` proves on the DRAWN frame that such a row cannot occupy the
+ * margin). Each test names the requirement it holds and was proved against a mutant of the production code (the report of the increment lists them).
  */
 
-const GLYPH_PATTERN = /[›▸⇄]/u;
 /** A stand-in for a glyph: one column and no space, so a text written with it lays out exactly as the same text written with the glyph. */
 const STAND_IN = 'Ж';
 const SWAP = /[›▸⇄]/gu;
@@ -41,47 +38,57 @@ const ZWSP = String.fromCharCode(0x200b);
 const LRM = String.fromCharCode(0x200e);
 const RLO = String.fromCharCode(0x202e);
 const COMBINING_ACUTE = String.fromCharCode(0x0301);
-
-/** The text of every row and of every span of every row: the whole of what a renderer could draw. */
-function drawn(rows: readonly DisplayLine[]): string[] {
-  return rows.flatMap((row) => [row.text, ...(row.spans ?? []).map((span) => span.text)]);
-}
-
-function expectNoMarkerGlyph(rows: readonly DisplayLine[], label: string): void {
-  for (const text of drawn(rows))
-    expect(text, `${label}: ${JSON.stringify(text)}`).not.toMatch(GLYPH_PATTERN);
-}
+const ESC = String.fromCharCode(0x1b);
 
 const assistant = (text: string): TranscriptEntry => ({ role: 'assistant', text });
 const user = (text: string): TranscriptEntry => ({ role: 'user', text });
 const notice = (text: string): TranscriptEntry => ({ role: 'notice', text });
 
-describe('the person’s turn carries the host’s marker as data', () => {
-  it('colour on: the first row starts with `›` and says so in `marker`; the rest of the turn hangs unprefixed, with no marker', () => {
-    const rows = wrapTranscript([user('hello world, a long message that wraps around')], 20, true);
-    expect(rows.length).toBeGreaterThan(2);
-    expect(rows[0]).toMatchObject({ marker: '›', style: 'user' });
-    expect(rows[0]?.text.startsWith('› hello')).toBe(true);
-    for (const row of rows.slice(1)) {
-      expect(row.marker, JSON.stringify(row.text)).toBeUndefined();
-      expect(row.style).toBe('user');
-    }
-  });
+/** The margin roles of a reply's rows must be exactly: `agent` on its first row, nothing on any other (no row of a reply is the host's). */
+function expectReplyMargins(rows: readonly DisplayLine[], label: string): void {
+  expect(
+    rows.map((row) => row.margin),
+    label,
+  ).toEqual(rows.map((_row, index) => (index === 0 ? 'agent' : undefined)));
+}
 
-  it('colour off: the marker is the ASCII `>`, carried as data like the glyph', () => {
-    const rows = wrapTranscript([user('hello world, a long message that wraps around')], 20, false);
-    expect(rows[0]).toMatchObject({ marker: '>', style: 'user' });
-    expect(rows[0]?.text.startsWith('> hello')).toBe(true);
-    expect(rows.slice(1).every((row) => row.marker === undefined)).toBe(true);
-  });
+/** The margin roles of rows that carry no host mark at all (a notice that names no lead, the hanging rows of a turn). */
+function expectNoMargin(rows: readonly DisplayLine[], label: string): void {
+  expect(
+    rows.filter((row) => row.margin !== undefined),
+    label,
+  ).toEqual([]);
+}
+
+describe('the person’s turn carries the host’s mark as its first row’s margin role', () => {
+  // Moved from step 7a: the first row's `marker` field and its text's leading glyph are now the row's `margin` role and a text without the prefix.
+  it.each([true, false])(
+    'the first row is the `yourTurn` role and the person’s words; the rest of the turn hangs with no role (colour %s)',
+    (color) => {
+      const rows = wrapTranscript(
+        [user('hello world, a long message that wraps around')],
+        20,
+        color,
+      );
+      expect(rows.length).toBeGreaterThan(2);
+      expect(rows[0]).toMatchObject({ margin: 'yourTurn', style: 'user' });
+      expect(rows[0]?.text.startsWith('hello')).toBe(true);
+      for (const row of rows.slice(1)) {
+        expect(row.margin, JSON.stringify(row.text)).toBeUndefined();
+        expect(row.style).toBe('user');
+      }
+    },
+  );
 
   it('a turn typed on several lines marks only its first row: the later lines are rows of the turn, not turns', () => {
     const rows = wrapTranscript([user('first\nsecond\nthird')], 80, true);
-    expect(rows.map((row) => row.text)).toEqual(['› first', 'second', 'third']);
-    expect(rows.map((row) => row.marker)).toEqual(['›', undefined, undefined]);
+    expect(rows.map((row) => row.text)).toEqual(['first', 'second', 'third']);
+    expect(rows.map((row) => row.margin)).toEqual(['yourTurn', undefined, undefined]);
   });
 
-  it('the row count, every row’s text and every row’s width are the text form’s (the marker costs no column and moves no row)', () => {
+  // Moved from "the marker costs no column and moves no row": the mark is not in the text at all now, so the turn's rows ARE the person's words
+  // wrapped at the content width, the same in both forms (the form is the margin's, drawn by `marginCell`).
+  it('the rows are the person’s words wrapped at the width, identical with colour on and off', () => {
     const bodies = [
       'short',
       'hello world, a long message that wraps around the width',
@@ -92,60 +99,40 @@ describe('the person’s turn carries the host’s marker as data', () => {
     ];
     for (const body of bodies) {
       for (const cols of [1, 2, 3, 7, 20, 80]) {
+        const label = `${JSON.stringify(body)} @ ${cols}`;
         const plain = wrapTranscript([user(body)], cols, false);
         const marked = wrapTranscript([user(body)], cols, true);
-        const label = `${JSON.stringify(body)} @ ${cols}`;
-        expect(marked.length, label).toBe(plain.length);
-        expect(wrapText(`> ${body}`, cols).length, label).toBe(marked.length);
-        marked.forEach((row, index) => {
-          const reference = plain[index]?.text ?? '';
-          expect(displayWidth(row.text), `${label} row ${index}`).toBe(displayWidth(reference));
-          // The rows of the two forms differ in the marker's glyph only.
-          expect(row.text.slice(index === 0 ? 1 : 0), `${label} row ${index}`).toBe(
-            reference.slice(index === 0 ? 1 : 0),
-          );
-        });
+        expect(marked, label).toEqual(plain);
+        expect(
+          marked.map((row) => row.text),
+          label,
+        ).toEqual(wrapText(body, cols));
       }
     }
   });
 
-  it('an empty turn is the marker and nothing else, and a one-column terminal still carries it as data', () => {
+  it('an empty turn is a row with the mark and no words, and a one-column terminal still carries the role', () => {
     expect(wrapTranscript([user('')], 80, true)).toEqual([
-      { text: '› ', style: 'user', marker: '›' },
+      { text: '', style: 'user', margin: 'yourTurn' },
     ]);
     const narrow = wrapTranscript([user('ab')], 1, true);
-    expect(narrow[0]).toEqual({ text: '›', style: 'user', marker: '›' });
-    expect(narrow.slice(1).every((row) => row.marker === undefined)).toBe(true);
+    expect(narrow[0]).toEqual({ text: 'a', style: 'user', margin: 'yourTurn' });
+    expect(narrow.slice(1).every((row) => row.margin === undefined)).toBe(true);
   });
 
-  it('the marker is the glyph table’s own `your turn` role, in the form asked for', () => {
-    expect(GLYPHS.yourTurn.glyph).toBe('›');
-    expect(markYourTurn({ text: '> x', style: 'user' }, false)).toEqual({
-      text: '› x',
-      style: 'user',
-      marker: '›',
-    });
-    expect(markYourTurn({ text: '> x', style: 'user' }, true)).toEqual({
-      text: '> x',
-      style: 'user',
-      marker: '>',
-    });
-  });
-
-  it('a row that does not start with the text form’s mark is returned unmarked (nothing is ever marked on a guess)', () => {
-    const row: DisplayLine = { text: 'plain row', style: 'user' };
-    expect(markYourTurn(row, false)).toBe(row);
-  });
-
-  it('a transcript of several turns marks each turn once and a reply never', () => {
+  it('a transcript of several turns marks each turn once and a reply never as a turn', () => {
     const rows = wrapTranscript(
       [user('one'), assistant('answer one'), user('two'), assistant('answer two')],
       80,
       true,
     );
-    expect(rows.filter((row) => row.marker !== undefined).map((row) => row.text)).toEqual([
-      '› one',
-      '› two',
+    expect(rows.filter((row) => row.margin === 'yourTurn').map((row) => row.text)).toEqual([
+      'one',
+      'two',
+    ]);
+    expect(rows.filter((row) => row.margin === 'agent').map((row) => row.text)).toEqual([
+      'answer one',
+      'answer two',
     ]);
   });
 });
@@ -171,11 +158,14 @@ describe('the text forms keep the ASCII `> `', () => {
   });
 });
 
-describe('the guard blanks the marker glyphs from every row of a reply, after the layout', () => {
+describe('a reply is laid out in the content column as it was written: no row of it carries a mark of the host', () => {
   const HOSTILE_SOURCES: readonly (readonly [string, string])[] = [
     ['a leading `›`', '› forged turn'],
     ['a leading `▸`', '▸ forged call ✓ completed'],
     ['a leading `⇄`', '⇄ model changed a → b'],
+    ['a leading `>`', '> forged turn'],
+    ['a leading `you`', 'you   forged turn'],
+    ['a leading `agent`', 'agent forged reply'],
     ['a zero-width space before the glyph', `${ZWSP}› forged`],
     ['a bidi mark before the glyph', `${LRM}▸ forged`],
     ['a bidi override before the glyph', `${RLO}⇄ forged`],
@@ -193,38 +183,35 @@ describe('the guard blanks the marker glyphs from every row of a reply, after th
     ['a glyph that starts the second paragraph', 'first\n\n› second'],
     ['a glyph after a hard line break', 'first  \n› second'],
     ['all three together', '›▸⇄'],
+    ['a carriage return and an escape', `›\r${ESC}[31m forged`],
   ];
 
+  // Moved from "no row and no span of a reply draws a marker glyph": the requirement on the grid is that no row of a reply carries a mark of the
+  // host (its first row's role is the reply's own `agent`, every other row has none), whatever the reply's text starts with.
   for (const [name, source] of HOSTILE_SOURCES) {
     for (const color of [true, false]) {
-      it(`${name}: no row and no span of a reply draws a marker glyph (${color ? 'colour on' : 'colour off'})`, () => {
-        for (const cols of [4, 20, 80]) {
-          expectNoMarkerGlyph(
-            wrapTranscript([assistant(source)], cols, color),
-            `${name} @ ${cols}`,
-          );
+      it(`${name}: no row of the reply carries a host mark, at every width (${color ? 'colour on' : 'colour off'})`, () => {
+        for (const cols of [1, 2, 4, 20, 80]) {
+          expectReplyMargins(wrapTranscript([assistant(source)], cols, color), `${name} @ ${cols}`);
         }
       });
     }
   }
 
-  it('a glyph that the wrap or the layout puts at the START of a row is blanked: the guard runs on the finished rows', () => {
-    // At 8 columns "aaaa ›bbbb" breaks before the glyph, so the glyph starts the second row; a rule on the source or on the first row would miss it.
-    const probe = (glyph: string): string[] =>
-      wrapTranscript([assistant(`aaaa ${glyph}bbbb`)], 8, false).map((row) => row.text);
-    const withStandIn = probe(STAND_IN);
-    expect(withStandIn[1]?.startsWith(`${STAND_IN}bbbb`)).toBe(true); // the stand-in starts the second row
+  // Moved from "a glyph … at the START of a row is blanked": it is kept now, as text in the content column, on a row with no mark.
+  it('a glyph that the wrap or the layout puts at the START of a row stays text, on a row that carries no mark', () => {
     for (const glyph of MARKER_GLYPHS) {
-      const rows = probe(glyph);
-      expect(rows[1], glyph).toBe(`${' '}bbbb`);
-      expect(rows[0], glyph).toBe(withStandIn[0]);
+      for (const color of [true, false]) {
+        const rows = wrapTranscript([assistant(`aaaa ${glyph}bbbb`)], 8, color);
+        expect(rows[1]?.text, glyph).toBe(`${glyph}bbbb`);
+        expect(rows[1]?.margin, glyph).toBeUndefined();
+      }
     }
-    const coloured = wrapTranscript([assistant('aaaa ›bbbb')], 8, true);
-    expect(coloured[1]?.text).toBe(' bbbb');
-    expect(coloured[1]?.spans?.map((span) => span.text).join('')).toBe(' bbbb');
   });
 
-  it('the guard changes no width and no row: a reply lays out as the same text written with a stand-in of one column', () => {
+  // Moved from "the guard changes no width and no row": with nothing blanked the glyph is one column like the stand-in, so the layout is the
+  // stand-in's, row for row and width for width, and the marks are the same: a glyph earns no mark.
+  it('a reply lays out as the same text written with a stand-in of one column, with the same marks', () => {
     const sources = [
       'aaaa ›bbbb ▸cccc ⇄dddd eeee ›ffff',
       '中› 中▸中 ⇄中 and 😀›😀',
@@ -236,22 +223,24 @@ describe('the guard blanks the marker glyphs from every row of a reply, after th
       for (const color of [true, false]) {
         for (const cols of [3, 8, 20, 80]) {
           const label = `${JSON.stringify(source)} @ ${cols} ${color ? 'colour' : 'plain'}`;
-          const guarded = wrapTranscript([assistant(source)], cols, color);
+          const rows = wrapTranscript([assistant(source)], cols, color);
           const standIn = wrapTranscript([assistant(source.replace(SWAP, STAND_IN))], cols, color);
-          expect(guarded.length, label).toBe(standIn.length);
-          guarded.forEach((row, index) => {
-            const reference = standIn[index]?.text.replaceAll(STAND_IN, ' ') ?? '';
-            expect(row.text, `${label} row ${index}`).toBe(reference);
-            expect(displayWidth(row.text), `${label} row ${index}`).toBe(
-              displayWidth(standIn[index]?.text ?? ''),
-            );
-          });
+          expect(rows.length, label).toBe(standIn.length);
+          expect(
+            rows.map((row) => displayWidth(row.text)),
+            label,
+          ).toEqual(standIn.map((row) => displayWidth(row.text)));
+          expect(
+            rows.map((row) => row.margin),
+            label,
+          ).toEqual(standIn.map((row) => row.margin));
         }
       }
     }
   });
 
-  it('the summary and the hint rows of a reply are guarded too: a model id, a provider’s words and a tool name are not the host’s', () => {
+  // Moved from "the summary and the hint rows of a reply are guarded too": they carry no mark; their words are text.
+  it('the summary and the hint rows of a reply carry no mark: a model id, a provider’s words and a tool name are text', () => {
     const rows = wrapTranscript(
       [
         {
@@ -266,16 +255,6 @@ describe('the guard blanks the marker glyphs from every row of a reply, after th
             failedTools: [{ toolId: '▸ forged_tool ⇄', count: 2 }],
           },
         },
-        {
-          role: 'assistant',
-          text: 'second',
-          summary: {
-            stopReason: 'stop',
-            tokensUsed: { input: 0, output: 0 },
-            errorCode: 'tool_denied',
-            errorMessage: '› denied ▸ by ⇄ policy',
-          },
-        },
       ],
       200,
       true,
@@ -283,10 +262,13 @@ describe('the guard blanks the marker glyphs from every row of a reply, after th
     expect(rows.some((row) => row.style === 'summary' && row.text.includes('via fallback'))).toBe(
       true,
     );
-    expectNoMarkerGlyph(rows, 'summary rows');
+    expectReplyMargins(rows, 'summary rows');
+    expect(rows.find((row) => row.style === 'hint')?.text.startsWith('→ ')).toBe(true);
   });
 
-  it('property: over 1,000 random strings of the three glyphs, zero-width, bidi and combining marks, markdown punctuation and wide glyphs, no row of a reply draws a glyph, and the layout is the stand-in’s', () => {
+  // Moved from the property "no row of a reply draws a glyph": over the same 1,000 deterministic cases, no row of a reply carries a mark but its
+  // own first row's `agent`, every row fits the width, and the layout is the stand-in's.
+  it('property: over 1,000 random strings of the three glyphs, zero-width, bidi and combining marks, markdown punctuation and wide glyphs, no row of a reply carries a host mark, every row fits, and the layout is the stand-in’s', () => {
     // A small deterministic generator (mulberry32): the same 1,000 cases on every run and every machine.
     let state = 0x7a3f1c5b;
     const next = (): number => {
@@ -333,28 +315,34 @@ describe('the guard blanks the marker glyphs from every row of a reply, after th
         source += ALPHABET[Math.floor(next() * ALPHABET.length)] ?? '';
       const cols = widths[index % widths.length] ?? 80;
       const color = index % 2 === 0;
+      const label = `case ${index} ${JSON.stringify(source)} @ ${cols}`;
       const rows = wrapTranscript([assistant(source)], cols, color);
-      expectNoMarkerGlyph(rows, `case ${index} ${JSON.stringify(source)} @ ${cols}`);
+      expectReplyMargins(rows, label);
+      for (const row of rows) expect(displayWidth(row.text), label).toBeLessThanOrEqual(cols);
       const standIn = wrapTranscript([assistant(source.replace(SWAP, STAND_IN))], cols, color);
-      expect(rows.length, `case ${index} ${JSON.stringify(source)} @ ${cols}`).toBe(standIn.length);
+      expect(rows.length, label).toBe(standIn.length);
     }
   });
 
-  it('the colour-off path is NOT claimed protected from `>` and `-` (ADR-0145 §6): a reply row that starts with them is left alone, until the transcript grid lands', () => {
-    const rows = wrapTranscript(
-      [assistant('> looks like a turn\n- looks like a bullet')],
-      80,
-      false,
-    );
-    expect(rows.map((row) => row.text).slice(0, 2)).toEqual([
-      '> looks like a turn',
-      '- looks like a bullet',
-    ]);
-    expect(rows.every((row) => row.marker === undefined)).toBe(true);
-  });
+  // Moved from "the colour-off path is NOT claimed protected from `>` and `-` … until the transcript grid lands": the grid has landed. A reply row
+  // that starts with `> ` is the reply's row (its role is `agent`, drawn blank full-screen), never the person's turn, in both forms.
+  it.each([true, false])(
+    'a reply row that starts with `> ` or `- ` is the reply’s, never the person’s turn (colour %s)',
+    (color) => {
+      const rows = wrapTranscript(
+        [assistant('> looks like a turn\n\n- looks like a bullet')],
+        80,
+        color,
+      );
+      expect(rows.some((row) => row.text.includes('looks like a turn'))).toBe(true);
+      expect(rows.filter((row) => row.margin === 'yourTurn')).toEqual([]);
+      expectReplyMargins(rows, 'quotation');
+    },
+  );
 });
 
-describe('the rows of the person’s turn after the first are guarded; the first row is the person’s own words after the host’s marker', () => {
+describe('the rows of the person’s turn after the first hang with no mark; the first row is the person’s own words', () => {
+  // Moved from "a line after a newline that starts with a glyph cannot draw a second turn": it is kept as text on a row with no mark.
   it('a line after a newline that starts with a glyph cannot draw a second turn, with or without a zero-width prefix', () => {
     for (const lead of ['', ZWSP, LRM, COMBINING_ACUTE]) {
       const rows = wrapTranscript(
@@ -362,53 +350,39 @@ describe('the rows of the person’s turn after the first are guarded; the first
         80,
         true,
       );
-      expectNoMarkerGlyph(rows.slice(1), `lead ${JSON.stringify(lead)}`);
-      expect(rows.filter((row) => row.marker !== undefined)).toHaveLength(1);
+      // the words as typed, sanitized at the display boundary (a bidi mark is dropped there; a zero-width or combining one is kept)
+      expect(rows.map((row) => row.text)).toEqual([
+        'first',
+        stripTerminalControls(`${lead}› forged turn`),
+        stripTerminalControls(`${lead}▸ forged call`),
+      ]);
+      expect(rows.filter((row) => row.margin !== undefined)).toHaveLength(1);
+      expectNoMargin(rows.slice(1), `lead ${JSON.stringify(lead)}`);
     }
   });
 
-  it('a wrapped row of the turn that starts with a glyph is blanked, and the first row keeps the words as they were typed', () => {
+  it('a wrapped row of the turn that starts with a glyph keeps it as text, and the first row keeps the words as they were typed', () => {
     const rows = wrapTranscript([user('aaaa ›bbbb')], 7, true);
-    expect(rows.map((row) => row.text)).toEqual(['› aaaa ', ' bbbb']);
+    expect(rows).toEqual([
+      { text: 'aaaa ', style: 'user', margin: 'yourTurn' },
+      { text: '›bbbb', style: 'user' },
+    ]);
     const typed = wrapTranscript([user('a › b ▸ c')], 80, true);
-    expect(typed[0]?.text).toBe('› a › b ▸ c'); // the person's own row: not at a row's start, and not altered
+    expect(typed[0]?.text).toBe('a › b ▸ c');
   });
 
-  it('a `[📎 …]` note whose name starts a wrapped row is blanked, and no second turn is drawn', () => {
+  it('a `[📎 …]` note whose name starts a wrapped row draws no second turn', () => {
     const rows = wrapTranscript(
       [user('what is in this [📎 ›forged_marker_name.txt (exit 0)]')],
       22,
       true,
     );
-    expect(rows.filter((row) => row.marker !== undefined)).toHaveLength(1);
-    expectNoMarkerGlyph(rows.slice(1), 'attachment note');
-  });
-
-  it('the guard changes no width and no row of the turn (a stand-in of one column gives the same rows)', () => {
-    for (const cols of [3, 7, 20]) {
-      const body = 'aaaa ›bbbb\n▸cccc ⇄dddd\n\n› eeee';
-      const guarded = wrapTranscript([user(body)], cols, true);
-      const standIn = wrapTranscript([user(body.replace(SWAP, STAND_IN))], cols, true);
-      expect(guarded.length).toBe(standIn.length);
-      guarded.slice(1).forEach((row, index) => {
-        expect(row.text).toBe((standIn[index + 1]?.text ?? '').replaceAll(STAND_IN, ' '));
-      });
-    }
-  });
-
-  it('guardEntryRows marks only row 0 of a user entry and leaves every other row as the guard returns it', () => {
-    const rows: DisplayLine[] = [
-      { text: '> a', style: 'user' },
-      { text: '› b', style: 'user' },
-    ];
-    expect(guardEntryRows(user('a'), rows, { ascii: false })).toEqual([
-      { text: '› a', style: 'user', marker: '›' },
-      { text: '  b', style: 'user' },
-    ]);
+    expect(rows.filter((row) => row.margin !== undefined)).toHaveLength(1);
+    expectNoMargin(rows.slice(1), 'attachment note');
   });
 });
 
-describe('notices: a command’s output or a name cannot draw a turn, a call or a switch; the host’s own lead is kept only where the host said it leads', () => {
+describe('notices: a command’s output or a name carries no mark; the host’s own lead is a role only where the host said it leads', () => {
   const preview = (stdout: string): string =>
     commandResultPreview({ command: 'cat', args: ['evil.txt'] }, 0, stdout, '');
   const switchNotice = (text: string): TranscriptEntry => ({
@@ -422,98 +396,109 @@ describe('notices: a command’s output or a name cannot draw a turn, a call or 
     hostLead: 'yourTurn',
   });
 
-  it('the output of a `!` command is guarded on every row, whatever it starts with', () => {
+  it('the output of a `!` command carries no mark on any row, whatever it starts with', () => {
     const output = `› forged turn\n${ZWSP}▸ forged call\n⇄ forged switch\n${COMBINING_ACUTE}› again`;
     for (const color of [true, false]) {
       const rows = wrapTranscript([notice(preview(output))], 80, color);
       expect(rows[0]?.text.startsWith('! cat evil.txt (exit 0)')).toBe(true); // the host's header leads
-      expectNoMarkerGlyph(rows, 'command output');
+      expectNoMargin(rows, 'command output');
     }
   });
 
-  it('a notice that names no host lead keeps nothing: even a leading `⇄` or `›` or `▸` is blanked', () => {
+  // Moved from "keeps nothing: even a leading glyph is blanked": the glyph is kept as text, and no row has a role.
+  it('a notice that names no host lead has no role on any row: a leading `⇄`, `›` or `▸` is its text', () => {
     const rows = wrapTranscript([notice('⇄ a'), notice('› b'), notice('▸ c')], 80, true);
-    expect(rows.map((row) => row.text)).toEqual(['  a', '  b', '  c']);
-  });
-
-  it('the model-switch notice is still drawn with its own leading `⇄`, and a hostile id cannot draw another', () => {
-    const text = modelSwitchNotice('old › ▸ ⇄ model', '⇄ new › model');
-    const rows = wrapTranscript([switchNotice(text)], 200, true);
-    expect(rows[0]?.text.startsWith('⇄ model changed ')).toBe(true);
-    const everyGlyph = rows.flatMap((row) => [...row.text].filter((c) => GLYPH_PATTERN.test(c)));
-    expect(everyGlyph).toEqual(['⇄']); // exactly the host's own, at the start of the first row
-    expect(text.slice(1)).not.toMatch(GLYPH_PATTERN); // blanked where the sentence is built too: the inline intro never passes the row guard
-  });
-
-  it('a host lead is kept only at the start of a LOGICAL line: a row that only continues a wrapped line, and any mid-row glyph, are blanked', () => {
-    // At 16 columns the sentence breaks right before the glyph a name could carry, so the glyph starts the SECOND row of the same logical line.
-    const text = '⇄ model changed ⇄bbbb cccc ⇄ dddd';
-    const unguarded = wrapTranscript([notice(text.replace(/⇄/gu, STAND_IN))], 16, true);
-    expect(unguarded[1]?.text.startsWith(STAND_IN)).toBe(true); // the break puts the stand-in at the start of a row
-    const rows = wrapTranscript([switchNotice(text)], 16, true);
-    expect(rows[0]?.text.startsWith('⇄ model')).toBe(true);
-    expectNoMarkerGlyph(rows.slice(1), 'continuation rows');
-    expect(rows.map((row) => row.text).join('')).not.toMatch(/⇄.*⇄/u);
-  });
-
-  it('a notice that names no lead keeps nothing even if a caller hands the guard its line starts', () => {
-    const rows: DisplayLine[] = [{ text: '⇄ a', style: 'notice' }];
-    expect(guardEntryRows(notice('⇄ a'), rows, { ascii: false, lineStarts: new Set([0]) })).toEqual(
-      [{ text: '  a', style: 'notice' }],
-    );
-    // …and a notice that names a lead keeps nothing without them (fail closed).
-    expect(guardEntryRows(switchNotice('⇄ a'), rows, { ascii: false })).toEqual([
-      { text: '  a', style: 'notice' },
+    expect(rows).toEqual([
+      { text: '⇄ a', style: 'notice' },
+      { text: '› b', style: 'notice' },
+      { text: '▸ c', style: 'notice' },
     ]);
   });
 
-  it('a host lead keeps only ITS glyph: a `›` or a `▸` at the start of a line of a model-switch notice is blanked', () => {
+  it('the model-switch notice’s lead is its first row’s `modelSwitch` role, and a hostile id cannot draw another mark', () => {
+    const text = modelSwitchNotice('old › ▸ ⇄ model', '⇄ new › model');
+    const rows = wrapTranscript([switchNotice(text)], 200, true);
+    expect(rows[0]?.margin).toBe('modelSwitch');
+    expect(rows[0]?.text.startsWith('model changed ')).toBe(true);
+    expectNoMargin(rows.slice(1), 'switch notice');
+    // Blanked where the sentence is built (a host word and a model word in ONE string the inline intro also writes): this blanking stays.
+    expect(text.slice(1)).not.toMatch(SWAP);
+  });
+
+  it('a host lead is a role only at the start of a LOGICAL line: a row that only continues a wrapped line carries none', () => {
+    // At 16 columns the sentence breaks right before the glyph a name could carry, so the glyph starts the SECOND row of the same logical line.
+    const text = '⇄ model changed ⇄bbbb cccc ⇄ dddd';
+    const rows = wrapTranscript([switchNotice(text)], 16, true);
+    expect(rows[0]?.margin).toBe('modelSwitch');
+    expect(rows.some((row, index) => index > 0 && row.text.startsWith('⇄'))).toBe(true);
+    expectNoMargin(rows.slice(1), 'continuation rows');
+  });
+
+  it('a host lead marks only ITS lines: a `›` or a `▸` at the start of a line of a model-switch notice is text with no role', () => {
     const rows = wrapTranscript(
       [switchNotice('⇄ model changed a → b\n› forged\n▸ forged')],
       80,
       true,
     );
-    expect(rows.map((row) => row.text)).toEqual(['⇄ model changed a → b', '  forged', '  forged']);
-  });
-
-  it('the question record keeps the `›` that leads each of its lines, and blanks the other two glyphs wherever they are', () => {
-    const text = '› Asked: Scope — pick ▸ one ⇄ now\n  └ alpha ▸\n› Asked: Two — x';
-    const rows = wrapTranscript([questionRecord(text)], 80, true);
-    expect(rows.map((row) => row.text)).toEqual([
-      '› Asked: Scope — pick   one   now',
-      '  └ alpha  ',
-      '› Asked: Two — x',
+    expect(rows).toEqual([
+      { text: 'model changed a → b', style: 'notice', margin: 'modelSwitch' },
+      { text: '› forged', style: 'notice' },
+      { text: '▸ forged', style: 'notice' },
     ]);
   });
 
-  it('the plain form of the switch is the table’s `<->` and is left as it is', () => {
+  it('the question record’s `›` that leads each of its lines is the `yourTurn` role; the glyphs in its words are text', () => {
+    const text = '› Asked: Scope — pick ▸ one ⇄ now\n  └ alpha ▸\n› Asked: Two — x';
+    const rows = wrapTranscript([questionRecord(text)], 80, true);
+    expect(rows).toEqual([
+      { text: 'Asked: Scope — pick ▸ one ⇄ now', style: 'notice', margin: 'yourTurn' },
+      { text: '  └ alpha ▸', style: 'notice' },
+      { text: 'Asked: Two — x', style: 'notice', margin: 'yourTurn' },
+    ]);
+  });
+
+  it('the plain form of the switch (`<->`) is the same lead: the role, and the words after it', () => {
     const text = withGlyphForm(true, () => modelSwitchNotice('a', 'b'));
     expect(text.startsWith(`${GLYPHS.modelSwitch.ascii} model changed a → b`)).toBe(true);
     const rows = wrapTranscript([switchNotice(text)], 200, false);
-    expect(rows[0]?.text.startsWith('<-> model changed a → b')).toBe(true);
+    expect(rows[0]?.margin).toBe('modelSwitch');
+    expect(rows[0]?.text.startsWith('model changed a → b')).toBe(true);
   });
 
-  it('logicalLineStarts names the first row of the text and of each line after a newline, under the wrap', () => {
-    expect([...logicalLineStarts('one\ntwo', 80)]).toEqual([0, 1]);
-    expect([...logicalLineStarts('aaaa bbbb cccc\nx', 6)]).toEqual([0, 3]);
-    expect([...logicalLineStarts('', 80)]).toEqual([0]);
-    expect([...logicalLineStarts('a\n\nb', 80)]).toEqual([0, 1, 2]);
+  // Replaces the retired `logicalLineStarts` and `guardEntryRows` context tests: the policy is one function of the host's data.
+  it('noticeLines: a role only from `hostLead`, only for a line that begins with the lead and a space, in either form', () => {
+    expect(noticeLines('⇄ a\n› b', undefined)).toEqual([{ text: '⇄ a' }, { text: '› b' }]);
+    expect(noticeLines('⇄ a\n⇄b\n x ⇄ y', 'modelSwitch')).toEqual([
+      { text: 'a', margin: 'modelSwitch' },
+      { text: '⇄b' },
+      { text: ' x ⇄ y' },
+    ]);
+    expect(noticeLines('> a\n› b\n▸ c', 'yourTurn')).toEqual([
+      { text: 'a', margin: 'yourTurn' },
+      { text: 'b', margin: 'yourTurn' },
+      { text: '▸ c' },
+    ]);
+    expect(noticeLines('<-> a', 'modelSwitch')).toEqual([{ text: 'a', margin: 'modelSwitch' }]);
+    expect(noticeLines('', 'yourTurn')).toEqual([{ text: '' }]);
   });
 });
 
-describe('tool rows: the host’s own `▸` is drawn, and the words that are not the host’s cannot draw another', () => {
+describe('tool rows: the host’s `▸` is the margin’s, and the words that are not the host’s are blanked where they share its string', () => {
+  // Unchanged: the plain driver and the documents keep `formatToolCall`'s string byte for byte, and the id and target are blanked inside it.
   it('formatToolCall keeps its leading `▸` and blanks a glyph in the tool’s id and in its target', () => {
     const line = formatToolCall(
       { id: 'c1', toolId: 'weird▸tool›name⇄', resolved: true, success: true, outcome: 'success' },
       { callId: 'c1', toolId: 'weird▸tool›name⇄', outcome: 'success', target: '› a ▸ path ⇄ here' },
     );
     expect(line.startsWith('▸ ')).toBe(true);
-    expect(line.slice(1)).not.toMatch(GLYPH_PATTERN);
+    expect(line.slice(1)).not.toMatch(SWAP);
     expect(line).toContain('weird tool name');
     expect(line).toContain('→   a   path   here');
   });
 
-  it('a tool entry’s rows each keep the host’s `▸` once per call and carry no other glyph', () => {
+  // Moved from "each row keeps the host's `▸` once per call": one call per row (OQ2), the `▸` is the row's `toolCall` role, the text is the call's
+  // words (`toolCallText`) with no glyph of the set.
+  it('a tool entry is one call per row, each the `toolCall` role and the call’s words, with no glyph in them', () => {
     const calls = Array.from({ length: 6 }, (_, index) => ({
       id: `c${index}`,
       toolId: `t${index}▸x`,
@@ -521,22 +506,34 @@ describe('tool rows: the host’s own `▸` is drawn, and the words that are not
       success: true,
       outcome: 'success' as const,
     }));
-    const rows = wrapTranscript([{ role: 'tools', text: '', calls }], 400, true);
-    const glyphs = rows.flatMap((row) => [...row.text].filter((c) => GLYPH_PATTERN.test(c)));
-    expect(glyphs).toEqual(Array.from({ length: 6 }, () => '▸'));
-    expect(rows.every((row) => row.text.startsWith('▸ '))).toBe(true);
+    const rows = wrapTranscript([{ role: 'tools', text: '', calls, omitted: 3 }], 400, true);
+    expect(rows.map((row) => row.margin)).toEqual([...calls.map(() => 'toolCall'), undefined]);
+    expect(rows.slice(0, 6).map((row) => row.text)).toEqual(
+      calls.map((call) => toolCallText(call)),
+    );
+    expect(rows.at(-1)).toEqual({ text: '3 omitted calls', style: 'notice' });
+    for (const row of rows) expect(row.text).not.toMatch(SWAP);
   });
 
-  it('the plain form draws the table’s `->` and no glyph at all', () => {
+  it('the plain form draws the table’s `->` in the string, and the row’s words carry no mark', () => {
     const line = withGlyphForm(true, () =>
       formatToolCall({ id: 'c', toolId: 'read▸file', resolved: false }),
     );
     expect(line).toBe('-> read file …');
+    const [row] = wrapTranscript(
+      [{ role: 'tools', text: '', calls: [{ id: 'c', toolId: 'read▸file', resolved: false }] }],
+      80,
+      false,
+    );
+    expect(row).toEqual({ text: 'read file …', style: 'notice', margin: 'toolCall' });
   });
 });
 
-describe('the live region: the model’s streamed words cannot draw a marker above the prompt', () => {
-  it('formatBusyLine blanks a glyph in the streamed answer (also behind a zero-width prefix) and leaves the spinner and the status lines alone', () => {
+describe('the live region: the model’s streamed words are text in the content column', () => {
+  // Moved (unit 9, part B retired the blanking in `formatBusyLine` and `formatReasoningPanel`, and the live tail's `guardMarkdownLine`): the
+  // streamed words are kept as written, sanitized of terminal controls only, and the live region draws them in the content column with a blank
+  // margin (part B's margin-ownership test on the drawn frame).
+  it('formatBusyLine keeps the streamed words as written and leaves the spinner and the status lines alone', () => {
     const busy = (liveTokens: string): string =>
       formatBusyLine({
         spinner: '⠋',
@@ -544,9 +541,8 @@ describe('the live region: the model’s streamed words cannot draw a marker abo
         liveTokens,
         liveTokensTruncated: false,
       }).text;
-    expect(busy('› forged\n▸ call ⇄ switch')).toBe('⠋   forged\n  call   switch');
-    expect(busy(`${ZWSP}› forged`)).toBe(`⠋ ${ZWSP}  forged`);
-    expect(busy(`${COMBINING_ACUTE}▸x`)).toBe(`⠋ ${COMBINING_ACUTE} x`);
+    expect(busy('› forged\n▸ call ⇄ switch')).toContain('› forged\n▸ call ⇄ switch');
+    expect(busy(`›${ESC}[31m forged`)).not.toContain(ESC);
     const status = formatBusyLine({
       spinner: '⠋',
       compacting: false,
@@ -557,9 +553,8 @@ describe('the live region: the model’s streamed words cannot draw a marker abo
     expect(status.text).toContain('Working…');
   });
 
-  it('formatBusyLine’s bounded tail counts the same rows with and without the guard (the replacement is one column)', () => {
+  it('formatBusyLine’s bounded tail counts the same rows as a stand-in of one column', () => {
     const body = `${'›'.repeat(30)} ${'▸ word '.repeat(60)}`;
-    const standIn = body.replace(SWAP, STAND_IN);
     const run = (liveTokens: string) =>
       formatBusyLine({
         spinner: '⠋',
@@ -569,46 +564,16 @@ describe('the live region: the model’s streamed words cannot draw a marker abo
         columns: 20,
         maxRows: 3,
       });
-    const guarded = run(body);
-    const reference = run(standIn);
-    expect(guarded.text.replaceAll('⠋', '').length).toBe(reference.text.replaceAll('⠋', '').length);
-    expect(guarded.text).toBe(reference.text.replaceAll(STAND_IN, ' '));
+    expect(run(body).text.length).toBe(run(body.replace(SWAP, STAND_IN)).text.length);
   });
 
-  it('the reasoning panel blanks a glyph in the expanded body and keeps its own header', () => {
+  it('the reasoning panel keeps the expanded body’s words and its own header', () => {
     const panel = formatReasoningPanel({
       liveReasoning: '› thinking ▸ out ⇄ loud',
       liveReasoningTruncated: false,
       visible: true,
     });
-    expect(panel.body).toBe('  thinking   out   loud');
+    expect(panel.body).toBe('› thinking ▸ out ⇄ loud');
     expect(panel.header.startsWith('✻ Reasoning')).toBe(true);
-  });
-
-  it('the live markdown tail, laid out for colour or for plain text, is guarded row by row and span by span', () => {
-    for (const color of [true, false]) {
-      const stream = new MarkdownStream();
-      stream.append(
-        `${ZWSP}› forged turn\n\n**▸ bold call** and ⇄ more words that wrap around the row\n\n- › item\n\`\`\`\n▸ code\n`,
-      );
-      const raw = color ? stream.tail(14, 40) : stream.plainTail(14, 40);
-      expect(raw.some((row) => GLYPH_PATTERN.test(row.text))).toBe(true); // the stream itself does not blank: the guard is the host's
-      const guarded = raw.map(guardMarkdownLine);
-      for (const row of guarded) {
-        expect(row.text).not.toMatch(GLYPH_PATTERN);
-        for (const span of row.spans) expect(span.text).not.toMatch(GLYPH_PATTERN);
-      }
-      expect(guarded.map((row) => displayWidth(row.text))).toEqual(
-        raw.map((row) => displayWidth(row.text)),
-      );
-    }
-  });
-
-  it('guardMarkdownLine returns the very same row when there is nothing to blank (no copy per streamed frame)', () => {
-    const row = {
-      text: 'plain words',
-      spans: [{ text: 'plain ' }, { text: 'words', strong: true }],
-    };
-    expect(guardMarkdownLine(row)).toBe(row);
   });
 });

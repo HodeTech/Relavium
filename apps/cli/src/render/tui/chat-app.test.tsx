@@ -9,6 +9,7 @@ import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
 import { CHAT_HEADER_ROWS } from './chat-layout.js';
+import { chatGrid } from './chat-grid.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -829,6 +830,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
    * mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
    */
   const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+  /**
+   * The 1-based terminal column of the n-th CONTENT cell (1 for the first): the transcript stands on the chat's grid (MVP-11 unit 9), so its text
+   * starts right of the margin, and the viewport reports that edge as its `left` (a press in the margin clamps to the first content cell).
+   */
+  const contentColumn = (n: number): number => chatGrid(100).margin + n;
 
   /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
   const seedThree = (): ChatStoreController => {
@@ -864,11 +870,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
 
-    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press at terminal row 1, column 1 ⇒ line 0, column 0
+    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press at column 1 (in the margin) ⇒ line 0, content column 0
     await settleFrames();
-    h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 3 ⇒ column 2 (inclusive)
+    h.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to the third content cell ⇒ column 2 (inclusive)
     await settleFrames();
-    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
+    h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']); // columns 0..2 of 'AAAA'
@@ -879,11 +885,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
 
-    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}M`); // press line 0, column 2
+    h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}M`); // press line 0, column 2
     await settleFrames();
-    h.stdin.write(`\x1b[<32;2;${viewportRow(3)}M`); // drag to line 2 ('CCCC'), column 1
+    h.stdin.write(`\x1b[<32;${contentColumn(2)};${viewportRow(3)}M`); // drag to line 2 ('CCCC'), column 1
     await settleFrames();
-    h.stdin.write(`\x1b[<0;2;${viewportRow(3)}m`);
+    h.stdin.write(`\x1b[<0;${contentColumn(2)};${viewportRow(3)}m`);
     await settleFrames();
 
     // First row from column 2 to its end, the middle row whole, the last row to its INCLUSIVE end column.
@@ -956,8 +962,8 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
 
     store.notice('DDDD'); // the ref still says 3 lines; the store says 4
     h.stdin.write(`\x1b[<0;1;${viewportRow(4)}M`); // press terminal row 4 ⇒ the new line
-    h.stdin.write(`\x1b[<32;4;${viewportRow(4)}M`);
-    h.stdin.write(`\x1b[<0;4;${viewportRow(4)}m`);
+    h.stdin.write(`\x1b[<32;${contentColumn(4)};${viewportRow(4)}M`);
+    h.stdin.write(`\x1b[<0;${contentColumn(4)};${viewportRow(4)}m`);
     await settleFrames();
 
     expect(copied).toEqual(['DDDD']); // NOT 'CCCC' — the stale clamp would have landed one row up
@@ -969,7 +975,8 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     // whose model wrote a paragraph.
     const copied: string[] = [];
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    const long = 'x'.repeat(100) + 'TAIL'; // cols = 100 in the harness ⇒ wraps to two rows
+    // cols = 100 in the harness: the content column is 84 wide (unit 9's grid) ⇒ the line wraps to two rows, the second ending in TAIL
+    const long = 'x'.repeat(chatGrid(100).content) + 'TAIL';
     store.notice(long);
     const h = mountWithClipboard(store, copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('TAIL'));
@@ -1017,9 +1024,9 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
       h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
+      h.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
+      h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`);
       await settleFrames();
     };
 

@@ -95,9 +95,12 @@ async function draw(shape: Shape, cols: number): Promise<string[]> {
   return rows;
 }
 
-/** The rows of the status line: those between the thin rule and the hint, the last row of the block. */
+/**
+ * The rows of the status line: those between the thin rule and the hint, the last row of the block. The block stands on the grid (unit 9), so the rule
+ * is the row of rule glyphs after the margin, and the status line is fitted to what the terminal leaves right of that margin.
+ */
 function statusRows(rows: readonly string[]): string[] {
-  const rule = rows.findIndex((row) => row.length > 0 && /^[-─]+$/u.test(row));
+  const rule = rows.findIndex((row) => /^ +[-─]+$/u.test(row));
   expect(rule, rows.join('\n')).toBeGreaterThanOrEqual(0);
   return rows.slice(rule + 1, rows.length - 1);
 }
@@ -138,7 +141,7 @@ describe.each(SHAPES)('the drawn status rows, $name, from 20 to 200 columns (SE7
   it('is exactly one row from 80 columns up, with the prompt block five rows below the leading row', async () => {
     for (const cols of WIDTHS.filter((width) => width >= 80)) {
       const rows = await draw(shape, cols);
-      const rule = rows.findIndex((row) => row.length > 0 && /^[-─]+$/u.test(row));
+      const rule = rows.findIndex((row) => /^ +[-─]+$/u.test(row));
       expect(statusRows(rows), `${String(cols)} columns`).toHaveLength(1);
       expect(rows.length - rule, 'the rule, the status line and the hint').toBe(3);
     }

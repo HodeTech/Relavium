@@ -140,9 +140,10 @@ describe('the rows a docked sheet leaves the conversation, from the code’s con
       expect(last - rule + 1, 'the sheet is its whole budget').toBe(sheetRows);
       expect(last + 1, 'the frame is rows − 1').toBe(chatFrameRows(rows));
       // The transcript's rows are the conversation's: the newest message is the row right above the sheet.
-      expect(frame[rule - 1]?.trim()).toMatch(/^(?:[›>] )?message 40$|^$/u);
-      // Nothing of the prompt block is drawn while the sheet is open.
-      expect(frame.join('\n')).not.toMatch(/ask mode · \d+ turn|\(twice\)|^-{20,}$/mu);
+      // (the person's turn marker is in the margin, with the two blank columns of the grid before the words: unit 9)
+      expect(frame[rule - 1]?.trim()).toMatch(/^(?:[›>] +)?message 40$|^$/u);
+      // Nothing of the prompt block is drawn while the sheet is open (its rule stands in the content column, after the margin).
+      expect(frame.join('\n')).not.toMatch(/ask mode · \d+ turn|\(twice\)|^ *-{20,}$/mu);
     },
   );
 

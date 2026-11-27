@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import { emitChatHeader } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import {
@@ -40,6 +41,13 @@ const INLINE_80: Variant = { renderer: 'inline', color: false, size: { cols: 80,
 
 const HOSTS = ['standalone-chat', 'chat'] as const;
 type Host = (typeof HOSTS)[number];
+
+/**
+ * The header and the prompt block stand on the grid (unit 9): the content column starts `margin` columns from the left edge (6 at 80 columns, 8 from
+ * 100), the wordmark starts there and the title ends at its last column (`margin + content`: 74 at 80 columns).
+ */
+const indent = (cols: number, text: string): string =>
+  `${' '.repeat(chatGrid(cols).margin)}${text}`;
 
 /** A conversation of `turns` turns, as the store holds it, whatever the renderer (the seed's transcript is carried by the full-screen store only). */
 function setupWith(turns: number): ChatSetup {
@@ -85,45 +93,57 @@ describe.each(HOSTS)('the full-screen chat frame, in the %s host', (host) => {
         CHAT_HEADER_ROWS + 16 + PROMPT_BLOCK_ROWS,
       );
       // The header: the wordmark, then a blank row.
-      expect(rows[0]?.startsWith(WORDMARK), shown).toBe(true);
+      expect(rows[0]?.startsWith(indent(80, WORDMARK)), shown).toBe(true);
       expect(rows[1]?.trim(), shown).toBe('');
-      // The transcript: 16 rows, every one of them a line of the conversation (the 40-turn conversation fills a viewport of any height).
+      // The transcript: 16 rows, every one of them a line of the conversation or the one blank row that separates two turns (unit 9: a blank row
+      // before each turn but the first), never two blank rows together (the 40-turn conversation fills a viewport of any height).
       const transcript = rows.slice(CHAT_HEADER_ROWS, CHAT_HEADER_ROWS + 16);
+      expect(transcript.at(-1)?.trim(), shown).not.toBe('');
       expect(
-        transcript.every((row) => row.trim() !== ''),
+        transcript.some((row, index) => row.trim() === '' && transcript[index - 1]?.trim() === ''),
         shown,
-      ).toBe(true);
+      ).toBe(false);
+      expect(transcript.filter((row) => row.trim() !== '').length, shown).toBeGreaterThanOrEqual(
+        10,
+      );
       expect(transcript.at(-1), shown).toContain('answer 39');
       expect(transcript.join('\n'), 'the oldest line is out of the viewport').not.toContain(
         'answer 0 ',
       );
       // The prompt block: a blank row, the prompt, a thin rule, the status line and the hint.
       expect(rows[CHAT_HEADER_ROWS + 16]?.trim(), shown).toBe('');
-      expect(rows[CHAT_HEADER_ROWS + 17], shown).toMatch(/^> reply to continue/u);
-      expect(rows[CHAT_HEADER_ROWS + 18], shown).toBe('-'.repeat(80));
+      expect(rows[CHAT_HEADER_ROWS + 17], shown).toBe(indent(80, '> reply to continue'));
+      expect(rows[CHAT_HEADER_ROWS + 18], shown).toBe(indent(80, '-'.repeat(chatGrid(80).content)));
       expect(rows[CHAT_HEADER_ROWS + 19], shown).toContain(' · ask mode · ');
-      expect(rows[CHAT_HEADER_ROWS + 20], shown).toMatch(/^\[\/\] commands · \[Ctrl\+C\] /u);
+      expect(
+        rows[CHAT_HEADER_ROWS + 20]?.startsWith(indent(80, '[/] commands · [Ctrl+C] ')),
+        shown,
+      ).toBe(true);
       expect(rows).toHaveLength(CHAT_HEADER_ROWS + 16 + PROMPT_BLOCK_ROWS);
     } finally {
       m.unmount();
     }
   });
 
-  it('has the wordmark at the left edge and the session title ending at the last column', async () => {
-    const m = await mountIn(host, ALT_80, setupWith(3));
-    try {
-      const first = m.frame()[0] ?? '';
-      expect(first.startsWith(WORDMARK)).toBe(true);
-      expect(
-        displayWidth(first.trimEnd()),
-        'the row is the whole width: the title is right-aligned',
-      ).toBe(80);
-      // The title is the first user line, derived as the persister derives it.
-      const title = chatSessionTitle('question 0 about the thing');
-      expect(title).toBe('question 0 about the thing');
-      expect(first.trimEnd().endsWith(title)).toBe(true);
-    } finally {
-      m.unmount();
+  it('has the wordmark at the content column and the session title ending at its last column', async () => {
+    for (const variant of [ALT_80, ALT_100]) {
+      const { cols } = variant.size;
+      const grid = chatGrid(cols);
+      const m = await mountIn(host, variant, setupWith(3));
+      try {
+        const first = m.frame()[0] ?? '';
+        expect(first.startsWith(indent(cols, WORDMARK)), first).toBe(true);
+        expect(
+          displayWidth(first.trimEnd()),
+          'the row ends at the content column’s last column: the title is right-aligned to the rail',
+        ).toBe(grid.margin + grid.content);
+        // The title is the first user line, derived as the persister derives it.
+        const title = chatSessionTitle('question 0 about the thing');
+        expect(title).toBe('question 0 about the thing');
+        expect(first.trimEnd().endsWith(title)).toBe(true);
+      } finally {
+        m.unmount();
+      }
     }
   });
 
@@ -131,8 +151,8 @@ describe.each(HOSTS)('the full-screen chat frame, in the %s host', (host) => {
     const m = await mountIn(host, ALT_80, { standalone: { provider: 'anthropic' } });
     try {
       const first = (m.frame()[0] ?? '').trimEnd();
-      if (host === 'standalone-chat') expect(first).toBe(WORDMARK);
-      else expect(first.startsWith(WORDMARK)).toBe(true);
+      if (host === 'standalone-chat') expect(first).toBe(indent(80, WORDMARK));
+      else expect(first.startsWith(indent(80, WORDMARK))).toBe(true);
     } finally {
       m.unmount();
     }
@@ -172,7 +192,7 @@ describe('the inline chat header', () => {
     const m = await mountIn('chat', INLINE_80, setupWith(2));
     try {
       const rows = m.frame();
-      expect(rows[0]?.trimEnd()).toBe(WORDMARK);
+      expect(rows[0]?.trimEnd()).toBe(indent(80, WORDMARK));
       expect(rows[1]?.trim()).toBe('');
       expect(rows.filter((row) => row.includes(WORDMARK))).toHaveLength(1);
     } finally {
@@ -184,10 +204,21 @@ describe('the inline chat header', () => {
 describe('the stand-alone chat writes its inline header once per process', () => {
   const bold = (text: string): string => `${ESC}[1m${text}${ESC}[22m`;
 
-  it('writes the wordmark in bold and a blank row', () => {
+  it('writes the wordmark in bold at the content column, and a blank row', () => {
     const written: string[] = [];
-    emitChatHeader(false, {}, (text) => written.push(text));
-    expect(written).toEqual([`${bold(WORDMARK)}\n\n`]);
+    emitChatHeader(false, {}, (text) => written.push(text), 80);
+    expect(written).toEqual([`${indent(80, bold(WORDMARK))}\n\n`]);
+    // from 100 columns the margin is 8; a width that is not a width is the supported minimum's (80: 6)
+    const wide: string[] = [];
+    emitChatHeader(false, {}, (text) => wide.push(text), 120);
+    expect(wide).toEqual([`${indent(120, bold(WORDMARK))}\n\n`]);
+    const unknown: string[] = [];
+    emitChatHeader(false, {}, (text) => unknown.push(text));
+    emitChatHeader(false, {}, (text) => unknown.push(text), 0);
+    expect(unknown).toEqual([
+      `${indent(80, bold(WORDMARK))}\n\n`,
+      `${indent(80, bold(WORDMARK))}\n\n`,
+    ]);
   });
 
   it('writes nothing for the full-screen renderer, whose header is the first child of its frame', () => {

@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
+import { chatGrid } from './chat-grid.js';
 import { ChatApp } from './chat-ink.js';
 import { CHAT_HEADER_ROWS, chatFrameRows } from './chat-layout.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -355,7 +356,10 @@ describe('the interrupt note stays above a docked sheet (nothing pinned it)', ()
         if (frame.length > 1) break;
       }
       const sheet = frame.findIndex((row) => row.startsWith('== Approval needed'));
-      const note = frame.findIndex((row) => /^Interrupting/u.test(row));
+      // the note is a row of the content column (unit 9): the margin to its left is blank
+      const note = frame.findIndex((row) =>
+        new RegExp(`^ {${String(chatGrid(80).margin)}}Interrupting`, 'u').test(row),
+      );
       expect(note, frame.join('\n')).toBeGreaterThanOrEqual(0);
       expect(note).toBeLessThan(sheet);
     },

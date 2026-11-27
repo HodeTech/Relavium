@@ -6,8 +6,9 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ChatApp } from './chat-ink.js';
+import { chatGrid } from './chat-grid.js';
 import { CHAT_HEADER_ROWS } from './chat-layout.js';
-import { wrapTranscript } from './chat-projection.js';
+import { transcriptRows } from './chat-projection.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import { INITIAL_SCROLL } from './scroll.js';
@@ -21,11 +22,13 @@ import { userRowPieces } from './transcript-row.js';
 import type { DisplayLine } from './viewport.js';
 
 /**
- * The speaker marker as it is DRAWN (MVP-11 step 7a, ADR-0145 §6): through a real ink render of both renderers, the full-screen transcript viewport
- * (which the Home's hosted chat also reaches) and the inline renderer's `TranscriptLine`. What is pinned is what a person sees and what a terminal is
- * told: the host's marker in the accent and bold, the words in bold, a reply plain, and no row of the model's able to draw any of it.
+ * The speaker marker as it is DRAWN on the grid (MVP-11 unit 9, ADR-0145 §6; this file held step 7a's pins, and every one that moved says so):
+ * through a real ink render of both renderers, the full-screen transcript viewport (which the Home's hosted chat also reaches) and the inline
+ * renderer's `TranscriptLine`. What is pinned is what a person sees and what a terminal is told: the host's mark in the MARGIN, in the accent and
+ * bold, the words in bold in the CONTENT column, a reply plain with a blank margin, and no row of the model's able to put anything in the margin.
  *
  * `force-color.js` makes chalk write real ANSI, so the frames carry the styling the tests read; `withoutStyles` reads a frame for its words only.
+ * ink-testing-library draws at 100 columns: the grid's margin is 8 there.
  */
 
 // ink-testing-library supplies an EventEmitter capture, not a native Writable (the same declaration `chat-app.test.tsx` makes).
@@ -39,7 +42,7 @@ const render = (tree: ReactElement): ReturnType<typeof renderCapture> =>
 
 afterEach(cleanup);
 
-const ESC = '\u001b';
+const ESC = String.fromCharCode(0x1b);
 /** The accent (cyan) opened, then bold: how the marker is written. */
 const ACCENT_THEN_BOLD = `${ESC}[36m${ESC}[1m`;
 const ACCENT = `${ESC}[36m`;
@@ -48,6 +51,10 @@ const BOLD_ON = `${ESC}[1m`;
 const GLYPH_PATTERN = /[›▸⇄]/u;
 /** A zero-width space: written by its code, so the source holds no invisible character. */
 const ZWSP = String.fromCharCode(0x200b);
+
+/** The harness's grid (100 columns). */
+const GRID = chatGrid(100);
+const BLANK_MARGIN = ' '.repeat(GRID.margin);
 
 const user = (text: string): TranscriptEntry => ({ role: 'user', text });
 const assistant = (text: string): TranscriptEntry => ({ role: 'assistant', text });
@@ -60,7 +67,7 @@ async function frameOfViewport(
 ): Promise<string> {
   const h = render(
     <Box flexDirection="column" height={rows}>
-      <TranscriptViewport lines={lines} color={color} scroll={INITIAL_SCROLL} />
+      <TranscriptViewport lines={lines} grid={GRID} color={color} scroll={INITIAL_SCROLL} />
     </Box>,
   );
   await settleFrames();
@@ -69,101 +76,99 @@ async function frameOfViewport(
 
 const rowsOf = (frame: string): string[] => frame.split('\n');
 const belowHeader = (frame: string): string => rowsOf(frame).slice(CHAT_HEADER_ROWS).join('\n');
+/** The margin columns of a drawn row, read without its styling (the margin is ASCII spaces and one glyph or word: a code unit is a column). */
+const marginOf = (row: string): string => withoutStyles(row).slice(0, GRID.margin);
+/** The content of a drawn row: what stands right of the margin. */
+const contentOf = (row: string): string => withoutStyles(row).slice(GRID.margin).trimEnd();
 
-describe('the full-screen viewport draws the person’s turn: marker in the accent and bold, words in bold', () => {
-  it('colour on: the first row opens the accent and bold on the `›`, and every row of the turn is bold', async () => {
-    const lines = wrapTranscript([user('hello world, a long message that wraps around')], 20, true);
+describe('the full-screen viewport draws the person’s turn: the mark in the margin, in the accent and bold, the words in bold', () => {
+  // Moved from step 7a: the `›` was the start of the row's text; it is the margin cell now, and the words start at the content column.
+  it('colour on: the first row opens the accent and bold on the margin’s `›`, and every row of the turn is bold words', async () => {
+    const lines = transcriptRows(
+      [user('hello world, a long message that wraps around')],
+      chatGrid(32),
+      true,
+    );
     const rows = rowsOf(await frameOfViewport(lines, true));
-    expect(rows[0]?.startsWith(`${ACCENT_THEN_BOLD}›`)).toBe(true);
-    expect(withoutStyles(rows[0] ?? '').trimEnd()).toBe('› hello world, a');
+    expect(rows[0]?.startsWith(`${ACCENT_THEN_BOLD}${' '.repeat(GRID.markerEnd)}›`)).toBe(true);
+    expect(marginOf(rows[0] ?? '')).toBe(`${' '.repeat(GRID.markerEnd)}›  `);
+    expect(contentOf(rows[0] ?? '')).toBe('hello world, a long');
     for (const row of rows.slice(1, 3)) {
-      expect(row.startsWith(BOLD_ON), JSON.stringify(row)).toBe(true); // a wrapped row is bold
-      expect(row).not.toContain(ACCENT); // …and has no accent and no marker
-      expect(withoutStyles(row)).not.toContain('›');
+      expect(marginOf(row), JSON.stringify(row)).toBe(BLANK_MARGIN); // a wrapped row hangs…
+      expect(row).not.toContain(ACCENT); // …with no accent…
+      expect(row.slice(GRID.margin).startsWith(BOLD_ON), JSON.stringify(row)).toBe(true); // …and bold words
     }
-    expect(withoutStyles(rows[1] ?? '').trimEnd()).toBe('long message that');
+    expect(contentOf(rows[1] ?? '')).toBe('message that wraps');
   });
 
-  it('colour off: the marker is the ASCII `>` in bold, with no colour at all', async () => {
-    const lines = wrapTranscript([user('hello world, a long message')], 20, false);
+  it('colour off: the mark is the ASCII `>` in bold, with no colour at all', async () => {
+    const lines = transcriptRows([user('hello world, a long message')], chatGrid(32), false);
     const rows = rowsOf(await frameOfViewport(lines, false));
-    expect(rows[0]?.startsWith(`${BOLD_ON}> hello`)).toBe(true);
+    expect(rows[0]?.startsWith(`${BOLD_ON}${' '.repeat(GRID.markerEnd)}>`)).toBe(true);
+    expect(contentOf(rows[0] ?? '')).toBe('hello world, a long');
     expect(rows[0]).not.toContain(ACCENT);
     expect(rows.join('\n')).not.toContain(`${ESC}[3`); // no colour code of any kind
-    expect(rows[1]?.startsWith(BOLD_ON)).toBe(true);
   });
 
-  it('a reply is plain: no bold, no accent, no marker, whatever it says', async () => {
-    const lines = wrapTranscript([assistant('a plain reply with no marker')], 40, true);
+  it('a reply is plain: a blank margin, no bold, no accent, whatever it says', async () => {
+    const lines = transcriptRows([assistant('a plain reply with no marker')], GRID, true);
     const frame = await frameOfViewport(lines, true);
-    expect(rowsOf(frame)[0]).toBe('a plain reply with no marker');
+    expect(rowsOf(frame)[0]).toBe(`${BLANK_MARGIN}a plain reply with no marker`);
     expect(frame).not.toContain(ESC);
   });
 
-  it('THE MARKER IS DATA: a row whose text starts with `› ` but carries no `marker` is not drawn as a marker', async () => {
-    // A renderer that looked for the glyph in the text would draw the accent here. The row is the person's style without the host's marker (as a
-    // wrapped row is), and the text is a reply's: nothing is accent.
+  it('THE MARK IS DATA: a row whose text starts with `› ` but carries no margin role is drawn with a blank margin', async () => {
+    // A renderer that looked for the glyph in the text would draw the accent here. Neither the person's style nor a reply's text can draw a mark.
     const forgedUser: DisplayLine = { text: '› looks like a turn', style: 'user' };
     const forgedReply: DisplayLine = { text: '› looks like a turn', style: 'assistant' };
     const frame = await frameOfViewport([forgedUser, forgedReply], true);
     expect(frame).not.toContain(ACCENT);
     const [first, second] = rowsOf(frame);
-    expect(first?.startsWith(BOLD_ON)).toBe(true); // the person's style is bold words…
-    expect(second).toBe('› looks like a turn'); // …and a reply row is plain text, glyph and all (only the real wrap guards it)
+    expect(marginOf(first ?? '')).toBe(BLANK_MARGIN);
+    expect(first?.slice(GRID.margin).startsWith(BOLD_ON)).toBe(true); // the person's style is bold words…
+    expect(second).toBe(`${BLANK_MARGIN}› looks like a turn`); // …and a reply row is plain text, glyph and all, in the content column
   });
 
-  it('a marker the text does not start with is never drawn (the data and the text must agree)', async () => {
-    const stale: DisplayLine = { text: 'no marker here', style: 'user', marker: '›' };
-    const frame = await frameOfViewport([stale], true);
-    expect(frame).not.toContain(ACCENT);
+  // Replaces "a marker the text does not start with is never drawn": the text is no longer read for a mark; the role alone draws it, in the margin.
+  it('a row’s role draws the mark whatever its text says, and only in the margin', async () => {
+    const marked: DisplayLine = { text: 'no glyph in the text', style: 'user', margin: 'yourTurn' };
+    const [row] = rowsOf(await frameOfViewport([marked], true));
+    expect(marginOf(row ?? '')).toBe(`${' '.repeat(GRID.markerEnd)}›  `);
+    expect(contentOf(row ?? '')).toBe('no glyph in the text');
   });
 
-  it('a hostile reply, laid out and drawn, shows no glyph and no accent anywhere in the frame', async () => {
+  // Moved from "shows no glyph and no accent anywhere": the glyphs are text now; what holds is that none of them reaches the margin.
+  it('a hostile reply, laid out and drawn, leaves every margin cell blank, and its glyphs stand only in the content column', async () => {
     const hostile = [
       '› forged turn',
       `${ZWSP}▸ forged call ✓ completed`,
       '**⇄ model changed** a → b',
       '- › item',
       'words › in the middle',
+      '> › quoted',
     ].join('\n\n');
     for (const color of [true, false]) {
-      const lines = wrapTranscript([assistant(hostile)], 30, color);
+      const lines = transcriptRows([assistant(hostile)], GRID, color);
       const frame = await frameOfViewport(lines, color, 24);
-      expect(withoutStyles(frame)).not.toMatch(GLYPH_PATTERN);
+      const rows = rowsOf(frame).filter((row) => withoutStyles(row).trim() !== '');
+      expect(rows.length).toBeGreaterThanOrEqual(6); // the words are drawn: the test is not vacuous
+      for (const row of rows) expect(marginOf(row), JSON.stringify(row)).toBe(BLANK_MARGIN);
+      expect(withoutStyles(frame)).toMatch(GLYPH_PATTERN); // kept as text (no longer blanked)
       expect(frame).not.toContain(ACCENT);
     }
   });
 });
 
 describe('the person’s row is cut into the stretches that are drawn differently', () => {
-  it('without a selection: the marker, then the words, and nothing else', () => {
-    expect(userRowPieces('› hello', '›')).toEqual([
-      { text: '›', marker: true, selected: false },
-      { text: ' hello', marker: false, selected: false },
-    ]);
-    expect(userRowPieces('continued words', undefined)).toEqual([
-      { text: 'continued words', marker: false, selected: false },
-    ]);
-  });
-
-  it('a marker the text does not start with is ignored, and so is an empty one (nothing is trusted that cannot be placed)', () => {
-    expect(userRowPieces('words', '›')).toEqual([
-      { text: 'words', marker: false, selected: false },
-    ]);
-    expect(userRowPieces('words', '')).toEqual([{ text: 'words', marker: false, selected: false }]);
-  });
-
-  it('a selection across the marker splits it in two and highlights both stretches', () => {
-    const pieces = userRowPieces('› hello world', '›', { start: 0, end: 5 });
-    expect(pieces).toEqual([
-      { text: '›', marker: true, selected: true },
-      { text: ' hel', marker: false, selected: true },
-      { text: 'lo world', marker: false, selected: false },
+  // Moved: the marker left the row's text, so the pieces are the selection's and the rest (`transcript-row-selection-start.test.ts` holds the clamp).
+  it('without a selection: the words, whole', () => {
+    expect(userRowPieces('continued words')).toEqual([
+      { text: 'continued words', selected: false },
     ]);
   });
 
   it('the pieces always join to the row and are never empty, whatever the selection covers', () => {
-    const text = '› some words here';
+    const text = 'some words here';
     for (const selected of [
       undefined,
       { start: 0, end: 0 },
@@ -172,20 +177,22 @@ describe('the person’s row is cut into the stretches that are drawn differentl
       { start: -4, end: 99 },
       { start: 9, end: 2 },
     ]) {
-      const pieces = userRowPieces(text, '›', selected);
+      const pieces = userRowPieces(text, selected);
       expect(pieces.map((piece) => piece.text).join('')).toBe(text);
       expect(pieces.every((piece) => piece.text.length > 0)).toBe(true);
     }
   });
 });
 
-describe('a selection on the person’s first row is drawn inverse over the marker and the words', () => {
-  it('the highlighted cells are inverse and bold, the rest of the row bold, the marker still the accent', async () => {
-    const lines = wrapTranscript([user('hello world')], 40, true);
+describe('a selection on the person’s first row is drawn inverse over the words, never over the margin', () => {
+  // Moved: the highlight covered `› hel` (the marker was text); it covers the content's cells only, and the margin keeps the accent.
+  it('the highlighted cells are inverse and bold, the rest of the row bold, the mark still the accent and outside the highlight', async () => {
+    const lines = transcriptRows([user('hello world')], GRID, true);
     const h = render(
       <Box flexDirection="column" height={4}>
         <TranscriptViewport
           lines={lines}
+          grid={GRID}
           color
           scroll={INITIAL_SCROLL}
           selection={{ start: { line: 0, column: 0 }, end: { line: 0, column: 4 } }}
@@ -194,17 +201,17 @@ describe('a selection on the person’s first row is drawn inverse over the mark
     );
     await settleFrames();
     const row = rowsOf(h.lastFrame() ?? '')[0] ?? '';
-    expect(withoutStyles(row).trimEnd()).toBe('› hello world');
-    expect(row).toContain(`${ESC}[7m`); // inverse is drawn
-    // The five highlighted cells (`› hel`) are inverse; the accent is still on the marker.
+    expect(withoutStyles(row).trimEnd()).toBe(`${' '.repeat(GRID.markerEnd)}›  hello world`);
     expect(row.startsWith(ACCENT)).toBe(true);
     const inverseOpen = row.indexOf(`${ESC}[7m`);
     const inverseClose = row.indexOf(`${ESC}[27m`);
-    expect(withoutStyles(row.slice(inverseOpen, inverseClose))).toBe('› hel');
+    expect(inverseOpen).toBeGreaterThan(0);
+    expect(withoutStyles(row.slice(inverseOpen, inverseClose))).toBe('hello');
+    expect(withoutStyles(row.slice(0, inverseOpen))).toBe(`${' '.repeat(GRID.markerEnd)}›  `);
   });
 });
 
-describe('the two renderers agree on every row', () => {
+describe('the two renderers agree on every row’s content, and each draws its own form of the margin', () => {
   /** A seeded store: the same conversation for the inline renderer (printed once, as a resumed session is) and for the full-screen one. */
   const transcript: readonly TranscriptEntry[] = [
     user('hello world, a long message that wraps around the width of the terminal screen'),
@@ -253,7 +260,8 @@ describe('the two renderers agree on every row', () => {
     rowsOf(frame).filter((row) => words.some((word) => withoutStyles(row).includes(word)));
 
   for (const color of [true, false]) {
-    it(`colour ${color ? 'on' : 'off'}: both draw the same bytes for the person’s rows and for the guarded rows of the reply and the notice`, async () => {
+    // Moved from "both draw the same bytes": the content is the same; the margin is each renderer's own form (the glyph full-screen, the word inline).
+    it(`colour ${color ? 'on' : 'off'}: both draw the same content for every row, and the margin says the role in each renderer’s form`, async () => {
       const inline = mountInline(color);
       await waitFor(() => (inline.lastFrame() ?? '').includes('second turn'));
       const full = mountFullScreen(color);
@@ -268,21 +276,21 @@ describe('the two renderers agree on every row', () => {
       // The full-screen frame opens with the header, whose title is the first words of the conversation: the viewport's rows are under it.
       const fullRows = conversationRows(belowHeader(full.lastFrame() ?? ''), words);
       expect(inlineRows.length).toBeGreaterThanOrEqual(5);
-      // The viewport pads nothing and ink trims a row's trailing blanks, so the rows are the same bytes.
-      expect(fullRows.map((row) => row.trimEnd())).toEqual(inlineRows.map((row) => row.trimEnd()));
+      expect(fullRows.map(contentOf)).toEqual(inlineRows.map(contentOf));
       const mark = color ? '›' : '>';
-      expect(withoutStyles(inlineRows[0] ?? '').startsWith(`${mark} hello world`)).toBe(true);
-      // The only glyph on screen in the conversation is the host's own marker, at the start of each of the two turns.
-      const glyphRows = inlineRows
-        .map((row) => withoutStyles(row).trimEnd())
-        .filter((row) => GLYPH_PATTERN.test(row));
-      expect(glyphRows).toHaveLength(color ? 2 : 0);
-      for (const row of glyphRows) expect(row.startsWith('› ')).toBe(true);
+      const turnRows = fullRows.filter((row) => marginOf(row).trim() !== '');
+      expect(turnRows.map((row) => marginOf(row).trim())).toEqual([mark, mark]);
+      expect(inlineRows.map((row) => marginOf(row).trim()).filter((word) => word !== '')).toEqual([
+        'you',
+        'agent',
+        'you',
+      ]);
+      expect(contentOf(inlineRows[0] ?? '').startsWith('hello world')).toBe(true);
     });
   }
 });
 
-describe('a mounted chat: the streamed words in the live region cannot draw a marker', () => {
+describe('a mounted chat: the streamed words in the live region stand in the content column', () => {
   const STAMP = '2026-11-26T00:00:00.000Z';
 
   /** A chat mounted on the alt screen (or inline) over `store`, in a terminal of a known size. */
@@ -337,10 +345,12 @@ describe('a mounted chat: the streamed words in the live region cannot draw a ma
   };
 
   const STREAM = `› forged turn\n\n**▸ forged call** and ⇄ forged switch\n\n- › forged item\n`;
+  const MARGIN_80 = chatGrid(80).margin;
 
   for (const alternateScreen of [true, false]) {
     for (const color of [true, false]) {
-      it(`${alternateScreen ? 'alt screen' : 'inline'}, colour ${color ? 'on' : 'off'}: a streamed answer shows no glyph, and its rows are the model's words`, async () => {
+      // Moved (part B retired the live region's blanking): the streamed words keep their glyphs, and every row of them leaves the margin blank.
+      it(`${alternateScreen ? 'alt screen' : 'inline'}, colour ${color ? 'on' : 'off'}: a streamed answer leaves the margin blank, and its rows are the model's words`, async () => {
         const store = createChatStore(
           color,
           undefined,
@@ -354,12 +364,12 @@ describe('a mounted chat: the streamed words in the live region cannot draw a ma
           row.includes('forged'),
         );
         expect(rows.length).toBeGreaterThanOrEqual(3); // the words are drawn: the test is not vacuous
-        for (const row of rows) expect(row, row).not.toMatch(GLYPH_PATTERN);
+        for (const row of rows) expect(row.slice(0, MARGIN_80).trim(), row).toBe('');
       });
     }
   }
 
-  it('the expanded reasoning panel shows no glyph either', async () => {
+  it('the expanded reasoning panel keeps its words, in the content column', async () => {
     const store = createChatStore(true, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const h = mount(store, true);
     await settleFrames();
@@ -367,12 +377,15 @@ describe('a mounted chat: the streamed words in the live region cannot draw a ma
     store.toggleReasoning();
     await waitFor(() => withoutStyles(h.lastFrame() ?? '').includes('thinking'));
     const row = rowsOf(withoutStyles(h.lastFrame() ?? '')).find((r) => r.includes('thinking'));
-    expect(row?.trim()).toBe('thinking   out   loud');
+    expect(row?.slice(0, MARGIN_80).trim()).toBe('');
+    expect(row?.trim()).toBe('› thinking ▸ out ⇄ loud');
   });
 });
 
 describe('copying the person’s turn with the mouse', () => {
-  it('copies the visible row text, marker glyph included (accepted: the text forms `/copy` and `/edit` keep the plain `> `)', async () => {
+  // Moved (OQ9): the copy was the visible row text with the marker glyph; it is the content the person sees, without the margin, and a press in
+  // the margin clamps to the content's first column (the `/copy` and `/edit` documents keep the plain `> `).
+  it('copies the content of the row, without the margin’s mark', async () => {
     const copied: string[] = [];
     const store = createChatStore(
       true,
@@ -399,12 +412,13 @@ describe('copying the person’s turn with the mouse', () => {
     h.stdout.emit('resize');
     await waitFor(() => belowHeader(withoutStyles(h.lastFrame() ?? '')).includes('hello there'));
     const row = CHAT_HEADER_ROWS + 1;
-    h.stdin.write(`\x1b[<0;1;${row}M`); // press at the first cell of the first transcript row
+    const margin = chatGrid(80).margin;
+    h.stdin.write(`${ESC}[<0;1;${row}M`); // press at the first cell of the row: in the margin
     await settleFrames();
-    h.stdin.write(`\x1b[<32;7;${row}M`); // drag to the seventh cell
+    h.stdin.write(`${ESC}[<32;${margin + 5};${row}M`); // drag to the fifth cell of the content
     await settleFrames();
-    h.stdin.write(`\x1b[<0;7;${row}m`); // release: copy
+    h.stdin.write(`${ESC}[<0;${margin + 5};${row}m`); // release: copy
     await settleFrames();
-    expect(copied).toEqual(['› hello']);
+    expect(copied).toEqual(['hello']);
   });
 });

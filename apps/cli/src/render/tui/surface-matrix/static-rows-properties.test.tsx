@@ -284,7 +284,11 @@ describe('the chat the Home hosts, in the inline renderer', () => {
   it('prints its two-row header through <Static>: the screen is two rows longer than the live frame', async () => {
     const result = await runCell(surface('chat.mode-prompt'), INLINE_80);
     expect(result.observation.staticRows).toBe(2);
-    expect(result.observation.lines.slice(0, 2)).toEqual(['R  E  L  A  V  I  U  M', '']);
+    // the header stands at the content column of the grid (unit 9): 6 columns in at 80
+    expect(result.observation.lines.slice(0, 2)).toEqual([
+      `${' '.repeat(6)}R  E  L  A  V  I  U  M`,
+      '',
+    ]);
     expect(result.observation.lines).toHaveLength(24);
     expect(result.violations).toEqual([]);
     expect(

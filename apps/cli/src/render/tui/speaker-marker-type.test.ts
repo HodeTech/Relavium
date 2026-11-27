@@ -1,36 +1,53 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { GLYPHS, speakerMarker, type SpeakerMarker } from './glyphs.js';
-import { markYourTurn } from './transcript-guard.js';
+import {
+  chatGrid,
+  marginCell,
+  MARGIN_WORDS,
+  type ChatGrid,
+  type MarginForm,
+  type MarginRole,
+} from './chat-grid.js';
+import { GLYPHS } from './glyphs.js';
 import type { DisplayLine } from './viewport.js';
 
 /**
- * The scoped security sitting of unit 7, an improvement: a row's `marker` is the host's own speaker marker, and it is typed as the two forms the
- * host draws (`›` and `>`), not as any string, so a producer that put another text there would not compile. The literals the type and
- * `markYourTurn` write are the glyph table's: this pins them to it, so the table cannot drift from the type.
+ * The typing of the speaker marker on the grid (MVP-11 unit 9, plan §4 invariant 2; moved from unit 7's `marker`, a text typed as the two forms
+ * of the glyph): a row's mark is its `margin`, a role of the CLOSED `MarginRole` set, so no string a model or a person wrote can be one, and the
+ * margin cell is drawn by `marginCell`, which takes the role, the grid and the form and no text. `pnpm typecheck` is the check of the
+ * `@ts-expect-error` below: a `DisplayLine` that accepted a glyph as its margin would make the directive unused, which fails the compile.
  */
-describe('the speaker marker is one of the two forms of the glyph table', () => {
-  it('is typed as exactly those two forms, which the table spells', () => {
-    // a union of two literals, not a string: an arbitrary string is not a marker
-    expectTypeOf<SpeakerMarker>().toExtend<string>();
-    expectTypeOf<string>().not.toExtend<SpeakerMarker>();
-    expectTypeOf(speakerMarker(false)).toEqualTypeOf<SpeakerMarker>();
-    expectTypeOf<DisplayLine['marker']>().toEqualTypeOf<SpeakerMarker | undefined>();
+describe('a row’s mark is a role of a closed set, never a text', () => {
+  it('is typed as the closed role set, not a string', () => {
+    expectTypeOf<DisplayLine['margin']>().toEqualTypeOf<MarginRole | undefined>();
+    expectTypeOf<string>().not.toExtend<MarginRole>();
+    expectTypeOf<MarginRole>().toEqualTypeOf<'yourTurn' | 'toolCall' | 'modelSwitch' | 'agent'>();
+    // @ts-expect-error a glyph is not a role: no text, a model's or a person's, can be a row's mark
+    const forged: DisplayLine = { text: 'x', style: 'user', margin: GLYPHS.yourTurn.glyph };
+    expect(forged.text).toBe('x');
   });
 
-  it('is what the table says for the person’s turn, with colour on and off', () => {
-    expect(speakerMarker(false)).toBe(GLYPHS.yourTurn.glyph);
-    expect(speakerMarker(true)).toBe(GLYPHS.yourTurn.ascii);
-    const row: DisplayLine = { text: '> hello', style: 'user' };
-    expect(markYourTurn(row, false).marker).toBe(GLYPHS.yourTurn.glyph);
-    expect(markYourTurn(row, true).marker).toBe(GLYPHS.yourTurn.ascii);
-    expect(markYourTurn(row, false).text).toBe(`${GLYPHS.yourTurn.glyph} hello`);
-    expect(markYourTurn(row, true).text).toBe('> hello');
+  it('marginCell takes a role, the grid and a form, and no text', () => {
+    expectTypeOf(marginCell).parameters.toEqualTypeOf<
+      [MarginRole | undefined, ChatGrid, MarginForm]
+    >();
+    expectTypeOf(marginCell).returns.toEqualTypeOf<string>();
+    expect(marginCell.length).toBe(3);
   });
 
-  it('marks no row that does not start with the text form’s mark', () => {
-    const row: DisplayLine = { text: 'hello', style: 'user' };
-    expect(markYourTurn(row, false)).toBe(row);
-    expect(markYourTurn(row, false).marker).toBeUndefined();
+  it('the role set is the four roles the words name, and each draws only the table’s mark or its word', () => {
+    expect(Object.keys(MARGIN_WORDS).sort()).toEqual([
+      'agent',
+      'modelSwitch',
+      'toolCall',
+      'yourTurn',
+    ]);
+    const grid = chatGrid(80);
+    expect(marginCell('yourTurn', grid, 'glyph').trim()).toBe(GLYPHS.yourTurn.glyph);
+    expect(marginCell('yourTurn', grid, 'ascii').trim()).toBe(GLYPHS.yourTurn.ascii);
+    expect(marginCell('toolCall', grid, 'glyph').trim()).toBe(GLYPHS.toolCall.glyph);
+    expect(marginCell('modelSwitch', grid, 'ascii').trim()).toBe(GLYPHS.modelSwitch.ascii);
+    expect(marginCell('agent', grid, 'glyph').trim()).toBe(''); // a reply has no glyph
+    expect(marginCell('agent', grid, 'word').trim()).toBe('agent');
   });
 });

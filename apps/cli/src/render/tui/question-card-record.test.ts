@@ -72,18 +72,24 @@ describe('the transcript entry (ADR-0132 §6)', () => {
       };
       const text = questionTranscriptText(hostile, answer);
       for (let cols = 30; cols <= 120; cols++) {
-        // The entry names its lead, as both producers of the record do (`settleQuestionWith`, the restored transcript): the speaker marker's
-        // row guard (ADR-0145 §6) keeps the host's `›` at the start of each of its lines and blanks it everywhere else.
-        // Colour on: the host's `›` (with colour off it draws `>`, the same one column: `question-record-glyph-form.test.ts`). The call used to leave
-        // the colour out, which reads as off, and passed only because the form of the lead was whatever the text was built with.
+        // The entry names its lead, as both producers of the record do (`settleQuestionWith`, the restored transcript). On the grid (unit 9,
+        // moved from the row guard of ADR-0145 §6) the host's `›` leaves the text and is the `yourTurn` margin role of the first row of each of
+        // the record's lines that leads with it, and of no other row: exactly one row here, the asked line's first, however the model's text breaks.
         const rows = wrapTranscript(
           [{ role: 'notice', text, hostLead: 'yourTurn' } as never],
           cols,
           true,
-        ).map((row) => row.text);
-        expect(rows.filter((row) => row.startsWith('› ')).length).toBe(1);
-        expect(rows.filter((row) => row.startsWith('  └ ')).length).toBe(1);
-        expect(rows.find((row) => row.startsWith('  └ '))).toBe('  └ alpha.ts');
+        );
+        expect(rows.filter((row) => row.margin === 'yourTurn').length).toBe(1);
+        expect(rows.find((row) => row.margin === 'yourTurn')?.text.startsWith('Asked: ')).toBe(
+          true,
+        );
+        expect(rows.filter((row) => row.margin !== undefined && row.margin !== 'yourTurn')).toEqual(
+          [],
+        );
+        const texts = rows.map((row) => row.text);
+        expect(texts.filter((row) => row.startsWith('  └ ')).length).toBe(1);
+        expect(texts.find((row) => row.startsWith('  └ '))).toBe('  └ alpha.ts');
       }
     }
   });

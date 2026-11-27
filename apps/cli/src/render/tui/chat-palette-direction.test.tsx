@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { REPL_COMMANDS } from '../../commands/repl-commands.js';
+import { chatGrid } from './chat-grid.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
@@ -28,6 +29,13 @@ const DOWN = '\x1b[B';
 const ESC = String.fromCharCode(0x1b);
 const plain = (text: string): string => text.replace(new RegExp(`${ESC}\\[\\d+m`, 'gu'), '');
 
+/**
+ * The capture is 100 columns wide, and the chat's chrome stands on the grid (unit 9): every row of the palette, the prompt, the rule and the hint
+ * begins at the content column, `GAP` columns from the left edge (8 from 100 columns). `row(pattern)` is a row that begins there with `pattern`.
+ */
+const GAP = chatGrid(100).margin;
+const row = (pattern: string): RegExp => new RegExp(`^ {${String(GAP)}}${pattern}`, 'u');
+
 function mountChat() {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const submitted: string[] = [];
@@ -51,7 +59,7 @@ function mountChat() {
   /** The highlighted entry's slash word, or `undefined`. */
   const highlighted = (): string | undefined =>
     frame()
-      .map((line) => /^> \/([a-z]+)(?: |$)/u.exec(line)?.[1])
+      .map((line) => row('> \\/([a-z]+)(?: |$)').exec(line)?.[1])
       .find((name) => name !== undefined);
   return { h, store, submitted, onExit, frame, highlighted };
 }
@@ -65,11 +73,11 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     await settleFrames();
     const rows = frame();
     const at = (word: string): number =>
-      rows.findIndex((line) => new RegExp(`^[> ] /${word}( |$)`, 'u').test(line));
-    const legendRow = '↑/↓ select · Enter run · Esc close';
+      rows.findIndex((line) => row(`[> ] /${word}( |$)`).test(line));
+    const legendRow = `${' '.repeat(GAP)}↑/↓ select · Enter run · Esc close`;
     // ADR-0146 §4: the typed `/` is the PROMPT's text, the legend is the hint row, and the rule stays between them: no row of the palette's own
     // carries the query, none carries the legend, and nothing (no blank row, no status line) separates the list from the prompt.
-    const promptAt = rows.findIndex((line) => /^> \/ ?$/u.test(line));
+    const promptAt = rows.findIndex((line) => row('> \\/ ?$').test(line));
     expect(promptAt, 'the prompt row shows the typed `/` (and the cursor cell)').toBeGreaterThan(
       -1,
     );
@@ -77,9 +85,9 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     expect(rows.indexOf(legendRow), 'the legend is the hint row, the last row of the frame').toBe(
       rows.length - 1,
     );
-    expect(rows[promptAt + 1], 'a thin rule between the prompt and the hint').toMatch(/^-+$/u);
+    expect(rows[promptAt + 1], 'a thin rule between the prompt and the hint').toMatch(row('-+$'));
     expect(rows[promptAt + 2], 'the hint row follows the rule').toBe(legendRow);
-    expect(rows.includes('/'), 'no query line of the palette’s own').toBe(false);
+    expect(rows.includes(`${' '.repeat(GAP)}/`), 'no query line of the palette’s own').toBe(false);
     expect(
       rows.some((line) => / · \d+ turns? · /u.test(line)),
       'no status line while the palette is open',
@@ -99,13 +107,13 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     h.stdin.write('/');
     await waitFor(() => (h.lastFrame() ?? '').includes('Enter run'));
     h.stdin.write('co');
-    await waitFor(() => frame().some((line) => /^> \/co ?$/u.test(line)));
+    await waitFor(() => frame().some((line) => row('> \\/co ?$').test(line)));
     const rows = frame();
-    const names = rows.flatMap((line) => /^[> ] \/([a-z]+) {2}/u.exec(line)?.[1] ?? []);
+    const names = rows.flatMap((line) => row('[> ] \\/([a-z]+) {2}').exec(line)?.[1] ?? []);
     expect(names, 'the list follows the query').toContain('cost');
     expect(names).not.toContain('exit');
     expect(
-      rows.includes('/co'),
+      rows.includes(`${' '.repeat(GAP)}/co`),
       'the query is the prompt’s text, not a line of the palette’s',
     ).toBe(false);
   });
@@ -117,7 +125,7 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     await waitFor(() => (h.lastFrame() ?? '').includes('Enter run'));
     await settleFrames();
     const shown = frame().flatMap((line) => {
-      const match = /^[> ] \/([a-z]+)(?: |$)/u.exec(line);
+      const match = row('[> ] \\/([a-z]+)(?: |$)').exec(line);
       return match?.[1] === undefined ? [] : [match[1]];
     });
     // The window may hide the far end of a 24-row terminal's list; what is drawn is the declared order, reversed, and it starts at /models.
@@ -159,7 +167,7 @@ describe('`/` then `Enter` in a chat', () => {
     await waitFor(() => highlighted() === 'exit');
     await settleFrames();
     expect(
-      frame().filter((line) => /^> \/[a-z]+ {2}/u.test(line)),
+      frame().filter((line) => row('> \\/[a-z]+ {2}').test(line)),
       'one highlighted row (the prompt row, `> /`, is the prompt’s and not a row of the list)',
     ).toHaveLength(1);
     expect(submitted, 'the highlight alone sends nothing').toEqual([]);

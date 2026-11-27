@@ -93,10 +93,13 @@ const variant = (renderer: 'alt' | 'inline'): Variant => ({
 const HOSTS = ['standalone-chat', 'chat'] as const;
 const RENDERERS = ['alt', 'inline'] as const;
 
-/** The leading row of the prompt block: the row above the prompt row, the last row that starts with the prompt's `> `. */
+/**
+ * The leading row of the prompt block: the row above the prompt row, the last row that starts with the prompt's `> `. The block stands in the content
+ * column of the grid (unit 9), so the prompt's `> ` is preceded by the margin: 8 columns at the 100 of these mounts.
+ */
 function leadRow(mount: ChatMount): string {
   const rows = mount.frame();
-  const prompt = rows.findLastIndex((row) => /^> /u.test(row));
+  const prompt = rows.findLastIndex((row) => /^ {8}> /u.test(row));
   expect(prompt, mount.text()).toBeGreaterThan(0);
   return rows[prompt - 1] ?? '';
 }

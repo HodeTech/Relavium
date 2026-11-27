@@ -6,6 +6,7 @@ import { wrapTranscript } from './chat-projection.js';
 import { withGlyphForm } from './glyphs.js';
 import { askRecordTranscriptText, questionTranscriptText } from './question-card-record.js';
 import type { TranscriptEntry } from './session-view-model.js';
+import type { DisplayLine } from './viewport.js';
 
 /**
  * The scoped security sitting of unit 7, an improvement: the record of an `ask_user` question leads its lines with the host's own `›`, and with
@@ -61,26 +62,36 @@ const restored = (): TranscriptEntry => ({
 
 const rowsOf = (entry: TranscriptEntry, color: boolean, cols = 80): string[] =>
   wrapTranscript([entry], cols, color).map((row) => row.text);
+/** The rows with their margin role (unit 9: the record's lead is the role, drawn by the margin in the form of the draw). */
+const markedRowsOf = (entry: TranscriptEntry, color: boolean): DisplayLine[] =>
+  wrapTranscript([entry], 80, color);
 
 describe('the question record is drawn in ONE form, live or restored', () => {
   it.each([true, false])(
     'draws the same rows for the live and the restored record (colour %s)',
     (color) => {
-      expect(rowsOf(restored(), color)).toEqual(rowsOf(live(color), color));
+      // Moved in unit 9: compared with their margin roles, not only their text (the lead is the role now).
+      expect(markedRowsOf(restored(), color)).toEqual(markedRowsOf(live(color), color));
     },
   );
 
-  it('leads each asked line with `›` with colour on', () => {
-    const rows = rowsOf(restored(), true);
-    expect(rows.filter((row) => row.startsWith('› Asked'))).toHaveLength(2);
-    expect(rows.join('\n')).not.toContain('>');
-  });
-
-  it('leads each asked line with `>` with colour off, and never with `›`', () => {
-    const rows = rowsOf(restored(), false);
-    expect(rows.filter((row) => row.startsWith('> Asked'))).toHaveLength(2);
-    expect(rows.join('\n')).not.toContain('›');
-  });
+  // Moved in unit 9 (the grid): the two tests that pinned the lead's GLYPH at the start of the text (`›` with colour on, `>` off) pin the role now:
+  // the lead leaves the text in both forms and is the `yourTurn` margin role, which the margin draws as `›` or `>` by the colour (`marginCell`,
+  // `chat-grid.test.ts`), so a restored record built in the Unicode form and a live one built in the plain form cannot differ on the screen.
+  it.each([true, false])(
+    'leads each asked line with the `yourTurn` margin role, and its text holds neither form of the glyph (colour %s)',
+    (color) => {
+      for (const entry of [restored(), live(color)]) {
+        const rows = markedRowsOf(entry, color);
+        const led = rows.filter((row) => row.margin === 'yourTurn');
+        expect(led.map((row) => row.text.slice(0, 6))).toEqual(['Asked:', 'Asked:']);
+        expect(rows.filter((row) => row.margin !== undefined)).toHaveLength(2);
+        const text = rows.map((row) => row.text).join('\n');
+        expect(text).not.toContain('›');
+        expect(text).not.toContain('> ');
+      }
+    },
+  );
 
   it('keeps the geometry: the same number of rows and the same widths in both forms, at every width', () => {
     for (let cols = 24; cols <= 120; cols += 1) {
@@ -94,7 +105,9 @@ describe('the question record is drawn in ONE form, live or restored', () => {
     }
   });
 
-  it('still blanks a glyph that is not at the start of a line of the record, in both forms', () => {
+  // Moved in unit 9: a glyph that is not the lead of a line is no longer blanked; it is TEXT in the content column, and the margin (the only place
+  // a mark is drawn) holds the role of the record's own lead and nothing else.
+  it('keeps a glyph that is not at the start of a line of the record as text, and marks only the lead, in both forms', () => {
     const hostile = {
       ...record,
       items: [{ header: 'Pick', question: 'a › b', selected: ['x'] }],
@@ -105,8 +118,18 @@ describe('the question record is drawn in ONE form, live or restored', () => {
         text: askRecordTranscriptText(hostile),
         hostLead: 'yourTurn',
       };
-      const rows = rowsOf(entry, color);
-      expect(rows.join('\n').split('›').length - 1, String(color)).toBe(color ? 1 : 0);
+      const rows = markedRowsOf(entry, color);
+      expect(
+        rows
+          .map((row) => row.text)
+          .join('\n')
+          .split('›').length - 1,
+        String(color),
+      ).toBe(1);
+      expect(
+        rows.filter((row) => row.margin === 'yourTurn'),
+        String(color),
+      ).toHaveLength(1);
     }
   });
 });

@@ -16,7 +16,7 @@ import {
   useWindowSize,
   type Key,
 } from 'ink';
-import { BackdropDim, Text } from './text.js';
+import { BackdropDim, Text, type TextProps } from './text.js';
 import {
   createElement,
   useCallback,
@@ -27,6 +27,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
@@ -53,7 +54,7 @@ import { unavailableNotice } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
-import { colorProps, dimProps, transcriptStyleProps } from './projection.js';
+import { colorProps, dimProps } from './projection.js';
 import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
@@ -171,6 +172,8 @@ import {
   headerRow,
 } from './chat-layout.js';
 import { WORDMARK, thinRule } from './home-layout.js';
+import { chatGrid, marginCell, type ChatGrid, type MarginForm } from './chat-grid.js';
+import { MarginRow, marginFormFor } from './margin-row.js';
 import type { Surface } from '../surface.js';
 import { layoutColumns } from './layout-columns.js';
 import { ReverseSearchView } from './reverse-search-view.js';
@@ -191,13 +194,14 @@ import {
   dockedTurnRows,
   formatBusyLine,
   formatReasoningPanel,
-  formatToolCall,
-  liveScrollGeometry,
+  toolCallText,
   reasoningLabelActive,
   STOP_THE_TURN,
   streamingAbortHint,
   stripTerminalControls,
-  wrapTranscript,
+  transcriptRows,
+  transcriptScrollGeometry,
+  transcriptSelectionText,
   liveAnswerRowBudget,
   type DockedTurnRow,
   type ReasoningPanel,
@@ -209,7 +213,6 @@ import { wrapWords } from './viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
-  selectionText,
   type SelectionRange,
   type SelectionState,
   routeMouseSelection,
@@ -229,8 +232,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { MarkdownText } from './markdown-text.js';
-import { TranscriptRowBody } from './transcript-row.js';
-import { guardMarkdownLine } from './transcript-guard.js';
+import { TranscriptRow } from './transcript-row.js';
 import type { MarkdownStream } from '../markdown/index.js';
 import type { ChatStoreController } from './chat-store.js';
 import { assertRenderStoreAgree } from './session-view-model.js';
@@ -249,9 +251,16 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * only a second inside the window ends the session (`/cancel`). (Re-verify on a real TTY when changing the input.)
  */
 
+/**
+ * One entry of the inline renderer's scrollback, printed once by `<Static>` on the chat's grid (MVP-11 unit 9, §3.3): each row is the margin in
+ * its WORD form (`you`, `agent`, `tool`, `model`: the closed set of `MARGIN_WORDS`, which a screen reader reads where it would skip a glyph) and
+ * the content, with the same rows as the full-screen viewport ({@link transcriptRows}). `previous` is the entry printed before it, so the blank
+ * row between turns is the same here as there.
+ */
 function TranscriptLine(
   props: Readonly<{
     entry: TranscriptEntry;
+    previous: TranscriptEntry | undefined;
     displays?: ReadonlyMap<string, ToolDisplay> | undefined;
     color: boolean;
     columns?: number | undefined;
@@ -259,16 +268,15 @@ function TranscriptLine(
   }>,
 ): ReactElement {
   const { entry, color } = props;
-  const lines = wrapTranscript([entry], props.columns ?? 80, color, props.displays);
+  const grid = chatGrid(props.columns ?? 80);
+  const lines = transcriptRows([entry], grid, color, props.displays, props.previous);
   useLayoutEffect(() => {
     if (entry.role === 'notice' && lines.length > 0) props.acknowledgement?.inlineNotice(entry);
   }, [entry, props.acknowledgement, lines.length]);
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => (
-        <Text key={index} {...transcriptStyleProps(line.style, color)}>
-          <TranscriptRowBody line={line} color={color} />
-        </Text>
+        <TranscriptRow key={index} line={line} grid={grid} color={color} form="word" />
       ))}
     </Box>
   );
@@ -600,15 +608,23 @@ export function chatIsBusy(work: ChatWork): boolean {
 /**
  * The chat's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
  * §4): the wordmark (bold, in the accent when it is the full-screen frame's first row, bold alone inline) with the session title right-aligned to the
- * width, then one blank row: {@link CHAT_HEADER_ROWS} rows.
+ * content column's last column, then one blank row: {@link CHAT_HEADER_ROWS} rows. It stands ON THE GRID (unit 9, {@link chatGrid}): the box starts
+ * at the content column, where the Home's wordmark starts, and is exactly the content column wide, so the title ends where the rail ends.
  * The title is already scrubbed and bounded by {@link headerRow}; with none (before the first message, inline) the wordmark stands alone.
  */
 function ChatHeaderView(
   props: Readonly<{ title: string; columns: number; color: boolean; accent: boolean }>,
 ): ReactElement {
-  const row = headerRow(props.title, props.columns);
+  const grid = chatGrid(layoutColumns(props.columns));
+  const row = headerRow(props.title, grid.content);
   return (
-    <Box flexDirection="column" flexShrink={0} height={CHAT_HEADER_ROWS}>
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      height={CHAT_HEADER_ROWS}
+      marginLeft={grid.margin}
+      width={grid.content}
+    >
       <Box>
         {/* The accent is the full-screen frame's first row. The inline header scrolls into the terminal's own history among the transcript, and it
             is bold only there in both hosts: the stand-alone chat writes it before it mounts (`emitChatHeader`, bold), so the Home's hosted chat
@@ -633,6 +649,12 @@ function ChatHeaderView(
 
 /** One item of the inline scrollback: a transcript entry, or the header printed once as the introduction of the chat. */
 type ScrollbackItem = TranscriptEntry | { readonly role: 'introduction' };
+
+/** The transcript entry printed just before `items[index]` (`<Static>` passes the absolute index), or none: the first entry, or after the header. */
+function entryBefore(items: readonly ScrollbackItem[], index: number): TranscriptEntry | undefined {
+  const before = items[index - 1];
+  return before === undefined || before.role === 'introduction' ? undefined : before;
+}
 
 /**
  * The inline renderer's scrollback: ink `<Static>` prints each item once into the terminal's own history. The header, when asked for, is its
@@ -666,6 +688,7 @@ function InlineScrollback(
           <TranscriptLine
             key={index}
             entry={item}
+            previous={entryBefore(items, index)}
             displays={props.displays}
             color={props.color}
             columns={props.columns}
@@ -715,6 +738,27 @@ function LeadRow(
   );
 }
 
+/**
+ * A column of the chat's chrome that stands in the content column ({@link chatGrid}, unit 9): it starts where the content starts and is as wide as
+ * the row budget it is given, `content` (the rail: the transcript's, the editor's, the live stream's) or `text` (what the terminal leaves right of
+ * the margin: a one-line row such as the status line or the hint). The margin on its left is blank: nothing a person or a model wrote can stand in it.
+ */
+export function ContentColumn(
+  props: Readonly<{ grid: ChatGrid; budget?: 'content' | 'text'; children?: ReactNode }>,
+): ReactElement {
+  const { grid } = props;
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      marginLeft={grid.margin}
+      width={props.budget === 'content' ? grid.content : grid.text}
+    >
+      {props.children}
+    </Box>
+  );
+}
+
 interface PromptBlockProps {
   readonly state: SessionViewState;
   readonly color: boolean;
@@ -722,8 +766,8 @@ interface PromptBlockProps {
   readonly mode: ChatMode;
   readonly reasoningEffort: ReasoningEffort | undefined;
   readonly provider: string | undefined;
-  /** The width the rule and the status line are laid for. */
-  readonly columns: number;
+  /** The chat's grid: the content column the editor and the rule are laid for, and the terminal width the status line is fitted to. */
+  readonly grid: ChatGrid;
   readonly running: boolean;
   readonly interruptArmed: boolean;
   readonly editor: EditorState;
@@ -757,65 +801,80 @@ function hintFor(props: PromptBlockProps): string {
  * status line and draws neither a prompt nor a hint that would name keys it does not take.
  */
 function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
-  const { color, palette } = props;
+  const { color, palette, grid } = props;
   const rule = (
     <Text {...dimProps(color)} wrap="truncate-end">
-      {thinRule(props.columns, !color)}
+      {thinRule(grid.content, !color)}
     </Text>
   );
   const prefix = glyphOf('yourTurn', !color);
   if (palette !== undefined) {
+    // The in-flight turn stands above the palette's list with its own margin (its tool rows mark it); the palette is the content column's.
     return (
-      <PaletteAbovePrompt
-        palette={palette}
-        maxRows={palette.maxRows}
-        ruleColumns={props.columns}
-        color={color}
-        before={props.live}
-      />
+      <Box flexDirection="column" flexShrink={0}>
+        {props.live}
+        <ContentColumn grid={grid}>
+          <PaletteAbovePrompt
+            palette={palette}
+            maxRows={palette.maxRows}
+            ruleColumns={grid.content}
+            contentColumns={grid.content}
+            color={color}
+          />
+        </ContentColumn>
+      </Box>
     );
   }
+  // The status line is fitted to what the terminal leaves right of the margin (the Home's budget: `W` would drop `used` and the turns at 80 columns).
   const status = chatStatusLine(
     props.state,
     { mode: props.mode, reasoningEffort: props.reasoningEffort, provider: props.provider },
-    props.columns,
+    grid.columns,
+    grid.margin,
   );
   const showsHint = props.promptShown || props.running;
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <LeadRow copied={props.copied} warnings={props.state.warnings} color={color} />
+      <ContentColumn grid={grid}>
+        <LeadRow copied={props.copied} warnings={props.state.warnings} color={color} />
+      </ContentColumn>
       {props.live}
-      {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
+      <ContentColumn grid={grid}>
+        {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
           context is always visible without flooding the editor. */}
-      {props.promptShown && props.attachments.length > 0 && (
-        <AttachmentBar attachments={props.attachments} color={color} />
-      )}
-      {/* The multi-line input prompt (idle) with the cursor at its position. Every segment is sanitized inside
+        {props.promptShown && props.attachments.length > 0 && (
+          <AttachmentBar attachments={props.attachments} color={color} columns={grid.content} />
+        )}
+        {/* The multi-line input prompt (idle) with the cursor at its position, in a box of EXACTLY the content column: the editor's own hard wrap
+          (`columns`, its windowed draft) and Ink's wrap of an unbounded draft are then the same width. Every segment is sanitized inside
           PromptEditor so a pasted/typed control sequence cannot corrupt the display or inject ANSI/OSC. Shared
           with the Home's prompt so both surfaces render the editor identically. */}
-      {props.promptShown && (
-        <PromptEditor
-          editor={props.editor}
-          color={color}
-          glyph={prefix}
-          cursor={props.cursor}
-          placeholder={hasConversation(props.state) ? PLACEHOLDER_REPLY : PLACEHOLDER_FIRST}
-          maxRows={props.editorRows}
-          columns={props.columns}
-        />
-      )}
-      {rule}
-      {/* Not `truncate-end`: the model fits its line to the width whenever the mode and the effort can (`statusLine`'s last resort), so a row that
+        {props.promptShown && (
+          <Box flexDirection="column" flexShrink={0} width={grid.content}>
+            <PromptEditor
+              editor={props.editor}
+              color={color}
+              glyph={prefix}
+              cursor={props.cursor}
+              placeholder={hasConversation(props.state) ? PLACEHOLDER_REPLY : PLACEHOLDER_FIRST}
+              maxRows={props.editorRows}
+              columns={grid.content}
+            />
+          </Box>
+        )}
+        {rule}
+        {/* Not `truncate-end`: the model fits its line to the width whenever the mode and the effort can (`statusLine`'s last resort), so a row that
           fits is drawn whole, and below the supported 80 columns, where even those words do not fit, the row WRAPS between words rather than being
           cut by Ink inside the cost (SE7-2: a cut row drew `$12…`, an amount without its qualifier). */}
-      <Text {...colorProps(color, 'gray')}>{status.text}</Text>
-      {/* The context-aware hint (2.5.C S6): at an EMPTY idle prompt the `/` palette is the command-discovery entry point and the key that
+        <Text {...colorProps(color, 'gray')}>{status.text}</Text>
+        {/* The context-aware hint (2.5.C S6): at an EMPTY idle prompt the `/` palette is the command-discovery entry point and the key that
           leaves says where it leads; with a draft it is the draft's own keys; while a turn runs it is the key that ends the chat. */}
-      {showsHint && (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {hintFor(props)}
-        </Text>
-      )}
+        {showsHint && (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {hintFor(props)}
+          </Text>
+        )}
+      </ContentColumn>
     </Box>
   );
 }
@@ -840,14 +899,24 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     paletteOpen,
   } = props;
   const attachments = props.attachments ?? [];
-  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H).
+  // The chat's grid (unit 9, `chat-grid.ts`): a margin the host owns and a content column that holds every word a person or a model wrote. Computed
+  // ONCE here and read by every part of the frame, so the transcript, the live region and the prompt block cannot disagree about where the content is.
+  // `grid` is the width as the host reports it (a suspended terminal, whose width is not a number, has no grid and so no transcript rows); `chromeGrid`
+  // is the same grid with the 80-column fallback a width that is not usable gets (`layoutColumns`), so the chrome is never asked for a width it cannot draw.
+  const hostColumns = props.viewport?.cols ?? props.columns ?? 80;
+  const grid = chatGrid(hostColumns);
+  const chromeGrid = grid.columns > 0 ? grid : chatGrid(layoutColumns(hostColumns));
+  // The form of the margin a row of the live region is drawn with: the glyph (ASCII without colour) full-screen, the role word inline.
+  const marginForm = marginFormFor(props.viewport !== undefined, color);
+  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H). Its body is the model's words in the content column, so its row
+  // tail is estimated at the content column's width.
   const hasReasoning = state.liveReasoning.length > 0;
   const reasoningPanel = hasReasoning
     ? formatReasoningPanel({
         liveReasoning: state.liveReasoning,
         liveReasoningTruncated: state.liveReasoningTruncated,
         visible: reasoningVisible,
-        columns: props.columns,
+        columns: chromeGrid.content,
       })
     : undefined;
   // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning (reasoning streamed AND no
@@ -888,14 +957,15 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       awaitingApprovalMs === undefined &&
       state.liveTokens.length > 0
     ) {
-      const cols = props.viewport?.cols ?? props.columns ?? 80;
       const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
       const answerRows = Math.max(0, maxRows - 1);
-      // The live tail is the model's words, drawn above the prompt among the host's own: its rows are guarded like a finished reply's (ADR-0145 §6),
-      // on the laid-out rows, so a glyph a layout moved to the start of a row is blanked too.
-      const lines = (
-        color ? props.markdown.tail(cols, answerRows) : props.markdown.plainTail(cols, answerRows)
-      ).map(guardMarkdownLine);
+      // The live tail is the model's words, laid out in the content column at its width: the finished reply is laid out at the same width
+      // (`transcriptRows`), so the stream never reflows when the turn completes. Drawn in the content column it cannot stand in the margin, whatever
+      // its first characters are (unit 9; the row-level guard of the interim marker retired with the grid, plan section 4).
+      const answerColumns = chromeGrid.content;
+      const lines = color
+        ? props.markdown.tail(answerColumns, answerRows)
+        : props.markdown.plainTail(answerColumns, answerRows);
       return (
         <Box flexDirection="column">
           {lines.map((line, index) => (
@@ -926,7 +996,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       // it passes no bound and its output stays byte-identical.
       ...(props.viewport === undefined
         ? {}
-        : { columns: props.viewport.cols, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
+        : { columns: chromeGrid.content, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
     });
     // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc …" hint; a streaming
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
@@ -960,12 +1030,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
   // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
   // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
+  // The rows are the grid's (`transcriptRows`, at the content column's width): the scroll, the copy and the acknowledgement read the same rows.
+  const fullScreen = viewport !== undefined;
   const wrappedTranscript = useMemo(
     () =>
-      viewport === undefined
-        ? undefined
-        : wrapTranscript(state.transcript, viewport.cols, color, props.toolDisplays),
-    [viewport?.cols, state.transcript, color, props.toolDisplays],
+      fullScreen ? transcriptRows(state.transcript, grid, color, props.toolDisplays) : undefined,
+    // `grid` is rebuilt every render; its content width is what the rows depend on.
+    [fullScreen, grid.content, state.transcript, color, props.toolDisplays],
   );
   // Static advances its cursor even when a child paints no rows. Retain its
   // admitted prefix during width suspension, then deliver pending entries once
@@ -987,40 +1058,21 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
   // the honest Esc-to-cancel affordance (Esc or the first Ctrl+C aborts the command, keeping the session; a second Ctrl+C
   // within two seconds ends it). It stands where the prompt row would, in the prompt block.
+  // On the grid (unit 9, `LiveTurn`): a tool call's row has the host's mark in the margin and the call's words in the content column; every other
+  // row of the turn is the content column's, and the margin beside it is blank, so nothing the model wrote can stand where a mark does.
   const liveTurn = running ? (
-    <Box flexDirection="column">
-      {state.liveToolCalls
-        .filter((call) => state.liveObserver !== true || !call.resolved)
-        .map((call) => (
-          <Text key={call.id} {...colorProps(color, 'yellow')}>
-            {withGlyphForm(!color, () => formatToolCall(call, props.toolDisplays?.get(call.id)))}
-          </Text>
-        ))}
-      {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
-          body only when expanded. Shown above the busy line whenever the turn streamed reasoning. */}
-      {reasoningPanel !== undefined && (
-        <Box flexDirection="column">
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {reasoningPanel.header}
-          </Text>
-          {reasoningPanel.body !== undefined && (
-            <Text {...dimProps(color)}>{reasoningPanel.body}</Text>
-          )}
-        </Box>
-      )}
-      {renderBusyLine()}
-      {/* The first Ctrl+C on a running turn interrupts it and arms: say so right here, because a turn that is slow to stop (a
-          hung tool) would otherwise show nothing at all. At an idle prompt the hint row below carries the same words. */}
-      {props.interruptArmed === true && (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {legend([{ text: 'Interrupting' }], leavesAgain(host))}
-        </Text>
-      )}
-    </Box>
+    <LiveTurn
+      state={state}
+      color={color}
+      grid={chromeGrid}
+      marginForm={marginForm}
+      toolDisplays={props.toolDisplays}
+      reasoning={reasoningPanel}
+      busyLine={renderBusyLine()}
+      interruptArmed={props.interruptArmed === true}
+      host={host}
+    />
   ) : undefined;
-  // The width every row of the frame is laid for: the viewport's, else the host's live width, else the 80-column fallback; a width that is not a
-  // usable number (a suspended terminal reports 0, NaN or Infinity) is the fallback too, so a rule is never asked for a count it cannot draw.
-  const rowWidth = layoutColumns(viewport?.cols ?? props.columns ?? 80);
   return (
     <Box
       display={props.hidden === true ? 'none' : 'flex'}
@@ -1047,6 +1099,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       ) : (
         <TranscriptViewport
           lines={wrappedTranscript}
+          grid={grid}
           color={color}
           scroll={viewport.scroll}
           selection={viewport.selection}
@@ -1077,7 +1130,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           reasoning={reasoningPanel}
           interruptArmed={props.interruptArmed === true}
           host={host}
-          columns={rowWidth}
+          grid={chromeGrid}
+          marginForm={marginForm}
           viewportRows={viewport?.rows}
           terminalRows={props.terminalRows}
         />
@@ -1089,7 +1143,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           mode={mode}
           reasoningEffort={reasoningEffort}
           provider={props.provider}
-          columns={rowWidth}
+          grid={chromeGrid}
           running={running}
           interruptArmed={props.interruptArmed === true}
           editor={editor}
@@ -1107,8 +1161,65 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   );
 }
 
+/**
+ * The in-flight turn of a chat that is not waiting on a sheet, on the grid (unit 9): a tool call's row through {@link MarginRow} (the host's mark in the
+ * margin, the call's words in the content column), then the content column's own rows: the collapsible "thinking" panel (2.5.H, a dim header with the
+ * Ctrl+T toggle hint and the reasoning body only when expanded), the busy line or the streamed answer (`busyLine`, drawn by the view that owns the
+ * timer), and the interrupt note: the first Ctrl+C on a running turn interrupts it and arms, and a turn that is slow to stop (a hung tool) would
+ * otherwise show nothing at all (at an idle prompt the hint row carries the same words).
+ */
+function LiveTurn(
+  props: Readonly<{
+    state: SessionViewState;
+    color: boolean;
+    grid: ChatGrid;
+    marginForm: MarginForm;
+    toolDisplays: ChatViewProps['toolDisplays'];
+    reasoning: ReasoningPanel | undefined;
+    busyLine: ReactElement;
+    interruptArmed: boolean;
+    host: ChatHost;
+  }>,
+): ReactElement {
+  const { state, color, reasoning } = props;
+  const calls = state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved);
+  return (
+    <Box flexDirection="column">
+      {calls.map((call) => (
+        <MarginRow
+          key={call.id}
+          role="toolCall"
+          grid={props.grid}
+          form={props.marginForm}
+          mark={colorProps(color, 'yellow')}
+        >
+          <Text {...colorProps(color, 'yellow')}>
+            {withGlyphForm(!color, () => toolCallText(call, props.toolDisplays?.get(call.id)))}
+          </Text>
+        </MarginRow>
+      ))}
+      <ContentColumn grid={props.grid} budget="content">
+        {reasoning !== undefined && (
+          <Box flexDirection="column">
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {reasoning.header}
+            </Text>
+            {reasoning.body !== undefined && <Text {...dimProps(color)}>{reasoning.body}</Text>}
+          </Box>
+        )}
+        {props.busyLine}
+        {props.interruptArmed && (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {legend([{ text: 'Interrupting' }], leavesAgain(props.host))}
+          </Text>
+        )}
+      </ContentColumn>
+    </Box>
+  );
+}
+
 /** The colour of a row of the in-flight turn above a docked sheet: the prompt block's own for the same row (warnings and tool lines amber). */
-function dockedTone(tone: DockedTurnRow['tone'], color: boolean): Record<string, unknown> {
+function dockedTone(tone: DockedTurnRow['tone'], color: boolean): Partial<TextProps> {
   return tone === 'warning' || tone === 'tool' ? colorProps(color, 'yellow') : dimProps(color);
 }
 
@@ -1117,7 +1228,9 @@ function dockedTone(tone: DockedTurnRow['tone'], color: boolean): Record<string,
  * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings, and while the turn runs its tool-call lines with their outcomes,
  * the reasoning panel and the interrupt note ({@link dockedTurnRows}), never the busy line. Bounded by the rows the conversation keeps above the
  * largest sheet ({@link sheetTranscriptRows}), the newest kept, so the sheet keeps its rows; in the full-screen frame it stands at the bottom of
- * the conversation's flex region, and the transcript above it takes what is left.
+ * the conversation's flex region, and the transcript above it takes what is left. It stands on the grid (unit 9) as the live region does: a tool
+ * call's row has the host's mark in the margin and the call's words in the content column ({@link MarginRow}), every other row is the content
+ * column's, and the rows are cut at the content column's width; the row budget is the sheet's and does not move.
  */
 function DockedTurn(
   props: Readonly<{
@@ -1128,7 +1241,9 @@ function DockedTurn(
     reasoning: ReasoningPanel | undefined;
     interruptArmed: boolean;
     host: ChatHost;
-    columns: number;
+    grid: ChatGrid;
+    /** The margin's form: the glyph full-screen, the role word inline ({@link marginFormFor}). */
+    marginForm: MarginForm;
     /** The alternate screen's viewport rows (the terminal's less the one its frame keeps free), absent inline. */
     viewportRows: number | undefined;
     /** The terminal's rows as the host reports them (inline), absent when it does not. */
@@ -1144,13 +1259,13 @@ function DockedTurn(
   const rows = withGlyphForm(!props.color, () =>
     dockedTurnRows({
       warnings: state.warnings,
-      toolLines: calls.map((call) => formatToolCall(call, props.toolDisplays?.get(call.id))),
+      toolLines: calls.map((call) => toolCallText(call, props.toolDisplays?.get(call.id))),
       reasoning: running ? props.reasoning : undefined,
       interrupt:
         running && props.interruptArmed
           ? legend([{ text: 'Interrupting' }], leavesAgain(props.host))
           : undefined,
-      columns: props.columns,
+      columns: props.grid.content,
       maxRows: sheetTranscriptRows(terminalRows ?? DOCKED_FALLBACK_ROWS),
     }),
   );
@@ -1158,11 +1273,38 @@ function DockedTurn(
   return (
     <Box flexDirection="column" flexShrink={0}>
       {rows.map((row, index) => (
-        <Text key={index} wrap="truncate-end" {...dockedTone(row.tone, props.color)}>
-          {row.text}
-        </Text>
+        <DockedRow
+          key={index}
+          row={row}
+          color={props.color}
+          grid={props.grid}
+          marginForm={props.marginForm}
+        />
       ))}
     </Box>
+  );
+}
+
+/** One row of the in-flight turn above a docked sheet: a tool call's through {@link MarginRow} (the mark in the margin), every other in the content column. */
+function DockedRow(
+  props: Readonly<{ row: DockedTurnRow; color: boolean; grid: ChatGrid; marginForm: MarginForm }>,
+): ReactElement {
+  const tone = dockedTone(props.row.tone, props.color);
+  const text = (
+    <Text wrap="truncate-end" {...tone}>
+      {props.row.text}
+    </Text>
+  );
+  if (props.row.tone === 'tool')
+    return (
+      <MarginRow role="toolCall" grid={props.grid} form={props.marginForm} mark={tone}>
+        {text}
+      </MarginRow>
+    );
+  return (
+    <ContentColumn grid={props.grid} budget="content">
+      {text}
+    </ContentColumn>
   );
 }
 
@@ -1920,9 +2062,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
    * drag during a streaming turn reduces against the transcript as it is now, not as it was at the last commit.
    */
   const chatLiveGeom = (): ScrollGeometry =>
-    liveScrollGeometry(
+    transcriptScrollGeometry(
       props.store.getSnapshot().state.transcript,
-      windowSize.columns,
+      chatGrid(windowSize.columns), // the grid `ChatView` draws with: its viewport's columns are these
       scrollGeomRef.current.height,
       props.store.getSnapshot().color,
       props.store.getSnapshot().toolDisplays,
@@ -1971,14 +2113,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const copySelection = (state: SelectionState): void => {
     const clipboard = props.clipboard;
     if (clipboard === undefined) return;
-    const rows = wrapTranscript(
+    // The content a person sees, without the margin (OQ9): the one copy path of both chat hosts.
+    const selected = transcriptSelectionText(
       props.store.getSnapshot().state.transcript,
-      windowSize.columns,
+      chatGrid(windowSize.columns),
+      normalizeSelection(state),
       props.store.getSnapshot().color,
       props.store.getSnapshot().toolDisplays,
-    ).map((line) => line.text);
+    );
     const store = props.store;
-    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
+    void attemptClipboardWrite(clipboard, selected)
       .then((outcome) => {
         if (
           !clipboardFeedbackMounted.current ||
@@ -2604,10 +2748,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             color={color}
             waitClock={waitClock}
           />
+          {/* The history search and the `@` completion list are host-drawn rows below the prompt that show stored names (a history line, a file
+              name): they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
           {search !== undefined && (
-            <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
+            <ContentColumn grid={chatGrid(layoutColumns(windowSize.columns))}>
+              <ReverseSearchView
+                state={search}
+                entries={historyRef.current.entries}
+                color={color}
+              />
+            </ContentColumn>
           )}
-          {mention !== undefined && <MentionView state={mention} color={color} />}
+          {mention !== undefined && (
+            <ContentColumn grid={chatGrid(layoutColumns(windowSize.columns))}>
+              <MentionView state={mention} color={color} />
+            </ContentColumn>
+          )}
         </Box>
       </BackdropDim>
       {/* The one overlay slot (ADR-0148 §2): the last child of the root, and the only absolutely positioned node of the CLI. */}
@@ -2639,22 +2795,49 @@ export function finalizeInkExit(
 const INTRO_COLUMNS_FALLBACK = 80;
 
 /**
- * The inline intro as rows of at most `columns` display columns, broken at spaces (OB7-M2). It is written straight to the terminal before Ink mounts,
- * so nothing wraps it but the terminal, which cuts a long sentence wherever the row ends (`…to continue it, star|t Relavium…`); the transcript's own
- * notices are word-wrapped by the transcript layout, and so is this. Explicit newlines of the intro are kept.
+ * The grid of the inline renderer's pre-mount writes (the header and the intro, unit 9): the terminal's, or the supported minimum's when its width is
+ * not known (a width is a number of at least one column; zero, a negative one and a number that is not one are not a width).
+ */
+function preMountGrid(columns: number | undefined): ChatGrid {
+  return chatGrid(
+    columns !== undefined && Number.isFinite(columns) && columns >= 1
+      ? columns
+      : INTRO_COLUMNS_FALLBACK,
+  );
+}
+
+/** The length of the host's model-switch glyph that leads an intro (in either form of the table) with the space after it, or 0 when it does not lead. */
+function modelSwitchLeadLength(intro: string): number {
+  for (const glyph of [GLYPHS.modelSwitch.glyph, GLYPHS.modelSwitch.ascii])
+    if (intro.startsWith(`${glyph} `)) return glyph.length + 1;
+  return 0;
+}
+
+/**
+ * The inline intro as rows in the content column, each of at most the content column's width, broken at spaces (OB7-M2), with the margin on the left
+ * of the first row. It is written straight to the terminal before Ink mounts, so nothing wraps it but the terminal, which cuts a long sentence wherever
+ * the row ends (`…to continue it, star|t Relavium…`); the transcript's own notices are word-wrapped by the transcript layout, and so is this. Explicit
+ * newlines of the intro are kept. The margin is the grid's (unit 9): blank, except on the first row of the model-switch notice, which the inline
+ * renderer marks with the host's role word `model` as it marks the same notice in the transcript (the word is drawn from the closed list and the
+ * glyph that led the sentence leaves it; with no room for the word the glyph stays where it was).
  */
 function wrapIntro(intro: string, columns: number | undefined): string {
-  const width =
-    columns !== undefined && Number.isFinite(columns) && columns >= 1
-      ? Math.floor(columns)
-      : INTRO_COLUMNS_FALLBACK;
+  const grid = preMountGrid(columns);
+  const lead = modelSwitchLeadLength(intro);
+  const word = lead === 0 ? '' : marginCell('modelSwitch', grid, 'word');
+  const marked = word.trim() !== '';
   // `wrapWords` keeps the whitespace a break fell on: a row does not end in it, and the next row does not begin with it
-  const rows = intro
+  const rows = (marked ? intro.slice(lead) : intro)
     .split('\n')
     .flatMap((line) =>
-      wrapWords(line, width).map((row, index) => (index === 0 ? row.trimEnd() : row.trim())),
+      wrapWords(line, grid.content).map((row, index) => (index === 0 ? row.trimEnd() : row.trim())),
     );
-  return rows.length === 0 ? intro : rows.join('\n');
+  if (rows.length === 0) return intro;
+  const blank = ' '.repeat(grid.margin);
+  // a blank row is written as nothing (no trailing spaces), and only the first row can carry the word
+  return rows
+    .map((row, index) => (row === '' ? '' : `${marked && index === 0 ? word : blank}${row}`))
+    .join('\n');
 }
 
 /**
@@ -2678,7 +2861,7 @@ export function emitIntro(
   ports: {
     readonly notice: (text: string, hostLead?: 'yourTurn' | 'modelSwitch') => void;
     readonly writeOut: (text: string) => void;
-    /** The terminal's width, which the inline intro is word-wrapped to (absent or not a width ⇒ {@link INTRO_COLUMNS_FALLBACK}). */
+    /** The terminal's width, from which the inline intro's grid is made (it is word-wrapped to the content column; absent or not a width ⇒ {@link INTRO_COLUMNS_FALLBACK}). */
     readonly columns?: number | undefined;
   },
 ): void {
@@ -2701,16 +2884,19 @@ const headerPrinted = new WeakSet<object>();
  * The inline renderer's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
  * §4): the wordmark in bold and a blank row, written ONCE into the terminal's own scrollback before the live region mounts, because inline has no
  * fixed top row to draw it in. The full-screen renderer draws it as the first child of the frame instead, so it writes nothing here. `owner` is
- * what the once belongs to (the command's `io`): a second chat over the same owner (`/clear`, a reseat) writes nothing.
+ * what the once belongs to (the command's `io`): a second chat over the same owner (`/clear`, a reseat) writes nothing. It stands at the content
+ * column of the terminal's `columns` (the grid, unit 9: the margin's spaces, then the wordmark), as the full-screen header does; an absent or unusable
+ * width is the supported minimum's.
  */
 export function emitChatHeader(
   alternateScreen: boolean,
   owner: object,
   writeOut: (text: string) => void,
+  columns?: number,
 ): void {
   if (alternateScreen || headerPrinted.has(owner)) return;
   headerPrinted.add(owner);
-  writeOut(`${emphasize(WORDMARK, 'bold')}\n\n`);
+  writeOut(`${' '.repeat(preMountGrid(columns).margin)}${emphasize(WORDMARK, 'bold')}\n\n`);
 }
 
 /**
@@ -2758,7 +2944,12 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // corrupt: inline render + full-screen store double-prints through `<Static>`; full-screen render + inline store
   // silently drops the carry and blanks the viewport (F1 itself).
   assertRenderStoreAgree(alternateScreen, ctx.store.getSnapshot().state.transcriptBound);
-  emitChatHeader(alternateScreen, ctx.io, (text) => ctx.io.writeOut(text));
+  emitChatHeader(
+    alternateScreen,
+    ctx.io,
+    (text) => ctx.io.writeOut(text),
+    ctx.io.nativeStdout?.columns,
+  );
   emitIntro(ctx.intro, alternateScreen, {
     notice: (text, hostLead) => ctx.store.notice(text, hostLead),
     writeOut: (text) => ctx.io.writeOut(text),

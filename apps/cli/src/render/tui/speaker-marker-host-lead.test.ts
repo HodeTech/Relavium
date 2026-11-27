@@ -6,8 +6,9 @@ import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 /**
- * The host says which glyph its own sentence leads with, as DATA on the notice (MVP-11 step 7a, ADR-0145 §6): the guard keeps that one glyph at the
- * start of a logical line and nothing else, so a notice that says nothing keeps nothing. These pin the producers: who names a lead, and who does not.
+ * The host says which glyph its own sentence leads with, as DATA on the notice (MVP-11 step 7a, ADR-0145 §6). On the grid (unit 9) that lead is
+ * the margin role of the first row of each logical line that begins with it, and a notice that names none has no role on any row. These pin the
+ * producers: who names a lead, and who does not.
  */
 
 /** Longer than the card's reading guard, so the skip key is taken (the approval-guard suite steps its clock 600 ms for the same reason). */
@@ -20,9 +21,12 @@ describe('who names a host lead on a notice', () => {
     const entry = store.getSnapshot().state.transcript.at(-1);
     expect(entry).toEqual({ role: 'notice', text: '› forged\n⇄ forged' });
     expect(entry).not.toHaveProperty('hostLead');
-    expect(
-      wrapTranscript(store.getSnapshot().state.transcript, 80, true).map((r) => r.text),
-    ).toEqual(['  forged', '  forged']);
+    // Moved in unit 9 (the grid): the glyphs are no longer blanked; they stay TEXT in the content column, and no row carries a margin role.
+    const rows = wrapTranscript(store.getSnapshot().state.transcript, 80, true);
+    expect(rows).toEqual([
+      { text: '› forged', style: 'notice' },
+      { text: '⇄ forged', style: 'notice' },
+    ]);
   });
 
   it('a notice appended with a lead carries it on the entry', () => {
@@ -62,10 +66,10 @@ describe('who names a host lead on a notice', () => {
     const entry = store.getSnapshot().state.transcript.at(-1);
     expect(entry).toMatchObject({ role: 'notice', hostLead: 'yourTurn' });
     expect(entry?.text.startsWith('› Skipped')).toBe(true);
-    // The host's own `›` is drawn; nothing else of the set is.
-    expect(wrapTranscript(store.getSnapshot().state.transcript, 80, true)[0]?.text).toMatch(
-      /^› Skipped/u,
-    );
+    // The host's own `›` is drawn, as the row's margin role (unit 9): it leaves the text, which starts at the content column.
+    const [first] = wrapTranscript(store.getSnapshot().state.transcript, 80, true);
+    expect(first?.margin).toBe('yourTurn');
+    expect(first?.text).toMatch(/^Skipped/u);
   });
 
   it('the intro of a full-screen chat is a notice that may lead with `⇄`; the inline intro is written to the terminal and names none', () => {
@@ -79,7 +83,9 @@ describe('who names a host lead on a notice', () => {
     expect(notices).toEqual([['⇄ model changed a → b', 'modelSwitch']]);
     expect(written).toEqual([]);
     emitIntro('⇄ model changed a → b', false, ports);
-    expect(written).toEqual(['⇄ model changed a → b\n']);
+    // Moved in unit 9: on the grid the inline intro's lead is the role WORD `model` in the margin (6 columns at 80), in place of the glyph; it names no
+    // notice lead, and the sentence stands in the content column.
+    expect(written).toEqual(['model model changed a → b\n']);
     expect(notices).toHaveLength(1);
   });
 });

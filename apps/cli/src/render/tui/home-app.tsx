@@ -42,6 +42,7 @@ import type { PendingAttachment } from './attachments.js';
 import {
   chatIsBusy,
   ChatView,
+  ContentColumn,
   composerEditor,
   dockedCardOpen,
   hintRowNotification,
@@ -56,7 +57,8 @@ import {
 import type { EditorState } from './chat-input.js';
 import { pressesOnly } from './chord-guard.js';
 import { isInterruptKey } from './interrupt-keymap.js';
-import { liveScrollGeometry, wrapTranscript } from './chat-projection.js';
+import { transcriptScrollGeometry, transcriptSelectionText } from './chat-projection.js';
+import { chatGrid } from './chat-grid.js';
 import { sanitizeInline } from '../sanitize.js';
 import type { ChatStoreController } from './chat-store.js';
 import {
@@ -109,7 +111,6 @@ import { ReverseSearchView } from './reverse-search-view.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
-  selectionText,
   type SelectionRange,
   type SelectionState,
   routeMouseSelection,
@@ -353,10 +354,18 @@ function ChatRegion(
         color={color}
         waitClock={waitClock}
       />
+      {/* The history search and the `@` completion list are host-drawn rows below the prompt that show stored names (a history line, a file name):
+          they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
       {props.search !== undefined && (
-        <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
+        <ContentColumn grid={chatGrid(layoutColumns(props.cols))}>
+          <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
+        </ContentColumn>
       )}
-      {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
+      {props.mention !== undefined && (
+        <ContentColumn grid={chatGrid(layoutColumns(props.cols))}>
+          <MentionView state={props.mention} color={color} />
+        </ContentColumn>
+      )}
     </Box>
   );
 }
@@ -774,9 +783,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const store = state.session?.store;
     return store === undefined
       ? scrollGeomRef.current
-      : liveScrollGeometry(
+      : transcriptScrollGeometry(
           store.getSnapshot().state.transcript,
-          size.cols,
+          chatGrid(size.cols), // the grid the hosted `ChatView` draws with: its viewport's columns are these
           scrollGeomRef.current.height,
           store.getSnapshot().color,
           store.getSnapshot().toolDisplays,
@@ -835,13 +844,15 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       current.session !== session
     )
       return;
-    const rows = wrapTranscript(
+    // The content a person sees, without the margin (OQ9): the one copy path of both chat hosts.
+    const selected = transcriptSelectionText(
       store.getSnapshot().state.transcript,
-      size.cols,
+      chatGrid(size.cols),
+      normalizeSelection(state_),
       store.getSnapshot().color,
       store.getSnapshot().toolDisplays,
-    ).map((line) => line.text);
-    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state_)))
+    );
+    void attemptClipboardWrite(clipboard, selected)
       .then((outcome) => {
         const current = controller.getSnapshot();
         if (

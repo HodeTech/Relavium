@@ -94,10 +94,10 @@ describe('emitIntro — the renderer decides where the intro survives', () => {
     expect(p.outs).toEqual([]); // never a pre-mount write: the alt buffer erases it
   });
 
-  it('INLINE: printed above the live region, with its newline — byte-identical to before', () => {
+  it('INLINE: printed above the live region, with its newline, in the content column of the grid (6 columns at 80)', () => {
     const p = ports();
     emitIntro('Resumed session id-0 (3 turns).', false, p);
-    expect(p.outs).toEqual(['Resumed session id-0 (3 turns).\n']);
+    expect(p.outs).toEqual(['      Resumed session id-0 (3 turns).\n']);
     expect(p.notices).toEqual([]);
   });
 

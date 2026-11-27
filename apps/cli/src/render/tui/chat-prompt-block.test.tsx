@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { chatGrid } from './chat-grid.js';
 import { ChatView, idleHint, runningHint } from './chat-ink.js';
 import { emptyEditor } from './chat-input.js';
 import { createChatStore } from './chat-store.js';
@@ -67,12 +68,18 @@ const turnStarted = {
   timestamp: '2026-11-26T00:00:00.000Z',
 };
 
-/** The index of the thin rule: the one row made only of rule glyphs. */
-const ruleAt = (rows: readonly string[]): number =>
-  rows.findIndex((row) => row.length > 0 && /^[-─]+$/u.test(row));
+/**
+ * The chat's chrome stands on the grid (unit 9: the content column starts where the Home's wordmark starts): a row of the prompt block begins
+ * `margin` columns from the left edge, 6 at 80 columns and 8 from 100.
+ */
+const indent = (cols: number, text: string): string =>
+  `${' '.repeat(chatGrid(cols).margin)}${text}`;
+
+/** The index of the thin rule: the one row made only of the margin and rule glyphs. */
+const ruleAt = (rows: readonly string[]): number => rows.findIndex((row) => /^ +[-─]+$/u.test(row));
 
 describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
-  it('is a blank row, the prompt, a thin rule, the status line and the hint, in that order, with the rule as wide as the terminal', async () => {
+  it('is a blank row, the prompt, a thin rule, the status line and the hint, in that order, with the rule as wide as the content column', async () => {
     for (const cols of [80, 100]) {
       const m = await mountIn(
         host,
@@ -84,11 +91,15 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
         const shown = rows.join('\n');
         const at = ruleAt(rows);
         expect(at, shown).toBeGreaterThan(0);
-        expect(rows[at], shown).toBe('-'.repeat(cols));
+        // The rule is the content column's width (68 at 80 columns, 84 at 100), not the terminal's.
+        expect(rows[at], shown).toBe(indent(cols, '-'.repeat(chatGrid(cols).content)));
         expect(rows[at - 2]?.trim(), `${shown}\n(the blank row above the prompt)`).toBe('');
-        expect(rows[at - 1], shown).toMatch(/^> reply to continue/u);
+        expect(rows[at - 1], shown).toBe(indent(cols, '> reply to continue'));
         expect(rows[at + 1], shown).toContain(' · ask mode · ');
-        expect(rows[at + 2], shown).toMatch(/^\[\/\] commands · \[Ctrl\+C\] /u);
+        expect(rows[at + 1]?.startsWith(indent(cols, 'anthropic')), shown).toBe(true);
+        expect(rows[at + 2], shown).toMatch(
+          new RegExp(`^ {${chatGrid(cols).margin}}\\[/\\] commands · \\[Ctrl\\+C\\] `, 'u'),
+        );
         expect(rows.length, 'the hint is the last row of the frame').toBe(at + 3);
       } finally {
         m.unmount();
@@ -104,8 +115,8 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
     );
     try {
       const rows = coloured.frame();
-      expect(rows[ruleAt(rows)]).toBe('─'.repeat(80));
-      expect(rows[ruleAt(rows) - 1]).toMatch(/^› reply to continue/u);
+      expect(rows[ruleAt(rows)]).toBe(indent(80, '─'.repeat(chatGrid(80).content)));
+      expect(rows[ruleAt(rows) - 1]?.startsWith(indent(80, '› reply to continue'))).toBe(true);
     } finally {
       coloured.unmount();
     }
@@ -130,12 +141,13 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
         const shown = rows.join('\n');
         const at = ruleAt(rows);
         const status = rows[at + 1] ?? '';
-        expect(status.startsWith('anthropic · '), shown).toBe(true);
+        expect(status.startsWith(indent(cols, 'anthropic · ')), shown).toBe(true);
         expect(status, shown).toContain(' · ask mode · effort high');
         expect(status, `the cost is never dropped: ${shown}`).toMatch(/\$[\d,.]+ known/u);
+        // The line is fitted to what the terminal leaves right of the margin (the Home's budget).
         expect(displayWidth(status), shown).toBeLessThanOrEqual(cols);
         // One row: the next row is the hint, and the whole block is still five rows tall.
-        expect(rows[at + 2], shown).toMatch(/^\[\/\] commands/u);
+        expect(rows[at + 2]?.startsWith(indent(cols, '[/] commands')), shown).toBe(true);
         expect(rows.length - (at - 2), 'the prompt block at rest').toBe(5);
         expect(
           rows.filter((row) => row.includes(' · ask mode · ')),
@@ -151,7 +163,7 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
     const m = await mountIn(host, ALT_80);
     try {
       const hint = m.frame().at(-1);
-      expect(hint).toBe(`[/] commands · [Ctrl+C] ${LEAVES[host].twice}`);
+      expect(hint).toBe(indent(80, `[/] commands · [Ctrl+C] ${LEAVES[host].twice}`));
       if (host === 'chat') expect(m.text()).not.toContain('end (twice)');
       else expect(m.text()).not.toContain('Home (twice)');
     } finally {
@@ -163,8 +175,8 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
     const m = await mountIn(host, ALT_80);
     try {
       m.key(CTRL_C);
-      await m.until(() => m.frame().at(-1) === `[Ctrl+C] ${LEAVES[host].again}`);
-      expect(m.frame().at(-1)).toBe(`[Ctrl+C] ${LEAVES[host].again}`);
+      await m.until(() => m.frame().at(-1) === indent(80, `[Ctrl+C] ${LEAVES[host].again}`));
+      expect(m.frame().at(-1)).toBe(indent(80, `[Ctrl+C] ${LEAVES[host].again}`));
     } finally {
       m.unmount();
     }
@@ -174,8 +186,10 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
     const m = await mountIn(host, ALT_80);
     try {
       m.key('draft');
-      await m.until(() => m.frame().at(-1)?.startsWith('Enter send') === true);
-      expect(m.frame().at(-1)).toBe('Enter send · [Ctrl+J] newline · [Ctrl+C] clear the draft');
+      await m.until(() => m.frame().at(-1)?.trimStart().startsWith('Enter send') === true);
+      expect(m.frame().at(-1)).toBe(
+        indent(80, 'Enter send · [Ctrl+J] newline · [Ctrl+C] clear the draft'),
+      );
     } finally {
       m.unmount();
     }
@@ -192,7 +206,7 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
       expect(rows[at - 1], shown).toContain('Working');
       expect(m.text(), 'no prompt while a turn runs').not.toContain('reply to continue');
       expect(rows[at + 1], shown).toContain(' · ask mode · ');
-      expect(rows[at + 2], shown).toBe(`[Ctrl+C] ${LEAVES[host].twice}`);
+      expect(rows[at + 2], shown).toBe(indent(80, `[Ctrl+C] ${LEAVES[host].twice}`));
       expect(rows.length, 'the frame keeps its height').toBe(23);
     } finally {
       m.unmount();
@@ -207,7 +221,7 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
       m.key(CTRL_C);
       await m.until(() => m.text().includes('Interrupting'));
       expect(m.text()).toContain(`Interrupting · [Ctrl+C] ${LEAVES[host].again}`);
-      expect(m.frame().at(-1)).toBe(`[Ctrl+C] ${LEAVES[host].again}`);
+      expect(m.frame().at(-1)).toBe(indent(80, `[Ctrl+C] ${LEAVES[host].again}`));
     } finally {
       m.unmount();
     }
@@ -253,7 +267,8 @@ describe.each(HOSTS)('the prompt block, in the %s host', (host) => {
       m.key('x');
       await m.until(() => !m.text().includes('reply to continue'));
       const rows = m.frame();
-      expect(rows[ruleAt(rows) - 1]).toMatch(/^> x/u);
+      // the cursor cell is a blank after the `x`
+      expect(rows[ruleAt(rows) - 1]).toBe(indent(80, '> x '));
     } finally {
       m.unmount();
     }
@@ -322,7 +337,7 @@ describe('the copy confirmation takes the leading row of the block', () => {
     const resting = frameOf(false);
     const copied = frameOf(true);
     expect(resting[0]?.trim(), 'the leading row at rest is blank').toBe('');
-    expect(copied[0]).toBe('[Sent to terminal clipboard]');
+    expect(copied[0]).toBe(indent(80, '[Sent to terminal clipboard]'));
     expect(copied.length).toBe(resting.length);
     expect(copied.slice(1)).toEqual(resting.slice(1));
   });

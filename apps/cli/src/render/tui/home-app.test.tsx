@@ -26,6 +26,7 @@ import {
   type HomeModelsPort,
 } from './home-controller.js';
 import { CHAT_HEADER_ROWS } from './chat-layout.js';
+import { chatGrid } from './chat-grid.js';
 import { WORDMARK } from './home-layout.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 
@@ -60,6 +61,11 @@ afterEach(cleanup);
  * (ADR-0146 §4) and the mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
  */
 const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+/**
+ * The 1-based terminal column of the n-th CONTENT cell of the in-Home chat's transcript (1 for the first): it stands on the chat's grid (MVP-11
+ * unit 9), so its text starts right of the margin, and a press in the margin clamps to the first content cell.
+ */
+const contentColumn = (n: number): number => chatGrid(100).margin + n;
 
 /** The frame below the chat's header: the first user line is the session title, drawn in the header, so what the VIEWPORT shows is read from here. */
 const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
@@ -594,10 +600,10 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     expect(onSuspend).toHaveBeenCalledOnce();
     m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`);
     await settleFrames();
     enabled = false;
-    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`);
     m.harness.stdin.write(bracketed('SEALED_HOME_PASTE'));
     m.harness.stdin.write('\x1a');
     await settleFrames();
@@ -622,9 +628,9 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
 
     m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']);
@@ -743,7 +749,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     // for as long as no line is wider than the terminal — so make one that is.
     const copied: string[] = [];
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    store.notice('A'.repeat(140)); // at 100 columns this wraps into two display rows
+    store.notice('A'.repeat(140)); // at 100 columns the content column is 84 wide (unit 9's grid): two display rows
     const m = mountHome(store, {
       alternateScreen: true,
       clipboard: (text) => {
@@ -755,9 +761,9 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
     const frame = (m.harness.lastFrame() ?? '').split('\n');
-    const firstRow = frame.findIndex((l) => l.startsWith('AAAA'));
+    const firstRow = frame.findIndex((l) => l.trimStart().startsWith('AAAA'));
     expect(firstRow).toBeGreaterThanOrEqual(0);
-    expect(frame[firstRow + 1]?.startsWith('AAAA')).toBe(true); // it really wrapped
+    expect(frame[firstRow + 1]?.trimStart().startsWith('AAAA')).toBe(true); // it really wrapped
 
     // Drag the SECOND visual row only. Terminal rows are 1-based.
     const row = String(firstRow + 2);
@@ -769,7 +775,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await settleFrames();
 
     expect(copied).toHaveLength(1);
-    expect(copied[0]).toBe('A'.repeat(40)); // the 40-char remainder, not all 140
+    expect(copied[0]).toBe('A'.repeat(140 - chatGrid(100).content)); // the 56-char remainder, not all 140
   });
 
   it('a RESIZE drops the live selection — re-wrapping moves every display-line index it holds', async () => {
@@ -787,14 +793,14 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
 
     m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press…
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // …drag…
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // …drag…
     await settleFrames();
 
     m.setSize({ cols: 60, rows: 30 });
     m.fireResize();
     await settleFrames();
 
-    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // …release AFTER the resize
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // …release AFTER the resize
     await settleFrames();
     expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
   });
@@ -822,9 +828,9 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
     m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
   };
 

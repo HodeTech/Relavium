@@ -31,6 +31,11 @@ export interface PaletteBlockPalette {
  * wide, and the palette's legend on the hint row. The list ends on the row above the prompt, so it has no query line, no legend line and no blank
  * row of its own (the `up` layout of {@link PaletteView}). `maxRows` is the budget of the whole block (the list's rows, the prompt, the rule and
  * the hint row).
+ *
+ * `contentColumns` is the width of the block's own rows, for a host that has a content column narrower than its own (the chat on the grid, unit 9:
+ * 68 columns of a 74-column row at 80 columns): the list's rows are cut inside it, the typed query wraps at it (the editor's own width, as the
+ * prompt's), and the rule is drawn at `ruleColumns`. The hint row's legend keeps the host's own width. Absent ⇒ the block takes the width it is
+ * given, as the work page's docked prompt draws it.
  */
 export function PaletteAbovePrompt(
   props: Readonly<{
@@ -39,12 +44,12 @@ export function PaletteAbovePrompt(
     ruleColumns: number;
     color: boolean;
     before?: ReactNode;
+    contentColumns?: number | undefined;
   }>,
 ): ReactElement {
   const { palette, color } = props;
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      {props.before}
+  const inner = (
+    <>
       <PaletteView
         list={palette.list}
         state={palette.state}
@@ -59,6 +64,18 @@ export function PaletteAbovePrompt(
       <Text {...dimProps(color)} wrap="truncate-end">
         {thinRule(props.ruleColumns, !color)}
       </Text>
+    </>
+  );
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {props.before}
+      {props.contentColumns === undefined ? (
+        inner
+      ) : (
+        <Box flexDirection="column" flexShrink={0} width={props.contentColumns}>
+          {inner}
+        </Box>
+      )}
       <Text {...dimProps(color)} wrap="truncate-end">
         {paletteLegend(palette.list)}
       </Text>
