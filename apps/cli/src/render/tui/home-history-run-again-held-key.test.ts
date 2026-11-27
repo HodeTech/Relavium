@@ -261,7 +261,7 @@ describe('a `r` held down on the detail types nothing into the form’s first fi
       it(`first repeat after ${String(initial)} ms, then every ${String(interval)} ms: the field is empty once the key is known to be held, and a deliberate key after it types`, async () => {
         const m = await mount();
         await m.pressR();
-        expect(m.open).toHaveBeenCalledWith('nightly', 'nightly.yaml');
+        expect(m.open).toHaveBeenCalledWith('nightly', 'nightly.yaml', { leaveOnBack: true });
         let shown = false;
         let peak = 0;
         let last = PRESSED_AT;

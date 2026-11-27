@@ -388,13 +388,19 @@ describe('a key typed over the line is told; the cancels are not (MVP-11 step 4 
 describe('the line’s expiry timer never outlives the line (MVP-11 step 4 review)', () => {
   it('one timer from the acknowledged frame, cleared by a new frame, a disarm, an answer, a step change, a close and dispose', () => {
     // A new frame (the line's content set again): the timer goes with the frame, and the next acknowledgement starts a new one.
+    // (The `(wait)` mark of the dwell has a timer of its own, which ends 800 ms after the acknowledged frame: these counts are taken once it has, so
+    // the one timer left is the expiry's.)
     const frame = rig();
     expect(frame.time.live()).toBe(0);
     frame.arm();
+    expect(frame.time.live(), 'the expiry and the dwell mark').toBe(2);
+    frame.time.advance(900);
     expect(frame.time.live()).toBe(1);
     frame.context().setContent(1, REPORT);
-    expect(frame.time.live()).toBe(0);
+    frame.time.advance(900);
+    expect(frame.time.live(), 'a new frame: the expiry went with it').toBe(0);
     frame.show();
+    frame.time.advance(900);
     expect(frame.time.live()).toBe(1);
     // A disarm (Esc).
     frame.press('', ESC);

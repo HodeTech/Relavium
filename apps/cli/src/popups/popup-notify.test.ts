@@ -127,12 +127,32 @@ function rig() {
 }
 
 describe('what a popup says belongs to it', () => {
+  it('and its latest word on itself replaces its earlier one, shown or waiting; the host’s words and another popup’s queue in order (review round 2, O2-6)', () => {
+    const r = rig();
+    const context = r.open();
+    r.show();
+    r.notifications.notify('the host says');
+    context.notify('Nothing was written.');
+    expect(r.current(), 'the host spoke first').toBe('the host says');
+    context.notify('Pinned release-notes.');
+    r.time.advance(NOTIFICATION_MS);
+    expect(r.current(), 'the popup’s newer word took the older one’s place in the queue').toBe(
+      'Pinned release-notes.',
+    );
+    expect(r.notifications.getSnapshot().queued).toBe(0);
+    context.notify('Unpinned release-notes.');
+    expect(r.current(), 'and, the older one showing, takes its place at once').toBe(
+      'Unpinned release-notes.',
+    );
+    r.time.advance(NOTIFICATION_MS);
+    expect(r.current()).toBeUndefined();
+  });
+
   it('is discarded when the popup closes, shown or waiting; the host’s own words stay', () => {
     const r = rig();
     const context = r.open();
     r.show();
     context.notify('first of the popup');
-    context.notify('second of the popup');
     r.notifications.notify('the host says');
     expect(r.current()).toBe('first of the popup');
     r.time.advance(600);

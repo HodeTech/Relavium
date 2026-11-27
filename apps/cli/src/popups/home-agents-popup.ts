@@ -25,7 +25,7 @@ import {
   type PopupListRow,
   type PopupOrigin,
 } from './frame-model.js';
-import { stored, storedParagraph } from './home-text.js';
+import { endedWithEllipsis, stored, storedParagraph } from './home-text.js';
 import type { PopupControl, PopupSpec } from './popup-reducer.js';
 import { POPUP_TEXT_COLUMNS, wrapHanging } from './popup-text.js';
 
@@ -147,6 +147,24 @@ export function wordCut(head: string): string {
   return `${at > 0 ? body.slice(0, at).trimEnd() : body}…`;
 }
 
+/**
+ * The head of a prompt as the detail's rows. The model's own cut mark (`…`) is taken off before the scrub (which folds it to three dots, so a head
+ * that ended in a full stop read `anything....`) and put back after, as the one ellipsis ending the last row (review round 2, O2-11).
+ */
+function promptRows(promptHead: string): string[] {
+  const cut = wordCut(promptHead);
+  const goesOn = cut.endsWith('…');
+  const lines = storedParagraph(
+    goesOn ? cut.slice(0, -1).trimEnd() : cut,
+    POPUP_TEXT_COLUMNS - 2,
+    PROMPT_ROWS,
+  );
+  const last = lines.at(-1);
+  if (goesOn && last !== undefined && !last.endsWith('…'))
+    lines[lines.length - 1] = endedWithEllipsis(last, POPUP_TEXT_COLUMNS - 2);
+  return lines;
+}
+
 /** What the detail says of an agent it has no definition for (a file that did not parse has none): never reached from a ready row. */
 export function agentDetailContent(row: AgentRow): PopupContent {
   const detail = row.detail;
@@ -157,9 +175,7 @@ export function agentDetailContent(row: AgentRow): PopupContent {
     field('Tools', stored(agentToolsText(detail), POPUP_TEXT_COLUMNS * TOOL_ROWS)),
     TOOL_ROWS,
   );
-  const head = storedParagraph(wordCut(detail.promptHead), POPUP_TEXT_COLUMNS - 2, PROMPT_ROWS).map(
-    (line) => `  ${line}`,
-  );
+  const head = promptRows(detail.promptHead).map((line) => `  ${line}`);
   return {
     kind: 'report',
     page: true,

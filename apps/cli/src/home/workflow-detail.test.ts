@@ -211,6 +211,83 @@ const idsOf = (count: number): string[] =>
 const shown = (definition: WorkflowDefinition): string[] =>
   buildWorkflowDetail(definition).nodes.map((node) => node.id);
 
+describe('which node of the chain follows a node an edge joins it to, and which one does not (review round 2, O2-4)', () => {
+  /** The ids of the nodes drawn after a `·` (no edge from the node before them), as the detail says them. */
+  const apartOf = (nodes: string, edges: string): readonly string[] =>
+    buildWorkflowDetail(
+      parse(`schema_version: '1.0'
+workflow:
+  id: w
+  nodes:
+${nodes}
+  edges:
+${edges}
+`),
+    )
+      .nodes.filter((node) => node.apart === true)
+      .map((node) => node.id);
+  const node = (id: string, type = 'transform'): string =>
+    type === 'transform'
+      ? `    - { id: ${id}, type: transform, transform: '({ })' }`
+      : `    - { id: ${id}, type: ${type} }`;
+
+  it('a straight chain has none: every node follows the one an edge leads from', () => {
+    expect(
+      apartOf(
+        [node('start', 'input'), node('a'), node('out', 'output')].join('\n'),
+        '    - { from: start, to: a }\n    - { from: a, to: out }',
+      ),
+    ).toEqual([]);
+  });
+
+  it('a branch that comes back together (a diamond): the second sibling is apart, the join is not', () => {
+    expect(
+      apartOf(
+        [node('start', 'input'), node('check'), node('hi'), node('lo'), node('out', 'output')].join(
+          '\n',
+        ),
+        [
+          '    - { from: start, to: check }',
+          '    - { from: check, to: hi }',
+          '    - { from: check, to: lo }',
+          '    - { from: hi, to: out }',
+          '    - { from: lo, to: out }',
+        ].join('\n'),
+      ),
+    ).toEqual(['lo']);
+  });
+
+  it('a fan-out: every branch after the first is apart', () => {
+    expect(
+      apartOf(
+        [node('start', 'input'), node('a'), node('b'), node('c')].join('\n'),
+        ['a', 'b', 'c'].map((id) => `    - { from: start, to: ${id} }`).join('\n'),
+      ),
+    ).toEqual(['b', 'c']);
+  });
+
+  it('two parts the edges do not link: the first node of the second is apart', () => {
+    expect(
+      apartOf(
+        [node('start', 'input'), node('a'), node('x'), node('y')].join('\n'),
+        '    - { from: start, to: a }\n    - { from: x, to: y }',
+      ),
+    ).toEqual(['x']);
+  });
+
+  it('is one pass over the edges: a star of thousands of edges is cheap', () => {
+    const count = 5_000;
+    const ids = Array.from({ length: count }, (_, at) => `n${String(at)}`);
+    const started = Date.now();
+    const apart = apartOf(
+      [node('start', 'input'), ...ids.map((id) => node(id))].join('\n'),
+      ids.map((id) => `    - { from: start, to: ${id} }`).join('\n'),
+    );
+    expect(apart.length).toBeGreaterThan(0);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
 describe('the order of the chain is the same on every small graph, and cheap on a huge one', () => {
   it.each([
     [
@@ -305,11 +382,44 @@ describe('the order of the chain is the same on every small graph, and cheap on 
     }
   });
 
+  it('an edge that LEADS to a node nobody declared is dropped too (the seeded graphs only ever pointed edges AT declared nodes, so a check on the edge’s source alone passed)', () => {
+    let seed = 7_261_127;
+    const next = (bound: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % bound;
+    };
+    for (let round = 0; round < 400; round += 1) {
+      const count = 2 + next(10);
+      const ids = idsOf(count);
+      const edges = Array.from({ length: 1 + next(2 * count) }, () => ({
+        from: ids[next(count)] ?? 'ghost',
+        to: next(3) === 0 ? 'ghost' : (ids[next(count)] ?? 'ghost'),
+      }));
+      const expected = referenceOrder(ids, edges).slice(0, WORKFLOW_DETAIL_ITEMS_MAX);
+      expect(shown(definitionOver(ids, edges)), `round ${String(round)}`).toEqual(expected);
+    }
+  });
+
   it('counts the nodes it leaves out whatever their order: 30 nodes show 24 and say 6 more', () => {
     const ids = idsOf(30);
     const detail = buildWorkflowDetail(definitionOver(ids, []));
     expect(detail.nodes).toHaveLength(WORKFLOW_DETAIL_ITEMS_MAX);
     expect(detail.nodesMore).toBe(6);
+  });
+
+  it('a star of 150,000 nodes is still cheap: the ready nodes are kept in a heap, never a list that is sorted again at every push (a sorted array passes the 8,000-node cases and is minutes here)', () => {
+    const count = 150_000;
+    const ids = idsOf(count);
+    const edges: { from: string; to: string }[] = [];
+    for (let at = 1; at < count; at += 1) edges.push({ from: 'n0', to: `n${String(at)}` });
+    const definition = definitionOver(ids, edges);
+    const started = performance.now();
+    const detail = buildWorkflowDetail(definition);
+    const took = performance.now() - started;
+    expect(took, `took ${String(Math.round(took))} ms`).toBeLessThan(1_500);
+    expect(detail.nodes.map((node) => node.id).slice(0, 3)).toEqual(['n0', 'n1', 'n2']);
+    expect(detail.nodes).toHaveLength(WORKFLOW_DETAIL_ITEMS_MAX);
+    expect(detail.nodesMore).toBe(count - WORKFLOW_DETAIL_ITEMS_MAX);
   });
 
   it.each([

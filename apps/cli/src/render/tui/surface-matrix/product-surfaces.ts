@@ -124,6 +124,10 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
     'home.workflows-detail-long',
     'the /workflows popup: a detail longer than its page (14 nodes, 7 inputs), `PgUp/PgDn`',
   ),
+  row(
+    'home.workflows-detail-long-mid',
+    'the /workflows popup: the long detail walked down, the highlight on a line of text',
+  ),
   row('home.workflows-detail-empty', 'the /workflows popup: the detail of a workflow with no run'),
   row(
     'home.workflows-overflow',

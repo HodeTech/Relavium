@@ -434,6 +434,40 @@ describe('the floor the sheet’s tests held, kept for the popup that replaced i
   });
 });
 
+describe('after a withdrawal the highlight stays where the row was (review round 2, M2-12: the sheet this popup replaced kept the cursor near)', () => {
+  /** The popup with the three rows of `FULL`, the row `down` rows below the first highlighted and its withdrawal answered. */
+  function afterWithdrawing(down: number) {
+    const { port, withdraw } = fakePort();
+    const p = opened(port);
+    for (let step = 0; step < down; step += 1) p.press('', DOWN);
+    const before = p.highlighted();
+    p.arm();
+    p.clock.advance(900);
+    p.press('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    return { before, after: p.highlighted(), p };
+  }
+
+  it('the LAST row withdrawn: the highlight goes to the new last row, not to the top', () => {
+    const { before, after } = afterWithdrawing(2);
+    expect(before).toBe('entry:2');
+    expect(after).toBe('entry:1');
+  });
+
+  it('a row in the middle withdrawn: the highlight stays on that place, which is the next row now', () => {
+    const { before, after, p } = afterWithdrawing(1);
+    expect(before).toBe('entry:1');
+    expect(after).toBe('entry:1');
+    expect(JSON.stringify(p.content())).toContain('git status');
+  });
+
+  it('the FIRST row withdrawn: the highlight stays on the first, which is the next row now', () => {
+    const { before, after } = afterWithdrawing(0);
+    expect(before).toBe('entry:0');
+    expect(after).toBe('entry:0');
+  });
+});
+
 describe('what a withdrawal says', () => {
   const answerOf = (answer: WithdrawAnswer) => fakePort(FULL, () => answer);
   const withdrawFirst = (port: PermissionsPort) => {

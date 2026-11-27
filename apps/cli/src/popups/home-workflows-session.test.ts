@@ -247,6 +247,29 @@ describe('the detail', () => {
     ]);
   });
 
+  it.each([
+    [
+      'the same slug declared by another file',
+      { path: '.relavium/workflows/elsewhere.relavium.yaml' },
+    ],
+    ['the same file under another slug (its id was edited)', { slug: 'renamed' }],
+  ] as const)(
+    'the file at the detail’s index is another one after the refresh (%s): the detail goes back to the catalogue, whichever of its slug and its path moved',
+    async (_what, over) => {
+      const fakes = fakeWorkflows([workflowEntry('backup-db'), workflowEntry('release-notes')], {
+        now: NOW,
+      });
+      const { rig } = await opened(fakes);
+      rig.press('', ENTER);
+      await settleWork();
+      rig.clock.advance(700);
+      expect(rig.step()).toBe(WORKFLOWS_STEP.detail);
+      fakes.entries[0] = { ...workflowEntry('backup-db'), ...over };
+      rig.press('p');
+      expect(rig.step(), 'back on the catalogue').toBe(WORKFLOWS_STEP.list);
+    },
+  );
+
   it('a workflow with no run says so; `Enter` is then offered nowhere', async () => {
     const { rig } = await opened(fakeWorkflows([workflowEntry('fresh')]));
     rig.press('', ENTER);
@@ -401,6 +424,22 @@ describe('what the keys hand the host', () => {
     expect(rig.notice()).toMatch(/^Cannot run broken/u);
   });
 
+  it('an invalid file’s long reason on its detail is cut between words with `…`, never in the middle of one (review round 2, O2-11)', async () => {
+    const reason = Array.from({ length: 60 }, (_, at) => `word${String(at)}`).join(' ');
+    const fakes = fakeWorkflows([invalidWorkflowEntry('broken', reason)]);
+    const { rig } = await opened(fakes);
+    rig.press('', ENTER);
+    await settleWork();
+    const content = rig.content();
+    if (content.kind !== 'report') throw new Error('a report');
+    const lines = content.lines.filter((line) => line.includes('word'));
+    expect(lines.length, 'a few rows, not one and not the whole reason').toBeGreaterThan(1);
+    const last = lines.at(-1) ?? '';
+    expect(last.endsWith('…')).toBe(true);
+    const lastWord = last.replace(/…$/u, '').trimEnd().split(' ').at(-1) ?? '';
+    expect(reason.split(' '), 'a whole word before the mark').toContain(lastWord);
+  });
+
   it('a key held down answers nothing: nothing is asked before the frame was seen, or inside the half second after it', async () => {
     const rig = homeRig();
     const fakes = fakeWorkflows();
@@ -448,7 +487,7 @@ describe('`[p]`', () => {
     rig.clock.advance(700);
     rig.press('p');
     expect(fakes.pins.calls).toEqual(['pin c', 'unpin c']);
-    rig.clock.advance(3100); // the first notification has been shown its time; the next one is drawn
+    // The popup's newer word on itself replaces its older one at once (review round 2, O2-6): the title says `unpinned` and so does the row.
     expect(rig.notice()).toBe('Unpinned c.');
   });
 
@@ -583,7 +622,7 @@ describe('what a stored word cannot do', () => {
   );
 });
 
-describe('R1-M proposed: the slug and an invalid file’s note are stored words too', () => {
+describe('the slug and an invalid file’s note are stored words too', () => {
   const FORGED = [
     `${String.fromCharCode(27)}[31mred`,
     '▼ 9 more',
@@ -640,7 +679,7 @@ describe('R1-M proposed: the slug and an invalid file’s note are stored words 
   );
 });
 
-describe('R1-M proposed: the catalog’s own words of a failed read are stored words too', () => {
+describe('the catalog’s own words of a failed read are stored words too', () => {
   it.each(['▼ 9 more', '[Enter] open', 'Press Ctrl+Y now'])(
     'an unreadable catalogue saying %j is drawn as text',
     async (hostile) => {

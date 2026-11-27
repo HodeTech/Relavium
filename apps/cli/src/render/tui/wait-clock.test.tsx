@@ -103,7 +103,7 @@ describe('useWaitClock', () => {
   });
 });
 
-describe('R1-M proposed: waitClockForm', () => {
+describe('waitClockForm', () => {
   it('ticks only in the alternate screen: a host that does not say is inline and static', () => {
     expect(waitClockForm(true)).toBe('ticking');
     expect(waitClockForm(false)).toBe('static');

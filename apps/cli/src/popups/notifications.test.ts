@@ -248,7 +248,6 @@ describe('a notification that was seen is spent; what a popup raised goes with i
     const other = {};
     channel.notify('the popup says', popup);
     channel.notify('the host says');
-    channel.notify('the popup again', popup);
     channel.notify('another popup', other);
     expect(text(channel)).toBe('the popup says');
     const before = channel.getSnapshot();

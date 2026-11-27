@@ -1031,10 +1031,22 @@ export interface LaunchOpener {
 export interface LaunchOptions {
   readonly opener?: LaunchOpener | undefined;
   /**
+   * The caller named the workflow for its own reason (run again from the Runs screen) and the picker is skipped: `Esc` at the first thing asked
+   * leaves the flow with no word, as it does for a launch with an {@link LaunchOpener}, instead of stepping back to a picker the person never
+   * opened (review round 2, O2-5). The caller's screen is where they come back to. It has no effect without a slug.
+   */
+  readonly leaveOnBack?: true | undefined;
+  /**
    * Told once when the person leaves the flow with `Ctrl+C` (or the flow is aborted from outside): the whole stack closes then, the popup this
    * launch came from with it. A No (`Ctrl+N`), a step back (`Esc`) and a refusal do not call it: the popup it came from comes back for them.
    */
   readonly onLeave?: (() => void) | undefined;
+  /**
+   * Told once when the host STARTED a run (the leg exists, whether it is still executing or has already parked or finished): the typed fact the
+   * caller closes its stack on. Nothing the launch SAYS decides that: a refusal's sentence is the host's and the project's words, and may begin
+   * with anything (review round 2, S2-4).
+   */
+  readonly onStarted?: (() => void) | undefined;
 }
 
 export interface RunLaunch {
@@ -1071,9 +1083,6 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
 /** What the notification of a run that started begins with: the launch's own word, never a refusal's (`Not started. …`). */
 export const LAUNCH_STARTED = 'Started ';
 
-/** Whether `notice` is the one a run that started says ({@link startedNotice}): the run exists, whether it is still executing or not. */
-export const launchSaysStarted = (notice: string): boolean => notice.startsWith(LAUNCH_STARTED);
-
 /**
  * What a started run says in its one notification: the workflow and the run's first characters, within 54 columns (a long name gives way to
  * the run alone). The run view opens on it at the same time, so it says nothing of where the run is.
@@ -1097,7 +1106,13 @@ const FIELD_PROMPT_ESCAPE = 'back';
 /** What `open` has settled before it begins a flow: the notice that ends it, or the offered workflows (and what was skipped) to begin on. */
 type Admission =
   /** `empty`: the project has nothing to run (the popup's empty state), rather than a catalog that failed or a slug that cannot begin. */
-  | { readonly kind: 'refused'; readonly notice: string; readonly empty: boolean }
+  | {
+      readonly kind: 'refused';
+      readonly notice: string;
+      /** The words of the same refusal that fit the 54 columns of a popup's legend row, for a launch whose popup comes back (`[r]` in `/workflows`). */
+      readonly short?: string;
+      readonly empty: boolean;
+    }
   | {
       readonly kind: 'admitted';
       readonly choices: readonly LaunchChoice[];
@@ -1113,13 +1128,30 @@ function slugRefusal(
   choices: readonly LaunchChoice[],
   slug: string | undefined,
   path: string | undefined,
-): string | undefined {
+): { readonly long: string; readonly short: string } | undefined {
   if (slug === undefined) return undefined;
   const [first, second] = choices.filter((choice) => choice.slug === slug);
-  if (first === undefined) return launchNotOffered(slug);
-  if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
-  return path !== undefined && first.path !== path ? launchMoved(slug, first.path) : undefined;
+  const named = bounded(slug, SHORT_SLUG_LIMIT);
+  if (first === undefined)
+    return {
+      long: launchNotOffered(slug),
+      short: `Not started: ${named} is not a valid workflow.`,
+    };
+  if (second !== undefined)
+    return {
+      long: launchAmbiguous(slug, first.path, second.path),
+      short: `Not started: two files declare ${named}.`,
+    };
+  return path !== undefined && first.path !== path
+    ? {
+        long: launchMoved(slug, first.path),
+        short: `Not started: ${named} moved. Open the list again.`,
+      }
+    : undefined;
 }
+
+/** How much of a slug a refusal that is read in an open popup's legend row (54 columns beside its way back) names. */
+const SHORT_SLUG_LIMIT = 16;
 
 /** The catalog read and its refusals, before anything is asked: an unreadable catalog, nothing to run, or a slug that cannot begin. */
 function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | undefined): Admission {
@@ -1141,7 +1173,7 @@ function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | und
   const refusal = slugRefusal(choices, slug, path);
   return refusal === undefined
     ? { kind: 'admitted', choices, skipped }
-    : { kind: 'refused', notice: refusal, empty: false };
+    : { kind: 'refused', notice: refusal.long, short: refusal.short, empty: false };
 }
 
 /**
@@ -1175,9 +1207,10 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
     const { opener } = options;
     // Only a launch that names a workflow skips the picker, so only it can go back to the popup that named it.
     const from = slug === undefined ? undefined : opener;
+    const leaveOnBack = slug !== undefined && (from !== undefined || options.leaveOnBack === true);
     const flow = frameOf(from);
     const busy = deps.host.snapshot === undefined ? undefined : launchBusy(deps.host.snapshot());
-    if (busy !== undefined) return refusedBusy(busy, slug);
+    if (busy !== undefined) return refusedBusy(busy);
     const admission = admit(deps, slug, path);
     if (admission.kind === 'refused') return refusedAdmission(flow, admission, slug);
     const { choices, skipped } = admission;
@@ -1194,8 +1227,9 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
       signal,
       preselect: slug,
       skipped: pickerNote,
-      ...(from === undefined ? {} : { opener: from }),
+      leaveOnBack,
       ...(options.onLeave === undefined ? {} : { onLeave: options.onLeave }),
+      ...(options.onStarted === undefined ? {} : { onStarted: options.onStarted }),
     });
     current = { session: running.session, done: running.done };
     try {
@@ -1218,11 +1252,12 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
 }
 
 /**
- * A leg already running: the popup cannot open now. The typed `/run` says it in one notification (its first sentence, which names the run);
- * `[r]` in the `/workflows` popup says it whole in one notification.
+ * A leg already running: the popup cannot open now. Both the typed `/run` and `[r]` in the `/workflows` popup say it in one notification of at
+ * most 54 columns (the popup comes back for `[r]`, and the notice is read in its legend row): its first sentence, which names the run. The strip's
+ * own row is the remedy the sentence after it names, and the strip says it.
  */
-function refusedBusy(busy: string, slug: string | undefined): string {
-  return slug === undefined ? fitted(busy, firstSentence(busy)) : busy;
+function refusedBusy(busy: string): string {
+  return fitted(busy, firstSentence(busy));
 }
 
 /**
@@ -1235,7 +1270,9 @@ async function refusedAdmission(
   admission: Extract<Admission, { kind: 'refused' }>,
   slug: string | undefined,
 ): Promise<string> {
-  if (slug !== undefined) return admission.notice;
+  // `[r]` in the `/workflows` popup: the popup comes back and the notice is read in its legend row, beside the way back (54 columns).
+  if (slug !== undefined)
+    return fitted(admission.notice, admission.short ?? firstSentence(admission.notice));
   flow.begin();
   try {
     await lastStep(flow, {
@@ -1287,12 +1324,14 @@ function runSession(options: {
   readonly preselect?: string | undefined;
   /** The line the picker showed about the files it did not offer: put back when a card that replaced it is left. */
   readonly skipped?: string | undefined;
-  /** The popup this launch was started from: `Esc` at the first thing asked leaves to it ({@link LaunchOpener}). */
-  readonly opener?: LaunchOpener | undefined;
+  /** `Esc` at the first thing asked leaves the flow (the launch was started from a popup or a screen that skipped the picker). */
+  readonly leaveOnBack: boolean;
   /** Told once when the person leaves with `Ctrl+C` ({@link LaunchOptions.onLeave}). */
   readonly onLeave?: (() => void) | undefined;
+  /** Told once when the host started a run ({@link LaunchOptions.onStarted}). */
+  readonly onStarted?: (() => void) | undefined;
 }): SessionRun {
-  const { flow, deps, hold, signal, preselect, skipped, opener, onLeave } = options;
+  const { flow, deps, hold, signal, preselect, skipped, leaveOnBack, onLeave, onStarted } = options;
   const { host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
   /** The workflow the person chose last: the list a step back returns to opens on it, not on its first row. */
@@ -1338,7 +1377,7 @@ function runSession(options: {
       left = true;
       onLeave?.();
     }
-    const step = reduceLaunch(state, event, { toOpener: opener !== undefined });
+    const step = reduceLaunch(state, event, { toOpener: leaveOnBack });
     if (step.state !== state) {
       state = step.state;
       deps.observe?.(state);
@@ -1554,6 +1593,7 @@ function runSession(options: {
         });
       });
       const notice = launchNotice(choice, launch);
+      if (launch.kind === 'started') onStarted?.();
       if (launch.kind === 'started' || state.kind !== 'starting' || state.turn !== effect.turn)
         dispatch({ kind: 'launched', turn: effect.turn, notice });
       else closeFailed(notice);

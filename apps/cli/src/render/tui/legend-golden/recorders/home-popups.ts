@@ -17,6 +17,7 @@ import {
   permissionsSpec,
 } from '../../../../popups/permissions-popup.js';
 import {
+  floorPageRows,
   highlightedRow,
   openFrame,
   withContent,
@@ -62,6 +63,14 @@ function legendOf(rig: HomeRig): readonly string[] {
   return [line?.text.trim() ?? '(no legend)', rolesOf(line)];
 }
 
+/** The page the keys judge an overflow on is the one the frame is drawn in at 80×24 (the host's own binding, as the slot makes it). */
+function bindFloorPage(rig: HomeRig): void {
+  rig.host.bindPageRows(() => {
+    const frame = rig.host.getSnapshot().frame;
+    return frame === undefined ? 1 : floorPageRows(frame);
+  });
+}
+
 /** The popup opened and its first read landed and shown. */
 async function opened(
   rig: HomeRig,
@@ -69,6 +78,7 @@ async function opened(
   port: Parameters<HomeRig['open']>[1],
 ): Promise<HomeRig> {
   rig.open(kind, port);
+  bindFloorPage(rig);
   await settleWork();
   rig.settle();
   return rig;
@@ -81,14 +91,12 @@ async function enter(rig: HomeRig): Promise<void> {
   rig.settle();
 }
 
-/** `↓` until the highlight stands on the first last run (a bounded walk), as a person pages onto it. */
+/** The one `↓` that lands on the first last run of a detail that fits (nothing is highlighted when it opens). */
 function walkToFirstRun(rig: HomeRig): void {
-  for (let step = 0; step < 60; step += 1) {
-    const frame = rig.host.getSnapshot().frame;
-    if (frame !== undefined && highlightedRow(frame)?.id === 'run:0') return;
-    rig.press('', DOWN);
-  }
-  throw new Error('the first last run was never highlighted');
+  rig.press('', DOWN);
+  const frame = rig.host.getSnapshot().frame;
+  if (frame === undefined || highlightedRow(frame)?.id !== 'run:0')
+    throw new Error('one ↓ did not land on the first last run');
 }
 
 const workflowsPort = (
@@ -138,6 +146,14 @@ const recordWorkflows: Recorder = async (): Promise<StateRows> => {
   });
   await enter(long);
   out[label({ popup: 'workflows', step: 'detail', content: 'overflows' })] = legendOf(long);
+  // The highlight on a line of text, and (End) on the last run of the overflowing page: `Enter open run` is the run's own, kept before `↑/↓ scroll`.
+  long.press('', { downArrow: true });
+  out[label({ popup: 'workflows', step: 'detail', content: 'overflows', highlighted: 'a line' })] =
+    legendOf(long);
+  long.press('', { end: true });
+  out[
+    label({ popup: 'workflows', step: 'detail', content: 'overflows', highlighted: 'last run' })
+  ] = legendOf(long);
   const failed = await opened(homeRig(), 'workflows', {
     workflows: workflowsPort({ throws: true }),
   });

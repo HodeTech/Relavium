@@ -585,11 +585,22 @@ export interface DockedTurnRow {
 }
 
 /**
+ * The rows of the reasoning panel's body a docked sheet leaves it, at most, expanded or not ({@link dockedTurnRows}): the sheet's rule must never
+ * stand under a screenful of the model's words.
+ */
+export const DOCKED_REASONING_BODY_ROWS = 3;
+/** The indent of a reasoning body row above a docked sheet: no row of the model's begins where the sheet's rule and the host's rows begin. */
+const DOCKED_REASONING_INDENT = '  ';
+
+/**
  * The in-flight turn as it stays on screen while a sheet is docked ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
  * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings (newest first, one row), this turn's tool-call lines with their
  * outcomes, the reasoning panel's header and body, and the interrupt note, each cut to `columns`. NOT the busy line: under a card that waits it
- * would say `Working…`, which is false. At most `maxRows`, the NEWEST kept: the sheet keeps its rows, and the rows the conversation keeps above
- * it show the latest of the turn. Pure; it reads the glyph form in force (the caller runs it inside `withGlyphForm`).
+ * would say `Working…`, which is false. At most `maxRows`. The HOST's rows come first (unit 8 fix wave 2, S2-2): the warnings row, the interrupt
+ * note and the newest tool lines keep their room, and the reasoning gets only what is left: its header, then at most
+ * {@link DOCKED_REASONING_BODY_ROWS} rows of its body (the newest, `…` where the rest was cut), each set in by two columns, so the model's words
+ * never fill the rows above the sheet and none of them begins where the sheet's rule does. Pure; it reads the glyph form in force (the caller
+ * runs it inside `withGlyphForm`).
  */
 export function dockedTurnRows(input: {
   readonly warnings: readonly string[];
@@ -600,28 +611,58 @@ export function dockedTurnRows(input: {
   readonly maxRows: number;
 }): readonly DockedTurnRow[] {
   const width = Math.max(1, Math.floor(input.columns));
+  const maxRows = Math.max(0, Math.floor(input.maxRows));
   const row = (text: string, tone: DockedTurnRow['tone']): DockedTurnRow => ({
     text: clipLine(text, width),
     tone,
   });
-  const rows: DockedTurnRow[] = [];
-  if (input.warnings.length > 0) {
-    const said = [...input.warnings]
-      .reverse()
-      .map((warning) => `${glyph('warning')} ${stripTerminalControls(warning)}`)
-      .join('  ');
-    rows.push(row(said, 'warning'));
-  }
-  for (const line of input.toolLines) rows.push(row(line, 'tool'));
-  if (input.reasoning !== undefined) {
-    rows.push(row(input.reasoning.header, 'reasoning'));
-    const body = input.reasoning.body ?? '';
-    if (body !== '')
-      for (const line of body.split('\n'))
-        for (const wrapped of wrapText(line, width)) rows.push(row(wrapped, 'reasoning'));
-  }
-  if (input.interrupt !== undefined) rows.push(row(input.interrupt, 'note'));
-  return rows.slice(Math.max(0, rows.length - Math.max(0, Math.floor(input.maxRows))));
+  const warning =
+    input.warnings.length === 0
+      ? []
+      : [
+          row(
+            [...input.warnings]
+              .reverse()
+              .map((said) => `${glyph('warning')} ${stripTerminalControls(said)}`)
+              .join('  '),
+            'warning',
+          ),
+        ];
+  const interrupt = input.interrupt === undefined ? [] : [row(input.interrupt, 'note')];
+  // The newest tool lines take the rows the warnings and the interrupt note leave; the reasoning takes what the tool lines leave.
+  const toolRoom = Math.max(0, maxRows - warning.length - interrupt.length);
+  const tools =
+    toolRoom === 0 ? [] : input.toolLines.slice(-toolRoom).map((line) => row(line, 'tool'));
+  const reasoning = dockedReasoningRows(input.reasoning, width, toolRoom - tools.length);
+  // Drawn in the turn's own order; a room smaller than the host's own rows keeps the newest of them (the interrupt note last).
+  const rows = [...warning, ...tools, ...reasoning, ...interrupt];
+  return rows.slice(Math.max(0, rows.length - maxRows));
+}
+
+/** The reasoning panel's rows above a docked sheet, in at most `room` rows: its header, then the newest rows of its body, set in, capped. */
+function dockedReasoningRows(
+  panel: ReasoningPanel | undefined,
+  width: number,
+  room: number,
+): readonly DockedTurnRow[] {
+  if (panel === undefined || room < 1) return [];
+  const header: DockedTurnRow = { text: clipLine(panel.header, width), tone: 'reasoning' };
+  const inner = Math.max(1, width - DOCKED_REASONING_INDENT.length);
+  const body = panel.body ?? '';
+  const lines = body === '' ? [] : body.split('\n').flatMap((line) => wrapText(line, inner));
+  const keep = Math.min(DOCKED_REASONING_BODY_ROWS, room - 1, lines.length);
+  if (keep < 1) return [header];
+  const shown = lines.slice(-keep);
+  if (shown.length < lines.length) shown[0] = `…${shown[0] ?? ''}`;
+  return [
+    header,
+    ...shown.map(
+      (line): DockedTurnRow => ({
+        text: clipLine(`${DOCKED_REASONING_INDENT}${line}`, width),
+        tone: 'reasoning',
+      }),
+    ),
+  ];
 }
 
 /**

@@ -15,7 +15,7 @@
  *   (`NativeChordPort.chord`): what is written (`default_mode = <mode>`), to which file, that saving rewrites it, what stays for this chat, and
  *   for `auto` the risk sentence before the question. Only an `allow` the chord guard let through confirms (the lockout runs from the card's
  *   appearance, a held key never confirms); `Ctrl+N`, `Ctrl+C`, a closed host and every other key confirm nothing. `Esc` steps back: the flow
- *   ends and the outcome says `back`, so the list opens again on the mode chosen (nothing was done before the confirmation).
+ *   ends and the outcome says `back`, so the list opens again on the mode in force or the saved default, as `/mode` opens it (nothing was done before the confirmation).
  * - **`Done` is persistent** (§6): a write that happened, or one that failed, is said on the popup's last step with the file it went to,
  *   closed by `Enter` or `Esc`. A confirmation declined is ONE notification, and a refusal before anything was asked (the configuration could
  *   not be read) is the flow's own sentence as that one notification, never a Done step.

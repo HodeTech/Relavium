@@ -127,7 +127,7 @@ export function costReportLines(
 
 /** The report step's content. */
 export function costReportContent(reading: CostReading): PopupContent {
-  return { kind: 'report', lines: costReportLines(reading) };
+  return { kind: 'report', page: true, lines: costReportLines(reading) };
 }
 
 /**

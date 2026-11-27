@@ -16,8 +16,8 @@ import { ReverseSearchView } from './reverse-search-view.js';
  * Text a user, a project, a model or a provider wrote is drawn inside the style pair of a bold or selected row, and must not carry an
  * SGR of its own into the frame: `emphasize` does not sanitise (its text is the caller's), so each VIEW that draws such a field inside a
  * pair passes it through `sanitizeInline` first (palette command name, mention name and filter, model name and filter, reverse-search query,
- * a strip row). The sheets' lines are cleaned upstream: the tab host's own view sanitises every line, and the permissions sheet shows a label
- * through `escaped()`. Each field below holds `ESC[31m … ESC[0m` and a pair of its own (`ESC[7m`), and the frame must hold only the
+ * a strip row). The sheets' and popups' lines are cleaned upstream: the tab host's own view sanitises every line, and the permissions popup shows a label
+ * through `escaped()` and the popups' one scrub. Each field below holds `ESC[31m … ESC[0m` and a pair of its own (`ESC[7m`), and the frame must hold only the
  * sequences the rule wrote: the colour and the reset the field tried to write are gone, and so is the inverse of its own.
  */
 afterEach(cleanup);

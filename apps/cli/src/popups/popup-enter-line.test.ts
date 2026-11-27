@@ -335,9 +335,10 @@ describe.each(KINDS)(
     it('the expiry timer goes with an answer', () => {
       const r = rig(kind);
       r.arm();
-      // The expiry timer, and on a line answered by `Enter` the one that ends its `(wait)` mark when the dwell has passed (review round 1, O-7).
-      expect(r.time.live()).toBe(kind === 'enter' ? 2 : 1);
+      // The expiry timer, and the one that ends the `(wait)` mark when the dwell has passed (review rounds 1 and 2: every line holds its dwell).
+      expect(r.time.live()).toBe(2);
       r.time.advance(900);
+      expect(r.time.live(), 'the dwell is over: the expiry is the one left').toBe(1);
       press(r);
       expect(r.chord).toHaveBeenCalledOnce();
       expect(r.time.live()).toBe(0);

@@ -1107,6 +1107,31 @@ describe('open(slug) starts the form for one workflow (the `/workflows` popup’
     expect(r.startCalls).toHaveLength(0);
   });
 
+  it('Esc at the first field LEAVES the flow, with no word, when the caller skipped the picker for its own reason (run again from the Runs screen): no picker the person never saw (review round 2, O2-5)', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('secret.relavium.yaml', SECRET_RUN);
+    const r = rig();
+    const opened = r.launch.open('host-secret', undefined, { leaveOnBack: true });
+    await shows(r, 'text', 'Input 1 of 2: n');
+    keys(r).esc();
+    expect(await opened, 'the screen the key came from has nothing to add').toBe('');
+    expect(r.snapshots.join('\n')).not.toContain('Run which workflow?');
+    expect(r.startCalls).toHaveLength(0);
+  });
+
+  it('`leaveOnBack` is the caller’s word about a slug: without one the person chose from the picker, and Esc at the first field steps back to it as ever', async () => {
+    writeWorkflow('secret.relavium.yaml', SECRET_RUN);
+    const r = rig();
+    const opened = r.launch.open(undefined, undefined, { leaveOnBack: true });
+    await shows(r, 'select', 'Run which workflow?');
+    keys(r).enter();
+    await shows(r, 'text', 'Input 1 of 2: n');
+    keys(r).esc();
+    await shows(r, 'select', 'Run which workflow?');
+    keys(r).esc();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
+
   it.each([
     ['a slug no file carries', 'ghost'],
     ['a path', '../../x'],
@@ -1118,8 +1143,9 @@ describe('open(slug) starts the form for one workflow (the `/workflows` popup’
     writeFileSync(join(root, 'x.relavium.yaml'), HAPPY.replace('id: host-happy', 'id: x'));
     const r = rig();
     const notice = await r.launch.open(slug);
-    expect(notice).toBe(launchNotOffered(slug));
-    expect(notice).toMatch(/^Not started\. .* is not a valid workflow of this project\.$/u);
+    // `[r]` brings the popup back, so the notice is read in its legend row (54 columns): the short words, the whole sentence is `launchNotOffered`'s.
+    expect(notice).toBe(`Not started: ${slug} is not a valid workflow.`);
+    expect(displayWidth(notice)).toBeLessThanOrEqual(54);
     expect(r.snapshots, 'no prompt was ever published').toEqual([]);
     expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
     expect(r.startCalls).toHaveLength(0);
@@ -1135,6 +1161,67 @@ describe('open(slug) starts the form for one workflow (the `/workflows` popup’
     expect(notice.includes(String.fromCharCode(0x1b)), 'no escape byte').toBe(false);
     expect(notice.includes(String.fromCharCode(0x202e)), 'no bidi override').toBe(false);
     expect(r.snapshots).toEqual([]);
+  });
+});
+
+describe('onStarted: only the host’s own fact says a run started, never a sentence (review round 2, S2-4)', () => {
+  it('a run that started tells it once, whatever its notification says; the notification is still the launch’s own', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const onStarted = vi.fn();
+    const opened = r.launch.open(undefined, undefined, { onStarted });
+    await toConfirmation(r);
+    keys(r).ctrlY();
+    expect(await opened).toMatch(/^Started host-happy · run /u);
+    expect(onStarted).toHaveBeenCalledOnce();
+  });
+
+  it('a refusal whose sentence begins with `Started ` never tells it, before the popup opens (a catalog that fails in the project’s words) or after (the host’s)', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    // Before: `[r]` on a catalogue the project broke says the catalog's own sentence, which may begin with anything.
+    const broken = rig({
+      catalog: (real) => ({
+        ...real,
+        list: () => {
+          throw new CliError('invalid_invocation', 'Started reading, but the catalog is broken.');
+        },
+      }),
+    });
+    const before = vi.fn();
+    const notice = await broken.launch.open('host-happy', undefined, { onStarted: before });
+    expect(notice).toMatch(/^Started reading/u);
+    expect(before, 'a sentence is not a run').not.toHaveBeenCalled();
+    // After: the host's refusal is the popup's last step; the launch resolves `''` and tells nothing either.
+    const refused = rig({
+      start: () =>
+        Promise.resolve({
+          kind: 'refused',
+          reason: 'busy',
+          message: 'Started over by another window: nothing was run.',
+        } as HostedLaunch),
+    });
+    const after = vi.fn();
+    const opened = refused.launch.open(undefined, undefined, { onStarted: after });
+    await toConfirmation(refused);
+    keys(refused).ctrlY();
+    expect((await lastStep(refused)).message).toMatch(/^Started over by another window/u);
+    expect(await opened).toBe('');
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it('a cancel, a workflow that is not offered and a host that is busy tell nothing either', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const onStarted = vi.fn();
+    const cancelled = rig();
+    const opened = cancelled.launch.open(undefined, undefined, { onStarted });
+    await toConfirmation(cancelled);
+    keys(cancelled).ctrlN();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    const missing = rig();
+    expect(await missing.launch.open('code-review', undefined, { onStarted })).toBe(
+      'Not started: code-review is not a valid workflow.',
+    );
+    expect(onStarted).not.toHaveBeenCalled();
   });
 });
 
@@ -1321,10 +1408,8 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeWorkflow('none-moved.relavium.yaml', NO_INPUTS);
     const r = rig();
     const notice = await r.launch.open('no-inputs', listed);
-    expect(notice).toBe(launchMoved('no-inputs', now));
-    expect(notice).toMatch(
-      /^Not started\. Open the list again: no-inputs is now in none-moved\.relavium\.yaml\.$/u,
-    );
+    expect(now).toContain('none-moved'); // the whole sentence, `launchMoved`, names the file it is in now (pinned below)
+    expect(notice).toBe('Not started: no-inputs moved. Open the list again.');
     expect(r.snapshots, 'no prompt was ever published').toEqual([]);
     expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
     expect(r.startCalls).toHaveLength(0);
@@ -1339,9 +1424,7 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeWorkflow('took-the-slug.relavium.yaml', NO_INPUTS);
     const r = rig();
     const notice = await r.launch.open('no-inputs', listed);
-    expect(notice).toBe(
-      launchMoved('no-inputs', join('.relavium', 'workflows', 'took-the-slug.relavium.yaml')),
-    );
+    expect(notice).toBe('Not started: no-inputs moved. Open the list again.');
     expect(r.snapshots).toEqual([]);
     expect(r.startCalls).toHaveLength(0);
   });
@@ -1351,9 +1434,45 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeFileSync(join(root, 'x.relavium.yaml'), NO_INPUTS.replace('id: no-inputs', 'id: x'));
     const r = rig();
     const notice = await r.launch.open('no-inputs', '../../x.relavium.yaml');
-    expect(notice).toBe(launchMoved('no-inputs', listed));
+    expect(notice).toBe('Not started: no-inputs moved. Open the list again.');
     expect(r.snapshots).toEqual([]);
     expect(r.startCalls).toHaveLength(0);
+  });
+});
+
+describe('what `[r]` says before its popup opens fits the row the popup comes back with (review round 2, O2-3)', () => {
+  const LONG = 'x'.repeat(200);
+
+  it('every refusal of a launch that names its workflow is at most 54 columns, whatever the slug, the files or the catalog say, and is never cut mid-word', async () => {
+    const notices: string[] = [];
+    // Nothing to run in the project at all.
+    notices.push(await rig().launch.open('anything'));
+    // A slug no file carries, a long one, a path-shaped one.
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    notices.push(await rig().launch.open(LONG));
+    notices.push(await rig().launch.open('../../x'));
+    // A file that moved, and two files that declare one id.
+    notices.push(
+      await rig().launch.open('host-happy', join('.relavium', 'workflows', `${LONG}.yaml`)),
+    );
+    writeWorkflow('happy-copy.relavium.yaml', HAPPY);
+    notices.push(await rig().launch.open('host-happy'));
+    // A catalog that fails in the project's words.
+    const broken = rig({
+      catalog: (real) => ({
+        ...real,
+        list: () => {
+          throw new CliError('invalid_invocation', `The catalog is unreadable: ${LONG} ${LONG}.`);
+        },
+      }),
+    });
+    notices.push(await broken.launch.open('host-happy'));
+    for (const notice of notices) {
+      expect(displayWidth(notice), notice).toBeLessThanOrEqual(54);
+      expect(notice, 'something is said').not.toBe('');
+    }
+    // Where a form ends in `…` it is the clip of a long word, never of a sentence that had a whole form that fits.
+    expect(notices.slice(0, 5).some((notice) => notice.endsWith('…'))).toBe(false);
   });
 });
 
@@ -1421,11 +1540,25 @@ describe('two files that declare one workflow id', () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     const r = rig();
     const notice = await r.launch.open('host-happy');
-    expect([
+    expect(notice).toBe('Not started: two files declare host-happy.');
+    // The whole sentence (`launchAmbiguous`) keeps the suffixes, so the two names differ.
+    expect(
+      launchAmbiguous(
+        'host-happy',
+        join('.relavium', 'workflows', 'happy.yaml'),
+        join('.relavium', 'workflows', 'happy.relavium.yaml'),
+      ),
+    ).toBe(
       'Not started. Rename one of happy.yaml or happy.relavium.yaml: both declare host-happy.',
-      'Not started. Rename one of happy.relavium.yaml or happy.yaml: both declare host-happy.',
-    ]).toContain(notice);
+    );
     expect(r.startCalls).toHaveLength(0);
+  });
+
+  it('the whole sentences keep their remedy and their names; the popup that comes back for `[r]` says the short ones (54 columns beside its way back)', () => {
+    expect(launchNotOffered('code-review')).toBe(
+      'Not started. code-review is not a valid workflow of this project.',
+    );
+    expect(displayWidth(launchNotOffered('code-review'))).toBeGreaterThan(54);
   });
 
   it('a file that moved to a name with the same stem is named with its suffix, so the sentence says which file', () => {
@@ -1449,15 +1582,14 @@ describe('two files that declare one workflow id', () => {
     // The two paths come in the order the directory listed them, which is the file system's: the sentence is compared in either order.
     const first = join('.relavium', 'workflows', 'happy-copy.relavium.yaml');
     const second = join('.relavium', 'workflows', 'happy.relavium.yaml');
-    expect([
-      launchAmbiguous('host-happy', first, second),
-      launchAmbiguous('host-happy', second, first),
-    ]).toContain(notice);
-    expect([
+    // The whole sentence, with both file names, is the popup's own where it has room (the typed `/run` says it whole on its first step).
+    expect(launchAmbiguous('host-happy', first, second)).toBe(
       'Not started. Rename one of happy-copy or happy: both declare host-happy.',
-      'Not started. Rename one of happy or happy-copy: both declare host-happy.',
-    ]).toContain(notice);
-    expect(notice.length, 'the row shows all of it').toBeLessThanOrEqual(78);
+    );
+    expect(notice, 'the popup comes back for it: 54 columns beside its way back').toBe(
+      'Not started: two files declare host-happy.',
+    );
+    expect(displayWidth(notice)).toBeLessThanOrEqual(54);
     expect(r.snapshots, 'no prompt was drawn for either file').toEqual([]);
     expect(r.startCalls).toHaveLength(0);
     // An id only one file declares is not ambiguous.
@@ -2277,12 +2409,11 @@ describe('a request while the host already hosts a leg is answered before the fo
     expect(r.channel.ui.getSnapshot().active).toBe(false);
     expect(list, 'the catalog was not read').not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
-    // The same for `r` on a workflow of the `/workflows` popup (the slug is not even looked at), said whole on the notification.
-    const whole = await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml');
-    expect(whole).toBe(
-      'A run is already executing (01234567). Enter on its row in the strip opens it.',
-    );
-    expect(whole.length, 'one row of the tab').toBeLessThanOrEqual(78);
+    // The same for `r` on a workflow of the `/workflows` popup (the slug is not even looked at): the popup comes back and the notification is read
+    // in its legend row, beside the way back, so it too is at most 54 columns (review round 2, O2-3: it was 78 and was clipped mid-word).
+    const refused = await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml');
+    expect(refused).toBe('A run is already executing (01234567).');
+    expect(displayWidth(refused)).toBeLessThanOrEqual(54);
   });
 
   it('a leg that is still starting is named as starting, and a host with nothing hosted opens the form as before', async () => {

@@ -268,13 +268,19 @@ describe('a result that lands', () => {
     expect(currentStep(short).state.selected).toBe(0);
   });
 
-  it('a highlighted row that is still there but cannot act any more is left for one that can', () => {
+  it('a highlighted row that is still there but cannot act any more is left for the nearest one that can: the next at or after it, else the one before (review round 2, M2-12: it was the top)', () => {
     const frame = stateOf(press(openFrame(spec([step()]), 1), '', { end: true })); // delta
     const disabled = withContent(frame, 0, {
       kind: 'list',
       rows: [row('alpha'), row('bravo'), row('charlie'), row('delta', false)],
     });
-    expect(currentStep(disabled).state.selected).toBe(0);
+    expect(currentStep(disabled).state.selected, 'none after it: the row before').toBe(2);
+    const middle = stateOf(press(openFrame(spec([step()]), 1), '', { downArrow: true })); // bravo
+    const moved = withContent(middle, 0, {
+      kind: 'list',
+      rows: [row('alpha'), row('bravo', false), row('charlie'), row('delta')],
+    });
+    expect(currentStep(moved).state.selected, 'one after it: the next').toBe(2);
   });
 });
 

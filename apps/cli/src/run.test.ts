@@ -339,10 +339,10 @@ describe('run — bare-invocation Home gate', () => {
     expect(out()).toContain('Usage: relavium');
   });
 
-  // ADR-0137 §3 — a bare `relavium permissions` opens the permissions sheet in a genuine terminal, as `relavium chat resume` opens the
+  // ADR-0137 §3, ADR-0148 §10 — a bare `relavium permissions` opens the `/permissions` popup over the Home in a genuine terminal, as `relavium chat resume` opens the
   // session picker; anywhere else the group keeps its help and its two subcommands.
   describe('a bare `relavium permissions`', () => {
-    it('opens the Home with the sheet as its whole job in a genuine TTY (no help printed), and a lone -- still counts as bare', async () => {
+    it('opens the Home with the `/permissions` popup as its whole job in a genuine TTY (no help printed), and a lone -- still counts as bare', async () => {
       for (const args of [['permissions'], ['permissions', '--']]) {
         const { io, out } = interactiveIo();
         const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);

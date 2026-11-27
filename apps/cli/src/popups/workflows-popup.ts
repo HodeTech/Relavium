@@ -54,6 +54,7 @@ export function workflowsContent(reading: WorkflowsReading): PopupContent {
         };
       return {
         kind: 'report',
+        page: true,
         lines: parts.sections.flatMap((section) => [
           ...wrapHanging(section.heading),
           ...section.entries.flatMap((entry) =>

@@ -154,7 +154,7 @@ describe('what the Home’s popup lists', () => {
   });
 });
 
-describe('R1-M proposed: what is stored cannot forge the page', () => {
+describe('what is stored cannot forge the page', () => {
   /** Every string the list step draws, raw (never JSON-escaped: an escape character must be seen as the character it is). */
   const drawn = (p: ReturnType<typeof opened>): string => {
     const content = p.content();
@@ -192,7 +192,7 @@ describe('R1-M proposed: what is stored cannot forge the page', () => {
   });
 });
 
-describe('R1-M proposed: the repository’s allowlist is bounded', () => {
+describe('the repository’s allowlist is bounded', () => {
   it('draws at most four entry rows, the last of them the count of the rest, and counts what the snapshot left out too', () => {
     const many: PermissionsSnapshot = {
       ...ROWS,

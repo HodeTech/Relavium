@@ -346,6 +346,17 @@ describe('the content states (ADR-0148 §5)', () => {
       page.some((row) => /▲ \d+ more/u.test(row)),
       'the lines above are said',
     ).toBe(true);
+    // The numbers (review round 2, P2-5): 40 lines in a body of 18 rows. At the end the window starts at line 22: 23 lines are above (the one under
+    // the marker counted), none below. Highlighted on line 20 it starts at line 12 and ends at line 30: 13 above, 11 below (line 29 under the marker).
+    expect(page[0]).toMatch(/▲ 23 more/u);
+    expect(page.at(-1)).not.toMatch(/▼/u);
+    const middle = frame({ kind: 'list', rows: lines, page: true }, { selected: 20 }).text.slice(
+      1,
+      -2,
+    );
+    expect(middle[0]).toMatch(/▲ 13 more/u);
+    expect(middle.at(-1)).toMatch(/▼ 11 more/u);
+    expect(middle.length).toBe(18);
   });
 
   it('a report that does not fit is windowed the same way, from its offset', () => {

@@ -236,7 +236,7 @@ describe('what a pending sheet writes while it waits (ADR-0147 §2: the byte-cou
   });
 });
 
-describe('R1-M proposed: the agent’s question and the continue checkpoint wear the clock too (ADR-0147 §1, §2)', () => {
+describe('the agent’s question and the continue checkpoint wear the clock too (ADR-0147 §1, §2)', () => {
   const QUESTION = {
     questions: [
       {

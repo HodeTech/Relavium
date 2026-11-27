@@ -715,7 +715,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     setScroll(next);
   };
 
-  // Tell the controller the size, so the permissions sheet knows whether it can show a withdrawal's question (ADR-0137 §2).
+  // Tell the controller the size, so a sheet or a popup knows whether it can show its question (ADR-0147 §1, ADR-0148 §2).
   useEffect(() => {
     controller.setTerminalSize(size.cols, size.rows);
   }, [controller, size.cols, size.rows]);

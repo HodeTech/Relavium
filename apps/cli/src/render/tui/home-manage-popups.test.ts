@@ -380,6 +380,7 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
     expect(launch.mock.calls[0]?.[2]).toEqual({
       opener: { origin: 'workflows' },
       onLeave: expect.any(Function) as unknown,
+      onStarted: expect.any(Function) as unknown,
     });
     // The `r` that asked is left on the Home's one key history for the flow to take when it begins: this launch never begins one, and the
     // record is forgotten as soon as it settles (a stale record would make the next flow's fast `rr` look like a held key).
@@ -467,8 +468,13 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
   it.each(['list', 'detail'] as const)(
     'a run that started and was already parked or finished when the host was looked at (from the %s) closes everything and says what a plain `/run` says, the popup not back',
     async (from) => {
-      // The host is idle again by the time it is read (the leg parked at a gate, or finished): only the launch's own word says a run started.
-      const launch = vi.fn(() => Promise.resolve('Started code-review · run run-0001'));
+      // The host is idle again by the time it is read (the leg parked at a gate, or finished): only the launch's own fact (`onStarted`) says a run started.
+      const launch = vi.fn(
+        (_slug?: string, _path?: string, options?: LaunchOptions): Promise<string> => {
+          options?.onStarted?.();
+          return Promise.resolve('Started code-review · run run-0001');
+        },
+      );
       const { controller, opened, announced } = mount({
         agents: agentsPort,
         defined: definedPort,
@@ -481,6 +487,24 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
       expect(opened, 'no popup comes back').toHaveLength(1);
       expect(controller.getSnapshot().screen, 'no leg executes, so no run view').toBeUndefined();
       expect(announced).toEqual(['Started code-review · run run-0001']);
+    },
+  );
+
+  it.each(['list', 'detail'] as const)(
+    'a refusal whose sentence begins with `Started ` is no run (from the %s): the popup comes back, and the sentence is the one notification (review round 2, S2-4)',
+    async (from) => {
+      const sentence = 'Started over by another window: nothing was run.';
+      const launch = vi.fn(() => Promise.resolve(sentence));
+      const { controller, opened, announced } = mount({
+        agents: agentsPort,
+        defined: definedPort,
+        launch,
+      });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.run(NODE, PATH, from);
+      await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
+      expect(opened[1]?.at).toEqual({ slug: NODE, step: from });
+      expect(announced).toEqual([sentence]);
     },
   );
 
@@ -611,6 +635,16 @@ describe('`[x]` hands the controller an export, from /workflows', () => {
     expect(announced).toEqual(['Export is unavailable in this session.']);
     expect(opened).toHaveLength(2);
   });
+
+  it.each(['list', 'detail'] as const)(
+    'a Home with no export brings the popup back on the step the key was pressed on (%s), as one that can export does',
+    (from) => {
+      const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.export('nightly', from);
+      expect(opened[1]?.at).toEqual({ slug: 'nightly', step: from });
+    },
+  );
 });
 
 describe('`[h]` and `Enter` on a last run open the Runs screen', () => {

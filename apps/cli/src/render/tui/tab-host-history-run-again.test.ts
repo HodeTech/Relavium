@@ -451,6 +451,17 @@ describe('the legend keeps `Enter open` beside `[r] run again`, and gives up the
     },
   ] as const;
 
+  it('the whole legend fits exactly where it is as wide as the usable columns, and one column narrower one item gives way (the boundary of the fit)', () => {
+    const r = rig();
+    r.onDetail({ kind: 'ready', detail: detailRead() });
+    const at = (columns: number): string =>
+      tabHostLines(r.state, { columns, terminalRows: 24 }).at(-1)?.text ?? '';
+    expect(displayWidth(EVERY_ITEM)).toBe(89);
+    expect(at(91)).toBe(EVERY_ITEM);
+    expect(at(90)).not.toBe(EVERY_ITEM);
+    expect(at(90)).toMatch(/\[r\] run again · Esc back$/u);
+  });
+
   // 78 is the usable width of the 80-column floor (`FLOOR`, below): a terminal narrower than the floor draws no tab host at all. At 80 one item
   // gives way; at 100 and 120 (98 and 100 usable) every item is named, since the width holds them (review round 1, D-2).
   for (const columns of [80, 100, 120]) {

@@ -98,6 +98,8 @@ interface RigOptions {
   readonly corrupt?: boolean;
   /** A project file selects another mode: the confirmation names the override. */
   readonly projectMode?: ChatMode;
+  /** A workspace file selects another mode: the confirmation names that override. */
+  readonly workspaceMode?: ChatMode;
   /** No config file exists yet: saving creates it. */
   readonly noFile?: boolean;
   /** The raw flow's `end` rejects (the prompt could not be released). */
@@ -110,6 +112,8 @@ interface RigOptions {
   readonly prepare?: ModeSettingsOptions['prepare'];
   /** The host's admission check, asked by the writer before and after its steps (a test makes the host stop admitting). */
   readonly assertAdmitting?: () => void;
+  /** The run names its configuration file (`--config`): the default is saved THERE, and the operator's own global file is left alone. */
+  readonly customConfig?: boolean;
 }
 
 /** An operator home whose global default is `initial`, the real runtime over it, and the flow running on the real channel. */
@@ -123,14 +127,31 @@ function rig(options: RigOptions = {}) {
   const configPath = join(home, '.relavium', 'config.toml');
   const written = `[preferences]\ndefault_mode = "${options.initial ?? 'ask'}"\ntheme = "kept"\n`;
   if (options.noFile !== true) writeFileSync(configPath, written);
+  if (options.workspaceMode !== undefined) {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'workspace.toml'),
+      `[chat]\ndefault_mode = "${options.workspaceMode}"\n`,
+    );
+  }
   if (options.projectMode !== undefined) {
-    mkdirSync(join(cwd, '.relavium'));
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(
       join(cwd, '.relavium', 'project.toml'),
       `[chat]\ndefault_mode = "${options.projectMode}"\n`,
     );
   }
-  const real = createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true);
+  const custom = join(root, 'custom.toml');
+  if (options.customConfig === true)
+    writeFileSync(custom, `[preferences]\ndefault_mode = "${options.initial ?? 'ask'}"\n`);
+  const real = createStartingModeRuntime(
+    loadResolvedConfig({
+      cwd,
+      home,
+      ...(options.customConfig === true ? { configPath: custom } : {}),
+    }),
+    true,
+  );
   const runtime: typeof real =
     options.readThrows === true
       ? {
@@ -191,6 +212,7 @@ function rig(options: RigOptions = {}) {
     result,
     snapshot,
     config: () => readFileSync(configPath, 'utf8'),
+    customConfig: () => readFileSync(custom, 'utf8'),
     unchanged: written,
     press: (input: string, key: Key) => channel.ui.input(input, key),
     advance: (ms: number) => {
@@ -562,6 +584,11 @@ describe('every path of the writer’s flow: what the person is told', () => {
     const done = await r.lastStep();
     expect(done.final).toBe('ok');
     expect(done.message).toBe('Startup default saved; auto applies after a restart');
+    // the flow's own sentence is drawn under it (a Done step that says less than the flow did would drop the reason).
+    expect(done.details).toEqual([
+      TARGET,
+      'Global startup default saved: auto. Startup auto was not re-admitted for this invocation.',
+    ]);
     expect(r.config()).toContain('default_mode = "auto"');
     r.press('', ENTER);
     expect(await r.result).toEqual({ kind: 'said' });
@@ -658,6 +685,55 @@ describe('every path of the writer’s flow: what the person is told', () => {
     expect(outcome.kind).toBe('notice');
     expect(r.config()).toBe(r.unchanged);
     expect(r.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('what the writer’s flow does at the edges its ported tests did not reach', () => {
+  it('a run that names its own configuration file (`--config`) saves the default THERE, and the operator’s global file is not touched', async () => {
+    const r = rig({ customConfig: true, mode: 'accept-edits' });
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    await r.lastStep();
+    r.press('', ENTER);
+    expect(await r.result).toEqual({ kind: 'said' });
+    expect(r.customConfig()).toContain('default_mode = "accept-edits"');
+    expect(r.config(), 'the global file is exactly what it was').toBe(r.unchanged);
+  });
+
+  it('a host that stops admitting between the confirmation and the preparation prepares and writes nothing', async () => {
+    let closing = false;
+    const prepare = vi.fn<NonNullable<ModeSettingsOptions['prepare']>>(() => {
+      throw new Error('must not be prepared');
+    });
+    const r = rig({
+      prepare,
+      assertAdmitting: () => {
+        if (closing) throw new Error('the chat is closing');
+      },
+    });
+    await r.stepUp('chord');
+    closing = true;
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    expect(done.final).toBe('failed');
+    r.press('', ENTER);
+    await r.result;
+    expect(prepare, 'nothing is prepared for a host that is going away').not.toHaveBeenCalled();
+    expect(r.publish).not.toHaveBeenCalled();
+    expect(r.config()).toBe(r.unchanged);
+  });
+});
+
+describe('a workspace setting that selects another mode', () => {
+  it('is named like a project’s: the Done step says the workspace overrides the saved default', async () => {
+    const r = rig({ mode: 'accept-edits', workspaceMode: 'plan' });
+    await r.stepUp('chord');
+    r.press('y', CTRL);
+    const done = await r.lastStep();
+    expect(done.message).toBe('Startup default saved; this workspace overrides it');
+    expect(done.details?.[1]).toContain('workspace override selects plan');
+    r.press('', ENTER);
+    await r.result;
   });
 });
 

@@ -6,7 +6,7 @@ import {
 } from '../../../history/defined-model.js';
 import type { AgentsPort } from '../../../home/agents-port.js';
 import type { HomeWorkflowRun } from '../../../popups/home-port.js';
-import { highlightedRow, type PopupFrame } from '../../../popups/popup-reducer.js';
+import type { PopupFrame } from '../../../popups/popup-reducer.js';
 import { AGENTS_PORT, DEFINED_PORT, NOW_MS, PROJECT_PERMISSIONS_PORT } from './home-fixtures.js';
 import { KEYS, type HomeMount, type HomeSetup } from './home-host.js';
 import { popupBoxOf, recordBaseline } from './popup-fixture.js';
@@ -248,14 +248,10 @@ async function enterDetail(m: HomeMount, landmark: string): Promise<void> {
   await m.settle();
 }
 
-/** `↓` until the highlight stands on the detail's first last run (the page opens on its title), a bounded walk. */
+/** The one `↓` that lands on the detail's first last run (nothing is highlighted when a page that fits opens). */
 async function walkToFirstRun(m: HomeMount): Promise<void> {
-  for (let step = 0; step < 60; step += 1) {
-    const frame = m.popupFrame();
-    if (frame !== undefined && highlightedRow(frame)?.id === 'run:0') break;
-    m.key(KEYS.down);
-    await m.settle();
-  }
+  m.key(KEYS.down);
+  await m.settle();
 }
 
 /** `/workflows` on a detail: the page as it opens (on its title), on a last run, with no run, or long enough to overflow. */
@@ -267,6 +263,8 @@ function workflowsDetailSurface(options: {
   readonly selectedRow?: string;
   readonly setup?: HomeSetup;
   readonly walk?: boolean;
+  /** How many `↓` are pressed on the page once it is up (a page that overflows is walked line by line). */
+  readonly presses?: number;
   readonly notes: string;
 }): HomeSurface {
   return {
@@ -289,6 +287,10 @@ function workflowsDetailSurface(options: {
       await settleOn(m, 'alpha');
       await enterDetail(m, options.landmark);
       if (options.walk === true) await walkToFirstRun(m);
+      for (let step = 0; step < (options.presses ?? 0); step += 1) {
+        m.key(KEYS.down);
+        await m.settle();
+      }
     },
   };
 }
@@ -301,9 +303,9 @@ const WORKFLOWS_DETAIL_SURFACES: readonly HomeSurface[] = [
     id: 'home.workflows-detail',
     title: 'The /workflows popup: one workflow’s detail as it opens (inputs, nodes, last runs)',
     landmark: 'Last runs',
-    // `↑/↓ select` (the last runs are rows to choose) is named where the width holds it, and is the first item to go.
+    // Nothing is highlighted when a page that fits opens: `↑/↓ select` lands on the first run, `[Ctrl+C] close` goes first, and the letters stay.
     legendRow: [
-      '[r] run · [x] export · [p] unpin · [Ctrl+C] close · Esc back',
+      '↑/↓ select · [r] run · [x] export · [p] unpin · Esc back',
       '↑/↓ select · [r] run · [x] export · [p] unpin · [Ctrl+C] close · Esc back',
     ],
     notes: DETAIL_NOTES,
@@ -313,7 +315,11 @@ const WORKFLOWS_DETAIL_SURFACES: readonly HomeSurface[] = [
     title:
       'The /workflows popup: one workflow’s detail with a last run walked onto (what Enter opens)',
     landmark: 'Last runs',
-    legendRow: '[r] run · [x] export · [p] unpin · [Ctrl+C] close · Esc back',
+    // The run's own `Enter open run` is kept before `↑/↓ select`, which gives way at 80 columns.
+    legendRow: [
+      'Enter open run · [r] run · [x] export · [p] unpin · Esc back',
+      '↑/↓ select · Enter open run · [r] run · [x] export · [p] unpin · Esc back',
+    ],
     selectedRow: '41ae651d',
     walk: true,
     notes: `${DETAIL_NOTES}; ↓ until the first last run is highlighted`,
@@ -323,11 +329,31 @@ const WORKFLOWS_DETAIL_SURFACES: readonly HomeSurface[] = [
     title:
       'The /workflows popup: a detail of 14 nodes and 7 inputs, which overflows its page and names PgUp/PgDn',
     landmark: 'Drafts release notes',
-    legendRow: 'PgUp/PgDn page · [r] run · [x] export · [Ctrl+C] close · Esc back',
+    // The page overflows: the highlight stands on its title and walks every line; `PgUp/PgDn page` is named where the width holds it.
+    legendRow: [
+      '↑/↓ scroll · [r] run · [x] export · [p] unpin · Esc back',
+      '↑/↓ scroll · PgUp/PgDn page · [r] run · [x] export · [p] unpin · Esc back',
+    ],
+    selectedRow: 'beta  ·  1 node · pinned',
     setup: {
       deps: { ...SETUP_DEPS, workflowReads: { describe: () => LONG_DETAIL, lastRuns: () => RUNS } },
     },
     notes: `${DETAIL_NOTES}; 14 nodes and 7 inputs make a page longer than the popup`,
+  }),
+  workflowsDetailSurface({
+    id: 'home.workflows-detail-long-mid',
+    title:
+      'The /workflows popup: the long detail walked down line by line (the highlight on a line of text, a marker above and below)',
+    landmark: 'Last runs',
+    legendRow: [
+      '↑/↓ scroll · [r] run · [x] export · [p] unpin · Esc back',
+      '↑/↓ scroll · PgUp/PgDn page · [r] run · [x] export · [p] unpin · Esc back',
+    ],
+    setup: {
+      deps: { ...SETUP_DEPS, workflowReads: { describe: () => LONG_DETAIL, lastRuns: () => RUNS } },
+    },
+    presses: 9,
+    notes: `${DETAIL_NOTES}; nine \`↓\` walk the highlight down the page, which windows around it`,
   }),
   workflowsDetailSurface({
     id: 'home.workflows-detail-empty',

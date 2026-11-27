@@ -242,7 +242,7 @@ describe('the fit rule: the marks never push a row past its width', () => {
   });
 });
 
-describe('R1-M proposed: the host hands the fit rule the card’s own width', () => {
+describe('the host hands the fit rule the card’s own width', () => {
   it('a command card with every grant, held by the lockout, at 80 columns: Remember is dropped from the grants row and no row is cut', async () => {
     const m = mount();
     await pause(40);
@@ -296,7 +296,7 @@ describe('R1-M proposed: the host hands the fit rule the card’s own width', ()
   });
 });
 
-describe('R1-M proposed: the inspection popup’s grants row says (wait) too', () => {
+describe('the inspection popup’s grants row says (wait) too', () => {
   it('a full view opened while the lockout holds says `[Ctrl+Y] Allow (wait)` and flips with the card', async () => {
     const m = mount();
     await pause(40);

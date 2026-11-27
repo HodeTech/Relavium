@@ -110,7 +110,7 @@ export function agentReportLines(view: BoundAgentView): readonly string[] {
 
 /** The popup's one step's content for `view`. */
 export function agentContent(view: BoundAgentView): PopupContent {
-  return { kind: 'report', lines: agentReportLines(view) };
+  return { kind: 'report', page: true, lines: agentReportLines(view) };
 }
 
 /** The content of the one step when the view could not be made. */

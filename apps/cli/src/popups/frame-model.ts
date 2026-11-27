@@ -31,8 +31,8 @@ import { sanitizeInline } from '../render/sanitize.js';
 import {
   blankHostGlyphs,
   glyph,
-  markWithWord,
   plainFormInForce,
+  statusCell,
   type GlyphRole,
   type StatusGlyphRole,
 } from '../render/tui/glyphs.js';
@@ -239,16 +239,21 @@ export type PopupContent =
        */
       readonly initialRow?: string | undefined;
       /**
-       * The rows are the LINES of a page (a detail), not choices of a list: the arrows and the pages walk every line (a line that cannot act is
-       * walked over, `Enter` answers on one that can), the page opens on its first line, the legend says `↑/↓ scroll` while it overflows (and names
-       * `PgUp/PgDn`), and inline the page may use the body's whole height (a list to choose from is windowed to ten rows there, ADR-0148 §4).
+       * The rows are the LINES of a page (a detail), not choices of a list. A page that fits has no highlight to start with; `↓` lands on a row that
+       * can act (a last run) and `Enter` answers there. A page that OVERFLOWS is walked line by line: the arrows and the pages move the highlight
+       * over every line, drawn wherever it stands (so no press is blind), the page opens on its first line, and the legend says `↑/↓ scroll` and
+       * names `PgUp/PgDn`. Inline the page may use the body's whole height (a list to choose from is windowed to ten rows there, ADR-0148 §4).
        */
       readonly page?: true | undefined;
     }
   | {
       readonly kind: 'report';
       readonly lines: readonly string[];
-      /** The lines are a page of text, not a list: inline they may use the body's whole height (see `list`'s `page`). */
+      /**
+       * The lines are a page of text to read (a help page, an agent's detail, a report), not a list and not a confirmation line: inline they may use
+       * the body's whole height (see `list`'s `page`), where a report without it is windowed to the ten rows of a list (ADR-0148 §4). A report that
+       * is a confirmation line (`chord`) never sets it: a line longer than ten rows is cut inline, and its answer is not offered then (§7).
+       */
       readonly page?: true | undefined;
     }
   | PopupForm
@@ -707,12 +712,17 @@ function marker(selected: boolean): string {
   return selected ? glyph('selection') : ' ';
 }
 
-/** A row's status, as it leads the row: its glyph, with its word where it has one, and two spaces; nothing for a row with no status. */
+/**
+ * A row's status, as it leads the row: its glyph, with its word where it has one, and two spaces; nothing for a row with no status. A row that
+ * carries a word draws its glyph in the list's status cell (one column, two in the plain form: `ok`, `||`, `x`), so the words of the rows under one
+ * another, and what follows them, stand in one column in either form (review round 2, P2-4).
+ */
 function statusText(row: PopupListRow): string {
   if (row.status === undefined) return '';
   const mark = glyph(row.status);
-  const shown = row.statusWord === undefined ? mark : markWithWord(mark, popupText(row.statusWord));
-  return `${shown}  `;
+  if (row.statusWord === undefined) return `${mark}  `;
+  const word = popupText(row.statusWord);
+  return `${mark === word ? word : `${statusCell(row.status)} ${word}`}  `;
 }
 
 /** What follows a row's label: its detail, or, for a row that cannot act, why. */
@@ -745,8 +755,11 @@ function withTag(own: string, row: PopupListRow, width: number): string {
   return `${lead}${' '.repeat(room - displayWidth(lead) + TAG_GAP)}${tag}`;
 }
 
-function listRowText(row: PopupListRow, selected: boolean, width: number): string {
-  if (row.section === true) return `  ${popupText(row.label)}`;
+function listRowText(row: PopupListRow, selected: boolean, width: number, caret = false): string {
+  if (row.section === true)
+    return caret && selected
+      ? `${marker(true)} ${popupText(row.label)}`
+      : `  ${popupText(row.label)}`;
   return withTag(
     `${marker(selected)} ${statusText(row)}${popupText(row.label)}${detailText(row)}${tailText(row)}`,
     row,
@@ -754,7 +767,9 @@ function listRowText(row: PopupListRow, selected: boolean, width: number): strin
   );
 }
 
-function rowKind(row: PopupListRow, selected: boolean): SheetLine['kind'] {
+/** `caret`: the highlight is drawn on any line it stands on (a page of lines that overflows: the arrows walk every line). */
+function rowKind(row: PopupListRow, selected: boolean, caret = false): SheetLine['kind'] {
+  if (caret && selected) return 'selected';
   if (row.enabled === false || row.section === true) return 'text';
   return selected ? 'selected' : 'row';
 }
@@ -798,6 +813,8 @@ function listLines(
   if (rows.length === 0) return [bodyLine('text', 'Nothing to show.', width)];
   const window = markedWindow(rows.length, selected, height);
   const markers = listMarkers(rows, window, page);
+  // A page that overflows its page is walked line by line (`popup-reducer.ts` `walkable`), so the highlight is drawn wherever it stands: no press is blind.
+  const caret = page && rows.length > height;
   const out: SheetLine[] = [];
   for (let index = window.start; index < window.end; index += 1) {
     const first = index === window.start && markers.above !== undefined;
@@ -811,8 +828,8 @@ function listLines(
       if (row === undefined) continue;
       out.push(
         bodyLine(
-          rowKind(row, index === selected),
-          listRowText(row, index === selected, width),
+          rowKind(row, index === selected, caret),
+          listRowText(row, index === selected, width, caret),
           width,
         ),
       );
@@ -883,8 +900,8 @@ function headingText(heading: PopupHeading): string {
 }
 
 /**
- * The rows a report is drawn in by {@link popupBody} in `geometry`: the body's rows less the filter line, and at most the list window. A report
- * of more lines than this overflows its page (it scrolls, and the legend names `↑/↓ scroll`).
+ * The rows a report is drawn in by {@link popupBody} in `geometry`: the body's rows less the filter line, and, unless the report is a `page` of
+ * text to read, at most the list window. A report of more lines than this overflows its page (it scrolls, and the legend names `↑/↓ scroll`).
  */
 export function reportPageRows(
   geometry: Pick<PopupBoxGeometry, 'bodyRows' | 'listRows'>,

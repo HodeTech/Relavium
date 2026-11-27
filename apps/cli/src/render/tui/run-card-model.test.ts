@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { approvalDecision } from '../../gate/decision.js';
-import type { RunGate } from '../../home/run-gates.js';
+import type { RunBudgetGate, RunCardGate, RunGate } from '../../home/run-gates.js';
 import type { HostedLaunch, HostedResumeRequest } from '../../home/run-host.js';
 import {
   createGateResumer,
@@ -652,5 +652,69 @@ describe('the resume opens a flow around the answer and closes it without changi
     const flow = flowWith(() => Promise.reject(new Error('the flow could not be closed')));
     const host = { resume: vi.fn((): Promise<HostedLaunch> => Promise.reject(new Error('boom'))) };
     await expect(createGateResumer({ host, flow })(request)).rejects.toThrow('boom');
+  });
+});
+
+describe('the sentence after an answer says what the answer did (unit 8 fix wave 2, O2-7)', () => {
+  const BUDGET: RunBudgetGate = {
+    runId: RUN,
+    gateId: 'b1',
+    nodeId: 'writer',
+    allowance: { kind: 'amount', microcents: 4_200_000 },
+    accepts: ['approved', 'rejected'],
+  };
+  /** A card over `gates` whose host starts a leg for every answer at once. */
+  async function answered(
+    gates: readonly RunCardGate[],
+    chord: [string, ChatKey],
+  ): Promise<string | undefined> {
+    const card = createRunCard({
+      runId: RUN,
+      gates,
+      resume: vi.fn(() => Promise.resolve(startedLaunch)),
+      now: () => 0,
+      guard: OFF,
+      painted: () => true,
+    });
+    expect(press(card, chord)).toMatchObject({ kind: 'answered' });
+    await flush();
+    const notice = card.getSnapshot().notice;
+    card.dispose();
+    return notice;
+  }
+
+  it.each([
+    [
+      'a human gate approved',
+      [gate('a')],
+      ctrl('y'),
+      'Answered. The run continues in the background.',
+    ],
+    [
+      'a human gate rejected: the workflow routes on it',
+      [gate('a')],
+      ctrl('n'),
+      'Rejected. The run continues in the background on its rejection route.',
+    ],
+    [
+      'a budget gate approved',
+      [BUDGET],
+      ctrl('y'),
+      'Answered. The run continues in the background.',
+    ],
+    [
+      'a budget gate aborted: the run fails at the budget',
+      [BUDGET],
+      ctrl('n'),
+      'Aborted. The run stops at the budget and fails (budget_exceeded).',
+    ],
+    [
+      'an abort while another gate still waits: the run fails all the same, so no gate is said to wait',
+      [BUDGET, gate('b')],
+      ctrl('n'),
+      'Aborted. The run stops at the budget and fails (budget_exceeded).',
+    ],
+  ] as const)('%s', async (_label, gates, chord, sentence) => {
+    expect(await answered(gates, chord)).toBe(sentence);
   });
 });

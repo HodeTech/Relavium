@@ -121,6 +121,12 @@ export interface PopupStep {
    * step goes first. The way back is always kept.
    */
   readonly legendKeep?: readonly string[] | undefined;
+  /**
+   * `[Ctrl+C] close`, which a stepped popup names before its `Esc back`, is the FIRST key of the step to go when the row does not hold it beside
+   * the others (every other step keeps it to the last: it is how out). For a step whose letters act only while the legend names them (`/workflows`'
+   * detail: `[r]`, `[x]`, `[p]`), so that none is ever dropped for it; `Esc` still goes back, and `Ctrl+C` closes whether it is named or not.
+   */
+  readonly closeGivesWay?: true | undefined;
 }
 
 /** What a command opens. */
@@ -248,14 +254,37 @@ export function visibleRows(step: PopupStepState): readonly PopupListRow[] {
 const canAct = (row: PopupListRow | undefined): boolean =>
   row !== undefined && row.enabled !== false;
 
-/** Whether the highlight may stand on a row: any row of a page of lines (`PopupContent` list `page`: the arrows walk every line), else a row that can act. */
+/** Whether the highlight may stand on a row. */
 type Walkable = (row: PopupListRow | undefined) => boolean;
-const walkable = (content: PopupContent): Walkable =>
-  content.kind === 'list' && content.page === true ? (row) => row !== undefined : canAct;
+/** A page of lines (`PopupContent` list `page`): a detail the person reads, with a row or two that can act (a last run). */
+const isPage = (content: PopupContent): boolean => content.kind === 'list' && content.page === true;
+/**
+ * Where the highlight MAY STAND when a step's content is replaced under it (a refresh, a pin): any row of a page, which keeps its place by id, else a row
+ * that can act.
+ */
+const holdable = (content: PopupContent): Walkable =>
+  isPage(content) ? (row) => row !== undefined : canAct;
+/**
+ * Where the arrows, a page and a jump TAKE the highlight. A list: the rows that can act. A page of lines that fits its page: the same, so that every
+ * press lands on something the screen shows (`↓` from the title lands on the first last run at once, and a page with none has nothing to move). A page
+ * that OVERFLOWS its page: every line, drawn with the caret wherever it stands (`frame-model.ts` `listLines`), so that no press is blind and the whole
+ * page is reachable line by line (review round 2, P2-1).
+ */
+const walkable = (content: PopupContent, rows: number, pageRows: number): Walkable =>
+  isPage(content) && rows > pageRows ? (row) => row !== undefined : canAct;
 
 function firstEnabled(rows: readonly PopupListRow[], can: Walkable = canAct): number {
   const index = rows.findIndex(can);
   return index < 0 ? 0 : index;
+}
+
+/** The row nearest to `from` that `can` stand on: `from` itself, else the first at or after it, else the last before it (0 for no such row). */
+function nearestEnabled(rows: readonly PopupListRow[], from: number, can: Walkable): number {
+  const start = Math.max(0, from);
+  for (let index = start; index < rows.length; index += 1) if (can(rows[index])) return index;
+  for (let index = Math.min(start, rows.length) - 1; index >= 0; index -= 1)
+    if (can(rows[index])) return index;
+  return 0;
 }
 
 function lastEnabled(rows: readonly PopupListRow[], can: Walkable = canAct): number {
@@ -773,7 +802,8 @@ function moveIn(
   if (state.content.kind === 'form') return moveInForm(frame, state, state.content, action);
   const rows = visibleRows(state);
   if (rows.length === 0) return { kind: 'unchanged' };
-  const selected = selectedAfter(rows, state.selected, action, pageRows, walkable(state.content));
+  const can = walkable(state.content, rows.length, pageRows);
+  const selected = selectedAfter(rows, state.selected, action, pageRows, can);
   return selected === state.selected
     ? { kind: 'unchanged' }
     : { kind: 'frame', frame: withStep(frame, { ...state, selected }) };
@@ -903,7 +933,7 @@ export const POPUP_KEYS = {
  * The rows of the page `frame`'s step is drawn in on a standard popup at the floor (80×24, the alternate screen; `bodyPageRows`): the page
  * {@link popupLegend} judges an overflow, a confirmation line and a form on when its caller has no geometry of its own.
  */
-function floorPageRows(frame: PopupFrame): number {
+export function floorPageRows(frame: PopupFrame): number {
   const { spec, state } = currentStep(frame);
   const filter = spec.filter === true ? state.filter : undefined;
   const kind = frame.spec.kind ?? 'standard';
@@ -966,8 +996,11 @@ export function popupLegend(
   // §2). With a filter typed `Esc` clears it first; otherwise it goes back.
   const filtered = state.filter.length > 0;
   if (filtered || back) {
-    items.push({ keys: POPUP_KEYS.closeAll, verb: 'close' });
-    return finish(exitKey.step(POPUP_KEYS.leave, filtered ? 'clear the filter' : 'back'));
+    const exit = exitKey.step(POPUP_KEYS.leave, filtered ? 'clear the filter' : 'back');
+    const close: LegendItem = { keys: POPUP_KEYS.closeAll, verb: 'close' };
+    const holds = displayWidth(legend([...items, close], exit)) <= width();
+    if (spec.closeGivesWay !== true || holds) items.push(close);
+    return finish(exit);
   }
   return finish(exitKey.close(POPUP_KEYS.leave, closingVerb(spec, state)));
 }
@@ -1063,7 +1096,8 @@ function formItems(form: PopupForm): LegendItem[] {
 
 /**
  * The keys that move through a list: `↑/↓ select` when there is more than one row to choose. A page of lines (`page`) that overflows its page is
- * scrolled, not chosen from, and says `↑/↓ scroll` and names the pages (`PgUp/PgDn`); one that fits has its rows to choose from (a last run).
+ * scrolled, line by line, and says `↑/↓ scroll` and names the pages (`PgUp/PgDn`); one that fits says `↑/↓ select` while it has a row that can act
+ * (a last run: `↓` lands on it), and nothing while it has none (there is nothing to move).
  */
 function listItems(state: PopupStepState, page: number): LegendItem[] {
   const content = state.content;
@@ -1074,8 +1108,11 @@ function listItems(state: PopupStepState, page: number): LegendItem[] {
       { keys: POPUP_KEYS.scroll, verb: 'scroll' },
       { keys: POPUP_KEYS.page, verb: 'page' },
     ];
+  // A page that fits has no highlight to start with (so that a held `Enter` that opened it answers nothing on it): `↓` lands on a row that can act,
+  // which is a choice to make with one such row as with three. A list is a choice from two rows on.
   const choices = content.page === true ? rows.filter(canAct).length : rows.length;
-  return choices > 1 ? [{ keys: POPUP_KEYS.select, verb: 'select' }] : [];
+  const needed = content.page === true ? 1 : 2;
+  return choices >= needed ? [{ keys: POPUP_KEYS.select, verb: 'select' }] : [];
 }
 
 /**
@@ -1156,14 +1193,16 @@ export function withContent(
 /**
  * The highlight after `content` replaces what a step showed. It stays on the row it was on, by id: rows that land (a refreshed catalog) may sort
  * before it, and a highlight kept by index would slide off the model in force onto another (a bare `Enter` chain would then choose it). A row that is
- * gone leaves it at its index. A page of lines that lands on a step that showed no list opens at its top (never on an index the last page left).
+ * gone leaves it at its place: the nearest row that can act at or after its index, else the nearest before it (a list that lost its last row keeps
+ * the highlight on the new last one, not on the top). A page of lines that lands on a step that showed no list opens at its top (never on an index
+ * the last page left).
  */
 function selectionAfter(
   state: PopupStepState,
   next: PopupStepState,
   content: PopupContent,
 ): number {
-  const can = walkable(content);
+  const can = holdable(content);
   const heldId =
     visibleRows(state)[state.selected]?.id ??
     (state.content.kind !== 'list' && content.kind === 'list' ? content.initialRow : undefined);
@@ -1171,5 +1210,6 @@ function selectionAfter(
   const sameRow = heldId === undefined ? -1 : rows.findIndex((row) => row.id === heldId);
   if (sameRow >= 0 && can(rows[sameRow])) return sameRow;
   if (content.kind === 'list' && content.page === true && state.content.kind !== 'list') return 0;
-  return can(rows[state.selected]) ? state.selected : firstEnabled(rows, can);
+  // The row it was on is gone (a withdrawn command): the nearest row that can act at or after its place, else the one before it, never the top.
+  return nearestEnabled(rows, state.selected, can);
 }

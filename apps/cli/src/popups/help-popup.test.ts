@@ -108,6 +108,23 @@ describe.each(['standalone-chat', 'home-chat'] as const)(
   },
 );
 
+describe('inline, the chat’s page is the body’s whole height, not the ten rows of a list (review round 2, O2-2)', () => {
+  it.each(['standalone-chat', 'home-chat'] as const)(
+    '%s at 100×40 shows more than ten rows of the page: its commands are not behind a scroll',
+    (surface) => {
+      const frame = openFrame(helpSpec('chat', helpContent(surface, KEYS)), 1);
+      const inline = { renderer: 'inline', color: false, size: { cols: 100, rows: 40 } } as const;
+      const text = popupBoxOf(frame, inline).rows.join('\n');
+      const lines = helpLines(surface, KEYS);
+      expect(lines.length, 'a page longer than a list window').toBeGreaterThan(14);
+      expect(text).toContain('Commands');
+      const drawn = popupBoxOf(frame, inline).rows;
+      // The frame's own rows (top edge, rail-less, legend, bottom edge) and ten rows of the page: a list's window. More is the page's whole height.
+      expect(drawn.length, 'more than the frame and ten rows of the page').toBeGreaterThan(16);
+    },
+  );
+});
+
 describe('the keys', () => {
   it('are the chat’s keys, each with its words, after the commands', () => {
     const lines = helpLines('standalone-chat', KEYS);

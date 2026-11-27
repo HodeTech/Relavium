@@ -91,7 +91,7 @@ export async function run(
       }
       return await enterHome();
     }
-    // A bare `relavium permissions` on a terminal opens the sheet before anything else (ADR-0137 §3), as `relavium chat resume` opens
+    // A bare `relavium permissions` on a terminal opens the `/permissions` popup over the Home before anything else (ADR-0137 §3, ADR-0148 §10), as `relavium chat resume` opens
     // the session picker. Anywhere else (a pipe, `--json`, CI) it stays the group: its help, and the `list` and `revoke` subcommands.
     if (isBareGroup(rest, 'permissions') && interactive)
       return await enterHome({ openPermissions: true });

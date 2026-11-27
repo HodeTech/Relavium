@@ -76,7 +76,7 @@ export function helpLines(surface: ReportSurface, keys: HelpPort['keys']): reado
 
 /** The content of the one step. */
 export function helpContent(surface: ReportSurface, keys: HelpPort['keys']): PopupContent {
-  return { kind: 'report', lines: helpLines(surface, keys) };
+  return { kind: 'report', page: true, lines: helpLines(surface, keys) };
 }
 
 /** The popup's spec: one read-only step whose only control is `[c] copy`, kept on the legend row ahead of the scroll hint. */

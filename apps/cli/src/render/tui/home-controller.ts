@@ -67,7 +67,7 @@ import {
   type WorkflowsAt,
   type WorkflowsStep,
 } from '../../popups/home-port.js';
-import { launchSaysStarted, type LaunchOptions } from '../../home/run-launch.js';
+import type { LaunchOptions } from '../../home/run-launch.js';
 import type { WorkflowDetail } from '../../home/workflow-detail.js';
 import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
 import {
@@ -177,6 +177,7 @@ import {
   homeFitsTerminal,
   hostedRunIsLive,
   homeIsEmpty,
+  workRowText,
   type ExitGuardPhase,
 } from './home-projection.js';
 import { EXAMPLE_PROMPT, exampleIsShown } from './home-layout.js';
@@ -962,8 +963,8 @@ export interface HomeController {
    *  insert it into the prompt buffer, or drop it while a keyboard-owning overlay/submode, a pending approval,
    *  or a mid-turn/build/`!`-shell/submit state is active. Paste never reaches the key reducers. */
   readonly handlePaste: (text: string) => void;
-  /** The terminal's size, told by the host whenever it changes: the permissions sheet needs it to know whether it can show a
-   *  withdrawal's question (ADR-0137 §2), and the strip's idle tick reads nothing below 80×24 (ADR-0140 §6). Until it is told, both
+  /** The terminal's size, told by the host whenever it changes: the sheets and the popups need it to know whether they can show their
+   *  question (ADR-0147 §1, ADR-0148 §2), and the strip's idle tick reads nothing below 80×24 (ADR-0140 §6). Until it is told, both
    *  assume a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
   /**
@@ -1157,6 +1158,12 @@ const SHOWN_LINE_MAX = 64;
  */
 const shownLine = (line: string): string =>
   line.replace(/[^\x20-\x7e]/gu, '?').slice(0, SHOWN_LINE_MAX);
+
+/** The workflow the Home's row of `runId` named, as that row draws it (the work page's scrub), when it named one. */
+function workflowOfRow(rows: readonly ParkedRunRow[], runId: string): string | undefined {
+  const slug = rows.find((row) => row.runId === runId)?.workflow;
+  return slug === undefined ? undefined : workRowText(slug);
+}
 
 /** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
 function readParkedRows(
@@ -1592,7 +1599,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   // ---- Leaving the Home while a hosted run executes (ADR-0139 §6) -------------------------------------------------------------
   // `requestExit` is the ONE way the Home ends: `/exit`, the second `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the
-  // loading bail-out and a closed `relavium permissions` sheet all call it, and `exitHome` is reached only from here. With no leg
+  // loading bail-out and a closed `relavium permissions` popup all call it, and `exitHome` is reached only from here. With no leg
   // executing or cancelling it leaves as it always did. With one, it opens the exit-guard card: `Ctrl+Y` cancels the run and waits for
   // it to settle for at most the grace window, then abandons it, runs the host's teardown and leaves; `Esc`, `Ctrl+C` and `Ctrl+N`
   // stay (ADR-0122 §7.4: a confirmation treats both interrupt keys as cancel). Cancelling a run cannot be undone, so nothing but an
@@ -2080,8 +2087,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     const card = createRunCard({
       runId: run.runId,
-      // The title names the workflow by the slug the Home's row showed (the gate read knows only its record's id).
-      workflow: state.parkedRuns.find((row) => row.runId === run.runId)?.workflow,
+      // The title names the workflow by the slug the Home's row showed (the gate read knows only its record's id), scrubbed as that row draws it.
+      workflow: workflowOfRow(state.parkedRuns, run.runId),
       gates,
       resume: answerGate,
       ...(deps.now === undefined ? {} : { now: deps.now }),
@@ -2700,7 +2707,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const opening = !state.nativeActionBusy;
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const said = await launch(slug, path).finally(forgetOpeningKey);
+      // `Esc` at the first thing asked leaves to the tab the key came from, not to a picker the person never saw (the same rule as `[r]` in `/workflows`).
+      const said = await launch(slug, path, { leaveOnBack: true }).finally(forgetOpeningKey);
       if (exiting) return;
       set({ ...parkedPatch() });
       if (launchStartedRun(before) && openRunView('tab-host')) deps.announce?.(said);
@@ -2756,7 +2764,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /**
    * `[r]` in the `/workflows` popup (the popup is already closed): the `/run` popup started at that workflow, saying it came from `/workflows`
    * (its picker is skipped once; the form, the `Ctrl+Y` confirmation and the single start are the flow's own). A run that STARTED closes everything, as
-   * it does for a plain `/run`: its notification, and its view when it is still executing; it is told by the launch's own word, so a run that parks or
+   * it does for a plain `/run`: its notification, and its view when it is still executing; it is told by the launch's own fact (`onStarted`), so a run that parks or
    * finishes before the host is looked at is no different. A flow that ends without one (`Esc` at its first step, a No, a refusal) brings the popup
    * back on the step `from` names, the catalogue's row or the detail the key was pressed on; only `Ctrl+C` closes the whole stack. What the launch
    * says is one notification, as it is anywhere. The `r` that opened it is the flow's to take: a held key's repeats are dropped there
@@ -2771,6 +2779,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     noteOpeningKey('r', {});
     let closedAll = false;
+    let started = false;
     const opening = !state.nativeActionBusy;
     openNativeAction(
       async () => {
@@ -2780,11 +2789,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           onLeave: () => {
             closedAll = true;
           },
+          // The launch's own fact, not its words: a refusal's sentence may begin with anything.
+          onStarted: () => {
+            started = true;
+          },
         }).finally(forgetOpeningKey);
         if (exiting) return;
         set({ ...parkedPatch() });
         // A run that started closes everything, and is shown while it executes; one that parked or finished already says so in its notification.
-        if (launchSaysStarted(said) || launchStartedRun(before)) {
+        if (started || launchStartedRun(before)) {
           closedAll = true;
           if (launchStartedRun(before)) openRunView();
         }
@@ -3166,7 +3179,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   /**
    * A registry word of the bare Home that is not in {@link homeWords}, answered at the landing (ADR-0140 §3): never sent to the model.
-   * `/help` opens the sheet; a word of the bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments);
+   * `/help` opens its popup; a word of the bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments);
    * any other registry word is a chat's, and the notice says so. The line is cleared first, as every other command's is. A typed line and a
    * palette selection come here alike.
    */
@@ -3689,7 +3702,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
-    managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
+    managePermissions: () => undefined, // the Home opens its own `/permissions` popup (ADR-0148 §10) from the controller, not through this context
     showAgent: () => undefined, // `/agent` is a chat's (ADR-0140 §3): the landing has no session, so it answers the word itself and never runs this
     openDetails: () => undefined,
     setMode: () => undefined, // `/mode` is a chat's here; the bare Home's own opens its startup settings from `homeWords`

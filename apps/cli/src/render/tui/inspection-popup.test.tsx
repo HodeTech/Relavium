@@ -175,6 +175,37 @@ describe('one geometry for the frame and the page (ADR-0148 §7)', () => {
   });
 });
 
+describe('a short change leaves the page as tall as a long one', () => {
+  /** Where the status row and the last row above the bottom edge stand in the full view of `preview`, alternate screen, 80×24. */
+  async function rowsOf(preview: ToolPreview) {
+    const m = mount(true, { cols: 80, rows: 24 });
+    await pause(40);
+    void m.store
+      .requestApproval(REQUEST, true, undefined, { callId: 'inspect', preview })
+      .catch(() => undefined);
+    await vi.waitFor(() => expect(m.rowsWith('Esc stops the turn').length).toBeGreaterThan(1));
+    await pause(60);
+    m.input.push('v');
+    await vi.waitFor(() => expect(m.store.getSnapshot().review?.screen).toBe('full'));
+    await vi.waitFor(() => expect(m.rowsWith('Full diff').length).toBeGreaterThan(1));
+    await pause(80);
+    const frame = m.rowsWith('Full diff');
+    return {
+      status: frame.findIndex((row) => /^ - \d+% · /u.test(row)),
+      keys: frame.findLastIndex((row) => row.trim() !== '' && !BOTTOM.test(row)),
+      frame,
+    };
+  }
+
+  it('the status row and the keys stand on the same rows whether the change fills the page or not', async () => {
+    const long = await rowsOf(SIXTY);
+    const short = await rowsOf(editedFilePreview(4, { 2: 'two' }));
+    expect(short.status, short.frame.join('\n')).toBeGreaterThan(0);
+    expect(short.status).toBe(long.status);
+    expect(short.keys).toBe(long.keys);
+  });
+});
+
 describe('the popup on the grid', () => {
   it.each([
     [80, 24],

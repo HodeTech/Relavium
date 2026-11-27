@@ -6,7 +6,10 @@ import { describe, expect, it } from 'vitest';
 
 import { HOME_PALETTE_COMMANDS } from '../commands/repl-commands.js';
 import { HOME_KEYS } from '../render/tui/help-sheet.js';
-import { homeHelpLines } from './home-help-popup.js';
+import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
+import type { Variant } from '../render/tui/surface-matrix/variants.js';
+import { homeHelpContent, homeHelpLines, homeHelpSpec } from './home-help-popup.js';
+import { openFrame } from './popup-reducer.js';
 import { ESC, homeRig } from './home-popups.test-support.js';
 
 const KEYS = Object.values(HOME_KEYS).map((key) => ({ keys: key.keys, verb: key.short }));
@@ -41,6 +44,31 @@ describe('the page', () => {
     expect(lines.includes(String.fromCharCode(27))).toBe(false);
     expect(lines).not.toMatch(/Ctrl\+Y now/u);
   });
+});
+
+describe('inline (the accessible mode), the page is the body’s whole height, not the ten rows of a list (review round 2, O2-2)', () => {
+  const CELLS: readonly Variant[] = [
+    { renderer: 'inline', color: false, size: { cols: 80, rows: 24 } },
+    { renderer: 'inline', color: false, size: { cols: 100, rows: 30 } },
+    { renderer: 'inline', color: false, size: { cols: 100, rows: 40 } },
+    { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } },
+  ];
+
+  it.each(CELLS)(
+    'at $renderer $size.cols×$size.rows every key and every command is on screen with no scroll, and the legend names none',
+    (variant) => {
+      const frame = openFrame(homeHelpSpec('home', homeHelpContent(KEYS)), 1);
+      const { rows, text } = {
+        rows: popupBoxOf(frame, variant).rows,
+        text: popupBoxOf(frame, variant).rows.join('\n'),
+      };
+      expect(text, 'no row is hidden').not.toMatch(/(\^|v|▲|▼) \d+ more/u);
+      for (const line of homeHelpLines(KEYS)) expect(text, line).toContain(line.trim());
+      expect(text).toContain('/doctor');
+      expect(text).toContain('/exit');
+      expect(rows.at(-2) ?? '', 'the legend').not.toContain('scroll');
+    },
+  );
 });
 
 describe('the popup', () => {

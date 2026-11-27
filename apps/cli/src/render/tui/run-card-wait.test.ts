@@ -165,7 +165,7 @@ describe('the (wait) marks keep the way back (unit 8 fix wave, S-2; ADR-0145 §2
   });
 });
 
-describe('R1-M proposed: an answer that comes while the lockout holds clears the display at once', () => {
+describe('an answer that comes while the lockout holds clears the display at once', () => {
   it('a budget Abort is never delayed: pressed inside the lockout it answers, and the card holds no key from then on', () => {
     const r = rig([BUDGET]);
     expect(r.card.lock.read(), 'the card has just appeared').toBe(true);
@@ -248,6 +248,28 @@ describe('the waiting card says "waiting" once in its rule and once in its clock
     );
   });
 
+  it('only the waiting state names the workflow: an expired gate and a refused answer keep their own words (the `state === waiting` test of the title was unpinned)', () => {
+    const expired: RunGate = { ...APPROVAL, expiresAt: '2026-11-27T09:00:00.000Z' };
+    const card = createRunCard({
+      runId: RUN,
+      workflow: 'release-notes',
+      gates: [expired],
+      resume: vi.fn(() => Promise.resolve(STARTED)),
+      now: () => OPENED_AT,
+      history: createChordHistory(),
+    });
+    const after = Date.parse('2026-11-27T09:00:01.000Z');
+    const rows = projectRunCard(card.getSnapshot(), {
+      columns: 80,
+      rows: 24,
+      nowMs: after,
+      clock: 'waiting 0:41',
+    }).rows;
+    card.dispose();
+    expect(rows[1]?.text).toContain('expired');
+    expect(rows[1]?.text).not.toContain('release-notes');
+  });
+
   it('a host that does not know the workflow keeps the state’s word', () => {
     expect(titleOf(undefined)[1]?.text).toBe('‖ waiting for you  ·  run run-0001');
   });
@@ -256,5 +278,33 @@ describe('the waiting card says "waiting" once in its rule and once in its clock
     expect(titleOf(`wf${String.fromCharCode(27)}[31m`)[1]?.text).not.toContain(
       String.fromCharCode(27),
     );
+  });
+
+  describe('a hostile slug is drawn as author text, never as the host’s (unit 8 fix wave 2, S2-1)', () => {
+    const ZWSP = String.fromCharCode(0x200b);
+    const title = (slug: string): string => titleOf(slug)[1]?.text ?? '';
+
+    it('a key token is no key: `[Ctrl+Y] Approve` names no chord', () => {
+      const row = title('[Ctrl+Y] Approve');
+      expect(row).not.toContain('Ctrl+Y');
+      expect(row).toMatch(/^‖ \[\[chord\]\] Approve {2}· {2}run run-0001$/u);
+    });
+
+    it('the host’s glyphs are blanked and an invisible character is removed', () => {
+      expect(title('‖ ✓ ━━ release')).not.toMatch(/✓|━/u);
+      expect(title(`rel${ZWSP}ease`)).toBe('‖ release  ·  run run-0001');
+    });
+
+    it('a slug of nothing but what the scrub removes falls back to the state’s word', () => {
+      expect(title(`${ZWSP}${ZWSP}`)).toBe('‖ waiting for you  ·  run run-0001');
+      expect(title('‖ ✓')).toBe('‖ waiting for you  ·  run run-0001');
+    });
+
+    it('a 500-character slug is cut so the run’s id and the gate count stay on the row, at 80 columns', () => {
+      const second: RunGate = { ...APPROVAL, gateId: 'g2', nodeId: 'publish' };
+      const row = titleOf('x'.repeat(500), [APPROVAL, second])[1]?.text ?? '';
+      expect(row.length).toBeLessThanOrEqual(78);
+      expect(row).toMatch(/^‖ x+… {2}· {2}gate 1 of 2 {2}· {2}run run-0001$/u);
+    });
   });
 });

@@ -17,7 +17,9 @@
  *   host says it instead ({@link NotificationChannel.popupHold}), because the popup's legend row is then where the notification is drawn.
  * - **What a popup says belongs to it.** A notification a popup raised (`from`) is about that popup and its keys (`[d] asks again`), so it is
  *   discarded, shown or waiting, when that popup closes ({@link NotificationChannel.discard}); the host's own words (a refused open, a popup
- *   closed by the system) are about the host and stay.
+ *   closed by the system) are about the host and stay. And a popup's latest word on itself is the only true one: what a popup says replaces
+ *   what the same popup said before, shown or waiting (`Nothing was written.` and a second later `Pinned x`: the row says the second, at once,
+ *   not the first for three seconds while the title already says `pinned`). The host's own words, and those of different popups, queue in order.
  * - **No residue.** It writes nothing into the conversation's transcript and nothing into the Home's notice area: those are the person's
  *   record, and a setting or a closed report is not part of it (§6). The host draws {@link NotificationSnapshot.current} and nothing else.
  *
@@ -209,7 +211,16 @@ export function createNotificationChannel(options?: {
         ...(from === undefined ? {} : { from }),
         ...(topic === undefined ? {} : { topic }),
       };
-      if (topic === undefined) {
+      if (topic === undefined && from !== undefined) {
+        // A popup's newer word on itself takes the place of its older one, shown or waiting.
+        for (let index = queue.length - 1; index >= 0; index -= 1)
+          if (queue[index]?.from === from) queue.splice(index, 1);
+        if (current?.from === from) {
+          stopTimer();
+          current = undefined;
+          queue.unshift(next);
+        } else queue.push(next);
+      } else if (topic === undefined) {
         queue.push(next);
       } else {
         for (let index = queue.length - 1; index >= 0; index -= 1)

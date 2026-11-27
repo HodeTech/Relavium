@@ -2313,7 +2313,7 @@ workflow:
       await leaveHome(props, drivePromise);
     });
 
-    it('R1-M proposed: a detail lists only the runs of THAT workflow, the newest three, though the directory holds other workflows’ runs and older ones', async () => {
+    it('a detail lists only the runs of THAT workflow, the newest three, though the directory holds other workflows’ runs and older ones', async () => {
       project();
       const root = realpathSync.native(cwd);
       const set = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
@@ -2495,8 +2495,10 @@ workflow:
       popups.input('r', {});
       await vi.waitFor(
         () =>
-          expect(props.notifications?.getSnapshot().current?.text).toMatch(
-            /alpha-moved\.relavium\.yaml/u,
+          expect(props.notifications?.getSnapshot().current?.text).toBe(
+            // The popup comes back for it, so the notification is read beside its way back (54 columns): the short words (the whole sentence names
+            // the file it is in now, `launchMoved`).
+            'Not started: alpha moved. Open the list again.',
           ),
         { timeout: WAIT_MS },
       );

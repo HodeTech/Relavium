@@ -86,7 +86,7 @@ export function homeHelpLines(keys: HomeHelpPort['keys']): readonly string[] {
 
 /** The content of the one step. */
 export function homeHelpContent(keys: HomeHelpPort['keys']): PopupContent {
-  return { kind: 'report', lines: homeHelpLines(keys) };
+  return { kind: 'report', page: true, lines: homeHelpLines(keys) };
 }
 
 /** The popup's spec: one read-only step whose only control is `[c] copy`, with its way back naming the Home. */

@@ -434,6 +434,12 @@ interface ChordArming {
   cancelExpiry: (() => void) | undefined;
   /** Whether the line's last acknowledged frame offered its answer (it was wholly on its page): a later frame that cuts it disarms it. */
   offered: boolean;
+  /**
+   * Until when the line's answer reads locked while its frame has not been acknowledged yet: the dwell can only begin at the acknowledgement, so
+   * until then the display holds for one dwell from the frame's arrival (a finite instant, moved to the acknowledgement's own when it comes; never
+   * open-ended) and the first painted frame is the `(wait)` one (review round 2, S2-3).
+   */
+  unseenUntil: number;
 }
 
 /** What the key history said just before a key (its stamp), or now when no key moved the popup. */
@@ -608,6 +614,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
   const beginLine = (record: FrameRecord | undefined): void => {
     record?.chord?.guard.begin();
     stopExpiry(record?.chord);
+    if (record?.chord !== undefined) record.chord.unseenUntil = now() + CHORD_STEP_GUARD.settleMs;
   };
 
   /** Arm the record's confirmation line when its step is one (and disarm it otherwise): a new guard, its dwell not started (a guard starts with none). */
@@ -628,6 +635,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       guard: createChordGuard({ now, history, guard: CHORD_STEP_GUARD }),
       cancelExpiry: undefined,
       offered: false,
+      unseenUntil: now() + CHORD_STEP_GUARD.settleMs,
     };
   };
 
@@ -719,12 +727,14 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       const arming = record.chord;
       if (arming === undefined) return Number.NEGATIVE_INFINITY;
       const lockout = arming.guard.lockedUntil({ lastResolvedAt: arming.lastResolvedAt });
-      // A line answered by `Enter` (the withdrawal) also holds its answer for the dwell, counted from the acknowledged frame: its legend says
-      // `(wait)` while it holds, so a key inside it is no surprise (the line's own guard refuses it as `early` all the same).
+      // Every confirmation line also holds its answer for the dwell, counted from the acknowledged frame (until the frame is acknowledged: from its
+      // arrival, a finite instant): its legend says `(wait)` while it holds, so a key inside it is no surprise (the line's own guard refuses it as
+      // `early` or `unseen` all the same). One rule for `Enter` lines (the withdrawal) and `Ctrl+Y` lines (`/doctor --deep`, `/cost`).
+      if (lineOffer(record) === 'nothing') return lockout;
       const shownAt = arming.guard.shownAt();
-      return shownAt !== undefined && lineAnswerKeyOf(currentStep(record.frame).spec) === 'enter'
-        ? Math.max(lockout, shownAt + CHORD_STEP_GUARD.settleMs)
-        : lockout;
+      const dwell =
+        shownAt === undefined ? arming.unseenUntil : shownAt + CHORD_STEP_GUARD.settleMs;
+      return Math.max(lockout, dwell);
     },
   });
 
@@ -1291,6 +1301,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       if (record === undefined) return;
       // The frame is measured again: a confirmation line's dwell restarts at the acknowledgement of the frame drawn at the new size.
       beginLine(record);
+      lock.sync();
       if (fitsTerminal) {
         syncHold();
         return;

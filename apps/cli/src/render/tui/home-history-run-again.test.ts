@@ -184,8 +184,8 @@ describe('r on the detail of a run of this directory opens the launch flow at th
     expect(launch).toHaveBeenCalledTimes(1);
     expect(
       launch.mock.calls[0],
-      'exactly the slug and the catalog path, no third argument',
-    ).toEqual(['nightly', 'nightly.yaml']);
+      'the slug and the catalog path, and that `Esc` at the form leaves to this tab (no picker was shown): nothing of the run',
+    ).toEqual(['nightly', 'nightly.yaml', { leaveOnBack: true }]);
     expect(m.controller.getSnapshot().nativeActionBusy).toBe(true);
     // The flow owns the keyboard: a key at the screen behind it moves nothing.
     m.controller.handleKey('', DOWN);

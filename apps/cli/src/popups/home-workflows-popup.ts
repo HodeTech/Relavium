@@ -256,16 +256,21 @@ function inputsWords(detail: WorkflowDetail): string {
     : shown.join(', ');
 }
 
-/** The node chain as one field: ids in the order a run reaches them, a human gate saying what it is and how long it waits. */
+/**
+ * The node chain as one field: ids in the order a run reaches them, a human gate saying what it is and how long it waits. `→` stands only between
+ * two nodes an edge joins; a node on another branch follows a `·`, so a fan-out or a diamond is never read as a path (review round 2, O2-4).
+ */
 function chainWords(detail: WorkflowDetail): string {
-  const chain = detail.nodes.map((node) =>
-    node.note === undefined
-      ? stored(node.id, 30, '?')
-      : `${stored(node.id, 30, '?')} (${stored(node.note, 24)})`,
-  );
-  return detail.nodesMore > 0
-    ? `${chain.join(' → ')} → … ${String(detail.nodesMore)} more`
-    : chain.join(' → ');
+  const chain = detail.nodes.map((node, index) => {
+    const word =
+      node.note === undefined
+        ? stored(node.id, 30, '?')
+        : `${stored(node.id, 30, '?')} (${stored(node.note, 24)})`;
+    if (index === 0) return word;
+    return `${node.apart === true ? '·' : '→'} ${word}`;
+  });
+  const joined = chain.join(' ');
+  return detail.nodesMore > 0 ? `${joined} → … ${String(detail.nodesMore)} more` : joined;
 }
 
 /** The id of a last-run row: its place in the list the detail holds, never the run's id. */
@@ -290,13 +295,15 @@ function runRows(runs: readonly HomeWorkflowRun[], nowMs: number): PopupListRow[
         : formatAgeOfIso(run.at, nowMs),
   );
   const ageWidth = Math.max(0, ...ages.map(displayWidth));
+  // The status words are padded to the widest of the rows, so the ages and the ids stand in one column under one another (review round 2, P2-4).
+  const wordWidth = Math.max(0, ...runs.map((run) => displayWidth(RUN_WORDS[run.status].word)));
   return [
     heading,
     ...runs.map(
       (run, index): PopupListRow => ({
         id: runRowId(index),
         status: RUN_WORDS[run.status].status,
-        statusWord: RUN_WORDS[run.status].word,
+        statusWord: padTo(RUN_WORDS[run.status].word, wordWidth),
         label: padTo(ages[index] ?? '', ageWidth),
         detail: rowId(run.runId),
         // The run in front carries its own `Enter` (a header line has none), and, as the legend row of a stepped popup keeps `[Ctrl+C] close` to
@@ -357,16 +364,25 @@ export function unlistedContent(row: DefinedRow): PopupContent {
   const slug = stored(row.slug, SLUG_COLUMNS, '?');
   const why =
     row.state === 'invalid'
-      ? `Its file could not be read: ${stored(row.note ?? 'unknown reason', POPUP_TEXT_COLUMNS - 4)}`
-      : row.state === 'not-in-catalog'
-        ? `It is pinned, but ${NOT_IN_CATALOG} any more.`
-        : `${OTHER_PROJECT}${row.projectRoot === undefined ? '' : `: ${stored(row.projectRoot, POPUP_TEXT_COLUMNS - 30)}`}.`;
+      ? // The file's own reason, in at most `INVALID_REASON_ROWS` rows, the cut (if any) between words with `…`, never in the middle of one.
+        storedParagraph(
+          `Its file could not be read: ${row.note ?? 'unknown reason'}`,
+          POPUP_TEXT_COLUMNS,
+          INVALID_REASON_ROWS,
+        )
+      : wrapHanging(
+          row.state === 'not-in-catalog'
+            ? `It is pinned, but ${NOT_IN_CATALOG} any more.`
+            : `${OTHER_PROJECT}${row.projectRoot === undefined ? '' : `: ${stored(row.projectRoot, POPUP_TEXT_COLUMNS - 30)}`}.`,
+          POPUP_TEXT_COLUMNS,
+          0,
+        );
   return {
     kind: 'report',
     lines: [
       slug,
       '',
-      ...wrapHanging(why, POPUP_TEXT_COLUMNS, 0),
+      ...why,
       '',
       row.pinned
         ? `It can be unpinned here (${keyToken('p')}); nothing can be run or exported.`
@@ -374,6 +390,9 @@ export function unlistedContent(row: DefinedRow): PopupContent {
     ],
   };
 }
+
+/** The most rows an invalid file's reason takes on its detail (the rest is cut between words, with `…`). */
+const INVALID_REASON_ROWS = 3;
 
 /** The controls a detail answers to: `[r]`, `[x]` and `[p]` for a workflow of the catalogue, `[p]` alone for a pin that is no entry of it. */
 export function detailControls(row: DefinedRow): readonly PopupControl[] {
@@ -399,8 +418,10 @@ export function homeWorkflowsSpec(origin: PopupOrigin): PopupSpec {
         name: 'Detail',
         content: DETAIL_LOADING_CONTENT,
         back: WORKFLOWS_STEP.list,
-        // A page that overflows names its pages before `[p]`, which gives way first at the floor.
-        legendKeep: ['r', 'x', POPUP_KEYS.page, 'p', 'Enter'],
+        // What the row can DO is kept before what moves the page: the letters (`[p]` is never dropped while `p` pins), then `Enter` (a last run is
+        // highlighted), then `↑/↓`, then the pages; `[Ctrl+C] close` goes first (review round 2, P2-2).
+        legendKeep: ['r', 'x', 'p', 'Enter', POPUP_KEYS.select, POPUP_KEYS.page],
+        closeGivesWay: true,
       },
     ],
   };

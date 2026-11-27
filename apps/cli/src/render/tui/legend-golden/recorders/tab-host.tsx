@@ -795,7 +795,7 @@ export const TAB_HOST_PRODUCERS: readonly Producer[] = [
     id: 'tab-host-legend',
     file: 'render/tui/tab-host.ts',
     describe:
-      'The strip’s own legend items (`←/→ tab · Tab cycle · … · Esc close`) and the Permissions tab’s legend and message row by state (rows, none, withdrawal armed, a refused key, unreadable), at 80 and 100 columns, with the roles of the keys.',
+      'The Runs screen’s own legend items (`←/→ tab · … · Esc back to Home`, `[Ctrl+C] close` where the width holds it) by state of its Active and History tabs and of a run’s detail, at 80 and 100 columns, with the roles of the keys.',
   },
   {
     id: 'tab-host-interrupt',

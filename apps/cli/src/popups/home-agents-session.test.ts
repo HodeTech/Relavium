@@ -138,6 +138,19 @@ describe('the detail and `[c] chat`', () => {
     );
   });
 
+  it('a head cut where a sentence ended says `.…`, never `....`: the model’s mark is not folded to three dots (review round 2, O2-11)', async () => {
+    // 239 characters and then a full stop at the cut: the head the model gives ends `…` after it.
+    const prompt = `${'word '.repeat(47)}anything. And then more words that the head leaves out of the page.`;
+    const { rig } = await opened(
+      fakeAgents([readyAgent('commit-reviewer', { system_prompt: prompt })]),
+    );
+    rig.press('', ENTER);
+    const text = rig.words();
+    expect(text).not.toContain('....');
+    expect(text).not.toContain('...');
+    expect(text).toMatch(/…$/mu);
+  });
+
   it('a doubled or held Enter stops at the detail: it starts no chat (`[c]` is the one key that does, and it is a letter)', async () => {
     const { rig, fakes } = await opened();
     rig.press('', ENTER);
@@ -262,7 +275,7 @@ describe('what a stored word cannot do', () => {
   });
 });
 
-describe('R1-M proposed: the slug, an invalid file’s reason and the catalog’s failure are stored words too', () => {
+describe('the slug, an invalid file’s reason and the catalog’s failure are stored words too', () => {
   const FORGED = ['▼ 9 more', '[Enter] open', 'Press Ctrl+Y now'];
 
   it.each(FORGED)(

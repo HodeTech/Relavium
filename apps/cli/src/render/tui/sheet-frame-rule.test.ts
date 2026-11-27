@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { withGlyphForm } from './glyphs.js';
 import {
@@ -9,6 +9,7 @@ import {
   waitSinceText,
 } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
+import { waitClockFor } from './wait-clock.js';
 
 /**
  * The sheet's heavy rule and its wait clock (ADR-0147 §1 and §2): the clock's words, quantised to the unit they show; the room the rule keeps
@@ -36,7 +37,7 @@ describe('waitClockText — the alternate screen’s clock, quantised to the uni
     expect(waitClockText(100 * DAY)).toBe('waiting 99d+');
   });
 
-  it('R1-M proposed: the unit boundaries are exact (an hour is 1h 00m, a day is 1d 00h)', () => {
+  it('the unit boundaries are exact (an hour is 1h 00m, a day is 1d 00h)', () => {
     expect(waitClockText(HOUR)).toBe('waiting 1h 00m');
     expect(waitClockText(DAY)).toBe('waiting 1d 00h');
   });
@@ -118,6 +119,42 @@ describe('waitSinceText — the inline renderer’s static clock', () => {
     );
     // A display clock stepped back below the origin is no earlier day: the time alone.
     expect(waitSinceText(since, since - DAY)).toBe('waiting since 14:05');
+  });
+});
+
+describe('waitSinceText — the day is compared whole (dropping the month or the year of the same-day test survived every test)', () => {
+  const NOW = new Date(2026, 10, 27, 12, 0).getTime();
+
+  it('the same day-of-month of the month before is another day, not today', () => {
+    expect(waitSinceText(new Date(2026, 9, 27, 14, 5).getTime(), NOW)).toBe(
+      'waiting since Oct 27 14:05',
+    );
+  });
+
+  it('the same day and month of the year before is another year, not today', () => {
+    expect(waitSinceText(new Date(2025, 10, 27, 14, 5).getTime(), NOW)).toBe(
+      'waiting since Nov 27 2025',
+    );
+  });
+
+  it('the same day, a few hours earlier, is the time alone', () => {
+    expect(waitSinceText(new Date(2026, 10, 27, 1, 5).getTime(), NOW)).toBe('waiting since 01:05');
+  });
+});
+
+describe('waitClockFor — the static form reads the caller’s `now`, not the wall clock', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a wait begun today by the wall clock but two days before the caller’s `now` says its day', () => {
+    const since = new Date(2026, 10, 27, 14, 5).getTime();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(since + 60_000);
+    expect(waitClockFor(since, 'static', since + 2 * 24 * 60 * 60 * 1000)).toBe(
+      'waiting since Nov 27 14:05',
+    );
+    expect(waitClockFor(since, 'static', since + 60_000)).toBe('waiting since 14:05');
   });
 });
 

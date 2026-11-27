@@ -367,6 +367,26 @@ describe('opening the card', () => {
     expect(frame).toMatch(/^== Waiting for you =+/mu);
   });
 
+  it.each([
+    ['a key token', '[Ctrl+Y] Approve', '|| [[chord]] Approve  ·  run run-0001'],
+    ['a list marker', 'release ▼ 9 more', '|| release 9 more  ·  run run-0001'],
+    [
+      'an invisible character',
+      `rel${String.fromCharCode(0x200b)}ease`,
+      '|| release  ·  run run-0001',
+    ],
+  ])(
+    'a stored slug with %s is drawn as the Home’s row draws it, at 80 columns (unit 8 fix wave 2, S2-1)',
+    async (_label, slug, title) => {
+      const m = mount({ rows: [{ ...ROW, workflow: slug }] });
+      await openCard(m);
+      const frame = m.frame();
+      expect(frame).toContain(title);
+      expect(frame).not.toContain('Ctrl+Y] Approve  ·');
+      expect(frame).not.toMatch(/▼|\u200b/u);
+    },
+  );
+
   it('`Enter` on the focused row opens the card in front of the landing: the message behind the gutter, the gate and the keys', async () => {
     const m = mount();
     await openCard(m);

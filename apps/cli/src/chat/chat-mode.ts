@@ -179,7 +179,7 @@ export class ApprovalCache {
     }
     return removed;
   }
-  /** The commands approved for this session, in the order they were approved (the `/permissions` sheet lists them so). */
+  /** The commands approved for this session, in the order they were approved (the `/permissions` popup lists them so). */
   commandApprovals(): readonly SessionCommandApproval[] {
     const approvals: SessionCommandApproval[] = [];
     for (const [key, grantId] of this.#commands) {

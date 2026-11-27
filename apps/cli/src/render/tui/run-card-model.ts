@@ -225,12 +225,20 @@ function sameGates(a: readonly RunCardGate[], b: readonly RunCardGate[]): boolea
 }
 
 /**
- * What the card says once an answer started a leg. The run continues in the background only when this was the last open gate: with
- * others still waiting, the card says how many, and not that the run is on its way.
+ * What the card says once an answer started a leg, in words true of that answer (unit 8 fix wave 2, O2-7). A budget gate's abort fails the run
+ * at the budget (`budget_exceeded`), whatever else waits, so it never says the run goes on. Otherwise the run continues in the background only
+ * when this was the last open gate: with others still waiting, the card says how many, and not that the run is on its way. A human gate's
+ * rejection continues the run on the route its workflow gives a rejection (the card's own fact row says so before the key).
  */
-function answeredNotice(stillOpen: number): string {
-  if (stillOpen === 0) return 'Answered. The run continues in the background.';
-  return `1 of ${String(stillOpen + 1)} gates answered; ${String(stillOpen)} still ${stillOpen === 1 ? 'waits' : 'wait'}.`;
+function answeredNotice(stillOpen: number, gate: RunCardGate, decision: GateDecision): string {
+  const rejected = decision.decision === 'rejected';
+  if (rejected && isBudgetGate(gate))
+    return 'Aborted. The run stops at the budget and fails (budget_exceeded).';
+  if (stillOpen > 0)
+    return `1 of ${String(stillOpen + 1)} gates answered; ${String(stillOpen)} still ${stillOpen === 1 ? 'waits' : 'wait'}.`;
+  return rejected
+    ? 'Rejected. The run continues in the background on its rejection route.'
+    : 'Answered. The run continues in the background.';
 }
 
 const SEND_FAILED: HostedLaunch = Object.freeze({
@@ -307,6 +315,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
   const accepted = (
     launch: Exclude<HostedLaunch, { kind: 'refused' }>,
     gate: RunCardGate,
+    decision: GateDecision,
   ): void => {
     const gates = snapshot.gates.filter((entry) => entry.gateId !== gate.gateId);
     guard.begin(); // whatever is under the cursor now is a new frame: its dwell starts when it is shown
@@ -320,7 +329,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
       });
       return;
     }
-    publish({ ...base, phase: 'answered', notice: answeredNotice(gates.length) });
+    publish({ ...base, phase: 'answered', notice: answeredNotice(gates.length, gate, decision) });
   };
 
   const send = (gate: RunCardGate, decision: GateDecision): void => {
@@ -349,7 +358,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
       .then((launch) => {
         if (disposed) return;
         if (launch.kind === 'refused') reopen(before, gate, launch.message);
-        else accepted(launch, gate);
+        else accepted(launch, gate, decision);
       });
   };
 
@@ -947,18 +956,28 @@ function budgetRows(gate: RunBudgetGate, width: number): readonly RunCardRow[] {
   return rows;
 }
 
-/** The facts under the author's message: where the gate sits, its deadline, and what an answer does. */
 /**
  * What the title row names beside the glyph: while the card waits, the workflow, because the rule above it already says `Waiting for you` and the
  * clock `waiting 1h 07m` (the frame `sheet-gate-home-80x24`; unit 8 fix wave, S-11: the card said "waiting" three times); in every other state,
- * and where the host does not know the workflow, the state's word.
+ * and where the host does not know the workflow, the state's word. The slug is stored text: it is drawn as author text ({@link authorLine}: no
+ * host glyph, no answer chord, nothing invisible), as the Home's row draws it, and a slug the scrub leaves empty names nothing (S2-1).
  */
 function titleName(state: RunCardState, snapshot: RunCardSnapshot, word: string): string {
-  return state === 'waiting' && snapshot.workflow !== undefined
-    ? sanitizeInline(snapshot.workflow)
-    : word;
+  if (state !== 'waiting' || snapshot.workflow === undefined) return word;
+  const name = authorLine(snapshot.workflow).replace(/\s+/gu, ' ').trim();
+  return name === '' ? word : name;
 }
 
+/** The title row: the glyph, what it names (cut first, so the gate count and the run's id stay on the row), and where the run is. */
+function titleText(mark: string, name: string, tail: string, width: number): string {
+  const room = Math.max(TITLE_NAME_MIN, width - displayWidth(`${mark} `) - displayWidth(tail));
+  return clipLine(`${mark} ${clipLine(name, room)}${tail}`, width);
+}
+
+/** The least a title keeps for what it names before the run's id is the part cut. */
+const TITLE_NAME_MIN = 12;
+
+/** The facts under the author's message: where the gate sits, its deadline, and what an answer does. */
 function gateFacts(
   gate: RunCardGate,
   width: number,
@@ -1064,8 +1083,10 @@ export function projectRunCard(
       : messageBlock(open, width, messageRoom(input.rows, 3 + facts.length + notice.length));
   const title: RunCardRow = {
     role: 'title',
-    text: clipLine(
-      `${mark} ${titleName(state, snapshot, word)}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
+    text: titleText(
+      mark,
+      titleName(state, snapshot, word),
+      `${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
       width,
     ),
   };

@@ -17,7 +17,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { HostedLaunch, HostedStartRequest, RunHostSnapshot } from '../../home/run-host.js';
-import { createRunLaunch, LAUNCH_CANCELLED, type LaunchCatalog } from '../../home/run-launch.js';
+import {
+  createRunLaunch,
+  LAUNCH_CANCELLED,
+  type LaunchCatalog,
+  type LaunchOptions,
+} from '../../home/run-launch.js';
 import { createChordHistory } from './chord-guard.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { createNativePromptChannel, type NativePromptSnapshot } from './native-prompt-channel.js';
@@ -63,6 +68,19 @@ workflow:
     - { from: start, to: out }
 `;
 
+/** One input: the form's first thing is a field, where `Esc` is a step back. */
+const ONE_INPUT = `schema_version: '1.0'
+workflow:
+  id: nightly
+  inputs:
+    - { name: n, type: number }
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
 const EMPTY: HomeSnapshot = {
   failedRuns: [],
   recentSessions: [],
@@ -83,14 +101,14 @@ const HOLD_MS = 4_000;
 const INITIAL_DELAYS_MS = [0, 250, 500, 660, 1_800] as const;
 const REPEAT_INTERVALS_MS = [30, 100] as const;
 
-const catalog: LaunchCatalog = {
+const catalogOf = (text: string): LaunchCatalog => ({
   list: () => [{ path: 'nightly.yaml', slug: 'nightly', name: undefined, tags: [], valid: true }],
   load: (path) => ({
-    definition: parseWorkflow(NO_INPUTS, { source: path }),
+    definition: parseWorkflow(text, { source: path }),
     sourceDigest: 'd'.repeat(64),
     fsScope: { tier: 'sandboxed', fromRepository: false },
   }),
-};
+});
 
 const STARTED: HostedLaunch = {
   kind: 'started',
@@ -100,7 +118,7 @@ const STARTED: HostedLaunch = {
 };
 
 /** A Home on a History detail whose `r` reaches the real launch flow over the real channel. */
-async function mount() {
+async function mount(workflow = NO_INPUTS) {
   let clock = PRESSED_AT - 1_000;
   const chordHistory = createChordHistory();
   const channel = createNativePromptChannel({ now: () => clock, history: chordHistory });
@@ -109,8 +127,10 @@ async function mount() {
   const host = {
     start: vi.fn((request: HostedStartRequest) => (void request, Promise.resolve(STARTED))),
   };
-  const launch = createRunLaunch({ flow: channel.flow, host, catalog });
-  const open = vi.fn((slug?: string, path?: string) => launch.open(slug, path));
+  const launch = createRunLaunch({ flow: channel.flow, host, catalog: catalogOf(workflow) });
+  const open = vi.fn((slug?: string, path?: string, options?: LaunchOptions) =>
+    launch.open(slug, path, options),
+  );
   const history: HistoryPort = {
     read: () => historyListOfRun(),
     cost: () => ({ kind: 'text', text: '$0.01' }),
@@ -179,6 +199,7 @@ describe('nothing starts until the form’s own confirmation is answered, whatev
         expect(m.open, 'the flow was opened for the catalog entry').toHaveBeenCalledWith(
           'nightly',
           'nightly.yaml',
+          { leaveOnBack: true },
         );
         const first = PRESSED_AT + FIRST_PRESS_AFTER_MS;
         m.at(first);
@@ -247,6 +268,24 @@ describe('nothing starts until the form’s own confirmation is answered, whatev
     expect(m.host.start, 'leaving the form started nothing').not.toHaveBeenCalled();
     expect(m.message(), 'what the flow said, on the detail').toBe(LAUNCH_CANCELLED);
     expect(m.controller.getSnapshot().notice).toBeUndefined();
+  });
+
+  it('Esc at the first field of the form leaves to the detail the key came from, saying nothing: no picker the person never saw, and the detail is where it was (review round 2, O2-5)', async () => {
+    const m = await mount(ONE_INPUT);
+    m.at(PRESSED_AT);
+    m.controller.handleKey('r', {});
+    for (let turn = 0; turn < 50 && m.channel.ui.getSnapshot().kind !== 'text'; turn += 1)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(m.snapshot().kind, 'the first field is up').toBe('text');
+    m.show();
+    m.at(PRESSED_AT + 1_000);
+    m.channel.ui.input('', { ...none, escape: true });
+    await vi.waitFor(() => expect(m.controller.getSnapshot().nativeActionBusy).toBe(false));
+    expect(m.channel.ui.getSnapshot().active, 'the flow is over: no picker').toBe(false);
+    expect(m.host.start).not.toHaveBeenCalled();
+    expect(m.message(), 'it has nothing to add').toBeUndefined();
+    const screen = m.controller.getSnapshot().screen;
+    expect(screen?.kind === 'tab-host' ? screen.host.history?.detail?.runId : undefined).toBe(RUN);
   });
 
   it('a Ctrl+Y typed ahead of the form, before its frame was on screen or inside its lockout, answers nothing, and the press that follows the lockout does', async () => {

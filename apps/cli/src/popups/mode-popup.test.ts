@@ -531,7 +531,7 @@ describe('in a chat: Enter applies at once or keeps; [s] is the startup default'
     expect(r.fake.mode()).toBe('ask');
   });
 
-  it('R1-M proposed: the hand-off starts only after the key that asked has been handled to its end (the writer’s first card is a frame of its own)', async () => {
+  it('the hand-off starts only after the key that asked has been handled to its end (the writer’s first card is a frame of its own)', async () => {
     const r = openMode({ current: 'ask', startup: 'ask' });
     r.press('', DOWN); // plan
     r.press('s', {});

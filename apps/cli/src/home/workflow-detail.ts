@@ -28,6 +28,12 @@ export interface WorkflowDetailInput {
 export interface WorkflowDetailNode {
   readonly id: string;
   readonly note?: string | undefined;
+  /**
+   * Set (`true`) on a node that NO edge joins to the node drawn before it: a sibling on another branch, or the first of a part the edges do not link.
+   * The chain draws `→` only along an edge, and `·` before such a node, so it never reads a branch as a path (review round 2, O2-4). Absent for a
+   * node an edge leads to from the one before it, and for the first node.
+   */
+  readonly apart?: true | undefined;
 }
 
 export interface WorkflowDetail {
@@ -137,6 +143,20 @@ function chainOrder(
   return order.map((at) => ids[at] ?? '');
 }
 
+/** The positions (in `order`) of the nodes that no edge leads to from the node before them: one pass over the edges, whatever their number. */
+function aparts(
+  order: readonly string[],
+  edges: readonly { readonly from: string; readonly to: string }[],
+): ReadonlySet<number> {
+  const at = new Map(order.map((id, index) => [id, index] as const));
+  const joined = new Set<number>();
+  for (const edge of edges) {
+    const from = at.get(edge.from);
+    if (from !== undefined && order[from + 1] === edge.to) joined.add(from + 1);
+  }
+  return new Set(order.map((_, index) => index).filter((index) => index > 0 && !joined.has(index)));
+}
+
 /** The note of a node: a human gate's kind and wait. */
 function noteOf(node: WorkflowDefinition['workflow']['nodes'][number]): string | undefined {
   if (node.type !== 'human_gate') return undefined;
@@ -152,6 +172,7 @@ export function buildWorkflowDetail(definition: WorkflowDefinition): WorkflowDet
   const byId = new Map(workflow.nodes.map((node) => [node.id, node]));
   const ids = [...byId.keys()];
   const order = chainOrder(ids, workflow.edges, WORKFLOW_DETAIL_ITEMS_MAX);
+  const apart = aparts(order, workflow.edges);
   return {
     description: workflow.description,
     inputs: declared.slice(0, WORKFLOW_DETAIL_ITEMS_MAX).map((input) => ({
@@ -160,10 +181,14 @@ export function buildWorkflowDetail(definition: WorkflowDefinition): WorkflowDet
       required: input.required === true && input.default === undefined,
     })),
     inputsMore: Math.max(0, declared.length - WORKFLOW_DETAIL_ITEMS_MAX),
-    nodes: order.map((id) => {
+    nodes: order.map((id, index) => {
       const node = byId.get(id);
       const note = node === undefined ? undefined : noteOf(node);
-      return { id, ...(note === undefined ? {} : { note }) };
+      return {
+        id,
+        ...(note === undefined ? {} : { note }),
+        ...(apart.has(index) ? { apart: true as const } : {}),
+      };
     }),
     nodesMore: Math.max(0, ids.length - order.length),
   };

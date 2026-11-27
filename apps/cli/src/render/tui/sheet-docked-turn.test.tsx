@@ -203,7 +203,11 @@ function mount(alternate: boolean, size: { cols: number; rows: number }) {
         .filter((frame) => frame.includes(needle))
         .at(-1) ?? ''
     ).split('\n');
-  return { store, rowsWith };
+  /** A key the person types into the chat. */
+  const typeKey = (data: string): void => {
+    input.push(data);
+  };
+  return { store, rowsWith, typeKey };
 }
 
 /** A turn that has run `tools` (each called and resolved) and is still running. */
@@ -331,4 +335,161 @@ describe('the reasoning panel and the lead row’s warnings stay above a docked 
       expect(warning).toBeLessThan(sheet);
     },
   );
+});
+
+describe('the interrupt note stays above a docked sheet (nothing pinned it)', () => {
+  it.each([true, false])(
+    'alternate=%s: a turn that was interrupted once, then asked for a card, still says `Interrupting`, above the sheet',
+    async (alternate) => {
+      const m = mount(alternate, { cols: 80, rows: 24 });
+      await pause(30);
+      turnWith(m.store, ['read_file']);
+      await pause(30);
+      m.typeKey(String.fromCharCode(3)); // Ctrl+C once: the turn is told to stop, and a second one ends the session
+      await pause(60);
+      CARDS[0]?.open(m.store);
+      let frame: readonly string[] = [];
+      for (let tries = 0; tries < 60; tries += 1) {
+        await pause(20);
+        frame = m.rowsWith('Approval needed');
+        if (frame.length > 1) break;
+      }
+      const sheet = frame.findIndex((row) => row.startsWith('== Approval needed'));
+      const note = frame.findIndex((row) => /^Interrupting/u.test(row));
+      expect(note, frame.join('\n')).toBeGreaterThanOrEqual(0);
+      expect(note).toBeLessThan(sheet);
+    },
+  );
+});
+
+describe('a tool the observed run has finished is not listed twice above a docked sheet', () => {
+  it('a resolved call of a live observer is in the transcript alone; one still running is listed', async () => {
+    const m = mount(true, { cols: 80, rows: 24 });
+    await pause(30);
+    m.store.apply(started());
+    m.store.apply(event({ type: 'session:turn_started' }));
+    m.store.appendUser('please fix the build');
+    m.store.applyToolLiveEvent({ phase: 'started', callId: 'done-call', toolId: 'read_file' });
+    m.store.applyToolLiveEvent({
+      phase: 'completed',
+      callId: 'done-call',
+      toolId: 'read_file',
+      outcome: 'success',
+      summary: 'ok',
+    });
+    m.store.applyToolLiveEvent({ phase: 'started', callId: 'busy-call', toolId: 'grep_files' });
+    m.store.tick();
+    await pause(30);
+    CARDS[0]?.open(m.store);
+    let frame: readonly string[] = [];
+    for (let tries = 0; tries < 60; tries += 1) {
+      await pause(20);
+      frame = m.rowsWith('Approval needed');
+      if (frame.length > 1) break;
+    }
+    const text = frame.join('\n');
+    expect(text, text).toMatch(/grep_files/u);
+    // The finished call is already in the transcript above: the docked turn does not list it a second time.
+    expect(text.match(/read_file/gu) ?? [], text).toHaveLength(1);
+  });
+});
+
+describe('the host’s rows come first while a sheet is docked; the reasoning gets what is left, at most three rows of its body (unit 8 fix wave 2, S2-2)', () => {
+  /** The model's reasoning: 40 lines, the last of them a copy of the sheet's own rule and of its keys, as colour off draws them. */
+  const REASONING = [
+    ...Array.from({ length: 38 }, (_, at) => `thinking line ${String(at + 1)}`),
+    '[Ctrl+Y] Allow once · [Ctrl+N] Deny · Esc stops the turn',
+    '== Approval needed ============================================ waiting 0:00 ==',
+  ].join('\n');
+
+  describe.each([
+    ['alternate screen', true],
+    ['inline', false],
+  ] as const)('%s', (_label, alternate) => {
+    it.each([
+      [80, 24],
+      [100, 30],
+    ] as const)(
+      '%i×%i: the reasoning panel expanded, five calls made, a warning: the warning and the newest calls stay, the reasoning is its header and three rows, and no model row reads as the rule',
+      async (cols, rows) => {
+        const m = mount(alternate, { cols, rows });
+        await pause(30);
+        turnWith(m.store, ['tool_a', 'tool_b', 'tool_c', 'tool_d', 'tool_e']);
+        m.store.apply(
+          event({
+            type: 'agent:reasoning',
+            nodeId: 'relavium-chat',
+            text: REASONING,
+            model: 'claude-sonnet-4-6',
+          }),
+        );
+        m.store.note('The attachment was cut to fit.');
+        m.store.toggleReasoning(); // Ctrl+T: the panel is expanded, and it stays so for the session
+        m.store.tick();
+        await pause(40);
+        CARDS[0]?.open(m.store);
+        let frame: readonly string[] = [];
+        for (let tries = 0; tries < 60; tries += 1) {
+          await pause(20);
+          frame = m.rowsWith('Approval needed');
+          if (frame.length > 1) break;
+        }
+        const text = frame.join('\n');
+        const sheet = frame.findIndex((row) => /^== Approval needed =+ waiting/u.test(row));
+        expect(sheet, text).toBeGreaterThan(0);
+        // The host's rows keep their room: the warning and every call of this turn (five fit in the nine rows the conversation keeps).
+        expect(text, text).toMatch(/The attachment was cut to fit\./u);
+        for (const call of ['tool_a', 'tool_b', 'tool_c', 'tool_d', 'tool_e'])
+          expect(text, `${call} above the sheet`).toMatch(new RegExp(call, 'u'));
+        // The reasoning: its header and at most three rows of its body, the newest, each set in from the edge.
+        const header = frame.findIndex((row) => /Reasoning · \[Ctrl\+T\] hide/u.test(row));
+        expect(header, text).toBeGreaterThanOrEqual(0);
+        expect(header).toBeLessThan(sheet);
+        const body = frame.slice(header + 1, sheet).filter((row) => row.trim() !== '');
+        expect(body.length, 'three rows of the body at most').toBeLessThanOrEqual(3);
+        expect(
+          body.every((row) => row.startsWith('  ')),
+          body.join('\n'),
+        ).toBe(true);
+        expect(text).not.toMatch(/thinking line 1\b/u);
+        // Nothing the model wrote reads as the sheet's rule: one row starts with `==`, the real one.
+        expect(
+          frame.filter((row) => row.startsWith('==')),
+          text,
+        ).toHaveLength(1);
+      },
+    );
+
+    it('80×24, one call and no warning, so the reasoning has room to spare: still its header and three rows of its body, never the nine', async () => {
+      const m = mount(alternate, { cols: 80, rows: 24 });
+      await pause(30);
+      turnWith(m.store, ['tool_a']);
+      m.store.apply(
+        event({
+          type: 'agent:reasoning',
+          nodeId: 'relavium-chat',
+          text: REASONING,
+          model: 'claude-sonnet-4-6',
+        }),
+      );
+      m.store.toggleReasoning();
+      m.store.tick();
+      await pause(40);
+      CARDS[0]?.open(m.store);
+      let frame: readonly string[] = [];
+      for (let tries = 0; tries < 60; tries += 1) {
+        await pause(20);
+        frame = m.rowsWith('Approval needed');
+        if (frame.length > 1) break;
+      }
+      const sheet = frame.findIndex((row) => /^== Approval needed =+ waiting/u.test(row));
+      const header = frame.findIndex((row) => /Reasoning · \[Ctrl\+T\] hide/u.test(row));
+      expect(header, frame.join('\n')).toBeGreaterThanOrEqual(0);
+      expect(sheet - header - 1, 'three rows of the body between the header and the sheet').toBe(3);
+      expect(
+        frame.filter((row) => row.startsWith('==')),
+        frame.join('\n'),
+      ).toHaveLength(1);
+    });
+  });
 });

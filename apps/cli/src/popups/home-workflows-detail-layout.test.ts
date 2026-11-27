@@ -26,6 +26,8 @@ import { bodyPageRows, naturalBodyRows } from './frame-model.js';
 import { INLINE_LIST_MAX_ROWS, popupGeometry, popupInnerWidth } from './geometry.js';
 import { definedRead, detailOf, workflowEntry } from './home-popups.test-support.js';
 import type { HomeWorkflowRun } from './home-port.js';
+import { POPUP_TEXT_COLUMNS } from './popup-text.js';
+import { displayWidth } from '../render/tui/viewport.js';
 
 const NOW = Date.parse('2026-11-27T12:00:00Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -101,7 +103,9 @@ function after(frame: PopupFrame, variant: Variant, keys: readonly string[]): Po
           ? { kind: 'move' as const, delta: -1 as const }
           : key === 'pageDown'
             ? { kind: 'page' as const, delta: 1 as const }
-            : { kind: 'jump' as const, to: 'last' as const };
+            : key === 'home'
+              ? { kind: 'jump' as const, to: 'first' as const }
+              : { kind: 'jump' as const, to: 'last' as const };
     const folded = foldPopupAction(current, action, pageRows);
     if (folded.kind === 'frame') current = folded.frame;
   }
@@ -109,6 +113,10 @@ function after(frame: PopupFrame, variant: Variant, keys: readonly string[]): Po
 }
 
 const NO_MARKER = /(\^|v) \d+ more/u;
+
+/** The lines the highlight stands on (`>`, the marker of the plain form), whatever kind of line they are. */
+const caretRows = (text: string): string[] =>
+  text.split('\n').filter((row) => /^ ?> /u.test(row.trimEnd()) || /^\s*> /u.test(row));
 
 describe.each(CELLS)('the detail at $name', ({ variant }) => {
   it('with three runs and a short header: the whole page is on screen from its title, no run in front, no marker, and the legend of the page that fits', () => {
@@ -118,10 +126,13 @@ describe.each(CELLS)('the detail at $name', ({ variant }) => {
     expect(text).toContain('Last runs');
     for (const id of ['41ae651d', '092e6161', 'fa7f8a61']) expect(text).toContain(id);
     expect(text, 'nothing is hidden above or below').not.toMatch(NO_MARKER);
-    expect(text, 'the highlight is on the title, not on a run').not.toMatch(/^ ?> .*[0-9a-f]{8}/mu);
-    // `↑/↓ select` (the last runs are rows to choose) is named where the width holds it (100 columns), and is the first item to go at 80.
+    expect(
+      caretRows(text),
+      'no line is highlighted when it opens: a held Enter that opened it answers nothing',
+    ).toEqual([]);
+    // `↑/↓ select` names the key that lands on the first run; it is the only key that goes when the row is short, and `[Ctrl+C] close` goes before it.
     expect(legend).toMatch(
-      /^(↑\/↓ select · )?\[r\] run · \[x\] export · \[p\] pin · \[Ctrl\+C\] close · Esc back$/u,
+      /^↑\/↓ select · \[r\] run · \[x\] export · \[p\] pin( · \[Ctrl\+C\] close)? · Esc back$/u,
     );
     expect(rows.length).toBeLessThanOrEqual(variant.size.rows - 1);
   });
@@ -134,7 +145,7 @@ describe.each(CELLS)('the detail at $name', ({ variant }) => {
     expect(legend).not.toContain('PgUp/PgDn');
   });
 
-  it('with 14 nodes and 7 inputs: it opens on its title, says it goes on, names its pages, and scrolls to the last runs and back', () => {
+  it('with 14 nodes and 7 inputs: it opens on its title (highlighted), says it goes on, names `↑/↓ scroll`, and reaches the last runs and back', () => {
     const frame = detailFrame(
       detailOf({ nodes: FOURTEEN_NODES, inputs: SEVEN_INPUTS }),
       THREE_RUNS,
@@ -146,12 +157,19 @@ describe.each(CELLS)('the detail at $name', ({ variant }) => {
     ).toContain('release-notes · Release notes');
     expect(first.text).toContain('Drafts release notes for a version.');
     expect(first.text, 'and it says that more follows').toMatch(/v \d+ more/u);
-    expect(first.legend).toContain('PgUp/PgDn page');
+    expect(
+      caretRows(first.text),
+      'the highlight is on the title: the page is walked line by line',
+    ).toEqual([expect.stringContaining('release-notes · Release notes')]);
+    expect(first.legend).toContain('↑/↓ scroll');
     expect(first.legend).toContain('Esc back');
+    expect(first.legend, 'the letters that act are named').toMatch(
+      /\[r\] run · \[x\] export · \[p\] pin/u,
+    );
     const end = drawn(after(frame, variant, ['end']), variant);
     for (const id of ['41ae651d', '092e6161', 'fa7f8a61']) expect(end.text).toContain(id);
     expect(end.text, 'at the end the page above is hidden').toMatch(/\^ \d+ more/u);
-    const back = drawn(after(frame, variant, ['end', ...Array<string>(40).fill('up')]), variant);
+    const back = drawn(after(frame, variant, ['end', ...Array<string>(60).fill('up')]), variant);
     expect(back.text, '↑ walks back up to the title').toContain('release-notes · Release notes');
     const paged = drawn(after(frame, variant, ['pageDown']), variant);
     expect(paged.text, 'a page on is not the first page').not.toBe(first.text);
@@ -170,19 +188,158 @@ describe('the page uses the body’s whole height in the flow, not the ten rows 
   });
 });
 
-describe('Enter on the page', () => {
-  it('opens nothing on the title (a held or doubled Enter stops at the detail), and opens the run it is walked onto', () => {
-    const variant = CELLS[0]?.variant;
-    if (variant === undefined) throw new Error('no cell');
-    const frame = detailFrame(detailOf(), THREE_RUNS);
-    expect(foldPopupAction(frame, { kind: 'enter' }, 15).kind).toBe('unchanged');
-    let walked = frame;
-    for (let step = 0; step < 30 && highlightedRow(walked)?.id !== 'run:0'; step += 1)
-      walked = after(walked, variant, ['down']);
-    expect(highlightedRow(walked)?.id).toBe('run:0');
-    const fold = foldPopupAction(walked, { kind: 'enter' }, 15);
+/** Frames of the detail with `runs` runs and the nodes and inputs it has, by what the page holds. */
+const PAGES = {
+  fits: (runs: readonly HomeWorkflowRun[]) => detailFrame(detailOf(), runs),
+  long: (runs: readonly HomeWorkflowRun[]) =>
+    detailFrame(detailOf({ nodes: FOURTEEN_NODES, inputs: SEVEN_INPUTS }), runs),
+  /** 30 nodes with long ids and 12 inputs: overflows every page with or without a run. */
+  thirty: (runs: readonly HomeWorkflowRun[]) =>
+    detailFrame(
+      detailOf({
+        nodes: Array.from({ length: 30 }, (_, at) => ({
+          id: `step-${String(at + 1).padStart(2, '0')}-of-the-long-chain`,
+        })),
+        inputs: Array.from({ length: 12 }, (_, at) => ({
+          name: `argument-number-${String(at + 1).padStart(2, '0')}`,
+          type: 'string',
+          required: at % 2 === 0,
+        })),
+      }),
+      runs,
+    ),
+};
+
+describe.each(CELLS)('the detail’s keys at $name (review round 2, P2-1)', ({ variant }) => {
+  const onScreen = (frame: PopupFrame): string => drawn(frame, variant).text;
+
+  it('a page that fits, three runs: it opens with nothing highlighted, `↓` lands on the first run at once, then walks the runs and stops at the last', () => {
+    const open = PAGES.fits(THREE_RUNS);
+    expect(caretRows(onScreen(open))).toEqual([]);
+    const one = after(open, variant, ['down']);
+    expect(highlightedRow(one)?.id).toBe('run:0');
+    expect(caretRows(onScreen(one)), 'the highlight is drawn on the first run').toEqual([
+      expect.stringContaining('41ae651d'),
+    ]);
+    expect(onScreen(one), 'it says what Enter does there').toContain(
+      'Opens it on the Runs screen.',
+    );
+    expect(drawn(one, variant).legend).toContain('Enter open run');
+    const two = after(open, variant, ['down', 'down']);
+    expect(highlightedRow(two)?.id).toBe('run:1');
+    const three = after(open, variant, ['down', 'down', 'down']);
+    expect(highlightedRow(three)?.id).toBe('run:2');
+    expect(highlightedRow(after(three, variant, ['down']))?.id, 'it stops at the last run').toBe(
+      'run:2',
+    );
+    expect(highlightedRow(after(three, variant, ['up']))?.id).toBe('run:1');
+    expect(highlightedRow(after(open, variant, ['end']))?.id, 'End: the last run').toBe('run:2');
+    expect(highlightedRow(after(open, variant, ['end', 'home']))?.id, 'Home: the first run').toBe(
+      'run:0',
+    );
+  });
+
+  it('a page that fits: Enter opens nothing before the first `↓` (a held or doubled Enter stops at the detail), and opens the run it is on after it', () => {
+    const open = PAGES.fits(THREE_RUNS);
+    expect(foldPopupAction(open, { kind: 'enter' }, 15).kind).toBe('unchanged');
+    const fold = foldPopupAction(after(open, variant, ['down']), { kind: 'enter' }, 15);
     expect(fold.kind).toBe('enter');
     expect(fold.kind === 'enter' ? fold.row?.id : undefined).toBe('run:0');
+  });
+
+  it('a page that fits, ONE run: `↓` lands on it too, and the legend names `↑/↓ select` (the opening state has nothing highlighted)', () => {
+    const open = PAGES.fits(THREE_RUNS.slice(0, 1));
+    expect(drawn(open, variant).legend).toContain('↑/↓ select');
+    expect(highlightedRow(after(open, variant, ['down']))?.id).toBe('run:0');
+  });
+
+  it('a page that fits, no run: nothing is blind: no key moves anything, and the legend names no `↑/↓` and no `Enter`', () => {
+    const open = PAGES.fits([]);
+    const before = onScreen(open);
+    for (const keys of [['down'], ['up'], ['pageDown'], ['end'], ['home']])
+      expect(onScreen(after(open, variant, keys)), keys.join(',')).toBe(before);
+    const { legend } = drawn(open, variant);
+    expect(legend).not.toContain('↑/↓');
+    expect(legend).not.toContain('Enter');
+    expect(legend).not.toContain('PgUp');
+  });
+
+  it.each([
+    ['14 nodes, 7 inputs, 3 runs', () => PAGES.long(THREE_RUNS)],
+    ['30 nodes, 7 inputs, 3 runs', () => PAGES.thirty(THREE_RUNS)],
+    ['30 nodes, 7 inputs, no run', () => PAGES.thirty([])],
+  ])(
+    'a page that overflows (%s): every `↓` changes the screen, with the highlight drawn on exactly one line, down to the last line',
+    (_name, make) => {
+      let frame = make();
+      const lines = currentStep(frame).state.content;
+      const total = lines.kind === 'list' ? lines.rows.length : 0;
+      expect(drawn(frame, variant).text, 'the page overflows').toMatch(/v \d+ more/u);
+      let seen = onScreen(frame);
+      expect(caretRows(seen)).toHaveLength(1);
+      let moved = 0;
+      for (let press = 0; press < total + 5; press += 1) {
+        const next = after(frame, variant, ['down']);
+        if (next === frame) break;
+        const text = onScreen(next);
+        expect(text, `press ${String(press + 1)} changed nothing`).not.toBe(seen);
+        expect(caretRows(text), `press ${String(press + 1)}`).toHaveLength(1);
+        frame = next;
+        seen = text;
+        moved += 1;
+      }
+      expect(moved, 'it walked to the last line, which is on screen').toBe(total - 1);
+      expect(currentStep(frame).state.selected).toBe(total - 1);
+      expect(caretRows(seen)).toHaveLength(1);
+    },
+  );
+
+  it('a page that overflows: `↑/↓ scroll` is named, `PgUp/PgDn` where the width holds it, and the letters that act are always named', () => {
+    for (const [make, runs] of [
+      [PAGES.long, THREE_RUNS],
+      [PAGES.thirty, THREE_RUNS],
+      [PAGES.thirty, []],
+    ] as const) {
+      {
+        const open = make(runs);
+        for (const keys of [[], ['down', 'down', 'down'], ['end']]) {
+          const { legend } = drawn(after(open, variant, keys), variant);
+          // Where a run is highlighted its own `Enter open run` is kept before `↑/↓ scroll`, which the arrows do without being told.
+          const onRun = highlightedRow(after(open, variant, keys))?.id?.startsWith('run:') === true;
+          if (onRun) expect(legend, keys.join(',')).toMatch(/Enter open run|↑\/↓ scroll/u);
+          else expect(legend, keys.join(',')).toContain('↑/↓ scroll');
+          expect(legend).toMatch(/\[r\] run · \[x\] export · \[p\] (un)?pin/u);
+          expect(legend).toMatch(/Esc back$/u);
+        }
+      }
+    }
+  });
+
+  it('a page that overflows: Enter does nothing on a line that is no run, and opens the run it has been walked onto', () => {
+    const open = PAGES.long(THREE_RUNS);
+    expect(foldPopupAction(open, { kind: 'enter' }, 15).kind, 'on the title').toBe('unchanged');
+    expect(
+      foldPopupAction(after(open, variant, ['down', 'down']), { kind: 'enter' }, 15).kind,
+    ).toBe('unchanged');
+    const ended = after(open, variant, ['end']);
+    expect(highlightedRow(ended)?.id).toBe('run:2');
+    const fold = foldPopupAction(ended, { kind: 'enter' }, 15);
+    expect(fold.kind === 'enter' ? fold.row?.id : undefined).toBe('run:2');
+    expect(drawn(ended, variant).legend).toContain('Enter open run');
+  });
+
+  it('whatever the page: the letters that act are named in the legend whenever it is drawn, and `[Ctrl+C] close` is the first key to go', () => {
+    for (const make of [PAGES.fits, PAGES.long, PAGES.thirty])
+      for (const runs of [[], THREE_RUNS]) {
+        const open = make(runs);
+        for (const keys of [[], ['down'], ['end'], ['pageDown']]) {
+          const { legend } = drawn(after(open, variant, keys), variant);
+          expect(legend, `${keys.join(',')} ${legend}`).toMatch(
+            /\[r\] run · \[x\] export · \[p\] (un)?pin/u,
+          );
+          if (!legend.includes('[Ctrl+C]')) expect(displayWidth(legend)).toBeGreaterThan(40);
+        }
+      }
   });
 });
 
@@ -200,5 +357,247 @@ describe('a page that lands opens at its top', () => {
     const content = workflowDetailContent({ row, detail: detailOf(), runs: THREE_RUNS }, NOW);
     const landed = withContent(stale, 1, content, detailControls(row), false);
     expect(highlightedRow(landed)?.id).toBe('title');
+  });
+});
+
+describe('what the page flag of a detail and of an agent’s report decides, pinned', () => {
+  const TWO_RUNS = THREE_RUNS.slice(0, 2);
+  const ONE_RUN = THREE_RUNS.slice(0, 1);
+  const WIDE: Variant = { renderer: 'alt', color: false, size: { cols: 100, rows: 30 } };
+
+  it('a page that fits names `↑/↓ select` while it has a run to select, ONE as well as two (`↓` lands on it: nothing is highlighted when it opens), where the width holds it; none, none (review round 2: this was `names no select with ONE run`)', () => {
+    expect(drawn(detailFrame(detailOf(), ONE_RUN), WIDE).legend).toContain('↑/↓ select');
+    expect(drawn(detailFrame(detailOf(), TWO_RUNS), WIDE).legend).toContain('↑/↓ select');
+    expect(drawn(detailFrame(detailOf(), []), WIDE).legend).not.toContain('↑/↓');
+  });
+
+  it('a report that is a page (an agent’s detail) uses the body’s whole height in the flow, where a plain report is windowed to the list bound', () => {
+    const lines = Array.from({ length: 30 }, (_, at) => `line ${String(at + 1)}`);
+    const spec = (page: boolean) => ({
+      id: 'agents',
+      title: '/agents',
+      origin: 'home' as const,
+      steps: [
+        {
+          name: 'Detail',
+          content: { kind: 'report' as const, lines, ...(page ? { page: true as const } : {}) },
+        },
+      ],
+    });
+    const inline: Variant = { renderer: 'inline', color: false, size: { cols: 80, rows: 40 } };
+    const shown = (page: boolean): number =>
+      popupBoxOf(openFrame(spec(page), 1), inline).rows.filter((row) => /line \d+ *$/u.test(row))
+        .length;
+    expect(shown(false), 'a plain report keeps to the list bound').toBeLessThanOrEqual(
+      INLINE_LIST_MAX_ROWS,
+    );
+    expect(shown(true), 'a page of lines takes the body’s whole height').toBeGreaterThan(
+      INLINE_LIST_MAX_ROWS,
+    );
+  });
+});
+
+describe('the words of the detail’s fields (inputs, chain, title facts) are pinned', () => {
+  const contentOf = (detail: WorkflowDetail, entryName?: string): string => {
+    const read = definedRead([
+      workflowEntry('release-notes', entryName === undefined ? {} : { name: entryName }),
+    ]);
+    const row = read.model.rows[0];
+    if (row === undefined) throw new Error('no row');
+    const content = workflowDetailContent({ row, detail, runs: [] }, NOW);
+    if (content.kind !== 'list') throw new Error('a page of lines');
+    return content.rows.map((entry) => entry.label).join('\n');
+  };
+
+  it('a workflow that declares no input says `none`', () => {
+    expect(contentOf(detailOf({ inputs: [] }))).toMatch(/^Inputs +none$/mu);
+  });
+
+  it('inputs past the bound say how many more there are, and so does the chain', () => {
+    const text = contentOf(detailOf({ inputsMore: 3, nodesMore: 5 }));
+    expect(text).toContain('… and 3 more');
+    expect(text).toContain('→ … 5 more');
+  });
+
+  it('the title says how many nodes the workflow has; a name that only repeats the slug is not said twice', () => {
+    const title = contentOf(detailOf()).split('\n')[0] ?? '';
+    expect(title).toBe('release-notes  ·  3 nodes');
+    expect(contentOf(detailOf(), 'release-notes').split('\n')[0]).toBe(title);
+    expect(contentOf(detailOf(), 'Release notes').split('\n')[0]).toBe(
+      'release-notes · Release notes  ·  3 nodes',
+    );
+  });
+});
+
+describe('the chain draws `→` only along an edge (review round 2, O2-4)', () => {
+  const chainOf = (nodes: { id: string; apart?: true }[], nodesMore = 0): string => {
+    const read = definedRead([workflowEntry('release-notes')]);
+    const row = read.model.rows[0];
+    if (row === undefined) throw new Error('no row');
+    const content = workflowDetailContent(
+      { row, detail: detailOf({ nodes, nodesMore }), runs: [] },
+      NOW,
+    );
+    if (content.kind !== 'list') throw new Error('a page of lines');
+    return content.rows
+      .map((entry) => entry.label)
+      .filter((label) => /^Nodes|^ {9}\S/u.test(label))
+      .join(' ')
+      .replace(/^Nodes +/u, '')
+      .replace(/ +/gu, ' ');
+  };
+
+  it('a diamond (`check` to `hi` and `lo`, both to `out`): the second sibling follows a `·`, the join an arrow', () => {
+    expect(
+      chainOf([
+        { id: 'start' },
+        { id: 'check' },
+        { id: 'hi' },
+        { id: 'lo', apart: true },
+        { id: 'out' },
+      ]),
+    ).toBe('start → check → hi · lo → out');
+  });
+
+  it('a fan-out: every branch after the first follows a `·`', () => {
+    expect(
+      chainOf([{ id: 'start' }, { id: 'a' }, { id: 'b', apart: true }, { id: 'c', apart: true }]),
+    ).toBe('start → a · b · c');
+  });
+
+  it('a straight chain keeps its arrows, and a chain cut at the bound says how many more follow', () => {
+    expect(chainOf([{ id: 'start' }, { id: 'a' }, { id: 'out' }])).toBe('start → a → out');
+    expect(chainOf([{ id: 'start' }, { id: 'a' }], 5)).toBe('start → a → … 5 more');
+  });
+});
+
+describe('the lines of the detail keep to the room they are given', () => {
+  const rowsOf = (
+    detail: WorkflowDetail,
+    runs: readonly HomeWorkflowRun[] = [],
+    over: Parameters<typeof workflowEntry>[1] = {},
+  ): readonly string[] => {
+    const read = definedRead([workflowEntry('release-notes', over)]);
+    const row = read.model.rows[0];
+    if (row === undefined) throw new Error('no row');
+    const content = workflowDetailContent({ row, detail, runs }, NOW);
+    if (content.kind !== 'list') throw new Error('a page of lines');
+    return content.rows.map((entry) => `${entry.label}${entry.detail ?? ''}`);
+  };
+  const MANY = Array.from({ length: 24 }, (_, at) => ({ id: `step-${String(at + 1)}` }));
+
+  it('the fields’ values start in one column, and no line is wider than the popup’s text', () => {
+    const lines = rowsOf(detailOf({ nodes: MANY, inputs: SEVEN_INPUTS }));
+    const starts = ['Inputs', 'Nodes', 'File'].map((label) => {
+      const line = lines.find((entry) => entry.startsWith(label)) ?? '';
+      return line.length - line.slice(label.length).trimStart().length;
+    });
+    expect(new Set(starts).size, JSON.stringify(starts)).toBe(1);
+    for (const line of lines)
+      expect(displayWidth(line), line).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS - 2);
+  });
+
+  it('a long file path is cut to what the File field has, not to the whole text width', () => {
+    const lines = rowsOf(detailOf(), [], {
+      path: `.relavium/workflows/${'a'.repeat(120)}.relavium.yaml`,
+    });
+    const file = lines.find((entry) => entry.startsWith('File')) ?? '';
+    expect(displayWidth(file)).toBeLessThanOrEqual(POPUP_TEXT_COLUMNS - 2);
+    expect(file).toContain('…');
+  });
+
+  it('a long description keeps to its rows and says it goes on', () => {
+    const description = Array.from({ length: 80 }, (_, at) => `word${String(at)}`).join(' ');
+    const lines = rowsOf(detailOf({ description }));
+    const before = lines.indexOf('');
+    const shown = lines.slice(1, before);
+    expect(shown.length).toBeLessThanOrEqual(3);
+    expect(shown.at(-1)).toMatch(/…$/u);
+  });
+
+  it('a paused run says how long it waits once, not twice', () => {
+    const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
+    const paused =
+      drawn(detailFrame(detailOf(), THREE_RUNS), variant).rows.find((row) =>
+        row.includes('41ae651d'),
+      ) ?? '';
+    expect(paused).toMatch(/waiting +5m/u);
+    expect(paused).not.toMatch(/waiting.*waiting/u);
+  });
+});
+
+describe('the keys of a page of lines walk every line, not only the lines that can act', () => {
+  // 80×24 is where the page overflows: at 100×30 it nearly fits and every key is a no-op.
+  const variant: Variant = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } };
+  const stepsOf = (count: number) =>
+    Array.from({ length: count }, (_, at) => ({ id: `step-${String(at + 1)}` }));
+  const inputsOf = (count: number) =>
+    Array.from({ length: count }, (_, at) => ({
+      name: `argument-${String(at + 1)}`,
+      type: 'string',
+      required: at % 2 === 0,
+    }));
+  const OVERFLOWING = { nodes: stepsOf(24), inputs: inputsOf(16) };
+  const selectedOf = (frame: PopupFrame): { selected: number; last: number } => {
+    const { state } = currentStep(frame);
+    return {
+      selected: state.selected,
+      last: state.content.kind === 'list' ? state.content.rows.length - 1 : -1,
+    };
+  };
+
+  it('End on a page that ends with a sentence (no run to act on) goes to its last line, and Home from there goes to its title', () => {
+    const frame = detailFrame(detailOf(OVERFLOWING), []);
+    expect(drawn(frame, variant).text, 'the page overflows').toMatch(/v \d+ more/u);
+    const ended = after(frame, variant, ['end']);
+    expect(selectedOf(ended).selected).toBe(selectedOf(ended).last);
+    expect(drawn(ended, variant).text, 'the last line of the page is on screen').toContain(
+      'No run of this workflow in this directory yet.',
+    );
+    const home = after(frame, variant, ['end', 'home']);
+    expect(selectedOf(home).selected).toBe(0);
+    expect(drawn(home, variant).text).toContain('release-notes · Release notes');
+  });
+
+  it('Home after End on a page with runs goes to the title, not to the first run that can act', () => {
+    const frame = detailFrame(detailOf(OVERFLOWING), THREE_RUNS);
+    const home = after(frame, variant, ['end', 'home']);
+    expect(selectedOf(home).selected).toBe(0);
+    expect(drawn(home, variant).text).toContain('release-notes · Release notes');
+  });
+
+  it('a page down moves a whole page of lines, whatever kind of line it lands on (the heading, a field, a run)', () => {
+    const geometryOf = (frame: PopupFrame) => {
+      const { state } = currentStep(frame);
+      const geometry = popupGeometry({
+        columns: variant.size.cols,
+        rows: variant.size.rows,
+        kind: 'standard',
+        placement: 'overlay',
+        rail: true,
+        bodyRows: naturalBodyRows(
+          state.content,
+          state,
+          undefined,
+          popupInnerWidth(variant.size.cols, 'standard'),
+        ),
+      });
+      if (!geometry.fits) throw new Error('the popup does not fit');
+      return geometry;
+    };
+    let landedOnAHeading = 0;
+    for (let nodes = 8; nodes <= 24; nodes += 1) {
+      const frame = detailFrame(
+        detailOf({ nodes: stepsOf(nodes), inputs: inputsOf(16) }),
+        THREE_RUNS,
+      );
+      const page = bodyPageRows(currentStep(frame).state.content, false, geometryOf(frame));
+      const after1 = selectedOf(after(frame, variant, ['pageDown']));
+      expect(after1.selected, `${String(nodes)} nodes`).toBe(Math.min(after1.last, page));
+      const content = currentStep(frame).state.content;
+      if (content.kind === 'list' && content.rows[after1.selected]?.enabled === false)
+        landedOnAHeading += 1;
+    }
+    expect(landedOnAHeading, 'the sweep reached lines that cannot act').toBeGreaterThan(3);
   });
 });

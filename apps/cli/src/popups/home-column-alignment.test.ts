@@ -5,8 +5,18 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { popupBoxOf } from '../render/tui/surface-matrix/popup-fixture.js';
+import type { Variant } from '../render/tui/surface-matrix/variants.js';
 import { displayWidth, padTo } from '../render/tui/viewport.js';
 import type { PopupContent } from './frame-model.js';
+import {
+  detailControls,
+  homeWorkflowsSpec,
+  workflowDetailContent,
+} from './home-workflows-popup.js';
+import { openFrame, withContent } from './popup-reducer.js';
+import type { HomeWorkflowRun } from './home-port.js';
+import { definedRead, detailOf } from './home-popups.test-support.js';
 import {
   fakeAgents,
   fakeWorkflows,
@@ -73,5 +83,49 @@ describe('a list that holds a wide name', () => {
       new Set(rows.map((row) => displayWidth(row.detail ?? ''))).size,
       'one nodes column',
     ).toBe(1);
+  });
+});
+
+describe('the last runs of a detail stand in columns (review round 2, P2-4)', () => {
+  const NOW = Date.parse('2026-11-27T12:00:00Z');
+  const ago = (ms: number): string => new Date(NOW - ms).toISOString();
+  const RUNS: readonly HomeWorkflowRun[] = [
+    { runId: '41ae651d-aaaa', status: 'paused', at: ago(5 * 60_000) },
+    { runId: '092e6161-bbbb', status: 'completed', at: ago(48 * 3_600_000) },
+    { runId: 'fa7f8a61-cccc', status: 'failed', at: ago(96 * 3_600_000) },
+    { runId: '7c0d19e2-dddd', status: 'running', at: ago(60_000) },
+  ];
+
+  function detailBox(color: boolean): readonly string[] {
+    const read = definedRead([workflowEntry('release-notes')]);
+    const row = read.model.rows[0];
+    if (row === undefined) throw new Error('no row');
+    const content = workflowDetailContent({ row, detail: detailOf(), runs: RUNS }, NOW);
+    const landed = withContent(
+      openFrame(homeWorkflowsSpec('home'), 1),
+      1,
+      content,
+      detailControls(row),
+      false,
+    );
+    const variant: Variant = { renderer: 'alt', color, size: { cols: 100, rows: 30 } };
+    return popupBoxOf({ ...landed, stepIndex: 1 }, variant).rows;
+  }
+
+  it.each([false, true])(
+    'the id of every run starts in one column, whatever the word before it is (colour %s: the plain form and the glyph form)',
+    (color) => {
+      const rows = detailBox(color).filter((row) => /[0-9a-f]{8}\s*$/u.test(row.trimEnd()));
+      expect(rows).toHaveLength(4);
+      const columns = rows.map((row) => displayWidth(row.slice(0, row.search(/[0-9a-f]{8}\s*$/u))));
+      expect(new Set(columns).size, rows.join('\n')).toBe(1);
+    },
+  );
+
+  it('the age column starts in one column too, where the runs have an age', () => {
+    const rows = detailBox(true).filter((row) => /(done|failed) +\d+[dhm] ago/u.test(row));
+    expect(rows).toHaveLength(2);
+    const starts = rows.map((row) => displayWidth(row.slice(0, row.search(/\d+[dhm] ago/u))));
+    expect(new Set(starts).size, rows.join('\n')).toBe(1);
   });
 });

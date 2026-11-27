@@ -83,7 +83,7 @@ const LINE: PopupStep = {
  * A host on a manual clock with its frame "on screen", the page and the width of a standard popup at 80×24, and what its lock heard. `ack` is the
  * slot's acknowledgement of the frame drawn now.
  */
-function rig(spec: PopupSpec, history: ChordHistory = createChordHistory()) {
+function rig(spec: PopupSpec, history: ChordHistory = createChordHistory(), acknowledged = true) {
   const time = manualTimers();
   const host = createPopupHost({
     now: time.now,
@@ -113,7 +113,7 @@ function rig(spec: PopupSpec, history: ChordHistory = createChordHistory()) {
     frames += 1;
   });
   const ack = (): void => host.shown(host.getSnapshot());
-  ack();
+  if (acknowledged) ack();
   return {
     host,
     time,
@@ -290,5 +290,86 @@ describe('a confirmation line: its answer waits on the evidence it was armed aga
     expect(r.chord).not.toHaveBeenCalled();
     expect(r.host.lock.read()).toBe(false);
     expect(r.time.due()).not.toContain(APPROVAL_LOCKOUT_MS);
+  });
+});
+
+describe('every confirmation line holds its dwell, from the first frame it is painted (review round 2, S2-3 and S2-6)', () => {
+  const ENTER_LINE: PopupStep = { ...LINE, chord: { verb: 'withdraw', key: 'enter' } };
+  /** A popup that opens on its line, the composer's last key long ago (the lockout is over: only the dwell is left), its frame not acknowledged yet. */
+  function opened(line: PopupStep, acknowledged = false) {
+    const history = createChordHistory();
+    history.previousKeyAt = -10_000;
+    const r = rig(
+      { id: 'line', title: '/line', origin: 'chat', steps: [LIST, line], initialStep: 1 },
+      history,
+      acknowledged,
+    );
+    r.time.advance(PAST_THE_OPENING_MS);
+    return r;
+  }
+
+  it.each([
+    ['a `Ctrl+Y` line', LINE],
+    ['an `Enter` line', ENTER_LINE],
+  ])(
+    '%s: the first painted frame already says `(wait)`, the acknowledgement moves its end to 800 ms after it, and it never flickers plain and waiting again',
+    (_name, line) => {
+      const r = opened(line);
+      expect(r.host.lock.read(), 'before the frame is acknowledged').toBe(true);
+      expect(r.time.due().length, 'one finite timer').toBe(1);
+      // The slot acknowledges the first frame within a few frames of its arrival (here 100 ms after the opening settle, inside the first dwell).
+      r.time.advance(100);
+      r.ack();
+      expect(r.host.lock.read()).toBe(true);
+      r.time.advance(799);
+      expect(r.host.lock.read(), '799 ms after the acknowledgement').toBe(true);
+      r.time.advance(1);
+      expect(r.host.lock.read(), '800 ms after it: the answer counts').toBe(false);
+      // What the legend heard: the mark only ever ended (never plain, then waiting again).
+      const firstPlain = r.heard.indexOf(false);
+      expect(firstPlain, 'it ended').toBeGreaterThanOrEqual(0);
+      expect(r.heard.slice(r.heard.indexOf(false) + 1)).not.toContain(true);
+    },
+  );
+
+  it.each([
+    ['a `Ctrl+Y` line', LINE],
+    ['an `Enter` line', ENTER_LINE],
+  ])(
+    '%s: the dwell is the same 800 ms in the legend (`(wait)`) and in the guard',
+    (_name, line) => {
+      const r = opened(line, true);
+      expect(r.legendText()).toMatch(/\(wait\)/u);
+      r.time.advance(800);
+      expect(r.legendText()).not.toMatch(/\(wait\)/u);
+    },
+  );
+
+  it('a frame drawn again at a new size is a new frame: the line waits again from the resize, and until its acknowledgement plus 800 ms', () => {
+    const r = opened(ENTER_LINE, true);
+    r.time.advance(800);
+    expect(r.host.lock.read()).toBe(false);
+    r.host.resized(100, 30);
+    expect(r.host.lock.read(), 'the new frame has not been seen').toBe(true);
+    r.time.advance(400);
+    r.ack();
+    r.time.advance(799);
+    expect(r.host.lock.read()).toBe(true);
+    r.time.advance(1);
+    expect(r.host.lock.read()).toBe(false);
+  });
+
+  it('an unacknowledged frame that is never acknowledged ends its mark at one dwell: no open-ended timer', () => {
+    const r = opened(ENTER_LINE);
+    r.time.advance(800);
+    expect(r.host.lock.read()).toBe(false);
+    expect(r.time.due()).toEqual([]);
+  });
+
+  it('a line that offers nothing to answer waits for nothing: no mark, no timer', () => {
+    const empty: PopupStep = { ...ENTER_LINE, content: { kind: 'empty', what: 'x', next: 'y' } };
+    const r = opened(empty);
+    expect(r.host.lock.read()).toBe(false);
+    expect(r.time.due()).toEqual([]);
   });
 });
