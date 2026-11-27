@@ -58,7 +58,11 @@ import type { PopupContext, PopupHandlers, PopupOpenResult } from './popup-host.
 import { fitNotice } from './popup-text.js';
 import { macrotask, startPopupWork } from './popup-work.js';
 
-/** The sentence for a row that cannot be run, exported or pinned: what it cannot do, then why. */
+/**
+ * The sentence for a row that cannot be run, exported or pinned: what it cannot do, then why, in whole words. An invalid file's own reason (the
+ * engine's, which can be a long path of a schema) is not in it: the row's effect line and the detail carry it, and a notification that cut it
+ * mid-word said less than either (review round 3, O3-5).
+ */
 function cannot(verb: 'run' | 'export' | 'pin', row: DefinedRow): string {
   const label = stored(row.slug, 18, '?');
   const why =
@@ -66,7 +70,7 @@ function cannot(verb: 'run' | 'export' | 'pin', row: DefinedRow): string {
       ? 'it is not in the catalog'
       : row.state === 'other-project'
         ? 'it is pinned in another project'
-        : stored(row.note ?? 'its file could not be read', 24);
+        : 'its file is invalid';
   return fitNotice(`Cannot ${verb} ${label}: ${why}.`, `Cannot ${verb} ${label}.`);
 }
 
@@ -166,6 +170,7 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
     context: PopupContext,
     verb: 'run' | 'export',
     row: DefinedRow | undefined,
+    line?: string,
   ): void => {
     if (row === undefined) return;
     const request = requestOf(verb, row);
@@ -177,23 +182,30 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
     // ends without a run.
     const from: WorkflowsStep = context.stepIndex() === WORKFLOWS_STEP.detail ? 'detail' : 'list';
     context.close();
-    if (verb === 'run') workflows.run(request.slug, request.path, from);
-    else workflows.export(request.slug, from);
+    // On the detail, the line the key was pressed on comes back with it (an overflowing detail reopens there, not at its top).
+    const lineBack = from === 'detail' ? line : undefined;
+    if (verb === 'run') workflows.run(request.slug, request.path, from, lineBack);
+    else workflows.export(request.slug, from, lineBack);
   };
 
-  const leaveForRuns = (context: PopupContext, runId?: string): void => {
+  const leaveForRuns = (context: PopupContext, run?: HomeWorkflowRun): void => {
     context.close();
-    workflows.openRuns(runId);
+    if (run === undefined) workflows.openRuns();
+    else workflows.openRuns(run.runId, run.status);
   };
 
   /** The detail on screen, built from what it holds; the verb of `[p]` follows the pin. */
-  const showDetail = (context: PopupContext): void => {
+  const showDetail = (context: PopupContext, initialRow?: string): void => {
     if (view === undefined) return;
-    const content = workflowDetailContent(view, workflows.now());
+    const content = workflowDetailContent(view, workflows.now(), initialRow);
     context.setContent(WORKFLOWS_STEP.detail, content, detailControls(view.row), false);
   };
 
-  const openDetail = (context: PopupContext, row: DefinedRow | undefined): void => {
+  const openDetail = (
+    context: PopupContext,
+    row: DefinedRow | undefined,
+    initialRow?: string,
+  ): void => {
     if (row === undefined) return;
     const token = {};
     pending = token;
@@ -225,7 +237,7 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
         }
         if (!live()) return;
         view = { row, detail: result.detail, runs: result.runs };
-        showDetail(context);
+        showDetail(context, initialRow);
       },
       () => {
         failed();
@@ -305,15 +317,15 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
       }
       const index = runIndexOfRow(row);
       const run = index === undefined ? undefined : view?.runs[index];
-      if (run !== undefined) leaveForRuns(context, run.runId);
+      if (run !== undefined) leaveForRuns(context, run);
     },
     control: (context, key, row) => {
       const onList = context.stepIndex() === WORKFLOWS_STEP.list;
       // The workflow a letter acts on: the highlighted row of the catalogue, or the one whose detail is open.
       const target = onList ? definedRowOf(read, row) : view?.row;
-      if (key === 'r') startFlow(context, 'run', target);
+      if (key === 'r') startFlow(context, 'run', target, row?.id);
       else if (key === 'h' && onList) leaveForRuns(context);
-      else if (key === 'x' && !onList) startFlow(context, 'export', target);
+      else if (key === 'x' && !onList) startFlow(context, 'export', target, row?.id);
       else if (key === 'p' && !onList) pin(context, target);
     },
   };
@@ -322,6 +334,8 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
   if (!opened.opened) return opened;
   const context = opened.context;
   const live = (): boolean => !context.signal.aborted;
+  // What the flow this popup was reopened from said is this popup's own first word: its next word replaces it at once, and it goes with the popup.
+  if (request.at?.said !== undefined) context.notify(request.at.said);
   const landed = (content: PopupContent): void => {
     context.setContent(WORKFLOWS_STEP.list, content, [RUNS_CONTROL], false);
   };
@@ -348,7 +362,8 @@ export function openHomeWorkflows(request: HomePopupOpenRequest): PopupOpenResul
               (row) => row.entryIndex !== undefined && read?.slugOf(row.entryIndex) === at,
             );
       land(context, read, back === undefined ? undefined : workflowRowId(back));
-      if (back !== undefined && request.at?.step === 'detail') openDetail(context, back);
+      if (back !== undefined && request.at?.step === 'detail')
+        openDetail(context, back, request.at.row);
     },
     () => {
       if (live()) landed(workflowsUnreadableContent());

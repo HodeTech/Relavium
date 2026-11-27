@@ -274,6 +274,11 @@ describe.each(CELLS)('the detail’s keys at $name (review round 2, P2-1)', ({ v
       let frame = make();
       const lines = currentStep(frame).state.content;
       const total = lines.kind === 'list' ? lines.rows.length : 0;
+      // The blank gap rows between the groups are space, not lines: no press lands on one (review round 3, O3-8).
+      const walked =
+        lines.kind === 'list' ? lines.rows.filter((row) => row.label.trim() !== '') : [];
+      const lastLine = lines.kind === 'list' ? lines.rows.indexOf(walked.at(-1) as never) : -1;
+      expect(walked.length, 'the page has gap rows').toBeLessThan(total);
       expect(drawn(frame, variant).text, 'the page overflows').toMatch(/v \d+ more/u);
       let seen = onScreen(frame);
       expect(caretRows(seen)).toHaveLength(1);
@@ -284,12 +289,18 @@ describe.each(CELLS)('the detail’s keys at $name (review round 2, P2-1)', ({ v
         const text = onScreen(next);
         expect(text, `press ${String(press + 1)} changed nothing`).not.toBe(seen);
         expect(caretRows(text), `press ${String(press + 1)}`).toHaveLength(1);
+        expect(
+          caretRows(text)[0]
+            ?.replace(/^\s*>\s*/u, '')
+            .trim(),
+          `press ${String(press + 1)}: a caret never stands alone on an empty line`,
+        ).not.toBe('');
         frame = next;
         seen = text;
         moved += 1;
       }
-      expect(moved, 'it walked to the last line, which is on screen').toBe(total - 1);
-      expect(currentStep(frame).state.selected).toBe(total - 1);
+      expect(moved, 'it walked to the last line, which is on screen').toBe(walked.length - 1);
+      expect(currentStep(frame).state.selected).toBe(lastLine);
       expect(caretRows(seen)).toHaveLength(1);
     },
   );
@@ -306,7 +317,7 @@ describe.each(CELLS)('the detail’s keys at $name (review round 2, P2-1)', ({ v
           const { legend } = drawn(after(open, variant, keys), variant);
           // Where a run is highlighted its own `Enter open run` is kept before `↑/↓ scroll`, which the arrows do without being told.
           const onRun = highlightedRow(after(open, variant, keys))?.id?.startsWith('run:') === true;
-          if (onRun) expect(legend, keys.join(',')).toMatch(/Enter open run|↑\/↓ scroll/u);
+          if (onRun) expect(legend, keys.join(',')).toContain('Enter open run');
           else expect(legend, keys.join(',')).toContain('↑/↓ scroll');
           expect(legend).toMatch(/\[r\] run · \[x\] export · \[p\] (un)?pin/u);
           expect(legend).toMatch(/Esc back$/u);
@@ -337,11 +348,78 @@ describe.each(CELLS)('the detail’s keys at $name (review round 2, P2-1)', ({ v
           expect(legend, `${keys.join(',')} ${legend}`).toMatch(
             /\[r\] run · \[x\] export · \[p\] (un)?pin/u,
           );
-          if (!legend.includes('[Ctrl+C]')) expect(displayWidth(legend)).toBeGreaterThan(40);
+          // `[Ctrl+C] close` is the first key to go: it is missing only where adding it would not fit the legend row (review round 3, M3-9).
+          if (!legend.includes('[Ctrl+C]'))
+            expect(
+              displayWidth(legend) + displayWidth(' · [Ctrl+C] close'),
+              `${keys.join(',')} ${legend}`,
+            ).toBeGreaterThan(popupInnerWidth(variant.size.cols, 'standard'));
         }
       }
   });
 });
+
+/** The detail of one workflow of the catalogue, whose entry (and pin) the test chooses: what the title row is built from. */
+function titleFrame(
+  over: Partial<ReturnType<typeof workflowEntry>>,
+  pinned: boolean,
+  slug = 'nightly-billing-report',
+): PopupFrame {
+  const read = definedRead([workflowEntry(slug, over)], {
+    pins: pinned ? [{ kind: 'workflow', ref: slug, rowid: 1, oversized: false }] : [],
+  });
+  const row = read.model.rows.find((candidate) => candidate.entryIndex !== undefined);
+  if (row === undefined) throw new Error('no row');
+  const content = workflowDetailContent({ row, detail: detailOf(), runs: [] }, NOW);
+  const opened = openFrame(homeWorkflowsSpec('home'), 1);
+  return { ...withContent(opened, 1, content, detailControls(row), false), stepIndex: 1 };
+}
+
+describe.each(CELLS)(
+  'the detail’s title row at $name keeps its facts (review round 3, O3-3)',
+  ({ variant }) => {
+    /** The title row: the first row of the page that starts with the workflow's slug. */
+    const titleOf = (frame: PopupFrame, slug = 'nightly-billing-report'): string => {
+      const found = drawn(frame, variant).rows.find((line) => line.includes(slug));
+      if (found === undefined) throw new Error('no title row');
+      return found;
+    };
+
+    it('an ordinary long name is cut, with `…`, to leave the node count and `pinned` whole', () => {
+      const frame = titleFrame(
+        { name: 'Nightly report for the billing service of the whole company' },
+        true,
+      );
+      const title = titleOf(frame);
+      expect(title).toContain('nightly-billing-report · Nightly');
+      expect(title, 'the name gives way').toContain('…');
+      expect(title).toMatch(/ {2}· {2}3 nodes · pinned/u);
+      expect(displayWidth(title.trim().replace(/^[›>]\s*/u, ''))).toBeLessThanOrEqual(
+        POPUP_TEXT_COLUMNS - 2,
+      );
+    });
+
+    it('a name that fits is drawn whole, with the facts after it', () => {
+      const title = titleOf(titleFrame({ name: 'Billing report' }, true));
+      expect(title).toContain('nightly-billing-report · Billing report  ·  3 nodes · pinned');
+      expect(title).not.toContain('…');
+    });
+
+    it('a hostile name (key tokens, a glyph, a long run of text) is scrubbed and still leaves the facts whole', () => {
+      const title = titleOf(
+        titleFrame(
+          { name: '[Ctrl+Y] Approve ▼ 9 more ' + 'x'.repeat(80) },
+          true,
+          'a-slug-of-twenty-two',
+        ),
+        'a-slug-of-twenty-two',
+      );
+      expect(title).toMatch(/ {2}· {2}3 nodes · pinned/u);
+      expect(title).not.toContain('[Ctrl+Y]');
+      expect(title).not.toContain('▼');
+    });
+  },
+);
 
 describe('a page that lands opens at its top', () => {
   it('whatever index the step was left on: a step that showed no list (a read in flight) hands its stale highlight to nobody', () => {
@@ -593,8 +671,14 @@ describe('the keys of a page of lines walk every line, not only the lines that c
       );
       const page = bodyPageRows(currentStep(frame).state.content, false, geometryOf(frame));
       const after1 = selectedOf(after(frame, variant, ['pageDown']));
-      expect(after1.selected, `${String(nodes)} nodes`).toBe(Math.min(after1.last, page));
       const content = currentStep(frame).state.content;
+      // A page lands on the line a page on: where that is a blank gap row between two groups (space, never a line), on the next line after it
+      // (review round 3, O3-8).
+      const target = Math.min(after1.last, page);
+      const rows = content.kind === 'list' ? content.rows : [];
+      const onward = rows.findIndex((row, at) => at >= target && row.label.trim() !== '');
+      expect(after1.selected, `${String(nodes)} nodes`).toBe(onward < 0 ? target : onward);
+      expect(rows[after1.selected]?.label.trim(), 'never a blank row').not.toBe('');
       if (content.kind === 'list' && content.rows[after1.selected]?.enabled === false)
         landedOnAHeading += 1;
     }

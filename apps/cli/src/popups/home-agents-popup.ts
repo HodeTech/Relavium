@@ -180,7 +180,8 @@ export function agentDetailContent(row: AgentRow): PopupContent {
     kind: 'report',
     page: true,
     lines: [
-      name === '' ? slug : `${slug} · ${name}`,
+      // Indented as the fields under it are (review round 3, O3-10).
+      `  ${name === '' ? slug : `${slug} · ${name}`}`,
       '',
       ...field('Model', stored(detail.model, POPUP_TEXT_COLUMNS - LABEL_WIDTH - 2, 'unknown')),
       ...field(

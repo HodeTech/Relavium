@@ -21,6 +21,7 @@ import {
 } from './home-popups.test-support.js';
 import type { WorkflowsAt } from './home-port.js';
 import { WORKFLOWS_STEP } from './home-workflows-popup.js';
+import { NOTIFICATION_MS } from './notifications.js';
 
 const NOW = Date.parse('2026-11-27T12:00:00Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -372,7 +373,7 @@ describe('what the keys hand the host', () => {
     rig.press('x');
     expect(rig.isOpen()).toBe(false);
     expect(fakes.asked, 'pressed on the detail: the host brings the detail back').toEqual([
-      'export backup-db from detail',
+      'export backup-db from detail at title',
     ]);
 
     const second = await opened();
@@ -381,8 +382,60 @@ describe('what the keys hand the host', () => {
     second.rig.clock.advance(700);
     second.rig.press('r');
     expect(second.fakes.asked).toEqual([
-      'run backup-db .relavium/workflows/backup-db.relavium.yaml from detail',
+      'run backup-db .relavium/workflows/backup-db.relavium.yaml from detail at title',
     ]);
+  });
+
+  describe('an overflowing detail comes back on the line the key was pressed on (review round 3, O3-4)', () => {
+    const LONG = detailOf({
+      nodes: Array.from({ length: 30 }, (_, at) => ({ id: `step-${String(at)}` })),
+    });
+    const RUNS = [
+      { runId: 'run-a-full-id', status: 'completed' as const, at: ago(HOUR) },
+      { runId: 'run-b-full-id', status: 'failed' as const, at: ago(2 * HOUR) },
+      { runId: 'run-c-full-id', status: 'completed' as const, at: ago(3 * HOUR) },
+    ];
+    const longFakes = () => {
+      const fakes = fakeWorkflows();
+      fakes.describe.mockReturnValue(LONG);
+      fakes.runs.set('backup-db', RUNS);
+      return fakes;
+    };
+
+    it.each(['x', 'r'] as const)(
+      '`[%s]` hands the host the highlighted line of the detail',
+      async (key) => {
+        const fakes = longFakes();
+        const { rig } = await opened(fakes);
+        rig.press('', ENTER);
+        await settleWork();
+        rig.clock.advance(700);
+        rig.press('', { end: true });
+        expect(rig.highlighted()).toBe('run:2');
+        rig.press('', { upArrow: true });
+        expect(rig.highlighted()).toBe('run:1');
+        rig.press(key);
+        expect(fakes.asked.at(-1)).toMatch(/ from detail at run:1$/u);
+      },
+    );
+
+    it('a detail reopened with that line has the highlight on it; a line that is gone opens the detail at its top', async () => {
+      const back = await opened(longFakes(), { slug: 'backup-db', step: 'detail', row: 'run:1' });
+      await settleWork();
+      expect(back.rig.step()).toBe(WORKFLOWS_STEP.detail);
+      expect(back.rig.highlighted()).toBe('run:1');
+      const gone = await opened(longFakes(), { slug: 'backup-db', step: 'detail', row: 'run:9' });
+      await settleWork();
+      expect(gone.rig.highlighted()).toBe('title');
+    });
+
+    it('a flow started from the catalogue hands no line: the catalogue keeps the highlight by workflow', async () => {
+      const fakes = longFakes();
+      const { rig } = await opened(fakes);
+      rig.press('x');
+      rig.press('r');
+      expect(fakes.asked.at(-1)).toMatch(/ from list$/u);
+    });
   });
 
   it('`[x]` is not a key of the catalogue (it lives in the detail’s legend): it does nothing there', async () => {
@@ -412,7 +465,22 @@ describe('what the keys hand the host', () => {
     expect(second.rig.highlighted()).toBe('run:0');
     second.rig.press('', ENTER);
     expect(second.rig.isOpen()).toBe(false);
-    expect(fakes.asked).toEqual(['runs run-1-full-id']);
+    expect(fakes.asked, 'the run and how it stands, so the host opens it where it lives').toEqual([
+      'runs run-1-full-id completed',
+    ]);
+  });
+
+  it('`Enter` on a run that waits names it as waiting: the host opens it on the Active tab (review round 3, O3-9)', async () => {
+    const fakes = fakeWorkflows();
+    fakes.runs.set('backup-db', [{ runId: 'run-2-full-id', status: 'paused', at: ago(HOUR) }]);
+    const { rig } = await opened(fakes);
+    rig.press('', ENTER);
+    await settleWork();
+    rig.clock.advance(700);
+    rig.press('', DOWN);
+    expect(rig.highlighted()).toBe('run:0');
+    rig.press('', ENTER);
+    expect(fakes.asked).toEqual(['runs run-2-full-id paused']);
   });
 
   it('a row that is no workflow of the catalogue makes no request: `[r]` says why in one notification and the popup stays', async () => {
@@ -421,7 +489,29 @@ describe('what the keys hand the host', () => {
     rig.press('r');
     expect(rig.isOpen()).toBe(true);
     expect(fakes.asked).toEqual([]);
-    expect(rig.notice()).toMatch(/^Cannot run broken/u);
+    expect(rig.notice()).toBe('Cannot run broken: its file is invalid.');
+  });
+
+  it('the refusal for an invalid file is one whole sentence, whatever the engine’s reason says and however long the slug is (review round 3, O3-5)', async () => {
+    const reason = 'node `a`.transform: missing the field `expression` of its configuration';
+    const fakes = fakeWorkflows([
+      invalidWorkflowEntry('aaa-broken', reason),
+      invalidWorkflowEntry('b'.repeat(40), reason),
+    ]);
+    const { rig } = await opened(fakes);
+    rig.press('r');
+    expect(rig.notice()).toBe('Cannot run aaa-broken: its file is invalid.');
+    rig.clock.advance(NOTIFICATION_MS);
+    rig.press('', DOWN);
+    rig.press('r');
+    const long = rig.notice() ?? '';
+    expect(long.endsWith('.'), long).toBe(true);
+    expect(
+      long,
+      'the engine’s reason is on the row’s effect line, never cut into the notice',
+    ).not.toContain('transform');
+    expect(long).not.toContain('…');
+    expect(fakes.asked).toEqual([]);
   });
 
   it('an invalid file’s long reason on its detail is cut between words with `…`, never in the middle of one (review round 2, O2-11)', async () => {
@@ -457,6 +547,57 @@ describe('what the keys hand the host', () => {
   });
 });
 
+describe('a popup reopened by the flow it handed a workflow to (review round 3, S3-1 and O3-1)', () => {
+  const THREE = [workflowEntry('a'), workflowEntry('b'), workflowEntry('c')];
+
+  it('says what the flow said as its own first word, and the pin that follows replaces it at once instead of waiting behind it', async () => {
+    const fakes = fakeWorkflows(THREE);
+    const { rig } = await opened(fakes, {
+      slug: 'c',
+      step: 'detail',
+      said: 'Nothing was written.',
+    });
+    expect(rig.step()).toBe(WORKFLOWS_STEP.detail);
+    expect(rig.notice(), 'the flow’s word is on the popup’s legend row').toBe(
+      'Nothing was written.',
+    );
+    rig.clock.advance(700);
+    rig.press('p');
+    expect(fakes.pins.calls).toEqual(['pin c']);
+    expect(rig.notice(), 'the title says pinned, and so does the row, at once').toBe('Pinned c.');
+    expect(rig.notifications.getSnapshot().queued).toBe(0);
+  });
+
+  it('the refusal a `[r]` came back with is replaced the same way (`p` right after it)', async () => {
+    const fakes = fakeWorkflows(THREE);
+    const said = 'A run is already executing (run-0001).';
+    const { rig } = await opened(fakes, { slug: 'c', step: 'list', said });
+    expect(rig.notice()).toBe(said);
+    rig.press('', ENTER);
+    await settleWork();
+    rig.clock.advance(700);
+    rig.press('p');
+    expect(rig.notice()).toBe('Pinned c.');
+  });
+
+  it('goes with the popup: closing it leaves nothing of the flow’s word on the Home’s channel', async () => {
+    const { rig } = await opened(fakeWorkflows(THREE), {
+      slug: 'c',
+      step: 'list',
+      said: 'Nothing was written.',
+    });
+    expect(rig.notice()).toBe('Nothing was written.');
+    rig.press('', ESC);
+    expect(rig.isOpen()).toBe(false);
+    expect(rig.notice()).toBeUndefined();
+  });
+
+  it('a reopen after a flow that said nothing raises no word', async () => {
+    const { rig } = await opened(fakeWorkflows(THREE), { slug: 'c', step: 'list' });
+    expect(rig.notice()).toBeUndefined();
+  });
+});
+
 describe('`[p]`', () => {
   it('pins in place, reads the rows again, keeps the highlight on the workflow and changes the verb; a second `[p]` unpins', async () => {
     const fakes = fakeWorkflows([workflowEntry('a'), workflowEntry('b'), workflowEntry('c')]);
@@ -470,6 +611,7 @@ describe('`[p]`', () => {
     rig.press('p');
     expect(fakes.pins.calls).toEqual(['pin c']);
     expect(rig.notice()).toBe('Pinned c.');
+    rig.host.shown(rig.host.getSnapshot()); // the slot's acknowledgement: the row drew it, so it was read and a newer word may take its place
     expect(fakes.read).toHaveBeenCalledTimes(2);
     expect(rig.words()).toContain('pinned');
     // The catalogue behind has the pinned row first, the highlight still on `c`.
@@ -487,7 +629,8 @@ describe('`[p]`', () => {
     rig.clock.advance(700);
     rig.press('p');
     expect(fakes.pins.calls).toEqual(['pin c', 'unpin c']);
-    // The popup's newer word on itself replaces its older one at once (review round 2, O2-6): the title says `unpinned` and so does the row.
+    // The popup's newer word on itself replaces the older one it drew at once (review round 2, O2-6; round 3, S3-1): the title says `unpinned` and so
+    // does the row.
     expect(rig.notice()).toBe('Unpinned c.');
   });
 

@@ -295,7 +295,10 @@ export function mountHome(
       readonly port: HomePopupsPort;
       readonly at?: WorkflowsAt | undefined;
     }) => {
-      void openHomePopup({ host: popups, port, kind, origin: 'home', at });
+      void openHomePopup({ host: popups, port, kind, origin: 'home', at }).then((result) => {
+        // As `driveHome` wires it: a reopen the host refused still owes the word of the flow it came back from.
+        if (!result.opened && at?.said !== undefined) notifications.notify(at.said);
+      });
     },
     // The bare Home's own channel, as `driveHome` wires it: what its `/models` popup applied says, after the popup has closed.
     announce: (text: string) => {

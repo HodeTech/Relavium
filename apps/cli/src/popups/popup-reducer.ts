@@ -264,14 +264,17 @@ const isPage = (content: PopupContent): boolean => content.kind === 'list' && co
  */
 const holdable = (content: PopupContent): Walkable =>
   isPage(content) ? (row) => row !== undefined : canAct;
+/** A line of a page the caret may stand on: one with something on it, or one that can act. A blank gap row between two groups is only space (a lone caret). */
+const isLine: Walkable = (row) => row !== undefined && (canAct(row) || row.label.trim() !== '');
 /**
  * Where the arrows, a page and a jump TAKE the highlight. A list: the rows that can act. A page of lines that fits its page: the same, so that every
  * press lands on something the screen shows (`↓` from the title lands on the first last run at once, and a page with none has nothing to move). A page
- * that OVERFLOWS its page: every line, drawn with the caret wherever it stands (`frame-model.ts` `listLines`), so that no press is blind and the whole
- * page is reachable line by line (review round 2, P2-1).
+ * that OVERFLOWS its page: every line that has something on it, drawn with the caret wherever it stands (`frame-model.ts` `listLines`), so that no press is blind
+ * and the whole page is reachable line by line (review round 2, P2-1); a blank gap row between two groups is skipped, so a caret never stands alone
+ * on an empty line (review round 3, O3-8).
  */
 const walkable = (content: PopupContent, rows: number, pageRows: number): Walkable =>
-  isPage(content) && rows > pageRows ? (row) => row !== undefined : canAct;
+  isPage(content) && rows > pageRows ? isLine : canAct;
 
 function firstEnabled(rows: readonly PopupListRow[], can: Walkable = canAct): number {
   const index = rows.findIndex(can);
@@ -687,7 +690,10 @@ function nextEnabled(
   return from;
 }
 
-/** A page of a list: `pageRows` rows on, then the nearest row that can act; it stops at the ends. */
+/**
+ * A page of a list: `pageRows` rows on, then the nearest row that can act; it stops at the ends. When no row at or around the target can act (a
+ * page of lines, none of them a key) the highlight stays where it was: it never moves onto a line nothing draws a caret on.
+ */
 function pageEnabled(
   rows: readonly PopupListRow[],
   from: number,
@@ -700,7 +706,8 @@ function pageEnabled(
   const onward = nextEnabled(rows, target, direction, can);
   if (onward !== target) return onward;
   const opposite: 1 | -1 = direction === 1 ? -1 : 1;
-  return nextEnabled(rows, target, opposite, can);
+  const back = nextEnabled(rows, target, opposite, can);
+  return back !== target ? back : from;
 }
 
 /**

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import type { ReasoningEffort } from '@relavium/shared';
+import type { ReasoningEffort, RunStatus } from '@relavium/shared';
 
 import {
   availabilityOf,
@@ -212,7 +212,12 @@ import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
 import { HOME_KEYS } from './help-sheet.js';
-import { hostedEndNotice, showsRelativeWords, type ParkedRunRow } from './home-attention.js';
+import {
+  foldKeyLookalikes,
+  hostedEndNotice,
+  showsRelativeWords,
+  type ParkedRunRow,
+} from './home-attention.js';
 import { withGlyphForm } from './glyphs.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import {
@@ -1159,10 +1164,20 @@ const SHOWN_LINE_MAX = 64;
 const shownLine = (line: string): string =>
   line.replace(/[^\x20-\x7e]/gu, '?').slice(0, SHOWN_LINE_MAX);
 
-/** The workflow the Home's row of `runId` named, as that row draws it (the work page's scrub), when it named one. */
+/** The statuses of a run that is still going or waiting: the runs the Active tab lists (a finished run is read on the History tab). */
+const LIVE_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'pending',
+  'running',
+  'paused',
+]);
+
+/**
+ * The workflow the Home's row of `runId` named, when it named one: through the work page's scrub, then with its key lookalikes folded as page 1's
+ * hint folds them (`[Enter] Allow` reads as `(Enter) Allow`), because the card draws it beside its own keys (unit 8 fix wave 3, S3-2).
+ */
 function workflowOfRow(rows: readonly ParkedRunRow[], runId: string): string | undefined {
   const slug = rows.find((row) => row.runId === runId)?.workflow;
-  return slug === undefined ? undefined : workRowText(slug);
+  return slug === undefined ? undefined : foldKeyLookalikes(workRowText(slug));
 }
 
 /** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
@@ -1944,6 +1959,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tabMemory = tabHostMemory(screen.host);
     putScreen(screen);
     return true;
+  };
+  /** The Runs screen on the Active tab with the cursor on `runId` (a row it lists, when its read lists the run). */
+  const openActiveTabOn = (runId: string): boolean => {
+    if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
+    tabMemory = { ...freshTabMemory('active'), activeFocus: runId };
+    return openTabHost('active');
   };
   /** The Runs screen back in front after a screen opened from it is left with `Esc`: the tab and the row it came from, read again. */
   const reopenTabHost = (): void => {
@@ -2739,9 +2760,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             lastRuns: deps.workflowReads?.lastRuns,
             pins: deps.pins,
             now: deps.epochNow ?? ((): number => Date.now()),
-            run: (slug, path, from) => openWorkflowRun(slug, path, from),
-            export: (slug, from) => openWorkflowExport(slug, from),
-            openRuns: (runId) => openRunsScreen(runId),
+            run: (slug, path, from, row) => openWorkflowRun(slug, path, from, row),
+            export: (slug, from, row) => openWorkflowExport(slug, from, row),
+            openRuns: (runId, status) => openRunsScreen(runId, status),
           },
         }),
   });
@@ -2756,9 +2777,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     open({ kind, port: homePopupsPort(), at });
   };
 
-  /** `/workflows` brought back where the flow was started (the catalogue's row of `slug`, or its detail), once the flow it handed that workflow to is over. */
-  const reopenWorkflows = (slug: string, step: WorkflowsStep): void => {
-    if (!exiting) openManagePopup('workflows', { slug, step });
+  /**
+   * `/workflows` brought back where the flow was started (the catalogue's row of `slug`, or its detail), once the flow it handed that workflow to is over.
+   * What the flow said (`said`) is handed to the reopened popup as ITS OWN first word, not announced on the Home's channel: the popup's next word
+   * (`Pinned x.`) then replaces it at once, where a Home word would be read for three seconds before it (review round 3, S3-1 and O3-1).
+   */
+  const reopenWorkflows = (
+    slug: string,
+    step: WorkflowsStep,
+    said?: string,
+    row?: string,
+  ): void => {
+    if (!exiting)
+      openManagePopup('workflows', {
+        slug,
+        step,
+        ...(said === undefined ? {} : { said }),
+        // The line of an overflowing detail the key was pressed on comes back with it (review round 3, O3-4).
+        ...(row === undefined || step !== 'detail' ? {} : { row }),
+      });
   };
 
   /**
@@ -2770,21 +2807,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * says is one notification, as it is anywhere. The `r` that opened it is the flow's to take: a held key's repeats are dropped there
    * (`noteOpeningKey`).
    */
-  const openWorkflowRun = (slug: string, path: string, from: WorkflowsStep): void => {
+  const openWorkflowRun = (slug: string, path: string, from: WorkflowsStep, row?: string): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
-      deps.announce?.('Running a workflow is unavailable in this session.');
-      reopenWorkflows(slug, from);
+      reopenWorkflows(slug, from, 'Running a workflow is unavailable in this session.', row);
       return;
     }
     noteOpeningKey('r', {});
     let closedAll = false;
     let started = false;
+    let said = '';
     const opening = !state.nativeActionBusy;
     openNativeAction(
       async () => {
         const before = deps.hostedRuns?.snapshot();
-        const said = await launch(slug, path, {
+        said = await launch(slug, path, {
           opener: { origin: 'workflows' },
           onLeave: () => {
             closedAll = true;
@@ -2801,40 +2838,51 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           closedAll = true;
           if (launchStartedRun(before)) openRunView();
         }
-        if (said !== '') deps.announce?.(said);
+        // What the launch says is the Home's word when the popup does not come back (a run started, or `Ctrl+C`), and the reopened popup's own first
+        // word when it does (a refusal, a No, an `Esc`).
+        if (closedAll && said !== '') deps.announce?.(said);
       },
       'Run workflow',
       {},
       () => {
-        if (!closedAll) reopenWorkflows(slug, from);
+        if (!closedAll) reopenWorkflows(slug, from, said === '' ? undefined : said, row);
       },
     );
     if (!opening || !state.nativeActionBusy) forgetOpeningKey();
   };
 
   /** `[x]` in the `/workflows` popup (already closed): the export confirmation, from `/workflows`; the popup comes back on the workflow when it ends. */
-  const openWorkflowExport = (slug: string, from: WorkflowsStep): void => {
+  const openWorkflowExport = (slug: string, from: WorkflowsStep, row?: string): void => {
     const exportDefined = deps.exportDefined;
     if (exportDefined === undefined) {
-      deps.announce?.('Export is unavailable in this session.');
-      reopenWorkflows(slug, from);
+      reopenWorkflows(slug, from, 'Export is unavailable in this session.', row);
       return;
     }
+    let said: string | undefined;
     openNativeAction(
       async () => {
-        announceFlowResult(await exportDefined(slug, 'workflows'));
+        said = await exportDefined(slug, 'workflows');
       },
       'Export',
       {},
       () => {
-        reopenWorkflows(slug, from);
+        reopenWorkflows(slug, from, said, row);
       },
     );
   };
 
-  /** `[h]` and `Enter` on a last run in the `/workflows` popup (already closed): the Runs screen, on that run's detail when one is named. */
-  const openRunsScreen = (runId?: string): void => {
-    const opened = runId === undefined ? openTabHost('history') : openRunDetail(runId);
+  /**
+   * `[h]` and `Enter` on a last run in the `/workflows` popup (already closed): the Runs screen. With a run named it opens where the run lives (review
+   * round 3, O3-9): a run that is still going or waiting is a row of the Active tab (the cursor on it, and `Enter` there answers its gate or
+   * shows it), a finished one is on the History tab, on its detail.
+   */
+  const openRunsScreen = (runId?: string, status?: RunStatus): void => {
+    const opened =
+      runId === undefined
+        ? openTabHost('history')
+        : status !== undefined && LIVE_RUN_STATUSES.has(status)
+          ? openActiveTabOn(runId)
+          : openRunDetail(runId);
     if (!opened && !exiting) deps.announce?.('The Runs screen could not be opened now.');
   };
 

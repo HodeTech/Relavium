@@ -12,6 +12,7 @@ import type { HostedLaunch } from '../../home/run-host.js';
 import { createChordHistory } from './chord-guard.js';
 import { createRunCard, projectRunCard } from './run-card-model.js';
 import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
+import { displayWidth } from './viewport.js';
 
 const RUN = 'run-0001';
 const STARTED: HostedLaunch = {
@@ -213,7 +214,11 @@ describe('the card wears the sheet’s heavy rule, its wait clock on the right w
 });
 
 describe('the waiting card says "waiting" once in its rule and once in its clock, and names the workflow in its title (unit 8 fix wave, S-11)', () => {
-  const titleOf = (workflow: string | undefined, gates: readonly RunCardGate[] = [APPROVAL]) => {
+  const titleOf = (
+    workflow: string | undefined,
+    gates: readonly RunCardGate[] = [APPROVAL],
+    columns = 80,
+  ) => {
     const card = createRunCard({
       runId: RUN,
       ...(workflow === undefined ? {} : { workflow }),
@@ -223,7 +228,7 @@ describe('the waiting card says "waiting" once in its rule and once in its clock
       history: createChordHistory(),
     });
     const rows = projectRunCard(card.getSnapshot(), {
-      columns: 80,
+      columns,
       rows: 24,
       nowMs: 0,
       clock: 'waiting 0:41',
@@ -298,6 +303,38 @@ describe('the waiting card says "waiting" once in its rule and once in its clock
     it('a slug of nothing but what the scrub removes falls back to the state’s word', () => {
       expect(title(`${ZWSP}${ZWSP}`)).toBe('‖ waiting for you  ·  run run-0001');
       expect(title('‖ ✓')).toBe('‖ waiting for you  ·  run run-0001');
+    });
+
+    it('the name is cut to exactly what the row leaves it: the whole row is the width of the card, to the column', () => {
+      for (const columns of [80, 100]) {
+        const row = titleOf('x'.repeat(500), [APPROVAL], columns)[1]?.text ?? '';
+        expect(displayWidth(row), `at ${String(columns)} columns`).toBe(columns - 2);
+        expect(row).toMatch(/^‖ x+… {2}· {2}run run-0001$/u);
+      }
+    });
+
+    it('a real run id (a uuid, 36 columns) and a gate count keep their room: the name is what gives way, the row stays whole', () => {
+      const uuid = '1b4e28ba-2fa1-11d2-883f-0016d3cca427';
+      const second: RunGate = { ...APPROVAL, gateId: 'g2', nodeId: 'publish' };
+      const card = createRunCard({
+        runId: uuid,
+        workflow: 'x'.repeat(500),
+        gates: [APPROVAL, second],
+        resume: vi.fn(() => Promise.resolve(STARTED)),
+        now: () => OPENED_AT,
+        history: createChordHistory(),
+      });
+      const rows = projectRunCard(card.getSnapshot(), {
+        columns: 80,
+        rows: 24,
+        nowMs: 0,
+        clock: 'waiting 0:41',
+      }).rows;
+      card.dispose();
+      const row = rows[1]?.text ?? '';
+      expect(displayWidth(row)).toBe(78);
+      expect(row.endsWith(`gate 1 of 2  ·  run ${uuid}`)).toBe(true);
+      expect(row).toMatch(/^‖ x{10,}…/u);
     });
 
     it('a 500-character slug is cut so the run’s id and the gate count stay on the row, at 80 columns', () => {

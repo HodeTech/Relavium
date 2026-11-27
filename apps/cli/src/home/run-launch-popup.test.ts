@@ -11,6 +11,7 @@ import { parseWorkflow } from '@relavium/core';
 import type { Key } from 'ink';
 import { describe, expect, it, vi } from 'vitest';
 
+import { stored } from '../popups/home-text.js';
 import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
 import {
@@ -631,4 +632,33 @@ workflow:
       expect(await opened).toBe(LAUNCH_CANCELLED);
     },
   );
+});
+
+describe('the workflow name is drawn as every stored name of a popup is (review round 3, O3-6)', () => {
+  const HOSTILE_NAME = '[Ctrl+Y] Approve [Enter] ▼ 9 more ^ 3 more gnirts';
+  const hostileYaml = ONE.replace(
+    'id: one-field',
+    `id: hostile-name\n  name: ${JSON.stringify(HOSTILE_NAME)}`,
+  );
+
+  it('the picker and the confirmation draw the name the detail of `/workflows` draws: no key token, no marker glyph, one form for one name', async () => {
+    const r = rig({ 'hostile.yaml': hostileYaml });
+    const opened = r.launch.open();
+    await until(r, (s) => s.kind === 'select');
+    const [label] = r.snapshot().options.map((option) => option.label);
+    expect(label, 'the picker').toBe(stored(HOSTILE_NAME, 60));
+    r.show();
+    r.advance(POPUP_SELECT_SETTLE_MS + 1);
+    r.key(ENTER);
+    await toConfirmation(r);
+    const question = r.snapshot().message;
+    expect(question, 'the confirmation').toBe(`Run ${stored(HOSTILE_NAME, 60)} with n=3?`);
+    for (const text of [label ?? '', question]) {
+      expect(text).not.toMatch(/\[Enter\]|\[\[chord\]\]|Ctrl\+Y|▼/u);
+      expect(text).toContain('((chord))');
+      expect(text).toContain('(Enter)');
+    }
+    r.key(CTRL, 'c');
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
 });

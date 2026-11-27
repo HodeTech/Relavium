@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
+import { manualClock } from '../../popups/doctor.test-support.js';
+import { createNotificationChannel, NOTIFICATION_MS } from '../../popups/notifications.js';
 import { createChatStore } from './chat-store.js';
 import {
   createHomeController,
@@ -59,6 +61,8 @@ function fixture(
   options: {
     keyless?: boolean;
     startChat?: () => Promise<HomeChatSession>;
+    /** The Home's real notification channel, under the one source the Home's own words have (`driveHome`'s `homeAnnouncements`). */
+    channel?: ReturnType<typeof createNotificationChannel>;
   } = {},
 ) {
   const lines: string[] = [];
@@ -72,12 +76,16 @@ function fixture(
   );
   /** The Home's one notification channel (ADR-0148 §6): what the setup and the controller say instead of a Home notice. */
   const announced: string[] = [];
+  const source = {};
   const c = createHomeController({
     homeStore: { read: () => SNAPSHOT },
     startChat,
     onExit: () => {},
     onError: () => {},
-    announce: (text) => announced.push(text),
+    announce: (text) => {
+      announced.push(text);
+      options.channel?.notify(text, source);
+    },
     providerSetup: { initialKeyless: options.keyless ?? true, open },
   });
   /**
@@ -86,7 +94,10 @@ function fixture(
    */
   const close = async (keyless: boolean, notification?: string): Promise<void> => {
     c.setProviderState(keyless);
-    if (notification !== undefined) announced.push(notification);
+    if (notification !== undefined) {
+      announced.push(notification);
+      options.channel?.notify(notification, source);
+    }
     finish();
     await flush();
   };
@@ -266,6 +277,37 @@ describe('a draft that looks like a provider key is never kept and never recorde
     const before = other.c.getSnapshot().notice;
     other.c.setProviderState(true);
     expect(other.c.getSnapshot().notice).toBe(before);
+  });
+
+  // Review round 3, S3-1: the Home's own words (one source) queue in order. A same-source replacement showed the setup's word 0 ms after the
+  // reason, at the instant the setup's hold ended.
+  it('the reason a draft was not kept is read its whole three seconds, held through the setup, before the setup’s own word (S3-1)', async () => {
+    const time = manualClock();
+    const channel = createNotificationChannel({ schedule: time.schedule });
+    const f = fixture({ channel });
+    f.c.handlePaste(FAKE_KEY);
+    f.c.handleKey('', ENTER);
+    // The Home holds the channel while the setup's native flow is on (`HomeApp`: `prompt.active`).
+    channel.hold(true);
+    time.advance(20_000);
+    channel.hold(false);
+    expect(channel.getSnapshot().current?.text, 'shown again, whole, when the hold ends').toBe(
+      KEY_SHAPED_DRAFT_NOTICE,
+    );
+    await f.close(true, 'Setup skipped · /providers connects a provider anytime');
+    expect(channel.getSnapshot().current?.text, 'the setup’s word does not replace it').toBe(
+      KEY_SHAPED_DRAFT_NOTICE,
+    );
+    time.advance(NOTIFICATION_MS - 1);
+    expect(channel.getSnapshot().current?.text, 'it is read to its last millisecond').toBe(
+      KEY_SHAPED_DRAFT_NOTICE,
+    );
+    time.advance(1);
+    expect(channel.getSnapshot().current?.text, 'and then the setup’s word has its own time').toBe(
+      'Setup skipped · /providers connects a provider anytime',
+    );
+    time.advance(NOTIFICATION_MS);
+    expect(channel.getSnapshot().current).toBeUndefined();
   });
 
   it('a short or ordinary dash-word is not mistaken for a key: the draft is kept', () => {

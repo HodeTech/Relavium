@@ -607,9 +607,14 @@ const LABEL_LIMIT = 60;
 const REASON_LIMIT = 80;
 const SKIPPED_LISTED = 3;
 
-/** What a workflow is called on the picker, the confirmation and the notices: its name, or its id when it has none. One rule for the list read and the pick read. */
+/**
+ * What a workflow is called on the picker, the confirmation and the notices: its name, or its id when it has none. One rule for the list read and
+ * the pick read. It is drawn in a popup beside real keys, so it passes the one scrub every stored name drawn in a popup passes (`placeRowText`:
+ * the Home's row scrub, as `/workflows` draws the same name), not the flow scrub alone: the confirmation and the detail show ONE name, in one
+ * form (review round 3, O3-6).
+ */
 function workflowLabel(name: string | undefined, id: string): string {
-  return bounded(name ?? id, LABEL_LIMIT);
+  return cut(placeRowText(name ?? id), LABEL_LIMIT);
 }
 
 /**

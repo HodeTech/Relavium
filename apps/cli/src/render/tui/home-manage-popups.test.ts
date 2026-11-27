@@ -20,7 +20,7 @@ import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { LaunchOptions } from '../../home/run-launch.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
-import type { HomePopupKind, HomePopupsPort } from '../../popups/home-port.js';
+import type { HomePopupKind, HomePopupsPort, WorkflowsAt } from '../../popups/home-port.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { buildAgentsModel, type AgentsModelItem } from '../../history/agents-model.js';
 import { createChatStore } from './chat-store.js';
@@ -113,7 +113,7 @@ const RUNNING: RunHostSnapshot = {
 interface Opened {
   readonly kind: HomePopupKind;
   readonly port: HomePopupsPort;
-  readonly at?: { readonly slug: string } | undefined;
+  readonly at?: WorkflowsAt | undefined;
 }
 
 interface Options {
@@ -422,7 +422,9 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
     submit(controller, '/workflows');
     last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-    expect(announced).toEqual(['A run is already executing (run-0001).']);
+    // The popup came back, so the refusal is ITS word (review round 3, S3-1): handed to the reopened popup, never the Home's channel.
+    expect(opened[1]?.at?.said).toBe('A run is already executing (run-0001).');
+    expect(announced).toEqual([]);
   });
 
   it('`Ctrl+C` closes the whole stack: the flow told the Home it was left, so its notification is the whole answer and no popup comes back', async () => {
@@ -460,8 +462,8 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
       submit(controller, '/workflows');
       last(opened).port.workflows?.run(NODE, PATH, from);
       await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-      expect(opened[1]?.at).toEqual({ slug: NODE, step: from });
-      expect(announced).toEqual(['Run cancelled.']);
+      expect(opened[1]?.at).toEqual({ slug: NODE, step: from, said: 'Run cancelled.' });
+      expect(announced, 'the reopened popup says it, not the Home').toEqual([]);
     },
   );
 
@@ -503,8 +505,8 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
       submit(controller, '/workflows');
       last(opened).port.workflows?.run(NODE, PATH, from);
       await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-      expect(opened[1]?.at).toEqual({ slug: NODE, step: from });
-      expect(announced).toEqual([sentence]);
+      expect(opened[1]?.at).toEqual({ slug: NODE, step: from, said: sentence });
+      expect(announced).toEqual([]);
     },
   );
 
@@ -533,7 +535,8 @@ describe('`[r]` hands the controller a run, from /workflows', () => {
     const { controller, opened, announced } = mount({ agents: agentsPort, defined: definedPort });
     submit(controller, '/workflows');
     last(opened).port.workflows?.run(NODE, PATH, 'detail');
-    expect(announced).toEqual(['Running a workflow is unavailable in this session.']);
+    expect(announced).toEqual([]);
+    expect(opened[1]?.at?.said).toBe('Running a workflow is unavailable in this session.');
     expect(opened).toHaveLength(2);
   });
 });
@@ -599,7 +602,11 @@ describe('what a refused or a closing Home leaves behind (review round 1, G04 an
     last(opened).port.workflows?.run(NODE, PATH, 'detail');
     await flush();
     expect(opened).toHaveLength(2);
-    expect(opened[1]?.at).toEqual({ slug: NODE, step: 'detail' });
+    expect(opened[1]?.at).toEqual({
+      slug: NODE,
+      step: 'detail',
+      said: 'Running a workflow is unavailable in this session.',
+    });
   });
 });
 
@@ -615,8 +622,38 @@ describe('`[x]` hands the controller an export, from /workflows', () => {
     last(opened).port.workflows?.export('nightly', 'detail');
     expect(exporter.mock.calls).toEqual([['nightly', 'workflows']]);
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'detail' });
-    expect(announced).toEqual(['Nothing exported.']);
+    // What the export said is the reopened popup's own first word, not the Home's (review round 3, S3-1 and O3-1: `p` right after it shows at once).
+    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'detail', said: 'Nothing exported.' });
+    expect(announced).toEqual([]);
+  });
+
+  it('the line of the detail the key was pressed on comes back with the popup; from the catalogue none does (review round 3, O3-4)', async () => {
+    const exporter = vi.fn(() => Promise.resolve<string | undefined>(undefined));
+    const launch = vi.fn(() => Promise.resolve('Run cancelled.'));
+    const { controller, opened } = mount({
+      agents: agentsPort,
+      defined: definedPort,
+      exporter,
+      launch,
+    });
+    submit(controller, '/workflows');
+    last(opened).port.workflows?.export('nightly', 'detail', 'run:1');
+    await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
+    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'detail', row: 'run:1' });
+    last(opened).port.workflows?.run('nightly', 'nightly.yaml', 'detail', 'nodes:3');
+    await vi.waitFor(() => expect(opened).toHaveLength(3), { timeout: WAIT_MS });
+    expect(opened[2]?.at).toEqual({
+      slug: 'nightly',
+      step: 'detail',
+      row: 'nodes:3',
+      said: 'Run cancelled.',
+    });
+    last(opened).port.workflows?.export('nightly', 'list', 'run:1');
+    await vi.waitFor(() => expect(opened).toHaveLength(4), { timeout: WAIT_MS });
+    expect(opened[3]?.at, 'a catalogue row is kept by workflow, never by a line').toEqual({
+      slug: 'nightly',
+      step: 'list',
+    });
   });
 
   it('an export started from the catalogue row comes back to the catalogue, not to a detail nobody opened', async () => {
@@ -625,14 +662,15 @@ describe('`[x]` hands the controller an export, from /workflows', () => {
     submit(controller, '/workflows');
     last(opened).port.workflows?.export('nightly', 'list');
     await vi.waitFor(() => expect(opened).toHaveLength(2), { timeout: WAIT_MS });
-    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'list' });
+    expect(opened[1]?.at).toEqual({ slug: 'nightly', step: 'list', said: 'Nothing exported.' });
   });
 
   it('a Home with no export says so and the popup comes back', () => {
     const { controller, opened, announced } = mount({ agents: agentsPort, defined: definedPort });
     submit(controller, '/workflows');
     last(opened).port.workflows?.export('nightly', 'detail');
-    expect(announced).toEqual(['Export is unavailable in this session.']);
+    expect(announced).toEqual([]);
+    expect(opened[1]?.at?.said).toBe('Export is unavailable in this session.');
     expect(opened).toHaveLength(2);
   });
 
@@ -642,7 +680,11 @@ describe('`[x]` hands the controller an export, from /workflows', () => {
       const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
       submit(controller, '/workflows');
       last(opened).port.workflows?.export('nightly', from);
-      expect(opened[1]?.at).toEqual({ slug: 'nightly', step: from });
+      expect(opened[1]?.at).toEqual({
+        slug: 'nightly',
+        step: from,
+        said: 'Export is unavailable in this session.',
+      });
     },
   );
 });
@@ -658,6 +700,32 @@ describe('`[h]` and `Enter` on a last run open the Runs screen', () => {
     controller.handleKey('', { escape: true });
     expect(controller.getSnapshot().screen).toBeUndefined();
   });
+
+  it.each(['pending', 'running', 'paused'] as const)(
+    '`Enter` on a last run that is %s opens the Runs screen on the Active tab, where it lives (review round 3, O3-9)',
+    (status) => {
+      const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.openRuns('run-9', status);
+      const screen = controller.getSnapshot().screen;
+      expect(screen?.kind).toBe('tab-host');
+      expect(screen?.kind === 'tab-host' ? screen.host.tab : undefined).toBe('active');
+      controller.handleKey('', { escape: true });
+      expect(controller.getSnapshot().screen).toBeUndefined();
+    },
+  );
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    '`Enter` on a last run that is %s asks for its detail on the History tab, never the Active tab',
+    (status) => {
+      const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });
+      submit(controller, '/workflows');
+      last(opened).port.workflows?.openRuns('run-9', status);
+      // No history port is wired here: the detail of a finished run cannot be read, and nothing opens on the Active tab instead.
+      expect(controller.getSnapshot().screen).toBeUndefined();
+      expect(controller.getSnapshot().notice).toBe('The run history is not available here.');
+    },
+  );
 
   it('a Home that cannot read the history says so in one notification and opens no screen', () => {
     const { controller, opened } = mount({ agents: agentsPort, defined: definedPort });

@@ -55,6 +55,17 @@ export type WorkflowsStep = 'list' | 'detail';
 export interface WorkflowsAt {
   readonly slug: string;
   readonly step: WorkflowsStep;
+  /**
+   * What the flow it came back from said (`Nothing was written.`, a refused `[r]`): the reopened popup says it as ITS OWN first word
+   * (`PopupContext.notify`), so a later word of the popup (`Pinned x.`) replaces it at once instead of waiting three seconds behind it, and it
+   * goes when the popup closes, as every word a popup says. Absent ⇒ the flow said nothing. A reopen the host refuses says it as the Home's.
+   */
+  readonly said?: string | undefined;
+  /**
+   * The line of the detail the key was pressed on (`run:2`, `nodes:1`): an overflowing detail comes back with the highlight on the same line, not
+   * at its top (review round 3, O3-4). Only for `step: 'detail'`; a line that is no longer there opens the detail at its top.
+   */
+  readonly row?: string | undefined;
 }
 
 /** What `/workflows` reads and starts. */
@@ -76,11 +87,15 @@ export interface HomeWorkflowsPort {
    * everything, and `Ctrl+C` too. `path` is the catalog's own path the row was listed from, so the flow refuses a slug whose file is another one
    * by then.
    */
-  readonly run: (slug: string, path: string, from: WorkflowsStep) => void;
+  readonly run: (slug: string, path: string, from: WorkflowsStep, row?: string) => void;
   /** `[x]`: the export confirmation of this workflow, from `/workflows`; the popup is brought back on the step `from` names when it ends. Called once the popup has closed. */
-  readonly export: (slug: string, from: WorkflowsStep) => void;
-  /** `[h]` (no run) and `Enter` on a last run (that run's detail): leave for the Runs screen. Called once the popup has closed. */
-  readonly openRuns: (runId?: string) => void;
+  readonly export: (slug: string, from: WorkflowsStep, row?: string) => void;
+  /**
+   * `[h]` (no run) and `Enter` on a last run: leave for the Runs screen. Called once the popup has closed. A last run is opened where it lives:
+   * a run that is still going or waiting (`status` is `pending`, `running` or `paused`) is on the Active tab with the cursor on it, a finished one on
+   * the History tab, on its detail (review round 3, O3-9).
+   */
+  readonly openRuns: (runId?: string, status?: RunStatus) => void;
 }
 
 /** What the Home hands its management popups. Built by the controller; nothing in it is read until a popup runs. */

@@ -327,27 +327,39 @@ export interface WorkflowDetailView {
  * its last runs (`Enter` opens one in the Runs screen). A row that is not one (a file that did not parse, a pin with no entry) has a short report
  * of what it is and what can be done with it ({@link unlistedContent}).
  */
-export function workflowDetailContent(view: WorkflowDetailView, nowMs: number): PopupContent {
+export function workflowDetailContent(
+  view: WorkflowDetailView,
+  nowMs: number,
+  initialRow?: string,
+): PopupContent {
   const { row, detail, runs } = view;
   if (row.state !== 'ready' || detail === undefined) return unlistedContent(row);
   const slug = stored(row.slug, SLUG_COLUMNS, '?');
-  const name =
-    row.name !== undefined && row.name !== row.slug ? ` · ${stored(row.name, NAME_COLUMNS)}` : '';
   const facts = [
     row.nodeCount === undefined ? undefined : nodeCountWords(row.nodeCount),
     row.pinned ? 'pinned' : undefined,
   ].filter((fact): fact is string => fact !== undefined);
+  const factWords = facts.length === 0 ? '' : `  ·  ${facts.join(' · ')}`;
+  // The facts (how many nodes, whether it is pinned) are the part of the row a person comes for, so they are kept whole and the NAME takes what is
+  // left of the row, cut with `…` (review round 3, O3-3). The slug is at most `SLUG_COLUMNS` and the facts a few words, so the room is never small.
+  const nameRoom = POPUP_TEXT_COLUMNS - 2 - displayWidth(`${slug} · ${factWords}`);
+  const nameWords =
+    row.name !== undefined && row.name !== row.slug
+      ? stored(row.name, Math.min(NAME_COLUMNS, nameRoom))
+      : '';
+  const name = nameWords === '' ? '' : ` · ${nameWords}`;
   const description =
     detail.description === undefined
       ? []
       : storedParagraph(detail.description, POPUP_TEXT_COLUMNS - 2, DESCRIPTION_ROWS);
   return {
     kind: 'list',
-    // A page of lines: it opens at its title, the arrows walk every line (a long chain or a long list of inputs is read by scrolling), and a last run
-    // is the one line that answers `Enter`.
+    // A page of lines: it opens at its title (or on `initialRow`, the line a flow it handed the workflow to was started from), the arrows walk every
+    // line (a long chain or a long list of inputs is read by scrolling), and a last run is the one line that answers `Enter`.
     page: true,
+    ...(initialRow === undefined ? {} : { initialRow }),
     rows: [
-      sectionRow('title', `${slug}${name}${facts.length === 0 ? '' : `  ·  ${facts.join(' · ')}`}`),
+      sectionRow('title', `${slug}${name}${factWords}`),
       ...description.map((line, at) => sectionRow(`description:${String(at)}`, line)),
       sectionRow('gap-a', ''),
       ...fieldRows('inputs', 'Inputs', inputsWords(detail)),

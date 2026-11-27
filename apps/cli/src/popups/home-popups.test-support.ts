@@ -204,14 +204,14 @@ export function fakeWorkflows(
     lastRuns,
     pins: pins.port,
     now: () => fakes.now,
-    run: (slug, path, from) => {
-      asked.push(`run ${slug} ${path} from ${from}`);
+    run: (slug, path, from, row) => {
+      asked.push(`run ${slug} ${path} from ${from}${row === undefined ? '' : ` at ${row}`}`);
     },
-    export: (slug, from) => {
-      asked.push(`export ${slug} from ${from}`);
+    export: (slug, from, row) => {
+      asked.push(`export ${slug} from ${from}${row === undefined ? '' : ` at ${row}`}`);
     },
-    openRuns: (runId) => {
-      asked.push(runId === undefined ? 'runs' : `runs ${runId}`);
+    openRuns: (runId, status) => {
+      asked.push(runId === undefined ? 'runs' : `runs ${runId} ${status ?? '?'}`);
     },
   };
   return {

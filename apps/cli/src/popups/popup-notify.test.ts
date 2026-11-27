@@ -127,23 +127,27 @@ function rig() {
 }
 
 describe('what a popup says belongs to it', () => {
-  it('and its latest word on itself replaces its earlier one, shown or waiting; the host’s words and another popup’s queue in order (review round 2, O2-6)', () => {
+  it('and its latest word on itself replaces the earlier one it drew; the host’s words and another popup’s queue in order (review round 2, O2-6; round 3, S3-1)', () => {
     const r = rig();
     const context = r.open();
     r.show();
     r.notifications.notify('the host says');
     context.notify('Nothing was written.');
     expect(r.current(), 'the host spoke first').toBe('the host says');
-    context.notify('Pinned release-notes.');
     r.time.advance(NOTIFICATION_MS);
-    expect(r.current(), 'the popup’s newer word took the older one’s place in the queue').toBe(
-      'Pinned release-notes.',
+    expect(r.current(), 'the popup’s word waited its turn and is shown now').toBe(
+      'Nothing was written.',
     );
+    r.show(); // the frame that drew it was acknowledged: it was read
+    context.notify('Pinned release-notes.');
+    expect(r.current(), 'the newer word takes its place at once').toBe('Pinned release-notes.');
     expect(r.notifications.getSnapshot().queued).toBe(0);
+    // The newer word was not drawn yet: nothing replaces a word nobody has read.
     context.notify('Unpinned release-notes.');
-    expect(r.current(), 'and, the older one showing, takes its place at once').toBe(
-      'Unpinned release-notes.',
-    );
+    expect(r.current()).toBe('Pinned release-notes.');
+    expect(r.notifications.getSnapshot().queued).toBe(1);
+    r.time.advance(NOTIFICATION_MS);
+    expect(r.current()).toBe('Unpinned release-notes.');
     r.time.advance(NOTIFICATION_MS);
     expect(r.current()).toBeUndefined();
   });

@@ -368,7 +368,8 @@ describe('opening the card', () => {
   });
 
   it.each([
-    ['a key token', '[Ctrl+Y] Approve', '|| [[chord]] Approve  ·  run run-0001'],
+    // The chord is made inert by the row scrub, and its brackets folded as page 1's hint folds them (unit 8 fix wave 3, S3-2).
+    ['a key token', '[Ctrl+Y] Approve', '|| ((chord)) Approve  ·  run run-0001'],
     ['a list marker', 'release ▼ 9 more', '|| release 9 more  ·  run run-0001'],
     [
       'an invisible character',
@@ -386,6 +387,53 @@ describe('opening the card', () => {
       expect(frame).not.toMatch(/▼|\u200b/u);
     },
   );
+
+  it.each([
+    [80, '[Enter] Allow', '|| (Enter) Allow  ·  run run-0001'],
+    [100, '[Enter] Allow', '|| (Enter) Allow  ·  run run-0001'],
+    [80, '[Ctrl+Y]', '|| ((chord))  ·  run run-0001'],
+    [100, '[Ctrl+Y]', '|| ((chord))  ·  run run-0001'],
+    [80, '▼ 9 more', '|| 9 more  ·  run run-0001'],
+    [100, '▼ 9 more', '|| 9 more  ·  run run-0001'],
+  ] as const)(
+    'at %i columns a slug `%s` reads as no key beside the card’s real ones (unit 8 fix wave 3, S3-2: the key lookalikes are folded)',
+    async (cols, slug, title) => {
+      const m = mount({ rows: [{ ...ROW, workflow: slug }], size: { cols, rows: 24 } });
+      await openCard(m);
+      const frame = m.frame();
+      expect(frame).toContain(title);
+      // The only bracketed keys on the card are its own legend's.
+      const titleRow = frame.split('\n').find((row) => row.startsWith('|| ')) ?? '';
+      expect(titleRow, frame).not.toMatch(/\[|\]|▼/u);
+    },
+  );
+
+  it('the title names the workflow of the row the card was opened from, not the first row’s', async () => {
+    const first: ParkedRunRow = {
+      runId: 'run-0000',
+      kind: 'approval',
+      gates: 1,
+      workflow: 'first-flow',
+    };
+    const m = mount({ rows: [first, { ...ROW, workflow: 'release-notes' }] });
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(
+      () => m.controller.getSnapshot().stripFocus?.id === first.runId,
+      'the focus on the first row',
+    );
+    m.harness.stdin.write(DOWN);
+    await eventually(
+      () => m.controller.getSnapshot().stripFocus?.id === RUN,
+      'the focus on the second row',
+    );
+    await eventually(() => m.frame().includes('Enter open') && m.homePainted(), 'the row drawn');
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+    await eventually(() => m.frame().includes('Waiting for you'), 'the card`s frame');
+    expect(m.frame()).toContain('|| release-notes  ·  run run-0001');
+    expect(m.frame()).not.toContain('first-flow');
+  });
 
   it('`Enter` on the focused row opens the card in front of the landing: the message behind the gutter, the gate and the keys', async () => {
     const m = mount();

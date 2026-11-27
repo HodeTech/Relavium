@@ -14,7 +14,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import { createChordHistory } from './chord-guard.js';
 import { createHomeController, type HomeControllerDeps } from './home-controller.js';
 import type { DefinedPort } from '../../history/defined-model.js';
-import type { HomePopupsPort } from '../../popups/home-port.js';
+import type { HomePopupsPort, WorkflowsAt } from '../../popups/home-port.js';
 
 const EMPTY: HomeSnapshot = {
   failedRuns: [],
@@ -64,6 +64,8 @@ function mount(resolveWith: string | undefined = undefined) {
       }),
   );
   let workflowsPort: HomePopupsPort['workflows'];
+  /** Where `/workflows` was brought back to, with what the flow it came back from said (round 3, S3-1: the popup's own first word). */
+  const reopened: WorkflowsAt[] = [];
   const deps: HomeControllerDeps = {
     now: () => clock,
     chordHistory: history,
@@ -81,6 +83,7 @@ function mount(resolveWith: string | undefined = undefined) {
     // The `/workflows` popup's request, kept: its `[x]` is the export's opener (MVP-11 unit 8).
     openHomePopup: (request) => {
       workflowsPort = request.port.workflows;
+      if (request.at !== undefined) reopened.push(request.at);
     },
     onExit: () => undefined,
     onError: (cause) => {
@@ -105,6 +108,7 @@ function mount(resolveWith: string | undefined = undefined) {
     controller,
     history,
     announced,
+    reopened,
     flow,
     begun,
     open,
@@ -129,7 +133,13 @@ describe.each(['init', 'import', 'pricing', 'export'] as const)('%s', (opener) =
     await m.open(opener);
     m.release();
     await flush();
-    expect(m.announced).toEqual(['Nothing was written.']);
+    if (opener === 'export') {
+      // The popup comes back, so the sentence is its own first word (review round 3, S3-1 and O3-1), not the Home's.
+      expect(m.announced).toEqual([]);
+      expect(m.reopened.map((at) => at.said)).toEqual(['Nothing was written.']);
+    } else {
+      expect(m.announced).toEqual(['Nothing was written.']);
+    }
     expect(m.controller.getSnapshot().notice).toBeUndefined();
     expect(m.controller.getSnapshot().screen).toBeUndefined();
   });

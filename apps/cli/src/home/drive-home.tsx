@@ -2189,7 +2189,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               kind,
               origin: 'home',
               at,
-            }).then(() => undefined),
+            }).then((result) => {
+              // A reopen the host refused still owes the word of the flow it came back from: it is the Home's own then.
+              if (!result.opened && at?.said !== undefined)
+                notifications.notify(at.said, homeAnnouncements);
+            }),
           );
         },
         importDefined: () =>

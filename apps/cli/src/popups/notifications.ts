@@ -17,9 +17,12 @@
  *   host says it instead ({@link NotificationChannel.popupHold}), because the popup's legend row is then where the notification is drawn.
  * - **What a popup says belongs to it.** A notification a popup raised (`from`) is about that popup and its keys (`[d] asks again`), so it is
  *   discarded, shown or waiting, when that popup closes ({@link NotificationChannel.discard}); the host's own words (a refused open, a popup
- *   closed by the system) are about the host and stay. And a popup's latest word on itself is the only true one: what a popup says replaces
- *   what the same popup said before, shown or waiting (`Nothing was written.` and a second later `Pinned x`: the row says the second, at once,
- *   not the first for three seconds while the title already says `pinned`). The host's own words, and those of different popups, queue in order.
+ *   closed by the system) are about the host and stay. And a popup's latest word on itself is the only true one: a word a popup says through
+ *   {@link NotificationChannel.notifyFromPopup} replaces the word the SAME popup said before when that one is showing and was seen
+ *   ({@link NotificationChannel.seen}): `Nothing was written.` and a second later `Pinned x`: the row says the second, at once, not the first
+ *   for three seconds while the title already says `pinned`. Nothing else is ever replaced: a word that has not been drawn yet is never
+ *   dropped for a newer one (both wait their turn, in order), and the host's own words, the Home's announcements
+ *   (`notify(text, source)`) and those of other popups queue in order, whatever the source: the person reads every one of them.
  * - **No residue.** It writes nothing into the conversation's transcript and nothing into the Home's notice area: those are the person's
  *   record, and a setting or a closed report is not part of it (§6). The host draws {@link NotificationSnapshot.current} and nothing else.
  *
@@ -63,6 +66,11 @@ export interface Notification {
   readonly from?: NotificationSource | undefined;
   /** What it is about ({@link NotificationTopic}): a newer notification of the same topic replaces it, shown or waiting. */
   readonly topic?: NotificationTopic | undefined;
+  /**
+   * It was said by a popup about itself ({@link NotificationChannel.notifyFromPopup}); only such a word is replaced by a newer word of the same
+   * popup. The host's own words, even those with a source to be discarded by, never are.
+   */
+  readonly popup?: true | undefined;
 }
 
 export interface NotificationSnapshot {
@@ -82,8 +90,17 @@ export interface NotificationChannel {
    * Report one line, raised by the host or (`from`) by a popup. Through {@link notificationText}; an empty text is ignored; a text shown or
    * waiting is not queued again. One with a `topic` replaces every earlier one of that topic, the one showing included (it takes its place at
    * once, for its own three seconds): the latest word on a subject is the only true one. An empty text with a topic withdraws that topic's.
+   * A `from` here only says who {@link discard} drops it for (the Home's own announcements have one): it never makes a word replaceable.
    */
   readonly notify: (text: string, from?: NotificationSource, topic?: NotificationTopic) => void;
+  /**
+   * Report one line a popup (`from`) says about itself: as {@link notify} with `from`, and its latest word replaces its earlier one: when the
+   * word that popup said before is SHOWING and was drawn in a frame the host measured and flushed ({@link seen}), the newer word takes its
+   * place at once, for its own three seconds, ahead of what was waiting. A word that was never drawn is never dropped, so a refusal waiting
+   * behind another notification is shown before a newer word; and when a word of the same popup is still waiting the newer one waits behind it
+   * (the order the person would have read them in is kept). Called only by the popup host, for `PopupContext.notify`.
+   */
+  readonly notifyFromPopup: (text: string, from: NotificationSource) => void;
   /**
    * The notification showing now, whose text is `text`, was drawn in a frame the host measured and flushed (the popup host tells it of a popup
    * frame it acknowledged): a hold that begins after this drops it instead of showing it again.
@@ -197,43 +214,59 @@ export function createNotificationChannel(options?: {
     if (showing || queue.length !== before) publish();
   };
 
+  /** Raise one notification: `popup` says it is a popup's word about itself ({@link NotificationChannel.notifyFromPopup}). */
+  const raise = (
+    text: string,
+    from: NotificationSource | undefined,
+    topic: NotificationTopic | undefined,
+    popup: boolean,
+  ): void => {
+    if (disposed) return;
+    const clean = notificationText(text);
+    if (clean.length === 0) {
+      if (topic !== undefined) withdraw(topic);
+      return;
+    }
+    if (current?.text === clean || queue.some((waiting) => waiting.text === clean)) return;
+    const next: Notification = {
+      text: clean,
+      ...(from === undefined ? {} : { from }),
+      ...(topic === undefined ? {} : { topic }),
+      ...(popup ? { popup: true as const } : {}),
+    };
+    if (topic !== undefined) {
+      for (let index = queue.length - 1; index >= 0; index -= 1)
+        if (queue[index]?.topic === topic) queue.splice(index, 1);
+      if (current?.topic === topic) {
+        // The one showing is about the same subject and is no longer true: the newer takes its place at once.
+        stopTimer();
+        current = undefined;
+        queue.unshift(next);
+      } else queue.push(next);
+    } else if (
+      popup &&
+      from !== undefined &&
+      current?.popup === true &&
+      current.from === from &&
+      currentSeen &&
+      !queue.some((waiting) => waiting.popup === true && waiting.from === from)
+    ) {
+      // The popup's newer word on itself, and the older one was read: it takes the older one's place at once. A word that was not drawn yet is
+      // never dropped for it, and one of this popup that still waits keeps its turn ahead of it (the order they were said in).
+      stopTimer();
+      current = undefined;
+      queue.unshift(next);
+    } else queue.push(next);
+    pump();
+    publish();
+  };
+
   return {
     notify: (text, from, topic) => {
-      if (disposed) return;
-      const clean = notificationText(text);
-      if (clean.length === 0) {
-        if (topic !== undefined) withdraw(topic);
-        return;
-      }
-      if (current?.text === clean || queue.some((waiting) => waiting.text === clean)) return;
-      const next: Notification = {
-        text: clean,
-        ...(from === undefined ? {} : { from }),
-        ...(topic === undefined ? {} : { topic }),
-      };
-      if (topic === undefined && from !== undefined) {
-        // A popup's newer word on itself takes the place of its older one, shown or waiting.
-        for (let index = queue.length - 1; index >= 0; index -= 1)
-          if (queue[index]?.from === from) queue.splice(index, 1);
-        if (current?.from === from) {
-          stopTimer();
-          current = undefined;
-          queue.unshift(next);
-        } else queue.push(next);
-      } else if (topic === undefined) {
-        queue.push(next);
-      } else {
-        for (let index = queue.length - 1; index >= 0; index -= 1)
-          if (queue[index]?.topic === topic) queue.splice(index, 1);
-        if (current?.topic === topic) {
-          // The one showing is about the same subject and is no longer true: the newer takes its place at once.
-          stopTimer();
-          current = undefined;
-          queue.unshift(next);
-        } else queue.push(next);
-      }
-      pump();
-      publish();
+      raise(text, from, topic, false);
+    },
+    notifyFromPopup: (text, from) => {
+      raise(text, from, undefined, true);
     },
     seen: (text) => {
       if (current !== undefined && current.text === text) currentSeen = true;

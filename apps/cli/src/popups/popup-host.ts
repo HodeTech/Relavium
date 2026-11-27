@@ -1027,7 +1027,7 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       // What a popup says is about it: it is discarded when the popup closes, and a popup that is already closed says nothing more.
       notify: (text) => {
         const live = recordOf(runId);
-        if (live !== undefined) channel?.notify(text, live);
+        if (live !== undefined) channel?.notifyFromPopup(text, live);
       },
     };
   };
