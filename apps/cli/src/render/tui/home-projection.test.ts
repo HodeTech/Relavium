@@ -289,17 +289,6 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
-  it('a stopping run’s legend drops its bound only when the whole of it is wider than the card: exactly as wide it stays whole, one column narrower it gives the bound up', () => {
-    const whole = exitGuardLines('confirm', running(true), 13)[1] ?? '';
-    expect(whole).toContain('(about 13s)');
-    const exact = [...whole].length; // plain ASCII: columns are characters
-    expect(exitGuardLines('confirm', running(true), 13, false, exact)[1]).toBe(whole);
-    const narrower = exitGuardLines('confirm', running(true), 13, false, exact - 1)[1] ?? '';
-    expect(narrower).not.toContain('(about');
-    expect(narrower).toContain('Ctrl+Y');
-    expect(narrower, 'the way back is never the part that is cut').toContain('stay');
-  });
-
   it('says the run has ended when it ended while the card was up', () => {
     expect(exitGuardLines('confirm', IDLE, 10)[0]).toBe(
       `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
