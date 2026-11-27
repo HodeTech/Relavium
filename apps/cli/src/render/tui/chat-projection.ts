@@ -787,6 +787,14 @@ export function formatReasoningPanel(input: {
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
 export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
+  return `${glyph('toolCall')} ${toolCallText(call, display)}`;
+}
+
+/**
+ * The words of a tool-call row without the host's `▸` that leads it: the margin draws the mark on the grid (unit 9), the content column carries
+ * this. {@link formatToolCall} is the two joined, so the plain driver and the documents keep today's row byte for byte.
+ */
+export function toolCallText(call: ToolCallView, display?: ToolDisplay): string {
   const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
   // A mark is never alone: the word stands beside the glyph (`denied` is the cancelled glyph with the call's own word).
   const marks = {
@@ -807,7 +815,7 @@ export function formatToolCall(call: ToolCallView, display?: ToolDisplay): strin
     display?.stats === undefined
       ? ''
       : ` · +${display.stats.addedLines} -${display.stats.removedLines}`;
-  return `${glyph('toolCall')} ${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(call.toolId)))} ${marks[outcome]}${target}${stats}`;
+  return `${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(call.toolId)))} ${marks[outcome]}${target}${stats}`;
 }
 
 function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
