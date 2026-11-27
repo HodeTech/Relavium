@@ -25,7 +25,9 @@ not specific to Relavium.
 Full-screen mode also enables terminal **mouse reporting** (DECSET 1002 + 1006) so the wheel scrolls the
 transcript. The emulator then forwards clicks to Relavium instead of running its own selection — so Relavium
 runs the selection itself (2.6.F Step 6): **drag to select, release to copy**. The highlight shows exactly
-what will be copied, the selection extends past a screenful by auto-scrolling at the viewport's edges, and
+what will be copied, and that is the content a person sees: the speaker marker in the margin and the
+text form's leading `> ` are not part of it, and a press in the margin starts at the first column of the
+text ([the transcript grid](chat-session.md#selection-copy-and-the-documents)). The selection extends past a screenful by auto-scrolling at the viewport's edges, and
 the copy goes to the system clipboard over **OSC 52**, which works over SSH and inside a container.
 
 Copy-on-select is on by default. Turn it off with **`[preferences].copy_on_select = false`** and the highlight
@@ -55,7 +57,8 @@ Three in-app **copy-and-search hatches** exist, in a live chat on either surface
 **`/scrollback`** prints the whole transcript to the primary buffer — where the emulator's own scrollback,
 search, selection and copy all work — and waits for Enter before repainting; **`/edit`** opens the transcript
 read-only in `$EDITOR`; **`/copy`** puts the whole transcript on the system clipboard over OSC 52 (the unwrapped
-document, unlike a mouse selection's visual rows). None needs the mouse, and all restore every terminal mode on
+document, unlike a mouse selection's visual rows). The three carry the transcript's text form: the person's turn
+starts with `> `, and there is no margin and no blank row between turns. None needs the mouse, and all restore every terminal mode on
 the way back.
 
 ## The escape hatch — the inline renderer
@@ -71,6 +74,29 @@ The flag overrides the config key. A **non-TTY / `--json` / CI** path is **alway
 regardless (there is no interactive terminal to take over), so machine output is unaffected by the
 default.
 
+**The inline renderer says who spoke in words** ([the transcript grid](chat-session.md#the-inline-renderers-words)). Each row
+of the chat is a margin (6 columns from 80 to 99 columns, 8 from 100) and the content: `you` on the first row of the person's turn,
+`agent` on the first row of a reply, `tool` on each tool-call row and `note` on the model-switch notice, so a line reads
+`you Add the VAT …` and `agent total() now multiplies …`. The words are a closed set of plain ASCII, not a glyph and not
+colour, so they are the same with `NO_COLOR` and `--no-color`, under a non-UTF-8 code page and under `LC_ALL=C` (nothing in
+the CLI detects the locale; the plain glyph form follows colour, not locale). A wrapped row hangs, with a blank margin and the
+text where the first row's text started; it never begins with the space the line broke at; and one blank row separates
+the person's turns and the replies. A native selection in the terminal copies the margin with the content, so the words
+come with it.
+
+What the words do not do, said plainly:
+
+- A screen reader does not announce indentation, so a hanging row (its margin is blank) reads as the continuation of the
+  row above it. A row of a reply, a tool call or a notice that **begins with one of the four words** (any case, a whole
+  word) is therefore given its own entry's word: a reply row that begins `you should rerun …` reads `agent you should
+  rerun …`. The extra `agent` is a cost, paid so that no model row reads as the person's turn; the person's own turn is
+  never given another speaker's word.
+- With colour off the speaker is carried by position and bold: the full-screen margin shows a bold `>` for the person's
+  turn, and a model line that starts with `> ` stands in the content column, after the blank columns, never in the margin.
+- **The flat text forms keep the colour-off residual.** `/copy`, `/edit` and `/scrollback` have no margin and start the
+  person's turn with `> `, so a model line `> x` there looks like the person's turn. The grid does not close this: a flat
+  text has no place for a mark that the model cannot write ([ADR-0145](../../decisions/0145-the-cli-has-one-surface-language.md#6-the-speaker-marker) §6).
+
 ## Other accessibility properties (both renderers)
 
 - **Color is never required for meaning.** `NO_COLOR` / `--no-color` degrade to a legible,
@@ -83,7 +109,9 @@ default.
   **Ctrl+Home/Ctrl+End** jump to the top/tail, and **auto-follow** re-pins to the newest output.
   Mouse-wheel scrolling is an optional convenience, not a requirement.
 - **Untrusted text is sanitized at the display boundary** (terminal-escape + bidi/Trojan-Source
-  stripping), so model / MCP / pasted content can neither forge the UI nor spoof the reading order.
+  stripping), so model / MCP / pasted content can neither forge the UI nor spoof the reading order. In the chat it is
+  also laid out in the content column only, so it cannot stand in the margin where the host draws who spoke
+  ([the transcript grid](chat-session.md#the-transcript-grid-mvp-11-unit-9-2026-11-27)).
 
 **MVP-3 Step 2 accepted on development (2026-11-12):** approval and tool details provide the
 same keyboard and color-independent inspection in inline and alternate-screen
