@@ -906,6 +906,10 @@ pattern). Cascades from `agent_sessions`.
 | `compaction_dropped_through_sequence` | INTEGER | NULL — ADR-0062: set ONLY on a `role='system'` compaction/trim boundary marker; the durable `sequence_number` through which older messages are superseded (resume drops rows at/below it). Additive nullable column (migration 0006); NULL on every normal transcript row |
 | `interruption_reason` | TEXT | NULL — ADR-0119 (migration 0021): set ONLY on the empty-content `role='system'` terminal row of a retained interrupted turn; `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`) |
 | `interruption_code` | TEXT | NULL — ADR-0119 (migration 0021): the closed `ErrorCode` taxonomy; present **iff** `interruption_reason = 'failed'` |
+| `record_kind` | TEXT | NULL — ADR-0148 §6 (migration 0023): set ONLY on a content-free `role='system'` **record row**; `CHECK` in (`mode_change`, `cost_release`). See [Record rows](#record-rows--adr-0148-6) |
+| `record_from` | TEXT | NULL — migration 0023: the previous chat mode of a `mode_change` record; `CHECK` in (`ask`, `plan`, `accept-edits`, `auto`) |
+| `record_to` | TEXT | NULL — migration 0023: the new chat mode of a `mode_change` record; the same `CHECK`; never equal to `record_from` |
+| `record_microcents` | INTEGER | NULL — migration 0023: the amount a `cost_release` record cleared; a non-negative safe integer (`CHECK` `typeof` integer, between `0` and `9007199254740991`) |
 | `created_at` | INTEGER | NOT NULL |
 
 ```sql
@@ -1324,6 +1328,36 @@ checks the rows, the triggers and the CHECKs.
 A migration that has been applied is immutable. Migration 0021 was amended before release to add the "no content" clause; a development
 database that ran the earlier draft keeps the weaker `CHECK` (its row loader still refuses text on an interruption row), and is
 recreated or lived with — drizzle decides what to apply by the journal timestamp, never by a file's text.
+
+#### Record rows — ADR-0148 §6
+
+**Implemented in migration `0023` (MVP-11 unit 5, 2026-11-25).** A **record row** is a content-free fact a session keeps
+about itself: an effective change of chat mode, or a release of the session's held estimates
+([ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §6;
+[contract](../contracts/agent-session-spec.md#record-rows--adr-0148-6): who writes one, what it means, and that it is never
+drawn, never sent to a model and dropped by an export). It is a `role = 'system'` row with empty content whose typed
+`SessionMessage.record` field (`SessionRecordSchema` in `@relavium/shared`) is stored in four nullable columns of
+`session_messages`, so the columns are the table's own and no new table exists:
+
+| Column | Type | Rule |
+|---|---|---|
+| `record_kind` | text | `CHECK` in (`mode_change`, `cost_release`), written from the schema's own kind list; `NULL` on every other row |
+| `record_from`, `record_to` | text | each `CHECK` in the four chat modes; present, and unequal, **iff** the kind is `mode_change`; `NULL` otherwise |
+| `record_microcents` | integer | `CHECK` `typeof` integer and between `0` and `9007199254740991`; present **iff** the kind is `cost_release`; `NULL` otherwise |
+| (shape) | — | `NULL` kind means every record column is `NULL`; a kind belongs only to a `role = 'system'` row that is not a compaction boundary or an interruption row and has empty `content_parts` (`NULL` or `'[]'`) |
+
+The row carries no text, tool name, argument or result, and the strict session schema is unchanged for every other row.
+The store reads a row's record columns through its explicit column list and refuses a row that violates the rules at its
+boundary (a value the kind does not own, or record fields with no kind) as well as in the database; the row takes the
+session's next `sequence_number`. An older binary's column list does not name the new columns, so it reads a record row as an
+inert `system` row. Existing rows are `NULL`; there is no backfill.
+
+**The migration is hand-written and additive**, for migration `0021`'s reasons: four `ALTER TABLE … ADD COLUMN` statements
+whose five constraints are written as column constraints (SQLite accepts and tests them on `ADD COLUMN`; the shape check is
+attached to `record_microcents`, the last added column, because it names every other), not a generated table rebuild, which
+would drop the ADR-0104 triggers on `session_messages` and move the table's root page. A fresh database and an upgraded one
+both come from the same file, so they carry identical constraints. The upgrade path is pinned by
+`packages/db/src/migration-0023-upgrade.test.ts` and `migration-0023-shape-gaps.test.ts`.
 
 #### Session content parts
 

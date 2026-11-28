@@ -436,6 +436,44 @@ row) gets ADR-0128's single request notice. Tool names reach the model only thro
 Compaction and trim count the turn; the summariser input renders the same block; reseat carries it; export shows
 it as interrupted and never derives a workflow step from it. A session's token columns accumulate its usage.
 
+### Record rows — ADR-0148 §6
+
+**Status: implemented on `development` (MVP-11 unit 5, 2026-11-25; migration `0023`).** A **record row** is a
+content-free fact a session keeps about itself, which is not part of the conversation.
+[ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §6 owns the decision (a
+change that widens authority keeps a durable, content-free record); this section owns the contract, and the
+[database schema](../shared-core/database-schema.md#record-rows--adr-0148-6) owns the columns.
+
+```ts
+type SessionRecord =                                          // @relavium/shared SessionRecordSchema (packages/shared/src/session.ts)
+  | { kind: 'mode_change'; from: ChatMode; to: ChatMode }     // from !== to; ChatMode = 'ask' | 'plan' | 'accept-edits' | 'auto'
+  | { kind: 'cost_release'; microcents: number };            // a non-negative safe integer
+```
+
+The schema is strict at every level: an unknown kind or an extra field is refused, never stripped.
+
+- **Rows.** The row is `role: 'system'` with empty `content` and the typed `record` field. It is never together
+  with `compaction` or `interruption`, and a `mode_change` names two different modes. The store refuses a row that
+  breaks these rules at its boundary, and the database refuses it again.
+- **`mode_change`.** The effective chat mode of a live, interactive session changed from `from` to `to`. Every
+  effective change is recorded, so the record of a mode has its end as well as its start; a non-interactive or
+  `--json` session always runs in `ask` and records nothing. A **widening** change is applied only if its row
+  landed (the record is written first; a record that cannot be written refuses the change, and does not latch the
+  session's egress). A **narrowing** change always applies, and its record is best effort.
+- **`cost_release`.** The person released the session's held conservative estimates
+  ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1). `microcents` is the durable
+  amount the release cleared, read and written inside the release's own transaction, and only when that amount is
+  above zero: a release is never without its record, and a release of nothing records nothing.
+- **A record row is not a message and not a boundary.** It takes the session's next `sequenceNumber`, and the one
+  structural history projection treats a system row that is not an interruption as inert, so resume, reseat,
+  compaction and trim map their boundaries as they would without it. It is **never drawn** in the transcript and
+  **never sent to a model**; it is read back only through the session store.
+- **Export drops it.** `sessionToWorkflow` leaves record rows out of the exported transcript
+  (`packages/core/src/export/serializer.ts`): a workflow file is meant to be committed and shared, so a person's
+  mode history and a money figure stay in `history.db`.
+- **An older binary** does not name the record columns in its explicit column list, so it reads a record row as an
+  inert `system` row.
+
 ### Measured compaction and one-shot recovery
 
 Automatic work is permitted by the resolved memory policy, independently of funding. Pre-send
@@ -636,6 +674,7 @@ interface SessionMessage {
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
   interruption?: { reason: 'aborted' | 'failed' | 'denied' | 'turn_limit'; code?: ErrorCode };  // ADR-0119: present ONLY on the empty-content role:'system' terminal row of a retained interrupted turn; code iff reason is 'failed' (mirrors session_messages.interruption_reason / interruption_code)
+  record?: SessionRecord;                 // ADR-0148 §6: present ONLY on a content-free role:'system' record row (empty content, never with compaction or interruption) — see "Record rows" below (mirrors session_messages.record_kind / record_from / record_to / record_microcents)
   timestamp: string;                      // ISO 8601
 }
 ```

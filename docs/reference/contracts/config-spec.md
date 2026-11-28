@@ -89,6 +89,39 @@ No backward-compatibility adapter or older-binary migration is required for this
 development increment (maintainer, 2026-11-11). Strict validation and authority
 checks are security requirements rather than legacy compatibility behavior.
 
+<a id="remembered-first-run-skip--mvp-11"></a>
+
+## Remembered first-run skip — MVP-11
+
+**Implemented on `development` (MVP-11 unit 6, 2026-11-26):**
+[ADR-0146](../../decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) §6
+(the skip is remembered; the maintainer ruled it 2026-11-24), as operator-owned onboarding state under
+[ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md). The flow is
+[home.md](../cli/home.md)'s; this section owns the key.
+
+| Location | Key | Accepted values |
+|---|---|---|
+| Operator global `[preferences]` | `first_run_setup_skipped` | Boolean; `true` is the only value the CLI writes; absent means the setup has not been skipped |
+
+- **What it records.** That the person left the Home's automatic first-run provider setup with a skip: `Esc` on
+  the popup's first step, or `Skip setup` after a failed key check. It holds nothing the person typed. While it
+  is `true` the Home does not open the setup by itself (`apps/cli/src/home/drive-home.tsx`,
+  `mayOfferFirstRunSetup`); `/providers` and `Enter` on a keyless Home still open it at any time. Absent, the
+  setup offers itself while no provider key is usable.
+- **Who writes it.** One closed setter (`prepareFirstRunSetupSkipped`, `apps/cli/src/config/write.ts`) that sets
+  this key to `true` and nothing else, with every guarantee of the shared writer (final-component symlink
+  refusal, schema round-trip, `0600`, atomic rename). It writes **only when no global config file exists yet**:
+  the file is then created holding this key, so nothing is lost and no rewrite notice is owed. A config that
+  already exists is **never rewritten for a skip** (a hand-made file would lose its comments and order, with no
+  way to decline): the skip is not remembered, the file stays as it is byte for byte, and the Home says the
+  setup opens again next launch. A refused or failed write (a symlink target, an unreadable or invalid file)
+  says the same. A setup that was left rather than skipped (`Ctrl+C`, `Not now`) writes nothing.
+- **Authority.** Global-only. It is not a key of the project or workspace schemas, so a repository file that
+  declares it is a strict-config error (`config_error`, exit `2`); no agent, session or environment overlay can
+  set it.
+- **Compatibility.** An older strict binary (`relavium@0.1.1`) rejects the unknown key on any command that loads
+  the config; remove the entry before running one.
+
 ## Locations
 
 ### Global — `~/.relavium/`
@@ -185,6 +218,7 @@ auto_refresh = false
 [preferences]
 default_mode = "ask"               # ask | plan | accept-edits | auto; only this operator-owned layer may select auto.
 default_mode_hint_shown = false     # Acknowledged only after the starting-mode hint was visibly delivered.
+first_run_setup_skipped = true      # ADR-0146 §6 (MVP-11 unit 6): the person skipped the Home's first-run provider setup, so the Home no longer opens it by itself. Operator-owned and global-only; `true` is the only value the CLI writes, and only when NO global config file exists yet — see "Remembered first-run skip" below. Absent ⇒ the first run offers itself while no provider key is usable.
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"     # ADR-0059: the provider serving default_model — anthropic | openai | gemini | deepseek. Persisted by the /models picker + the onboarding wizard at pick time (authoritative there — the live model list is per-provider), so the next chat resolves the provider WITHOUT id inference. Load-bearing for a live-discovered id whose spelling the prefix map cannot place (e.g. chatgpt-4o-latest). Absent ⇒ inference from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).
@@ -192,7 +226,7 @@ theme = "dark"
 alt_screen = true                  # ADR-0068 §e (2.6.F): the full-screen alternate-screen renderer for the bare Home + `relavium chat`. Since Step 4b-3 the DEFAULT is ON — a TTY opens full-screen — so this key is the durable OPT-OUT: `false` keeps the byte-identical INLINE renderer (native scrollback + the emulator's own a11y — the screen-reader fallback), `true` forces it on. The `--no-alt-screen` flag is the per-invocation opt-out and overrides this key; a non-TTY / `--json` / CI path always renders inline regardless. Absent ⇒ the phase default (alt-ON since 4b-3 — ADR-0068 §b).
                                    # What the full-screen renderer actually does (viewport, scroll keymap, mouse-wheel) is NOT restated here — see [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) and, for the inline/screen-reader tradeoff this key controls, [accessibility.md](../cli/accessibility.md).
 mouse = true                       # ADR-0068 §e (2.6.F Step 5e): terminal mouse reporting (DECSET 1002+1006) INSIDE the full-screen renderer — what makes the wheel scroll the transcript and what lets Relavium run its OWN click-drag selection (Step 6). DEFAULT ON. Set `false` (or pass `--no-mouse`) to turn it off durably: the wheel stops scrolling (PgUp/PgDn + Ctrl+Home/Ctrl+End still page), in-app selection and copy-on-select go with it, and the emulator's native click-drag SELECTION works again without a modifier. The `--no-mouse` flag overrides this key. Ignored outside the alt screen — the inline renderer never enables mouse reporting. See [accessibility.md](../cli/accessibility.md).
-show_banner = true                 # ADR-0068 (2.6.F Step 5g): the branded Home banner — a wordmark + tagline plaque drawn where the plain `relavium` heading otherwise sits. `true` ⇒ always, `false` ⇒ never. ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue), so it greets a fresh install and auto-dismisses the moment there is something to continue. Degrades to plain ASCII under `NO_COLOR` / `--no-color`. A forced banner stands down on a terminal too short for it. Cosmetic: it gates no feature.
+show_banner = true                 # ADR-0068 (2.6.F Step 5g), meaning revised by ADR-0146 §1 and §3 (MVP-11 unit 7, maintainer 2026-11-26): the landing's block — the wordmark, the rail and its taglines — on page 1 of the Home. `true` or ABSENT ⇒ the block, always: page 1 is the landing in BOTH states of the Home (nothing to continue, or something to continue behind `↓`). `false` ⇒ the one-line spaced wordmark (`R  E  L  A  V  I  U  M`) in its place, whatever the Home holds. (Before MVP-11 an ABSENT key showed the banner only while the Home was empty, and `false` meant never.) The block's rail draws its plain ASCII form whenever colour is off (`NO_COLOR` / `--no-color`). Cosmetic: it gates no feature.
 copy_on_select = true              # ADR-0068 §e (2.6.F Step 6e): releasing a mouse drag writes the selection to the system clipboard over OSC 52. DEFAULT ON. Set `false` to keep the highlight while never touching the clipboard — a stray drag then cannot clobber what you copied elsewhere. There is no flag: `--no-mouse` already removes the gesture. Meaningless without `mouse`, and IGNORED when it is off. `/copy` copies the whole transcript on demand regardless. OSC 52 has no acknowledgement, so a copy is attempted, never confirmed — see [accessibility.md](../cli/accessibility.md) for the tmux and VS Code Remote SSH caveats.
 max_turns = 50                     # ADR-0136 §1: the operator's BASE for the four chat limits — what a repository's [chat] values may not exceed. Hand-edited (no typed writer); each is bounded (see "Chat limits" below). Absent ⇒ the published default.
 max_tool_turns = 16                # tool rounds in a turn where NOBODY can answer (plain, --json): a hard stop. 1–256.
@@ -248,7 +282,8 @@ A config file is committed to a repository; a grant is not.
 > and accepted on `development`; they separately admit only `standard_env_key_consent` and
 > `keychain_unavailable_acknowledged`, under the contract below. MVP-3 separately
 > admits `default_mode` and the true-only `default_mode_hint_shown` through closed
-> setters. These groups use
+> setters, and MVP-11 (unit 6) admits the true-only `first_run_setup_skipped` through its
+> own closed setter ([Remembered first-run skip](#remembered-first-run-skip--mvp-11)). These groups use
 > closed **typed setters** (never a generic key/value
 > writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
 > only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)). A partial write leaves

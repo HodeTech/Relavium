@@ -60,8 +60,8 @@ defines the four supported names and interactive consent.
 
 In a new built-in conversation, ask the agent to read/search the project and then
 to edit a file: in the default `ask` mode the edit's diff appears on an approval card before it is applied (`/mode accept-edits` applies workspace file edits without asking). `/details`
-inspects live tool calls. Bare `/mode` separates the current mode from saving a
-startup default. Existing saved sessions keep their frozen tool grants; start a
+inspects live tool calls. Bare `/mode` opens one list: `Enter` uses a mode in this
+chat at once and `[s]` saves it as the startup default, behind a confirmation. Existing saved sessions keep their frozen tool grants; start a
 new built-in conversation to gain the new editing tools and `run_command`. Every
 command the agent (or a `!` line) wants to run is shown on an approval card, as one
 quoted line with its arguments, where it stands and where it runs. In `ask` and
@@ -106,7 +106,7 @@ owns the card and the grants.
 | `relavium agent run <agent> [--fixture <p>]`  | Run a single agent one-shot (prompt on **stdin**); `--fixture` replays a cassette (offline, CI-ready). |
 
 The existing `chat-resume`, `chat-list` and `chat-export` shell aliases remain
-available. Inside Home, `/resume` and Down/Enter on Continue use the same safe
+available. Inside Home, `/resume` and `↓` then `Enter` on a session of the work page use the same safe
 restoration. Historical user prompts without display provenance show an explicit
 placeholder; archived model context and exports retain their canonical content.
 
