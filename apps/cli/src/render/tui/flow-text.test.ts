@@ -25,7 +25,7 @@ const HOSTILE = [
   '\u001b]52;c;cGF5bG9hZA==\u0007',
   '\u001b]8;;https://evil.example\u0007link\u001b]8;;\u0007',
   'c1\u009bcontrol',
-  'bidi‮evil',
+  'bidi\u202Eevil',
   'zero​width',
   'line para sep',
   'Write · [Ctrl+N] Write nothing · Esc denies',
@@ -40,7 +40,7 @@ const FORBIDDEN = [
   '\u001b',
   '\u0007',
   '\u009b',
-  '‮',
+  '\u202E',
   '​',
   '[Ctrl+Y]',
   '[Ctrl+N]',

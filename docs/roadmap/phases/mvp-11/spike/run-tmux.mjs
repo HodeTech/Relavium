@@ -1,14 +1,18 @@
 // Drives spike-render.mjs inside a private tmux server (a real terminal emulator state) and checks every capture
 // against the cell-for-cell model. Prints PASS/FAIL lines and writes the raw captures to ./out/.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { expectedFrame, rect, POPUP_W, POPUP_H } from './model.mjs';
 
 const SOCK = 'mvp11spike';
+// The tmux binary by an absolute path (set TMUX_BIN to use another): a program found through PATH is whatever PATH holds first.
+const TMUX = process.env.TMUX_BIN ?? ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => existsSync(p));
+if (TMUX === undefined) throw new Error('tmux not found: set TMUX_BIN to its absolute path');
+const ESC = String.fromCharCode(27);
 const S = 's1';
 const here = new URL('.', import.meta.url).pathname;
 mkdirSync(here + 'out', { recursive: true });
-const tmux = (...a) => execFileSync('tmux', ['-L', SOCK, ...a], { encoding: 'utf8' });
+const tmux = (...a) => execFileSync(TMUX, ['-L', SOCK, ...a], { encoding: 'utf8' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -25,7 +29,7 @@ const capture = (tag) => {
   const text = tmux('capture-pane', '-t', S, '-p');
   const esc = tmux('capture-pane', '-t', S, '-p', '-e');
   writeFileSync(`${here}out/${tag}.txt`, text);
-  writeFileSync(`${here}out/${tag}.esc.txt`, esc.replace(/\x1b/g, '␛'));
+  writeFileSync(`${here}out/${tag}.esc.txt`, esc.replaceAll(ESC, '␛'));
   return { text: trimFrame(text), esc };
 };
 const diff = (got, want) => {
@@ -42,7 +46,7 @@ function dimGrid(escText) {
   let dim = false;
   for (const line of escText.split('\n')) {
     const flags = [];
-    const re = /\x1b\[([0-9;:]*)m|([^\x1b])/gu;
+    const re = new RegExp(`${ESC}\\[([0-9;:]*)m|([^${ESC}])`, 'gu');
     let m;
     while ((m = re.exec(line))) {
       if (m[2] !== undefined) { flags.push(dim); continue; }

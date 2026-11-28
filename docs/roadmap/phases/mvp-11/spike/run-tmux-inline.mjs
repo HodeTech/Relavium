@@ -2,12 +2,15 @@
 // Checks: it appears in flow above the prompt; closing leaves no popup row; the scrollback is not polluted by
 // repeated open/close; and the case where the live region is as tall as the terminal.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { popupLines } from './model.mjs';
 const SOCK = 'mvp11spike2', S = 's2';
+// The tmux binary by an absolute path (set TMUX_BIN to use another): a program found through PATH is whatever PATH holds first.
+const TMUX = process.env.TMUX_BIN ?? ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => existsSync(p));
+if (TMUX === undefined) throw new Error('tmux not found: set TMUX_BIN to its absolute path');
 const here = new URL('.', import.meta.url).pathname;
 mkdirSync(here + 'out', { recursive: true });
-const tmux = (...a) => execFileSync('tmux', ['-L', SOCK, ...a], { encoding: 'utf8' });
+const tmux = (...a) => execFileSync(TMUX, ['-L', SOCK, ...a], { encoding: 'utf8' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const res = [];
 const check = (n, ok, d = '') => { res.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  — ' + d : ''}`); };
@@ -24,7 +27,7 @@ async function scenario(flag, title) {
   await sleep(300);
   check('alternate screen is NOT used', tmux('display-message', '-p', '-t', S, '#{alternate_on}').trim() === '0');
   const k = (...a) => tmux('send-keys', '-t', S, ...a);
-  const keptBefore = count(hist(), 'SCROLLBACK 1\n') + (hist().includes('SCROLLBACK 1\n') ? 0 : 0);
+  const keptBefore = count(hist(), 'SCROLLBACK 1\n');
   const pre = hist().includes('SCROLLBACK 1\n');
   k('o'); await sleep(700);
   const open = visible();

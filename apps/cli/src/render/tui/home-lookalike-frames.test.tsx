@@ -33,6 +33,10 @@ import { homeContentColumns } from './home-notice.js';
 import { HomeView } from './home-view.js';
 import { mountHome } from './surface-matrix/home-host.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 afterEach(cleanup);
 

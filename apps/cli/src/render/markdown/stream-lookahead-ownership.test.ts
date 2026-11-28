@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { layoutMarkdown } from './layout.js';
 import { BlockLineClassifier, closesMarkdownFence, parseMarkdown } from './parser.js';
 import { MarkdownStream } from './stream.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 function check(source: string, chunk: number, draw: boolean): void {
   const stream = new MarkdownStream();

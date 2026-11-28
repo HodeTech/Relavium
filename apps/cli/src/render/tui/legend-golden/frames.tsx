@@ -15,6 +15,9 @@ import { isHintShaped } from './hint-shape.js';
  * golden and a change of it is a visible diff.
  */
 
+/** The order `sort()` gives strings (UTF-16 code units), written out so that the sort names its comparison. */
+const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 // eslint-disable-next-line no-control-regex -- the escape that starts a styling sequence
 const SGR = /\u001b\[([0-9;]*)m/gu;
 
@@ -61,7 +64,7 @@ export function tagStyles(text: string): string {
       out += run;
       return;
     }
-    out += `⟦${[...active].sort().join(',')}: ${run}⟧`;
+    out += `⟦${[...active].sort(byCodeUnit).join(',')}: ${run}⟧`;
   };
   for (const match of text.matchAll(SGR)) {
     flush(match.index);

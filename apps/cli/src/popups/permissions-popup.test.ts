@@ -66,11 +66,11 @@ const FULL: PermissionsSnapshot = {
 const SECRET = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789'].join('-');
 
 /** What a model or a project could put in a command string: a bidi override, an escape sequence, a forged key token and a chord, a legend separator, a host glyph, a line break, a secret. */
-const HOSTILE = `curl ‮evil‬ \u001b[31mred\u001b[0m [Ctrl+Y] allow · Ctrl+Y ✓ ok\nnext ${SECRET}`;
+const HOSTILE = `curl \u202Eevil\u202C \u001b[31mred\u001b[0m [Ctrl+Y] allow · Ctrl+Y ✓ ok\nnext ${SECRET}`;
 
 /** Every rule a scrubbed and escaped command keeps, as drawn. */
 function expectInert(text: string): void {
-  expect(text).not.toContain('‮');
+  expect(text).not.toContain('\u202E');
   expect(text).not.toContain('\u001b');
   expect(text).not.toContain('\n');
   expect(text).not.toContain('[Ctrl+Y]');
@@ -312,7 +312,7 @@ describe('the withdrawal’s line', () => {
       'x',
       'word '.repeat(30),
       'a'.repeat(400),
-      `‮${'\u0007'.repeat(300)}`,
+      `\u202E${'\u0007'.repeat(300)}`,
       HOSTILE.repeat(8),
     ]) {
       const line = withdrawLineContent(session(false, text));
@@ -387,7 +387,7 @@ describe('a hostile command string through every sink', () => {
       geometry,
     );
     for (const line of lines) {
-      expect(line.text).not.toContain('‮');
+      expect(line.text).not.toContain('\u202E');
       expect(line.text).not.toContain('\u001b');
       expect(line.text).not.toContain('[Ctrl+Y]');
       expect(line.text).not.toContain(SECRET);

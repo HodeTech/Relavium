@@ -12,6 +12,10 @@ import {
   screenText,
 } from './screen-text.js';
 import { displayWidth, expandTabs, wrapText, wrapWords } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 /**
  * The screen's filter is LINEAR (MVP-11 unit 9, review round 2, C2-1): the first version had a lookbehind (`(?<=🏴[tags]*)`) tried at every

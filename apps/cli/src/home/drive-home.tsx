@@ -24,6 +24,7 @@ import { SessionTerminalOwner } from '../chat/session-terminal-owner.js';
 import { SessionViewLifetime } from '../chat/session-view-lifetime.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import type { CliInvocation } from '../process/invocation.js';
+import { tryCall } from '../process/attempt.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
@@ -2434,16 +2435,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const openAutomaticSetup = (): void => {
         automaticSetupStarted = true;
         const operation = () => openProviders('automatic');
-        let pending: Promise<void>;
-        try {
-          // Admission is synchronous: `enter` throws when the owner has stopped admitting before the Home's input was sealed, and this runs
-          // inside a resize listener, where an escaping throw would be an uncaught exception out of the terminal's emit (round 2, B4).
-          pending = ownership === undefined ? operation() : ownership.surface.work.enter(operation);
-        } catch (cause) {
-          if (!homeInputSealed) failSetup(cause);
+        // Admission is synchronous: `enter` throws when the owner has stopped admitting before the Home's input was sealed, and this runs
+        // inside a resize listener, where an escaping throw would be an uncaught exception out of the terminal's emit (round 2, B4).
+        const started = tryCall(() =>
+          ownership === undefined ? operation() : ownership.surface.work.enter(operation),
+        );
+        if (!started.ok) {
+          if (!homeInputSealed) failSetup(started.cause);
           return;
         }
-        void pending.catch(failSetup);
+        void started.value.catch(failSetup);
       };
       /**
        * Whether the first-run offer may open now: it opens once, never while it waits for room, never after the Home began leaving, never when

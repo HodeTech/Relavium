@@ -1,7 +1,11 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 const SOCK = 'mvp11spike3', S = 's3';
+// The tmux binary by an absolute path (set TMUX_BIN to use another): a program found through PATH is whatever PATH holds first.
+const TMUX = process.env.TMUX_BIN ?? ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => existsSync(p));
+if (TMUX === undefined) throw new Error('tmux not found: set TMUX_BIN to its absolute path');
 const here = new URL('.', import.meta.url).pathname;
-const tmux = (...a) => execFileSync('tmux', ['-L', SOCK, ...a], { encoding: 'utf8' });
+const tmux = (...a) => execFileSync(TMUX, ['-L', SOCK, ...a], { encoding: 'utf8' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hist = () => tmux('capture-pane', '-t', S, '-p', '-S', '-', '-E', '-');
 for (const body of [0, 1, 2, 3]) {

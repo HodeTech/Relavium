@@ -83,3 +83,16 @@ Whether each §5.5 floor pin test is green and unchanged (the log says so); the 
 
 CI on the final head: see the pull request's checks.
 
+## CI on the pull request's first head (`93e66c52`) and what it found
+
+The first CI run of [PR #103](https://github.com/HodeTech/Relavium/pull/103) failed in four checks: the workspace job (two test files and one worker error), the job that requires it, the advisory Node 22.13 floor job (cancelled at its time limit) and SonarCloud's gate. The local runs had passed because this machine has several times the runner's cores (the CLI suite took 1,106 s there against 166 s here), so every finding was a test that is only wrong on a slow machine, or a static-analysis finding:
+
+| Finding | Cause | Fix (test and tooling only; the product code of the unit is unchanged apart from two renames and a helper) |
+|---|---|---|
+| `home-flow-popups-hosts.test.tsx`, 8 variants, `expected 0 to be 1` (red on `development` since 2026-11-26, unnoticed) | a notification lives 3 s of real time and the waits before the assertion outlasted it on a slow runner | the test reads a recorder subscribed before `Esc`, not the channel at one moment |
+| `tool-review-screen.test.ts`, two property tests, `Test timed out in 5000ms` | 1.5 s here, several times that on the runner | 60 s timeout; a turn of the event loop between the file's tests |
+| `Error: [vitest-worker]: Timeout calling "onTaskUpdate"` (exit 1 with every test passing) | vitest's 60 s worker RPC timeout fires when a file's synchronous tests run 60 s without a turn of the event loop; `terminal-widths.test.ts` ran 47.7 s unbroken here, 78 s there | `yieldBetweenTests()` and an async whitelist build (`render/event-loop.test-support.ts`); no file now runs longer than 3.8 s without a turn here (15 files had); counts and mutants unchanged |
+| SonarCloud: 12 bugs and 22 vulnerabilities (reliability D, security C) | `sort()` without a comparison (3), a `then` property (2), a `try` around an unawaited promise (4), a control character, PATH and a no-op condition in the spike scripts (7), bidirectional characters written raw in 10 test files (19) | a comparison written out; `then` renamed `afterwards`; `tryCall` (`process/attempt.ts`) tells a synchronous refusal from the work's later fault; the spike scripts use an absolute tmux path and an `ESC` constant; the bidirectional characters are `\u` escapes |
+
+To imitate the runner the whole CLI suite was run with two workers: 986 s, 1,130 files, 29,377 passed, no timeout. The advisory Node 22.13 job did not finish in its limit on the first head; whether it does is read from the new run.
+

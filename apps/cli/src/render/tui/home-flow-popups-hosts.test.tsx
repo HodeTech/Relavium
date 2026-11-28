@@ -322,6 +322,7 @@ describe.each(VARIANTS)('the Home’s flows that write, $renderer at 80×24', (v
     '%s: a Ctrl+Y right after the card appeared writes nothing; Esc leaves it with one notification and no Home notice',
     async (name) => {
       const { m, wrote } = homeWithFlows(variant);
+      let stopRecording: (() => void) | undefined;
       try {
         await m.settle();
         await toChord(m, name);
@@ -330,29 +331,50 @@ describe.each(VARIANTS)('the Home’s flows that write, $renderer at 80×24', (v
         await pause(150);
         expect(wrote()).toBe(false);
         expect(m.channel?.ui.getSnapshot().kind).toBe('chord');
+        const recorded = recordNotifications(m);
+        stopRecording = recorded.stop;
         m.key(KEYS.escape);
         await m.until(() => m.controller.getSnapshot().nativeActionBusy === false, 2000);
         expect(wrote()).toBe(false);
         expect(m.controller.getSnapshot().notice).toBeUndefined();
+        // The notification is READ FROM THE RECORD, not by looking at the channel at one moment: a notification shows for NOTIFICATION_MS of real time,
+        // and on a loaded CI runner the waits above can outlast that, so a look after them found it already gone (this assertion failed there on every
+        // run since unit 6 while it passed on a fast machine). The recorder listens from before `Esc` and keeps every text that was ever shown.
+        await m.until(() => recorded.shown.length > 0 || recorded.mostQueued > 0, 2000);
         // One notification on the Home's channel. The `/workflows` popup is closed while its export is: nothing draws its legend, so the channel holds it until the
         // screen is left (`notifications.ts`), and it waits there rather than showing.
-        await m.until(() => {
-          const now = m.notifications.getSnapshot();
-          return now.current !== undefined || now.queued > 0;
-        }, 2000);
-        const now = m.notifications.getSnapshot();
-        expect(now.current === undefined ? now.queued : 1).toBe(1);
-        if (now.current !== undefined)
-          expect(now.current.text).toMatch(
-            /^(Nothing was written\.|Project initialization cancelled\.)$/u,
-          );
+        expect(recorded.shown.length === 0 ? recorded.mostQueued : recorded.shown.length).toBe(1);
+        for (const text of recorded.shown)
+          expect(text).toMatch(/^(Nothing was written\.|Project initialization cancelled\.)$/u);
       } finally {
+        stopRecording?.();
         m.unmount();
       }
     },
     JOURNEY_TIMEOUT_MS,
   );
 });
+
+/**
+ * Every notification the Home's channel shows from now on, as a record that does not depend on when the test looks: the texts shown, and the most that
+ * waited at once (a notification held while the screen is left, which is never drawn).
+ */
+function recordNotifications(m: HomeMount): {
+  readonly shown: string[];
+  mostQueued: number;
+  readonly stop: () => void;
+} {
+  const record = { shown: [] as string[], mostQueued: 0, stop: () => {} };
+  const note = (): void => {
+    const now = m.notifications.getSnapshot();
+    if (now.current !== undefined && !record.shown.includes(now.current.text))
+      record.shown.push(now.current.text);
+    record.mostQueued = Math.max(record.mostQueued, now.queued);
+  };
+  note();
+  record.stop = m.notifications.subscribe(note);
+  return record;
+}
 
 /** The chat's `/export` port: a fake whose one write is counted. */
 function exportPort() {

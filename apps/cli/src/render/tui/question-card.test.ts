@@ -16,6 +16,10 @@ import {
 } from './question-card.js';
 import { escapeScreenText, screenText } from './screen-text.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests, yieldToRunner } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 /** The 80×24 floor: the card's twelve rows are a rule, two key rows and nine body rows. */
 const COLUMNS = 80;
@@ -305,10 +309,11 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
     expect(clustered.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('holds for 300 generated calls across alphabets, with every row within the card width and no model text lost', () => {
+  it('holds for 300 generated calls across alphabets, with every row within the card width and no model text lost', async () => {
     const random = mulberry32(20261116);
     let withClusters = 0;
     for (let n = 0; n < 300; n += 1) {
+      await yieldToRunner();
       const request = generate(random, 1 + Math.floor(random() * 4), random() < 0.5);
       if (
         request.questions.some((q) =>

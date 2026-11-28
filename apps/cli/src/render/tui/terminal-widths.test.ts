@@ -22,6 +22,7 @@ import {
   whitelistStrings,
 } from './tmux-whitelist.test-support.js';
 import { displayWidth, fitColumns, measuredClusters, wrapWords } from './viewport.js';
+import { yieldBetweenTests, yieldToRunner } from '../event-loop.test-support.js';
 
 /**
  * The widths the screen's filter is held to (MVP-11 unit 9, review rounds 2 and 3): what tmux 3.7b, the reference terminal, drew, from the
@@ -31,6 +32,9 @@ import { displayWidth, fitColumns, measuredClusters, wrapWords } from './viewpor
  * measured on tmux, and the layout never counts it narrower (review round 3, R3S-2 and R3S-5: round 2 claimed the second for every hostile run
  * from the simulation alone, and consecutive flags proved it false).
  */
+
+// the file's tests run for tens of seconds: the event loop turns between them, and in the long loops, so the runner's worker stays answered
+yieldBetweenTests();
 
 describe('the simulated terminal draws what tmux 3.7b drew', () => {
   it.each(TMUX_MEASUREMENTS.map(([name, codes, width]) => [name, codes, width] as const))(
@@ -260,24 +264,30 @@ describe('the SEQUENCE differential against tmux (review round 4, R4-S-1, item A
 });
 
 describe('the joins the measure keeps at `string-width`’s count are the ones measured on tmux (review round 5, R5-S-4)', () => {
-  it('this runtime’s recommended sequences and Hangul blocks are the measured ones, and the measure keeps `string-width`’s count for each', () => {
-    const strings = whitelistStrings();
+  it('this runtime’s recommended sequences and Hangul blocks are the measured ones, and the measure keeps `string-width`’s count for each', async () => {
+    const strings = await whitelistStrings();
     for (const kind of ['presentation', 'keycap', 'flag', 'tagFlag', 'zwj'] as const) {
       expect(strings[kind], kind).toHaveLength(TMUX_WHITELIST_EVIDENCE[kind].strings);
       // tmux drew every one of them exactly as `string-width` counts it (the evidence's `exact`), and that is what the measure says
       expect(TMUX_WHITELIST_EVIDENCE[kind].exact).toBe(TMUX_WHITELIST_EVIDENCE[kind].strings);
       for (const text of strings[kind]) {
+        await yieldToRunner();
         expect(displayWidth(text), `${kind} ${text}`).toBe(stringWidth(text));
         expect(displayWidth(text), `${kind} ${text}`).toBe(2);
       }
     }
     // a toned sequence is not kept: tmux drew 315 of them wider than `string-width`, so it counts the sum, never less than `string-width`
     expect(strings.modifier).toHaveLength(TMUX_WHITELIST_EVIDENCE.modifier.strings);
-    for (const text of strings.modifier)
+    for (const text of strings.modifier) {
+      await yieldToRunner();
       expect(displayWidth(text), text).toBeGreaterThan(stringWidth(text));
+    }
     expect(strings.hangul).toHaveLength(TMUX_WHITELIST_EVIDENCE.hangul.strings);
     expect(TMUX_WHITELIST_EVIDENCE.hangul.wider).toBe(0);
-    for (const text of strings.hangul) expect(displayWidth(text), text).toBe(stringWidth(text));
+    for (const text of strings.hangul) {
+      await yieldToRunner();
+      expect(displayWidth(text), text).toBe(stringWidth(text));
+    }
   }, 120_000);
 
   it('every code point that joins a letter was measured after one: drawn in no column, or one of the fourteen that add columns', () => {
@@ -308,7 +318,7 @@ describe('the joins the measure keeps at `string-width`’s count are the ones m
     );
   }, 120_000);
 
-  it('a string the measure counts whole (no code point that can join another) is counted as its clusters are, against every kind of neighbour', () => {
+  it('a string the measure counts whole (no code point that can join another) is counted as its clusters are, against every kind of neighbour', async () => {
     // the fast path: `displayWidth` counts a string with no joining code point as `string-width` does; a combining mark and a line feed before
     // it force the cluster path (a line feed ends every cluster, and both count nothing), and the two must agree for every code point of the planes text uses beside a letter, a consonant, a Hangul
     // leading jamo and syllable, a regional indicator, a Prepend letter and an emoji with a joiner, on either side (every code point of the other
@@ -324,6 +334,7 @@ describe('the joins the measure keeps at `string-width`’s count are the ones m
       `${c(0x2764)}${c(0xfe0f)}${c(0x200d)}`,
     ];
     for (let code = 0x20; code < 0x110000; code += 1) {
+      if (code % 256 === 0) await yieldToRunner();
       if (code >= 0xd800 && code <= 0xdfff) continue;
       const character = c(code);
       if (code >= 0x20000 && (code < 0xe0000 || code > 0xe0fff)) {
@@ -442,8 +453,8 @@ describe('a recommended sequence after a joiner that ends a cluster (review roun
     });
   };
 
-  it('every recommended sequence in each of the 44 measured contexts: the count measured, and after the filter no joiner is left to glue a pictograph', () => {
-    const strings = inContextStrings();
+  it('every recommended sequence in each of the 44 measured contexts: the count measured, and after the filter no joiner is left to glue a pictograph', async () => {
+    const strings = await inContextStrings();
     expect(strings).toHaveLength(TMUX_IN_CONTEXT_EVIDENCE.strings);
     expect(new Set(strings.map(([name]) => name)).size).toBe(TMUX_IN_CONTEXT_EVIDENCE.contexts);
     expect(TMUX_IN_CONTEXT_EVIDENCE.exact + TMUX_IN_CONTEXT_EVIDENCE.over).toBe(
@@ -451,6 +462,7 @@ describe('a recommended sequence after a joiner that ends a cluster (review roun
     );
     expect(TMUX_IN_CONTEXT_EVIDENCE.under).toBe(0);
     for (const [name, text] of strings) {
+      await yieldToRunner();
       const filtered = screenText(text);
       // the filter leaves no joiner to glue a pictograph's sequence; one before a keycap is the measure's (its column more, below)
       expect(

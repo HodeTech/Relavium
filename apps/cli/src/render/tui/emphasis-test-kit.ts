@@ -4,6 +4,9 @@
  * "no row leaves a style open" instead of matching escape bytes.
  */
 
+/** The order `sort()` gives strings (UTF-16 code units), written out so that the sort names its comparison. */
+const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 const ESC = String.fromCharCode(0x1b);
 const SGR = new RegExp(`${ESC}\\[([0-9;]*)m`, 'gu');
 
@@ -51,7 +54,7 @@ export function styleRuns(text: string): StyleRun[] {
   let at = 0;
   const flush = (upto: number): void => {
     const run = text.slice(at, upto);
-    if (run.length > 0) runs.push({ text: run, styles: [...active].sort() });
+    if (run.length > 0) runs.push({ text: run, styles: [...active].sort(byCodeUnit) });
   };
   for (const match of text.matchAll(SGR)) {
     flush(match.index);
@@ -72,7 +75,7 @@ export function openAtEndOfEachRow(frame: string): readonly (readonly string[])[
   const active = new Set<string>();
   return frame.split('\n').map((row) => {
     for (const match of row.matchAll(SGR)) apply(active, match[1] ?? '');
-    const open = [...active].sort();
+    const open = [...active].sort(byCodeUnit);
     // A row is judged on its own: what a previous row left open is reported there, and the next row starts again from nothing.
     active.clear();
     return open;

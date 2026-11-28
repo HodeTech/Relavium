@@ -4566,7 +4566,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'to-docked':
         set({ stripFocus: undefined });
         // `↓` past the last row is spent; a key that types is then the docked prompt's (typed, or `/` opening the palette over it).
-        return outcome.then === 'none';
+        return outcome.afterwards === 'none';
       case 'open-row': {
         const row = rows[rowIndex ?? -1];
         if (row === undefined || rowIndex === undefined) return true;

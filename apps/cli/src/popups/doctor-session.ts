@@ -51,6 +51,7 @@ import {
   providerEndpointOrigin,
   type ProviderResolver,
 } from '../engine/providers.js';
+import { tryCall } from '../process/attempt.js';
 import { keyToken } from '../render/tui/legend.js';
 import { CHORD_REFUSAL_PHRASE } from './chord-refusal.js';
 import {
@@ -345,13 +346,14 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
         run.producers -= 1;
         settle();
       };
-      let raw: Promise<T>;
-      try {
-        raw = owner === undefined ? factory() : owner.work.retainWork(factory);
-      } catch (cause) {
+      const started = tryCall(() =>
+        owner === undefined ? factory() : owner.work.retainWork(factory),
+      );
+      if (!started.ok) {
         done();
-        throw cause;
+        throw started.cause;
       }
+      const raw = started.value;
       raw.then(done, done);
       return raw;
     };
@@ -378,16 +380,15 @@ export function openDoctorPopup(request: DoctorOpenRequest): PopupOpenResult {
       owner?.signal.removeEventListener('abort', stopWithOwner);
       settle();
     };
-    let pending: ReturnType<typeof operation>;
-    try {
-      pending = owner === undefined ? operation() : owner.enter(operation);
-    } catch (cause) {
+    const started = tryCall(() => (owner === undefined ? operation() : owner.enter(operation)));
+    if (!started.ok) {
       finish();
-      owner?.failure(cause);
+      owner?.failure(started.cause);
       deepRunning = false;
       refresh(context);
       return;
     }
+    const pending = started.value;
     pending
       .then(
         (result) => {

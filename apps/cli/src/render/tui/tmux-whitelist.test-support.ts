@@ -24,6 +24,8 @@
  * written out and measured again; `terminal-widths.test.ts` holds the counts to it.
  */
 
+import { yieldToRunner } from '../event-loop.test-support.js';
+
 /** The code points tmux 3.7b drew in no column after a letter, a letter and a mark, a consonant and an emoji (2,605 of them), as ranges. */
 export const TMUX_ZERO_AFTER_A_LETTER: readonly (readonly [number, number])[] = [
   [0x300, 0x36f],
@@ -401,45 +403,53 @@ function* tagCodes(): Generator<string> {
 }
 
 /** Every untoned recommended zero-width-joiner sequence of this runtime (the search of the module header). */
-function zwjSequences(): string[] {
+async function zwjSequences(): Promise<string[]> {
   const joiner = c(0x200d);
   const pictographs: string[] = [];
   for (let code = 0x20; code <= 0x1ffff; code += 1) {
+    await yieldToRunner();
     const ch = c(code);
     if (/\p{Extended_Pictographic}/u.test(ch) && /\p{Emoji}/u.test(ch))
       pictographs.push(ch, `${ch}${c(0xfe0f)}`);
   }
   const found = new Set<string>();
   const members = new Set<string>();
-  for (const a of pictographs)
+  for (const a of pictographs) {
+    await yieldToRunner();
     for (const b of pictographs)
       if (RGI.test(`${a}${joiner}${b}`)) {
         found.add(`${a}${joiner}${b}`);
         members.add(a);
         members.add(b);
       }
+  }
   const second = [...members];
   const third = new Set<string>();
-  for (const a of second)
+  for (const a of second) {
+    await yieldToRunner();
     for (const b of second)
       for (const d of second)
         if (RGI.test(`${a}${joiner}${b}${joiner}${d}`)) {
           found.add(`${a}${joiner}${b}${joiner}${d}`);
           third.add(a).add(b).add(d);
         }
+  }
   const fourth = [...third];
-  for (const a of fourth)
+  for (const a of fourth) {
+    await yieldToRunner();
     for (const b of fourth)
       for (const d of fourth)
         for (const e of fourth)
           if (RGI.test(`${a}${joiner}${b}${joiner}${d}${joiner}${e}`))
             found.add(`${a}${joiner}${b}${joiner}${d}${joiner}${e}`);
+  }
   // review round 6 (I-1): a sequence with a member no smaller sequence holds (a kiss: `💋` inserted into a couple with a heart) is reached by
   // inserting every pictograph at every place of every sequence found, until nothing new is found (four members at most)
   let frontier = [...found];
   while (frontier.length > 0) {
     const next: string[] = [];
     for (const sequence of frontier) {
+      await yieldToRunner();
       const parts = sequence.split(joiner);
       if (parts.length >= 4) continue;
       for (let at = 0; at <= parts.length; at += 1)
@@ -457,9 +467,10 @@ function zwjSequences(): string[] {
 }
 
 /** The Hangul strings of the measurement (see the module header), in its order and with its seed. */
-function hangulStrings(): string[] {
+async function hangulStrings(): Promise<string[]> {
   const out: string[] = [];
   for (let code = 0xac00; code <= 0xd7a3; code += 1) {
+    await yieldToRunner();
     out.push(c(code, 0x11a8));
     if ((code - 0xac00) % 28 === 0) out.push(c(code, 0x1161));
   }
@@ -494,6 +505,7 @@ function hangulStrings(): string[] {
     (code) => code !== 0x115f && code !== 0x1160,
   );
   for (let runs = 0; runs < 20_000; ) {
+    await yieldToRunner();
     const length = 2 + Math.floor(random() * 5);
     const text = c(
       ...Array.from({ length }, () => pool[Math.floor(random() * pool.length)] ?? 0x1100),
@@ -507,21 +519,23 @@ function hangulStrings(): string[] {
 
 type WhitelistStrings = Readonly<Record<keyof typeof TMUX_WHITELIST_EVIDENCE, readonly string[]>>;
 
-let measured: WhitelistStrings | undefined;
+let measured: Promise<WhitelistStrings> | undefined;
 
 /**
  * Every string of the whitelist's measurement, by class (see the module header). The search takes seconds, so it runs once per test file and
- * its strings are shared read-only: two searches in one file kept a worker busy past the test runner's 60-second call timeout under load.
+ * its strings are shared read-only, and it lets the event loop turn as it goes (`../event-loop.test-support.ts`): run in one piece it kept a
+ * worker from the test runner past its 60-second call timeout on CI.
  */
-export function whitelistStrings(): WhitelistStrings {
+export function whitelistStrings(): Promise<WhitelistStrings> {
   measured ??= searchWhitelistStrings();
   return measured;
 }
 
-function searchWhitelistStrings(): WhitelistStrings {
+async function searchWhitelistStrings(): Promise<WhitelistStrings> {
   const presentation: string[] = [];
   const modifier: string[] = [];
   for (let code = 0x20; code <= 0x1ffff; code += 1) {
+    await yieldToRunner();
     if (RGI.test(c(code, 0xfe0f))) presentation.push(c(code, 0xfe0f));
     for (let tone = 0x1f3fb; tone <= 0x1f3ff; tone += 1)
       if (RGI.test(c(code, tone))) modifier.push(c(code, tone));
@@ -531,17 +545,20 @@ function searchWhitelistStrings(): WhitelistStrings {
     for (let b = 0x1f1e6; b <= 0x1f1ff; b += 1) if (RGI.test(c(a, b))) flag.push(c(a, b));
   const tagFlag: string[] = [];
   for (const code of tagCodes()) {
+    await yieldToRunner();
     const text = c(0x1f3f4, ...[...code].map((ch) => 0xe0000 + (ch.codePointAt(0) ?? 0)), 0xe007f);
     if (RGI.test(text)) tagFlag.push(text);
   }
+  const zwj = await zwjSequences();
+  const hangul = await hangulStrings();
   return {
     presentation,
     keycap: [...'0123456789#*'].map((key) => `${key}${c(0xfe0f, 0x20e3)}`),
     flag,
     tagFlag,
-    zwj: zwjSequences(),
+    zwj,
     modifier,
-    hangul: hangulStrings(),
+    hangul,
   };
 }
 
@@ -567,8 +584,8 @@ export const TMUX_IN_CONTEXT_EVIDENCE = {
  * joiner, and the sequence itself two, five and twenty times. The strings, filtered as the screen filters them, were measured on tmux:
  * {@link TMUX_IN_CONTEXT_EVIDENCE}.
  */
-export function inContextStrings(): (readonly [string, string])[] {
-  const w = whitelistStrings();
+export async function inContextStrings(): Promise<(readonly [string, string])[]> {
+  const w = await whitelistStrings();
   const sequences = [...w.presentation, ...w.keycap, ...w.flag, ...w.tagFlag, ...w.zwj];
   const marks = (count: number): string => c(0x301).repeat(count);
   const joiner = c(0x200d);

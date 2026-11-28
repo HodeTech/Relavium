@@ -212,7 +212,7 @@ describe('every string is scrubbed with the full floor, whatever the view was bu
   /** A view built by hand, so no field has been through the view's own scrub: the popup's is the one under test. */
   function hostileView(field: string): BoundAgentView {
     const made = boundAgentView(definition({ tools: ['read_file'] }), 'high');
-    const evil = `${field}\u001b[31m ${FORGED} ${SECRET} ‮✓›`;
+    const evil = `${field}\u001b[31m ${FORGED} ${SECRET} \u202E✓›`;
     return {
       ...made,
       id: field === 'id' ? evil : made.id,
@@ -236,7 +236,7 @@ describe('every string is scrubbed with the full floor, whatever the view was bu
       const drawnText = drawn(view);
       for (const text of [agentReportLines(view).join('\n'), drawnText]) {
         expect(text, field).not.toContain('\u001b');
-        expect(text, field).not.toContain('‮');
+        expect(text, field).not.toContain('\u202E');
         expect(text, field).not.toContain('Ctrl+Y');
         expect(text, field).not.toContain('[d]');
         expect(text, field).not.toContain(SECRET);

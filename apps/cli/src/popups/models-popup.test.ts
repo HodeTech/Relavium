@@ -538,7 +538,7 @@ describe('what a choice announces (the host’s channel, at most 54 columns)', (
 describe('the one scrub holds every sink of the popup (a catalog, a provider and a model write these strings)', () => {
   // Built at runtime (no contiguous secret literal: leakwatch).
   const SECRET = ['sk', 'ant', 'scrub', 'ABCDEF1234567890XYZ'].join('-');
-  const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› ‮`;
+  const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› \u202E`;
   const evilName = (): string => EVIL;
   const hostile = model(EVIL, 'openai', { displayName: EVIL });
   const dim = {
@@ -609,7 +609,7 @@ describe('the one scrub holds every sink of the popup (a catalog, a provider and
     const text = drawn();
     expect(text).toContain('x');
     expect(text).not.toContain('\u001b');
-    expect(text).not.toContain('‮');
+    expect(text).not.toContain('\u202E');
     expect(text).not.toContain('[Ctrl+Y]');
     expect(text).not.toContain('allow ·');
     expect(text).not.toContain('· [d]');

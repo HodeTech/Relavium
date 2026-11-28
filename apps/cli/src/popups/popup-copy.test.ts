@@ -40,7 +40,7 @@ import {
 
 // Built at runtime (no contiguous secret literal: leakwatch).
 const SECRET = ['sk', 'ant', 'copy', 'ABCDEF1234567890XYZ'].join('-');
-const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› ‮`;
+const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› \u202E`;
 const VARIANT = { renderer: 'alt', color: false, size: { cols: 80, rows: 24 } } as const;
 const KEYS = Object.values(CHAT_KEYS);
 
@@ -170,7 +170,7 @@ describe('the copy is exactly the lines the popup draws', () => {
 describe('what a hostile field never carries to the clipboard', () => {
   const clean = (text: string): void => {
     expect(text).not.toContain('\u001b');
-    expect(text).not.toContain('‮');
+    expect(text).not.toContain('\u202E');
     expect(text).not.toContain('[Ctrl+Y]');
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain('✓');

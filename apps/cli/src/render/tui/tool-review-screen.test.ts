@@ -43,6 +43,10 @@ import {
   type ScreenKind,
 } from './tool-review-screen.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// The file's tests are one unbroken run of synchronous work; a turn of the event loop between them keeps a loaded runner's worker answering.
+yieldBetweenTests();
 
 /**
  * What the width measurer was asked, in calls and characters: `escapedFit` is bounded by counting what it measures, which is
@@ -2589,6 +2593,9 @@ describe('escapedFit verifies its estimate, in both directions: the whole decide
 // come out one cell WIDER than the width); the tail loop's guard `reversed.length > 0` back to `> 1` (a lone keycap mark opens
 // the tail and composes with the ellipsis: `a…⃣`).
 // ---------------------------------------------------------------------------------------------------------------------
+/** The two property loops below take about 1.5 s each here and several times that on a loaded CI runner (the 5 s default timed out there). */
+const SLOW_PROPERTY_TIMEOUT_MS = 60_000;
+
 describe('escapedFit gives the base back when the shorter cut would not fit (width is not monotone)', () => {
   // `1⃣` is two cells and `1⃣🏻` is one: a cut that drops a trailing base so as not to part it from its mark can be one cell
   // WIDER than the cut it was made from, so the rule only applies while the shorter cut and the ellipsis still fit.
@@ -2615,43 +2622,51 @@ describe('escapedFit gives the base back when the shorter cut would not fit (wid
     expect(displayWidth('\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}')).toBe(2);
   });
 
-  it('keeps a start cut within the width, ending in an ellipsis, for the security sitting’s input at widths 8..120, 1..6 keycaps and every mark count around the cap', () => {
-    const { check, none } = collect();
-    let cases = 0;
-    for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
-      for (let keycaps = 1; keycaps <= 6; keycaps++) {
-        if (width - 3 - 2 * keycaps < 0) continue;
-        // The modifier is the last piece under the cap of 3 × width pieces when the marks number about 2 × width; every count
-        // from a little under that to a little past 3 × width is tried, so the cap falls on every piece of the tail in turn.
-        for (let marks = 2 * width - 8; marks <= 3 * width + 8; marks++) {
-          cases++;
-          const out = escapedFit(sittingInput(width, keycaps, marks), width);
-          check(
-            displayWidth(out) <= width,
-            () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
-          );
-          check(out.endsWith('…'), () => `@${width} k=${keycaps} M=${marks}: no ellipsis`);
+  it(
+    'keeps a start cut within the width, ending in an ellipsis, for the security sitting’s input at widths 8..120, 1..6 keycaps and every mark count around the cap',
+    () => {
+      const { check, none } = collect();
+      let cases = 0;
+      for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
+        for (let keycaps = 1; keycaps <= 6; keycaps++) {
+          if (width - 3 - 2 * keycaps < 0) continue;
+          // The modifier is the last piece under the cap of 3 × width pieces when the marks number about 2 × width; every count
+          // from a little under that to a little past 3 × width is tried, so the cap falls on every piece of the tail in turn.
+          for (let marks = 2 * width - 8; marks <= 3 * width + 8; marks++) {
+            cases++;
+            const out = escapedFit(sittingInput(width, keycaps, marks), width);
+            check(
+              displayWidth(out) <= width,
+              () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
+            );
+            check(out.endsWith('…'), () => `@${width} k=${keycaps} M=${marks}: no ellipsis`);
+          }
         }
-      }
-    none();
-    expect(cases).toBeGreaterThan(1_500);
-  });
+      none();
+      expect(cases).toBeGreaterThan(1_500);
+    },
+    SLOW_PROPERTY_TIMEOUT_MS,
+  );
 
-  it('does the same in middle mode', () => {
-    const { check, none } = collect();
-    for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
-      for (let keycaps = 1; keycaps <= 6; keycaps += 5) {
-        if (width - 3 - 2 * keycaps < 0) continue;
-        for (let marks = 2 * width - 6; marks <= 3 * width + 8; marks++) {
-          const out = escapedFit(sittingInput(width, keycaps, marks), width, 'middle');
-          check(
-            displayWidth(out) <= width,
-            () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
-          );
+  it(
+    'does the same in middle mode',
+    () => {
+      const { check, none } = collect();
+      for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
+        for (let keycaps = 1; keycaps <= 6; keycaps += 5) {
+          if (width - 3 - 2 * keycaps < 0) continue;
+          for (let marks = 2 * width - 6; marks <= 3 * width + 8; marks++) {
+            const out = escapedFit(sittingInput(width, keycaps, marks), width, 'middle');
+            check(
+              displayWidth(out) <= width,
+              () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
+            );
+          }
         }
-      }
-    none();
-  });
+      none();
+    },
+    SLOW_PROPERTY_TIMEOUT_MS,
+  );
 });
 
 describe('escapedFit never opens a tail on a lone zero-width mark', () => {

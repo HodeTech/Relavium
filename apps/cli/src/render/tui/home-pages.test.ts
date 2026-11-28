@@ -125,9 +125,9 @@ function expected(key: PageKey, state: PageKeyState): PageKeyOutcome {
     if (key === 'up') return state.rowIndex === 0 ? { kind: 'to-start' } : { kind: 'step-row', delta: -1 };
     if (key === 'down')
       return state.rowIndex === state.rowCount - 1
-        ? { kind: 'to-docked', then: 'none' }
+        ? { kind: 'to-docked', afterwards: 'none' }
         : { kind: 'step-row', delta: 1 };
-    return { kind: 'to-docked', then: 'type' };
+    return { kind: 'to-docked', afterwards: 'type' };
   }
   if (key === 'escape') return { kind: 'to-start' };
   if (key === 'up' && state.rowCount > 0 && cursorOnFirstLine(state.draft)) return { kind: 'to-last-row' };

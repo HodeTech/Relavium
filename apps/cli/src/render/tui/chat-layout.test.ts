@@ -18,7 +18,7 @@ import { WORDMARK } from './home-layout.js';
 import { displayWidth } from './viewport.js';
 
 const KEY_SHAPED = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
-const BIDI = ['‮', '⁦', '‏'];
+const BIDI = ['\u202E', '\u2066', '\u200F'];
 const ESC = String.fromCharCode(0x1b);
 
 describe('the frame of a full-screen chat is one row short of the terminal', () => {

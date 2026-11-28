@@ -128,7 +128,7 @@ describe('the content', () => {
   it.each(['slug', 'invalid slug'])(
     'a hostile %s reaches no row as an escape, a key token, a forged separator, a secret or a host glyph',
     (kind) => {
-      const evil = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› ‮`;
+      const evil = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› \u202E`;
       const content = workflowsContent({
         kind: 'catalog',
         workflows: [catalogEntry(evil, kind === 'slug')],
@@ -142,7 +142,7 @@ describe('the content', () => {
       ).rows;
       for (const text of [lines.join('\n'), rows.join('\n')]) {
         expect(text).not.toContain('\u001b');
-        expect(text).not.toContain('‮');
+        expect(text).not.toContain('\u202E');
         expect(text).not.toContain('Ctrl+Y');
         expect(text).not.toContain('[d]');
         expect(text).not.toContain(SECRET);

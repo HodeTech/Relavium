@@ -18,6 +18,10 @@ import { describe, expect, it } from 'vitest';
 import type { EditorState } from './chat-input.js';
 import { landingHint, needsYouWords, type HintRow, type UrgentHead } from './home-pages.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 /** The walk is a few thousand real hint fits per test: a bound that holds on a loaded machine too. */
 const SLOW_MS = 30_000;

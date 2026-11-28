@@ -242,7 +242,7 @@ describe('the one scrub holds every sink of every popup that has it', () => {
   // Built at runtime (no contiguous secret literal: leakwatch).
   const SECRET = ['sk', 'ant', 'scrub', 'ABCDEF1234567890XYZ'].join('-');
   /** What a project, a provider, a model or a catalog could write: an escape, a forged answer chord, a forged field, a secret, a glyph, a bidi mark. */
-  const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› ‮`;
+  const EVIL = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› \u202E`;
 
   /** The agent a hostile project defined: every string of its view is hostile. */
   const hostileAgent = (): BoundAgentView => {
@@ -338,7 +338,7 @@ describe('the one scrub holds every sink of every popup that has it', () => {
     // The sink has something to be clean of: the visible start of the hostile text is there.
     expect(text).toContain('x');
     expect(text).not.toContain('\u001b');
-    expect(text).not.toContain('‮');
+    expect(text).not.toContain('\u202E');
     // The forged answer chord and the forged field, as written: the product's own words (a legend, a title) may have a key or a separator.
     expect(text).not.toContain('[Ctrl+Y]');
     expect(text).not.toContain('allow ·');

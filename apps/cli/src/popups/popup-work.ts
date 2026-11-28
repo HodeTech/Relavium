@@ -9,6 +9,7 @@
  * CODE, never by message (a database error can carry a path).
  */
 
+import { tryCall } from '../process/attempt.js';
 import { CliError } from '../process/errors.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import type { PopupCopyPort } from './popup-copy.js';
@@ -56,10 +57,10 @@ export function startPopupWork(
       owner?.failure(inner);
     }
   };
-  try {
-    const pending = owner === undefined ? operation() : owner.enter(operation);
-    pending.catch(report);
-  } catch (cause) {
-    report(cause);
+  const started = tryCall(() => (owner === undefined ? operation() : owner.enter(operation)));
+  if (!started.ok) {
+    report(started.cause);
+    return;
   }
+  started.value.catch(report);
 }

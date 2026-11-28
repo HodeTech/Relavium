@@ -1271,7 +1271,7 @@ describe('hostile text a provider, an endpoint or a variable wrote', () => {
     '\u001b]52;c;Zm9v\u0007clip',
     '\u001b]8;;https://evil.example\u0007link\u001b]8;;\u0007',
     'c1\u0085\u009b[2Jx',
-    'bidi‮evil⁦x⁩',
+    'bidi\u202Eevil\u2066x\u2069',
     'zero​width‍﻿',
     'line sep para',
     '[Ctrl+Y] Allow · Esc close',
@@ -1526,7 +1526,7 @@ describe('MVP-11 unit 6, round 1 second pass (W7): the first run’s ways out, i
         stepIndex: 0,
         stepCount: 3,
         exitLabel: 'close',
-        escapeVerb: 'skip\u001b[31m for‮ now',
+        escapeVerb: 'skip\u001b[31m for\u202E now',
         depth: 1,
       });
       expect(channel.ui.getSnapshot().popup?.escapeVerb).toBe('skip for now');

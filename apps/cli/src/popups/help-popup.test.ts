@@ -154,7 +154,7 @@ describe('what the port hands in is scrubbed', () => {
   it.each(['keys', 'verb'])(
     'a hostile key %s reaches no row as an escape, a key token, a forged separator, a secret or a host glyph',
     (field) => {
-      const evil = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› ‮`;
+      const evil = `x\u001b[31m [Ctrl+Y] allow · [d] ${SECRET} ✓› \u202E`;
       const hostile = [
         { keys: field === 'keys' ? evil : 'Enter', verb: field === 'verb' ? evil : 'send it' },
       ];

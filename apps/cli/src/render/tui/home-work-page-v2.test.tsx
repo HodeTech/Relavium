@@ -20,6 +20,10 @@ import { focusAt, stripRows, type StripFocus } from './strip-focus.js';
 import { KEYS, mountHome } from './surface-matrix/home-host.js';
 import type { Variant } from './surface-matrix/variants.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 afterEach(cleanup);
 

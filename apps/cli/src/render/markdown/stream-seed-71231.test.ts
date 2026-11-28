@@ -3,6 +3,10 @@ import { streamCorpusBatches } from './fixtures/stream-corpus.js';
 import { layoutMarkdown } from './layout.js';
 import { parseMarkdown } from './parser.js';
 import { MarkdownStream } from './stream.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 describe('seeded incremental markdown stream (71231)', () => {
   const batches = streamCorpusBatches(71231);

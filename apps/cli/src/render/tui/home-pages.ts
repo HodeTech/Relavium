@@ -139,7 +139,7 @@ export type PageKeyOutcome =
   /** From the docked prompt up onto the last row. */
   | { readonly kind: 'to-last-row' }
   /** From a row down onto the docked prompt (`↓` past the last row: the key is spent), or a key that types there (it is kept: `then: 'type'`). */
-  | { readonly kind: 'to-docked'; readonly then: 'none' | 'type' }
+  | { readonly kind: 'to-docked'; readonly afterwards: 'none' | 'type' }
   /** `Enter` on a row: what the row's kind opens. */
   | { readonly kind: 'open-row' };
 
@@ -162,11 +162,11 @@ function rowKey(key: PageKey, index: number, state: PageKeyState): PageKeyOutcom
       return index <= 0 ? { kind: 'to-start' } : { kind: 'step-row', delta: -1 };
     case 'down':
       return index >= state.rowCount - 1
-        ? { kind: 'to-docked', then: 'none' }
+        ? { kind: 'to-docked', afterwards: 'none' }
         : { kind: 'step-row', delta: 1 };
     case 'types':
     case 'other':
-      return { kind: 'to-docked', then: 'type' };
+      return { kind: 'to-docked', afterwards: 'type' };
   }
 }
 
