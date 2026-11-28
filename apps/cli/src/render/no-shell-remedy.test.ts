@@ -850,6 +850,34 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
     expect(exempt).toEqual(['chat/resume-hint.ts', 'render/tui/final-summary.ts']);
   });
 
+  it('lists in the `commands/` exemption every command file the Home, the chat or the TUI imports: a new import is scanned, never skipped', () => {
+    // `commands/` is shell-only by directory, with an `except` list of the files the TUI draws from. A command file that a Home, chat or TUI
+    // source imports but the list does not name would have its strings skipped without a word, so the list is held to the imports.
+    const byModule = new Map([...FILES.keys()].map((file) => [modulePathOf(file), file] as const));
+    const imported = new Map<string, string[]>();
+    for (const file of FILES.keys()) {
+      if (!(file.startsWith('home/') || file.startsWith('chat/') || file.startsWith('render/tui/')))
+        continue;
+      for (const specifier of moduleSpecifiers(
+        file,
+        readFileSync(join(SRC, ...file.split('/')), 'utf8'),
+      )) {
+        if (!specifier.startsWith('.')) continue;
+        const resolved = modulePathOf(posix.normalize(posix.join(posix.dirname(file), specifier)));
+        const target = byModule.get(resolved) ?? byModule.get(`${resolved}/index`);
+        if (target?.startsWith('commands/') !== true) continue;
+        imported.set(target, [...(imported.get(target) ?? []), file]);
+      }
+    }
+    // the sweep sees imports at all (a guard that finds none would pass for any list)
+    expect([...imported.keys()].length).toBeGreaterThan(0);
+    const unlisted = [...imported]
+      .filter(([target]) => isShellOnly(target))
+      .map(([target, importers]) => `${target} (imported by ${importers.sort().join(', ')})`)
+      .sort();
+    expect(unlisted).toEqual([]);
+  });
+
   it('leaves out the test harness directories only because no product source imports them (a static, side-effect, re-export or dynamic import)', () => {
     const importers = [...FILES.keys()].filter((file) =>
       moduleSpecifiers(file, readFileSync(join(SRC, ...file.split('/')), 'utf8')).some(

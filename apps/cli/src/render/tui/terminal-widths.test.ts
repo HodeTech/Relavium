@@ -36,6 +36,18 @@ import { yieldBetweenTests, yieldToRunner } from '../event-loop.test-support.js'
 // the file's tests run for tens of seconds: the event loop turns between them, and in the long loops, so the runner's worker stays answered
 yieldBetweenTests();
 
+/**
+ * Four tests below re-derive their counts from THIS runtime's Unicode data (`Intl.Segmenter`, `\p{RGI_Emoji}`, `\p{L}`) and pin the numbers Unicode 17
+ * gives (27 Prepend letters, 2,619 joining code points, 32,076 in-context strings). An older runtime gives other numbers (Node 22.13, the floor job's,
+ * carries Unicode 16), and a different count there says nothing about the measure, which the committed tmux tables check on every runtime. Those
+ * four run where the data is the data they were taken from (review of PR #103, H5). The simulated terminal's own clustering reads the runtime's
+ * segmenter too, so the sequence differential can differ at the edge on an older one: that is the floor job's to show, and it is advisory.
+ */
+const PINNED_UNICODE_VERSION = 17;
+const itPinned = it.skipIf(
+  Number.parseFloat(process.versions['unicode'] ?? '0') < PINNED_UNICODE_VERSION,
+);
+
 describe('the simulated terminal draws what tmux 3.7b drew', () => {
   it.each(TMUX_MEASUREMENTS.map(([name, codes, width]) => [name, codes, width] as const))(
     '%s',
@@ -201,122 +213,134 @@ describe('the SEQUENCE differential against tmux (review round 4, R4-S-1, item A
     expect(under.length).toBeGreaterThan(300);
   });
 
-  it('the linkers and Prepend letters the measure knows are the ones this runtime’s segmenter joins (re-derived)', () => {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    const clusters = (text: string): number => [...segmenter.segment(text)].length;
-    const derivedPrepend: number[] = [];
-    for (let code = 0x80; code < 0x110000; code += 1) {
-      if (code >= 0xd800 && code <= 0xdfff) continue;
-      const character = String.fromCodePoint(code);
-      if (/\p{Cc}/u.test(character)) continue;
-      if (clusters(`${character}a`) === 1) derivedPrepend.push(code);
-    }
-    // each joins what follows it into one cluster, and the measure counts the spacing characters of that cluster
-    expect(derivedPrepend).toHaveLength(27);
-    for (const code of derivedPrepend)
-      expect(displayWidth(`${String.fromCodePoint(code)}y`), code.toString(16)).toBe(
-        stringWidth(String.fromCodePoint(code)) + 1,
-      );
-    const derivedLinkers: number[] = [];
-    for (let code = 0x80; code < 0x110000; code += 1) {
-      if (code >= 0xd800 && code <= 0xdfff) continue;
-      const mark = String.fromCodePoint(code);
-      if (!/\p{M}/u.test(mark)) continue;
-      const block = code & ~0x7f;
-      for (
-        let letter = Math.max(0, block - 0x80);
-        letter < Math.min(0x110000, block + 0x100);
-        letter += 1
-      ) {
-        if (letter >= 0xd800 && letter <= 0xdfff) continue;
-        const l = String.fromCodePoint(letter);
-        if (!/\p{L}/u.test(l) || clusters(`a${l}`) !== 2 || clusters(`${l}a`) !== 2) continue;
-        if (clusters(`${l}${mark}${l}`) === 1) {
-          derivedLinkers.push(code);
-          expect(displayWidth(`${l}${mark}${l}`), code.toString(16)).toBe(2 * stringWidth(l));
-          break;
+  itPinned(
+    'the linkers and Prepend letters the measure knows are the ones this runtime’s segmenter joins (re-derived)',
+    () => {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+      const clusters = (text: string): number => [...segmenter.segment(text)].length;
+      const derivedPrepend: number[] = [];
+      for (let code = 0x80; code < 0x110000; code += 1) {
+        if (code >= 0xd800 && code <= 0xdfff) continue;
+        const character = String.fromCodePoint(code);
+        if (/\p{Cc}/u.test(character)) continue;
+        if (clusters(`${character}a`) === 1) derivedPrepend.push(code);
+      }
+      // each joins what follows it into one cluster, and the measure counts the spacing characters of that cluster
+      expect(derivedPrepend).toHaveLength(27);
+      for (const code of derivedPrepend)
+        expect(displayWidth(`${String.fromCodePoint(code)}y`), code.toString(16)).toBe(
+          stringWidth(String.fromCodePoint(code)) + 1,
+        );
+      const derivedLinkers: number[] = [];
+      for (let code = 0x80; code < 0x110000; code += 1) {
+        if (code >= 0xd800 && code <= 0xdfff) continue;
+        const mark = String.fromCodePoint(code);
+        if (!/\p{M}/u.test(mark)) continue;
+        const block = code & ~0x7f;
+        for (
+          let letter = Math.max(0, block - 0x80);
+          letter < Math.min(0x110000, block + 0x100);
+          letter += 1
+        ) {
+          if (letter >= 0xd800 && letter <= 0xdfff) continue;
+          const l = String.fromCodePoint(letter);
+          if (!/\p{L}/u.test(l) || clusters(`a${l}`) !== 2 || clusters(`${l}a`) !== 2) continue;
+          if (clusters(`${l}${mark}${l}`) === 1) {
+            derivedLinkers.push(code);
+            expect(displayWidth(`${l}${mark}${l}`), code.toString(16)).toBe(2 * stringWidth(l));
+            break;
+          }
         }
       }
-    }
-    expect(derivedLinkers.map((code) => code.toString(16))).toEqual([
-      '94d',
-      '9cd',
-      'acd',
-      'b4d',
-      'c4d',
-      'd4d',
-      '1039',
-      '17d2',
-      '1a60',
-      '1b44',
-      '1bab',
-      'a9c0',
-      'aaf6',
-      '10a3f',
-      '11133',
-      '113d0',
-      '1193e',
-      '11a47',
-      '11a99',
-      '11f42',
-    ]);
-  }, 120_000);
+      expect(derivedLinkers.map((code) => code.toString(16))).toEqual([
+        '94d',
+        '9cd',
+        'acd',
+        'b4d',
+        'c4d',
+        'd4d',
+        '1039',
+        '17d2',
+        '1a60',
+        '1b44',
+        '1bab',
+        'a9c0',
+        'aaf6',
+        '10a3f',
+        '11133',
+        '113d0',
+        '1193e',
+        '11a47',
+        '11a99',
+        '11f42',
+      ]);
+    },
+    120_000,
+  );
 });
 
 describe('the joins the measure keeps at `string-width`’s count are the ones measured on tmux (review round 5, R5-S-4)', () => {
-  it('this runtime’s recommended sequences and Hangul blocks are the measured ones, and the measure keeps `string-width`’s count for each', async () => {
-    const strings = await whitelistStrings();
-    for (const kind of ['presentation', 'keycap', 'flag', 'tagFlag', 'zwj'] as const) {
-      expect(strings[kind], kind).toHaveLength(TMUX_WHITELIST_EVIDENCE[kind].strings);
-      // tmux drew every one of them exactly as `string-width` counts it (the evidence's `exact`), and that is what the measure says
-      expect(TMUX_WHITELIST_EVIDENCE[kind].exact).toBe(TMUX_WHITELIST_EVIDENCE[kind].strings);
-      for (const text of strings[kind]) {
+  itPinned(
+    'this runtime’s recommended sequences and Hangul blocks are the measured ones, and the measure keeps `string-width`’s count for each',
+    async () => {
+      const strings = await whitelistStrings();
+      for (const kind of ['presentation', 'keycap', 'flag', 'tagFlag', 'zwj'] as const) {
+        expect(strings[kind], kind).toHaveLength(TMUX_WHITELIST_EVIDENCE[kind].strings);
+        // tmux drew every one of them exactly as `string-width` counts it (the evidence's `exact`), and that is what the measure says
+        expect(TMUX_WHITELIST_EVIDENCE[kind].exact).toBe(TMUX_WHITELIST_EVIDENCE[kind].strings);
+        for (const text of strings[kind]) {
+          await yieldToRunner();
+          expect(displayWidth(text), `${kind} ${text}`).toBe(stringWidth(text));
+          expect(displayWidth(text), `${kind} ${text}`).toBe(2);
+        }
+      }
+      // a toned sequence is not kept: tmux drew 315 of them wider than `string-width`, so it counts the sum, never less than `string-width`
+      expect(strings.modifier).toHaveLength(TMUX_WHITELIST_EVIDENCE.modifier.strings);
+      for (const text of strings.modifier) {
         await yieldToRunner();
-        expect(displayWidth(text), `${kind} ${text}`).toBe(stringWidth(text));
-        expect(displayWidth(text), `${kind} ${text}`).toBe(2);
+        expect(displayWidth(text), text).toBeGreaterThan(stringWidth(text));
       }
-    }
-    // a toned sequence is not kept: tmux drew 315 of them wider than `string-width`, so it counts the sum, never less than `string-width`
-    expect(strings.modifier).toHaveLength(TMUX_WHITELIST_EVIDENCE.modifier.strings);
-    for (const text of strings.modifier) {
-      await yieldToRunner();
-      expect(displayWidth(text), text).toBeGreaterThan(stringWidth(text));
-    }
-    expect(strings.hangul).toHaveLength(TMUX_WHITELIST_EVIDENCE.hangul.strings);
-    expect(TMUX_WHITELIST_EVIDENCE.hangul.wider).toBe(0);
-    for (const text of strings.hangul) {
-      await yieldToRunner();
-      expect(displayWidth(text), text).toBe(stringWidth(text));
-    }
-  }, 120_000);
+      expect(strings.hangul).toHaveLength(TMUX_WHITELIST_EVIDENCE.hangul.strings);
+      expect(TMUX_WHITELIST_EVIDENCE.hangul.wider).toBe(0);
+      for (const text of strings.hangul) {
+        await yieldToRunner();
+        expect(displayWidth(text), text).toBe(stringWidth(text));
+      }
+    },
+    120_000,
+  );
 
-  it('every code point that joins a letter was measured after one: drawn in no column, or one of the fourteen that add columns', () => {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    const zero = (code: number): boolean =>
-      TMUX_ZERO_AFTER_A_LETTER.some(([first, last]) => code >= first && code <= last);
-    const wider = new Map(TMUX_JOINING_WIDER);
-    let joining = 0;
-    for (let code = 0x80; code < 0x110000; code += 1) {
-      if (code >= 0xd800 && code <= 0xdfff) continue;
-      const text = `a${String.fromCodePoint(code)}`;
-      if ([...segmenter.segment(text)].length !== 1) continue;
-      joining += 1;
-      const added = wider.get(code);
-      if (added === undefined) {
-        expect(zero(code), code.toString(16)).toBe(true);
-        expect(displayWidth(text), code.toString(16)).toBe(1);
-      } else {
-        // the sum counts what tmux added, or the screen's filter drops the code point (a tone, a wide tone mark)
-        expect(displayWidth(screenText(text)), code.toString(16)).toBeGreaterThanOrEqual(
-          screenText(text) === text ? 1 + added : 1,
-        );
+  itPinned(
+    'every code point that joins a letter was measured after one: drawn in no column, or one of the fourteen that add columns',
+    () => {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+      const zero = (code: number): boolean =>
+        TMUX_ZERO_AFTER_A_LETTER.some(([first, last]) => code >= first && code <= last);
+      const wider = new Map(TMUX_JOINING_WIDER);
+      let joining = 0;
+      for (let code = 0x80; code < 0x110000; code += 1) {
+        if (code >= 0xd800 && code <= 0xdfff) continue;
+        const text = `a${String.fromCodePoint(code)}`;
+        if ([...segmenter.segment(text)].length !== 1) continue;
+        joining += 1;
+        const added = wider.get(code);
+        if (added === undefined) {
+          expect(zero(code), code.toString(16)).toBe(true);
+          expect(displayWidth(text), code.toString(16)).toBe(1);
+        } else {
+          // the sum counts what tmux added, or the screen's filter drops the code point (a tone, a wide tone mark)
+          expect(displayWidth(screenText(text)), code.toString(16)).toBeGreaterThanOrEqual(
+            screenText(text) === text ? 1 + added : 1,
+          );
+        }
       }
-    }
-    expect(joining).toBe(2619);
-    expect(TMUX_ZERO_AFTER_A_LETTER.reduce((sum, [first, last]) => sum + last - first + 1, 0)).toBe(
-      2605,
-    );
-  }, 120_000);
+      expect(joining).toBe(2619);
+      expect(
+        TMUX_ZERO_AFTER_A_LETTER.reduce((sum, [first, last]) => sum + last - first + 1, 0),
+      ).toBe(2605);
+    },
+    120_000,
+  );
 
   it('a string the measure counts whole (no code point that can join another) is counted as its clusters are, against every kind of neighbour', async () => {
     // the fast path: `displayWidth` counts a string with no joining code point as `string-width` does; a combining mark and a line feed before
@@ -453,27 +477,32 @@ describe('a recommended sequence after a joiner that ends a cluster (review roun
     });
   };
 
-  it('every recommended sequence in each of the 44 measured contexts: the count measured, and after the filter no joiner is left to glue a pictograph', async () => {
-    const strings = await inContextStrings();
-    expect(strings).toHaveLength(TMUX_IN_CONTEXT_EVIDENCE.strings);
-    expect(new Set(strings.map(([name]) => name)).size).toBe(TMUX_IN_CONTEXT_EVIDENCE.contexts);
-    expect(TMUX_IN_CONTEXT_EVIDENCE.exact + TMUX_IN_CONTEXT_EVIDENCE.over).toBe(
-      TMUX_IN_CONTEXT_EVIDENCE.strings,
-    );
-    expect(TMUX_IN_CONTEXT_EVIDENCE.under).toBe(0);
-    for (const [name, text] of strings) {
-      await yieldToRunner();
-      const filtered = screenText(text);
-      // the filter leaves no joiner to glue a pictograph's sequence; one before a keycap is the measure's (its column more, below)
-      expect(
-        keptJoinerBeforeSelectorSequence(filtered, true),
-        `${name} ${JSON.stringify(filtered)}`,
-      ).toBe(false);
-      expect(displayWidth(filtered), `${name} ${JSON.stringify(filtered)}`).toBeGreaterThanOrEqual(
-        terminalColumns(filtered),
+  itPinned(
+    'every recommended sequence in each of the 44 measured contexts: the count measured, and after the filter no joiner is left to glue a pictograph',
+    async () => {
+      const strings = await inContextStrings();
+      expect(strings).toHaveLength(TMUX_IN_CONTEXT_EVIDENCE.strings);
+      expect(new Set(strings.map(([name]) => name)).size).toBe(TMUX_IN_CONTEXT_EVIDENCE.contexts);
+      expect(TMUX_IN_CONTEXT_EVIDENCE.exact + TMUX_IN_CONTEXT_EVIDENCE.over).toBe(
+        TMUX_IN_CONTEXT_EVIDENCE.strings,
       );
-    }
-  }, 120_000);
+      expect(TMUX_IN_CONTEXT_EVIDENCE.under).toBe(0);
+      for (const [name, text] of strings) {
+        await yieldToRunner();
+        const filtered = screenText(text);
+        // the filter leaves no joiner to glue a pictograph's sequence; one before a keycap is the measure's (its column more, below)
+        expect(
+          keptJoinerBeforeSelectorSequence(filtered, true),
+          `${name} ${JSON.stringify(filtered)}`,
+        ).toBe(false);
+        expect(
+          displayWidth(filtered),
+          `${name} ${JSON.stringify(filtered)}`,
+        ).toBeGreaterThanOrEqual(terminalColumns(filtered));
+      }
+    },
+    120_000,
+  );
 
   it.each([
     // measured on tmux with the joiner kept (the filter before this round): two, then four once the letter's cell overflows, then three

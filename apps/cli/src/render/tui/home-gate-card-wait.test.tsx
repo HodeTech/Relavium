@@ -28,6 +28,8 @@ const RUN = 'run-0001';
 const DOWN = '\x1b[B';
 const ENTER = '\r';
 const PARKED_SINCE = '2026-11-27T08:00:00.000Z';
+/** The pinned wall clock of the one test that reads the day: a day later than {@link PARKED_SINCE} in every time zone. */
+const PINNED_NOW_MS = Date.parse('2026-11-28T12:00:00.000Z');
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
 const ROW: ParkedRunRow = { runId: RUN, kind: 'approval', gates: 1 };
 const EMPTY: HomeSnapshot = {
@@ -120,19 +122,27 @@ async function opened(parkedSince: string | undefined) {
 
 describe('the gate card’s wait clock starts when the run parked', () => {
   it('parkedSince is the origin: the screen record carries it, the card’s snapshot does not', async () => {
-    const m = await opened(PARKED_SINCE);
-    const screen = m.controller.getSnapshot().screen;
-    if (screen?.kind !== 'gate-card') throw new Error('no card');
-    expect(screen.waitingSinceMs).toBe(Date.parse(PARKED_SINCE));
-    expect(Object.keys(screen.card.getSnapshot())).not.toContain('waitingSinceMs');
-    // Inline the clock is the static origin, in the rule.
-    // (the text the card draws names the day once the run parked before today, so the expectation is the formatter's own text for that origin)
-    expect(m.frame()).toMatch(
-      new RegExp(
-        `^== Waiting for you =+ ${waitSinceText(Date.parse(PARKED_SINCE)).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')} ==$`,
-        'mu',
-      ),
-    );
+    // The card reads the wall clock itself (its own display clock is `Date.now`), so the date is pinned: the expectation below is then the
+    // formatter's text for an explicit `nowMs`, not for whatever "now" the assertion happens to read, and it cannot flip at midnight.
+    vi.useFakeTimers({ toFake: ['Date'], now: PINNED_NOW_MS });
+    try {
+      const m = await opened(PARKED_SINCE);
+      const screen = m.controller.getSnapshot().screen;
+      if (screen?.kind !== 'gate-card') throw new Error('no card');
+      expect(screen.waitingSinceMs).toBe(Date.parse(PARKED_SINCE));
+      expect(Object.keys(screen.card.getSnapshot())).not.toContain('waitingSinceMs');
+      // Inline the clock is the static origin, in the rule. A run that parked on an earlier day than `nowMs` names the day too.
+      const expected = waitSinceText(Date.parse(PARKED_SINCE), PINNED_NOW_MS);
+      expect(expected).toMatch(/^waiting since [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/u);
+      expect(m.frame()).toMatch(
+        new RegExp(
+          `^== Waiting for you =+ ${expected.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')} ==$`,
+          'mu',
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('with no parkedSince it is the moment the card opened', async () => {

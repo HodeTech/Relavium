@@ -56,3 +56,4 @@ await scenario('--inline', 'inline, body empty (live region = popup 21 + prompt 
 await scenario('--inline --tall', 'inline, 5 body rows + popup 21 + prompt 1 = 27 rows on a 24-row terminal');
 try { tmux('kill-server'); } catch {}
 console.log(`\n${res.filter(Boolean).length}/${res.length} checks passed`);
+process.exit(res.length > 0 && res.every(Boolean) ? 0 : 1); // a failed (or absent) check fails the run, as run-tmux.mjs does

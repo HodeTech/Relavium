@@ -1,6 +1,9 @@
 /**
  * What tmux 3.7b, the reference terminal, drew (MVP-11 unit 9, review rounds 2 to 5): each string written to a pane after an `A`, the cursor read
- * back with `ESC[6n` (the reviewers' `measure.py`). Three tables, verbatim from the measurement files:
+ * back with `ESC[6n` (the reviewers' `measure.py`). **Provenance:** the tables below were copied from the measurement files those runs wrote;
+ * the measurement script and its raw output are NOT committed in this repository, so a number here cannot be re-derived from the repository
+ * alone (re-measuring is the recipe in `docs/roadmap/deferred-tasks.md`: write the string after an `A`, read the cursor with `ESC[6n`), and
+ * `terminal-widths.test.ts` holds the simulated terminal to these values, not to a live tmux. Three tables, as copied:
  *
  * - {@link TMUX_MEASUREMENTS}: code points and sequences the simulated terminal (`terminal-wrap.test-support.ts`) must draw exactly as wide as
  *   tmux did (round 2's table, the sitting's round-3 probes `r3 …`, and round 3's own `w3 …`: the flag and joiner cases of R3S-2, the nine
