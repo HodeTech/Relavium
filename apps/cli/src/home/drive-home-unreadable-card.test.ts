@@ -24,8 +24,12 @@ import type { RootAppProps } from '../render/tui/home-app.js';
 import { seedRun } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
-/** The bound of every wait in this file, in turns of the event loop. */
+/**
+ * The bound of every wait in this file: at least this many turns of the event loop AND this long. A bound in turns alone passed on a fast
+ * machine and failed on a slow CI runner (`the card was not reached within 500 turns`): the awaited step needs real time, not turns.
+ */
 const WAIT_TURNS = 500;
+const WAIT_MS = 15_000;
 const CTRL_C = { ctrl: true } as const;
 const INERT_JOB_CONTROL: JobControlLifecycle = {
   supported: false,
@@ -58,11 +62,14 @@ afterEach(() => {
 const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /** Turn the event loop until `predicate` holds, and FAIL when it does not within {@link WAIT_TURNS}. */
 async function until(predicate: () => boolean, what: string): Promise<void> {
-  for (let n = 0; n < WAIT_TURNS; n += 1) {
+  const deadline = Date.now() + WAIT_MS;
+  for (let n = 0; n < WAIT_TURNS || Date.now() < deadline; n += 1) {
     if (predicate()) return;
     await turn();
   }
-  throw new Error(`${what} was not reached within ${String(WAIT_TURNS)} turns`);
+  throw new Error(
+    `${what} was not reached within ${String(WAIT_TURNS)} turns and ${String(WAIT_MS)} ms`,
+  );
 }
 
 /** The Home over an injected mount (no TTY), on `client`'s file, with only the controller's timers faked; `controls` collects what it writes to the terminal. */

@@ -26,8 +26,12 @@ yieldBetweenTests();
 
 const c = (code: number): string => String.fromCodePoint(code);
 const N = 64_000;
-/** The bound for one call on N characters: two orders above the measured cost on an idle machine, three below the defect. */
-const BOUND_MS = 250;
+/**
+ * The bound for one call on N characters: about ten times the cost on this machine when it is busy (20 to 30 ms here, 250 to 300 ms on the CI
+ * runner, where a bound of 250 failed four calls of the first run) and an order below the defect this file was written for (a quadratic
+ * run takes 28 s).
+ */
+const BOUND_MS = 2_000;
 
 /** The least of three runs of `run`, in milliseconds: the work's own cost, not a busy machine's (the suites run in parallel). */
 function timed(run: () => unknown): number {
