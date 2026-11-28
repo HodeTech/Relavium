@@ -1317,7 +1317,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     });
     await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
     const frame = (f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ');
-    expect(frame).toContain('narrow change, or [v] full view / [p] code points');
+    expect(frame).toContain('narrow change, or [v] full view');
+    expect(frame).not.toContain('[p] code points');
     expect(frame).not.toContain('A command is waiting');
     expect(f.errors).toEqual([]);
   });

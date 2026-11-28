@@ -122,7 +122,7 @@ describe('a section whose rows were counted and not all loaded', () => {
       [100, 30],
     );
     expect(page.map((row) => row.trim())).toContain('v 1 more · /resume');
-    expect(page.map((row) => row.trim())).toContain('v 1 more · /workflows');
+    expect(page.map((row) => row.trim())).toContain('v 1 more · /workflows, then [h]');
   });
 });
 

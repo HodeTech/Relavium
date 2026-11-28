@@ -264,8 +264,13 @@ export function openModels(request: SettingsOpenRequest): PopupOpenResult {
   if (inForce === undefined) content = MODELS_SETTINGS_FAILED;
   else if (first === undefined) content = MODELS_READ_FAILED;
   else content = listed({ kind: 'refreshing' });
+  // The popup opens on the model in force (ADR-0148 §3: a bare `Enter` chain changes nothing). A model that is in force but cannot be used now (its
+  // key is gone) or is not listed has no row to stand on, and the first usable model must not stand in for it: the next `Enter` would open that
+  // model's second step. It opens on the row that refreshes the list, which changes no setting.
+  const marked = markedCurrent(view.entries, inForce?.current);
+  const markedIsUsable = view.entries.some((entry) => entry.available && entry.modelId === marked);
   const opened = host.openForUser(
-    modelsSpec(origin, models.scope, content, markedCurrent(view.entries, inForce?.current)),
+    modelsSpec(origin, models.scope, content, markedIsUsable ? marked : MODELS_REFRESH_ROW),
     {
       enter: (context, row) => {
         if (inForce === undefined || context.stepIndex() !== MODELS_STEP.model) return;

@@ -93,7 +93,7 @@ export const NO_OVERLAYS: OverlayFlags = {
  * - `activePoll` — the tab host's Active tab does not poll.
  * - `promptHidden` — the chat region draws no idle prompt and footer (`ChatView`'s `paletteOpen`).
  * - `landingPromptHidden` — the landing draws no prompt (`HomeView`'s `paletteOpen`).
- * - `pageNotice` — `PgUp`/`PgDn` do not page the landing's notice.
+ * - `pageNotice` — `PgUp`/`PgDn` do not page the landing's notice (the picker or the palette over the landing takes them).
  * - `occupiesRows` — the flag's own body takes the screen's rows: the landing and the chat are not drawn (or are shrunk) under it.
  * - `revokesCustody` — the approval's custody (the measured-frame evidence of the Home, a gate card and a review) is not held. A host that
  *   sees it revoked by a popup also resets the cards' acknowledgement and dwell origin (`popups/custody.ts`): a card that regains custody is
@@ -113,7 +113,7 @@ type Gate =
   | 'occupiesRows'
   | 'revokesCustody';
 
-/** What the three submodes share. */
+/** What the three submodes share (`pageNotice` too: the `@` picker and the search list take `PgUp`/`PgDn` for themselves, never the notice's). */
 const SUBMODE: readonly Gate[] = [
   'screenSlot',
   'scrollKeys',
@@ -121,10 +121,11 @@ const SUBMODE: readonly Gate[] = [
   'interrupt',
   'stripPause',
   'promptHidden',
+  'pageNotice',
 ];
 
-/** What the one submode that can open on the bare landing adds (the palette; `/models` is a popup now). */
-const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
+/** What the one submode that can open on the bare landing adds (the palette; `/models` is a popup now): it draws no prompt of the landing's own. */
+const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden'];
 
 /**
  * The table: for each flag, the gates it closes (besides owning the keyboard, which every flag does). A flag with no row, or a row with no
@@ -143,7 +144,7 @@ const ON_THE_LANDING: readonly Gate[] = ['landingPromptHidden', 'pageNotice'];
  * | 5 | `scrollKeys` | the submodes close it, the cards do not: their own host answers every key |
  * | 6 | `mouseCapture` | only a native prompt and a busy native action release it; an open submode does not (toggling reporting would be churn) |
  * | 7 | `interrupt` | the exit card and the cards are not interrupt gates (routed first) |
- * | 8 | `landingPromptHidden`, `pageNotice` | of the submodes only the palette, the one that opens on the landing |
+ * | 8 | `landingPromptHidden` | of the submodes only the palette, the one that opens on the landing (`pageNotice` is every submode's) |
  * | 9 | paste (`pasteFlagsFrom`) | read for the three submodes and `approval`/`review`; decided BEFORE the gate for the rest (see {@link pasteFlagsFrom}) |
  */
 const GATES: Readonly<Record<keyof OverlayFlags, readonly Gate[]>> = {
@@ -289,7 +290,7 @@ export function landingPromptHidden(flags: OverlayFlags): boolean {
   return closes(flags, 'landingPromptHidden');
 }
 
-/** Whether `PgUp`/`PgDn` do not page the landing's notice: a screen, the exit card, the palette or a popup is in front. */
+/** Whether `PgUp`/`PgDn` do not page the landing's notice: a screen, the exit card, a submode (the palette, the search, the `@` picker) or a popup is in front. */
 export function noticePagingBlocked(flags: OverlayFlags): boolean {
   return closes(flags, 'pageNotice');
 }

@@ -15,7 +15,8 @@
  *   moment the card opened, so a card that is the FIRST prompt of a flow (`/init`, the `/workflows` export, `/run` started on a workflow with no
  *   inputs) and a card that appears after a wait with the key held through it (the MCP consent card a `/run` start or a gate's resume raises,
  *   the repeats of the `Ctrl+Y` that answered the card before landing on the wait as typing) are locked against a held `Ctrl+Y` as a card
- *   right after an answer always was. A deliberate `Ctrl+Y` needs about two seconds after the card appeared; `Ctrl+N` is never delayed.
+ *   right after an answer always was. A deliberate `Ctrl+Y` needs about two seconds after the card appeared; `Ctrl+N` is never delayed by the
+ *   guards (it is dropped before the card's first painted frame).
  *
  * Pure but for the clock and the shared key history they are handed.
  */
@@ -77,7 +78,10 @@ export function navigates(key: Key): boolean {
   return key.upArrow || key.downArrow || key.pageUp || key.pageDown;
 }
 
-/** A chord card's key: its `Ctrl+N` refuses, as `Esc` does, and is never delayed; its `Ctrl+Y` answers; anything else is typing. */
+/**
+ * A chord card's key: its `Ctrl+N` refuses, as `Esc` does, and is never delayed by the guards (dropped before the first painted frame); its
+ * `Ctrl+Y` answers; anything else is typing.
+ */
 function chordOpeningKey(input: string, key: Key, boundary: number): OpeningKey {
   const answer = boundary >= 0 ? undefined : chordOf(input, key);
   if (answer === 'deny') return 'leave';
@@ -171,7 +175,8 @@ export interface ChordCardGuard {
   /**
    * Whether `answer`, stamped `stamp`, answers the open chord card on a frame that is (`painted`) or is not on screen: the channel's chord guard
    * decides, with the card's opening counted as an answer just before the key. A refused `Ctrl+Y` inside that lockout restarts it on the shared
-   * history (`createChordGuard`'s strict rule), so a key held at any repeat rate keeps the card locked; `Ctrl+N` is never delayed.
+   * history (`createChordGuard`'s strict rule), so a key held at any repeat rate keeps the card locked; `Ctrl+N` is never delayed by the guards
+   * (dropped before the first painted frame).
    */
   readonly decide: (
     stamp: ChordStamp,

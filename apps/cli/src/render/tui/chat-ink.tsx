@@ -170,6 +170,7 @@ import {
   firstUserLine,
   hasConversation,
   headerRow,
+  liveRegionRows,
 } from './chat-layout.js';
 import { WORDMARK, thinRule } from './home-layout.js';
 import {
@@ -1023,15 +1024,23 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // pre-token live-turn status ("Working… {elapsed} · Esc stops the turn"), or the streaming token line (with the
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
   // its `dim` flag to `<Text>`. Only rendered while `running`.
-  const renderBusyLine = (): ReactElement => {
+  // The element AND the rows it takes: the live region is bounded as a whole (`liveRegionRows`), and what the busy line takes is what the tool calls
+  // and the reasoning panel above it have left.
+  const renderBusyLine = (): { readonly node: ReactElement; readonly rows: number } => {
     if (props.displaySuspended)
-      return (
-        <ContentColumn grid={chromeGrid} budget="content">
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {legend([{ text: 'Display paused for an oversized control sequence' }], STOP_THE_TURN)}
-          </Text>
-        </ContentColumn>
-      );
+      return {
+        rows: 1,
+        node: (
+          <ContentColumn grid={chromeGrid} budget="content">
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {legend(
+                [{ text: 'Display paused for an oversized control sequence' }],
+                STOP_THE_TURN,
+              )}
+            </Text>
+          </ContentColumn>
+        ),
+      };
     if (
       props.markdown !== undefined &&
       !state.compacting &&
@@ -1054,32 +1063,37 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       // Each row stands on the grid with the reply's own role: `agent` on the first row of the stream and on a row that starts with a margin
       // word, drawn only as the inline renderer's word (the full-screen margin of a reply is blank), so a streamed `you   …` row is read as the
       // agent's WHILE it streams, as the finished reply's row will be (review round 2, S2-3).
-      return (
-        <Box flexDirection="column">
-          {lines.map((line, index) => (
-            <MarginRow
-              key={index}
-              role={index === 0 || startsWithMarginWord(line.text) ? 'agent' : undefined}
-              grid={chromeGrid}
-              form={marginForm}
-            >
-              {/* full-screen the row is one physical row whatever a width says (cut at the cell's edge, never wrapped: review round 3, R3S-1) */}
-              <Text wrap={marginForm === 'word' ? 'wrap' : 'truncate-end'}>
-                <MarkdownText
-                  spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
-                  color={color}
-                />
+      return {
+        rows: lines.length + 1,
+        node: (
+          <Box flexDirection="column">
+            {lines.map((line, index) => (
+              <MarginRow
+                key={index}
+                role={index === 0 || startsWithMarginWord(line.text) ? 'agent' : undefined}
+                grid={chromeGrid}
+                form={marginForm}
+              >
+                {/* full-screen the row is one physical row whatever a width says (cut at the cell's edge, never wrapped: review round 3, R3S-1) */}
+                <Text wrap={marginForm === 'word' ? 'wrap' : 'truncate-end'}>
+                  <MarkdownText
+                    spans={
+                      line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])
+                    }
+                    color={color}
+                  />
+                </Text>
+              </MarginRow>
+            ))}
+            <ContentColumn grid={chromeGrid} budget="content">
+              <Text {...dimProps(color)} wrap="truncate-end">
+                {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
+                {legend([], STOP_THE_TURN)}
               </Text>
-            </MarginRow>
-          ))}
-          <ContentColumn grid={chromeGrid} budget="content">
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
-              {legend([], STOP_THE_TURN)}
-            </Text>
-          </ContentColumn>
-        </Box>
-      );
+            </ContentColumn>
+          </Box>
+        ),
+      };
     }
     const line = formatBusyLine({
       spinner: spinnerFrame(tick),
@@ -1100,29 +1114,33 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
     // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
     const abortHint = streamingAbortHint(line);
-    return (
-      <ContentColumn grid={chromeGrid} budget="content">
-        {line.dim ? (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {/* a status line (a `!` command the person typed, the pre-token wait): cut by the repo's measure (review round 4, R4-S-1) */}
-            {clipLine(line.text, chromeGrid.content)}
-          </Text>
-        ) : (
-          // the streamed words, laid out by the repo's measure in rows of the content column and drawn row by row, so ink never wraps them by
-          // its own (narrower) count of a conjunct (review round 4, R4-S-1)
-          wrapText(line.text, Math.max(1, chromeGrid.content)).map((row, index) => (
-            <Text key={index} wrap="truncate-end">
-              {row === '' ? ' ' : row}
+    // the streamed words, laid out by the repo's measure in rows of the content column (a status line is one row, cut to it)
+    const answerRows = line.dim ? undefined : wrapText(line.text, Math.max(1, chromeGrid.content));
+    return {
+      rows: (answerRows?.length ?? 1) + (abortHint === undefined ? 0 : 1),
+      node: (
+        <ContentColumn grid={chromeGrid} budget="content">
+          {answerRows === undefined ? (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {/* a status line (a `!` command the person typed, the pre-token wait): cut by the repo's measure (review round 4, R4-S-1) */}
+              {clipLine(line.text, chromeGrid.content)}
             </Text>
-          ))
-        )}
-        {abortHint !== undefined && (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {abortHint}
-          </Text>
-        )}
-      </ContentColumn>
-    );
+          ) : (
+            // drawn row by row, so ink never wraps them by its own (narrower) count of a conjunct (review round 4, R4-S-1)
+            answerRows.map((row, index) => (
+              <Text key={index} wrap="truncate-end">
+                {row === '' ? ' ' : row}
+              </Text>
+            ))
+          )}
+          {abortHint !== undefined && (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {abortHint}
+            </Text>
+          )}
+        </ContentColumn>
+      ),
+    };
   };
   // The full-screen alt-screen renderer (ADR-0068 §c, 2.6.F Step 4b) renders the transcript through the scroll
   // VIEWPORT (the alt buffer has no scrollback for `<Static>` to use); the inline renderer (default) keeps `<Static>`
@@ -1165,19 +1183,29 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // within two seconds ends it). It stands where the prompt row would, in the prompt block.
   // On the grid (unit 9, `LiveTurn`): a tool call's row has the host's mark in the margin and the call's words in the content column; every other
   // row of the turn is the content column's, and the margin beside it is blank, so nothing the model wrote can stand where a mark does.
-  const liveTurn = running ? (
-    <LiveTurn
-      state={state}
-      color={color}
-      grid={chromeGrid}
-      marginForm={marginForm}
-      toolDisplays={props.toolDisplays}
-      reasoning={reasoningPanel}
-      busyLine={renderBusyLine()}
-      interruptArmed={props.interruptArmed === true}
-      host={host}
-    />
-  ) : undefined;
+  // Full-screen the live region is ONE budget (`liveRegionRows`): the busy line or the answer and the interrupt note keep their rows, and the tool calls
+  // and the reasoning panel above them are cut to what is left (`maxTopRows`), so the rule, the status line and the hint stay on the frame.
+  const busy = running ? renderBusyLine() : undefined;
+  const frameBudget = liveRegionRows(viewport?.rows);
+  const maxTopRows =
+    frameBudget === undefined || busy === undefined
+      ? undefined
+      : Math.max(0, frameBudget - busy.rows - (props.interruptArmed === true ? 1 : 0));
+  const liveTurn =
+    busy === undefined ? undefined : (
+      <LiveTurn
+        state={state}
+        color={color}
+        grid={chromeGrid}
+        marginForm={marginForm}
+        toolDisplays={props.toolDisplays}
+        reasoning={reasoningPanel}
+        busyLine={busy.node}
+        maxTopRows={maxTopRows}
+        interruptArmed={props.interruptArmed === true}
+        host={host}
+      />
+    );
   return (
     <Box
       display={props.hidden === true ? 'none' : 'flex'}
@@ -1284,45 +1312,47 @@ function LiveTurn(
     toolDisplays: ChatViewProps['toolDisplays'];
     reasoning: ReasoningPanel | undefined;
     busyLine: ReactElement;
+    /**
+     * The rows the tool calls and the reasoning panel together may take (the live region's budget less the busy line's and the interrupt note's
+     * rows: {@link liveRegionRows}); `undefined` for a renderer that has no fixed frame to overflow. The reasoning body gives up its oldest rows
+     * first, then the oldest tool calls, so the newest of each stays.
+     */
+    maxTopRows: number | undefined;
     interruptArmed: boolean;
     host: ChatHost;
   }>,
 ): ReactElement {
   const { state, color, reasoning } = props;
   const calls = state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved);
+  const toolRows = calls.flatMap((call) =>
+    // laid out by the repo's measure in rows of the content column (ink would wrap a conjunct by its own narrower count: review round 4,
+    // R4-S-1); the call's first row carries the mark, a row after it hangs, and one that starts with a margin word carries the reply's word
+    wrapText(
+      withGlyphForm(!color, () => screenText(toolCallText(call, props.toolDisplays?.get(call.id)))),
+      Math.max(1, props.grid.content),
+      true,
+    ).map((row, index) => (
+      <MarginRow
+        key={`${call.id}:${String(index)}`}
+        role={index === 0 ? 'toolCall' : startsWithMarginWord(row) ? 'agent' : undefined}
+        grid={props.grid}
+        form={props.marginForm}
+        mark={colorProps(color, 'yellow')}
+      >
+        <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+          {row === '' ? ' ' : row}
+        </Text>
+      </MarginRow>
+    )),
+  );
+  const panel =
+    reasoning === undefined
+      ? undefined
+      : reasoningRows(reasoning, props.grid, props.marginForm, color);
+  const top = fitLiveTop(toolRows, panel, props.maxTopRows);
   return (
     <Box flexDirection="column">
-      {calls.flatMap((call) =>
-        // laid out by the repo's measure in rows of the content column (ink would wrap a conjunct by its own narrower count: review round 4,
-        // R4-S-1); the call's first row carries the mark, a row after it hangs, and one that starts with a margin word carries the reply's word
-        wrapText(
-          withGlyphForm(!color, () =>
-            screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
-          ),
-          Math.max(1, props.grid.content),
-          true,
-        ).map((row, index) => (
-          <MarginRow
-            key={`${call.id}:${String(index)}`}
-            role={index === 0 ? 'toolCall' : startsWithMarginWord(row) ? 'agent' : undefined}
-            grid={props.grid}
-            form={props.marginForm}
-            mark={colorProps(color, 'yellow')}
-          >
-            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-              {row === '' ? ' ' : row}
-            </Text>
-          </MarginRow>
-        )),
-      )}
-      {reasoning !== undefined && (
-        <ReasoningRows
-          reasoning={reasoning}
-          grid={props.grid}
-          form={props.marginForm}
-          color={color}
-        />
-      )}
+      {top}
       {/* The busy line places itself on the grid: the streamed answer's rows each with their margin, a status line in the content column. */}
       {props.busyLine}
       {props.interruptArmed && (
@@ -1337,17 +1367,20 @@ function LiveTurn(
 }
 
 /**
- * The live reasoning panel on the grid: its header in the content column, and its body in rows at the content column's width, laid out by the
- * repo's own measure in both renderers (review round 4, R4-S-1: ink's wrap counts an Indic conjunct narrower than a terminal draws it). A row that
- * starts with a margin word carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does: the inline renderer writes
- * the word, the full-screen margin draws nothing for it.
+ * The live reasoning panel on the grid, as its rows: its header in the content column, and its body in rows at the content column's width, laid
+ * out by the repo's own measure in both renderers (review round 4, R4-S-1: ink's wrap counts an Indic conjunct narrower than a terminal draws it). A
+ * row that starts with a margin word carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does: the inline renderer
+ * writes the word, the full-screen margin draws nothing for it. Every row is one element and one terminal row, so the panel can be cut by rows
+ * ({@link fitLiveTop}).
  */
-function ReasoningRows(
-  props: Readonly<{ reasoning: ReasoningPanel; grid: ChatGrid; form: MarginForm; color: boolean }>,
-): ReactElement {
-  const { reasoning, grid, color } = props;
+function reasoningRows(
+  reasoning: ReasoningPanel,
+  grid: ChatGrid,
+  form: MarginForm,
+  color: boolean,
+): { readonly header: ReactElement; readonly body: readonly ReactElement[] } {
   const header = (
-    <ContentColumn grid={grid} budget="content">
+    <ContentColumn key="reasoning:header" grid={grid} budget="content">
       <Text {...dimProps(color)} wrap="truncate-end">
         {reasoning.header}
       </Text>
@@ -1355,24 +1388,43 @@ function ReasoningRows(
   );
   // the body is laid out in rows by the repo's measure in both renderers (ink's wrap would count a conjunct narrower than a terminal draws
   // it: review round 4, R4-S-1); full-screen a row's `agent` draws nothing
-  if (reasoning.body === undefined) return header;
-  return (
-    <Box flexDirection="column">
-      {header}
-      {wrapText(reasoning.body, Math.max(1, grid.content), true).map((row, index) => (
-        <MarginRow
-          key={index}
-          role={startsWithMarginWord(row) ? 'agent' : undefined}
-          grid={grid}
-          form={props.form}
-        >
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {row === '' ? ' ' : row}
-          </Text>
-        </MarginRow>
-      ))}
-    </Box>
-  );
+  if (reasoning.body === undefined) return { header, body: [] };
+  return {
+    header,
+    body: wrapText(reasoning.body, Math.max(1, grid.content), true).map((row, index) => (
+      <MarginRow
+        key={`reasoning:${String(index)}`}
+        role={startsWithMarginWord(row) ? 'agent' : undefined}
+        grid={grid}
+        form={form}
+      >
+        <Text {...dimProps(color)} wrap="truncate-end">
+          {row === '' ? ' ' : row}
+        </Text>
+      </MarginRow>
+    )),
+  };
+}
+
+/**
+ * The tool-call rows and the reasoning panel's rows of the live region, in their order (the calls, then the panel), cut to `maxRows` when the
+ * renderer has a frame to keep (`undefined`: not cut). The newest rows stay: the reasoning body gives up its oldest rows first, its header goes
+ * next, and only then do the oldest tool calls (a turn that makes sixteen of them would otherwise leave no room for the answer or the hint).
+ */
+function fitLiveTop(
+  toolRows: readonly ReactElement[],
+  panel: { readonly header: ReactElement; readonly body: readonly ReactElement[] } | undefined,
+  maxRows: number | undefined,
+): readonly ReactElement[] {
+  if (maxRows === undefined)
+    return panel === undefined ? toolRows : [...toolRows, panel.header, ...panel.body];
+  let room = Math.max(0, maxRows);
+  const tools = toolRows.slice(Math.max(0, toolRows.length - room));
+  room -= tools.length;
+  if (panel === undefined || room < 1) return tools;
+  room -= 1; // the panel's header
+  const body = room > 0 ? panel.body.slice(Math.max(0, panel.body.length - room)) : [];
+  return [...tools, panel.header, ...body];
 }
 
 /** The colour of a row of the in-flight turn above a docked sheet: the prompt block's own for the same row (warnings and tool lines amber). */
@@ -2201,6 +2253,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (text.length === 0) return;
     disarmInterrupt();
     pickEnter.typed(); // a paste is typing: the next `Enter` is the person's
+    props.store.noteForeignInput(); // ... and a `Ctrl+Y` or `Ctrl+G` right after it is not an answer (the guards' foreign-key evidence)
     if (pasted.length === 0) return; // nothing but controls: a key that edits nothing
     const snap = props.store.getSnapshot();
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.

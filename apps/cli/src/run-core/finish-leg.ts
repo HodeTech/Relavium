@@ -40,8 +40,11 @@ export interface LegLifetime {
   readonly effectNoticeOwner: EffectNoticeOwner;
 }
 
-/** Where the Home's card says a run is read: its own browser, on the tab where a finished run is listed. */
-export const READ_RUN_IN_HOME = 'the run in /workflows (History tab)';
+/**
+ * Where the Home's card says a run is read: its own browser. The Runs screen has no command of its own; `/workflows` opens it, and `[h]` in that
+ * popup lands on the History tab, where a finished run is listed.
+ */
+export const READ_RUN_IN_HOME = 'the run in /workflows, then [h]';
 
 export interface FinishLegInput {
   readonly leg: LegKind;

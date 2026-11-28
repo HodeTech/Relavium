@@ -494,6 +494,12 @@ export interface PopupHostOptions {
    * passes `0`.
    */
   readonly settleMs?: number | undefined;
+  /**
+   * Told the cause of a popup that threw while it was drawn or answered ({@link PopupHost.fail}), after the popup is closed and the person told
+   * (the notification never carries it). The cause is RAW: the owner scrubs it before it prints or stores it. A hook that throws is ignored:
+   * the error boundary must never raise a second error of its own.
+   */
+  readonly onFault?: ((cause: unknown) => void) | undefined;
 }
 
 const CLOSED: Omit<PopupHostSnapshot, 'placement'> = { open: false, depth: 0, frame: undefined };
@@ -1286,12 +1292,18 @@ export function createPopupHost(options: PopupHostOptions): PopupHost {
       closeTop(stack.length, 'sheet');
       notify(closedUnansweredText(title, 'sheet'));
     },
-    fail: () => {
+    fail: (cause) => {
       const record = top();
       if (record === undefined) return;
       const title = record.frame.spec.title;
       closeTop(stack.length, 'error');
       notify(closedUnansweredText(title, 'error'));
+      // The cause is the owner's to keep (a log, a diagnostic): the person was told in words, and the words carry none of it.
+      try {
+        options.onFault?.(cause);
+      } catch {
+        // A diagnostic hook cannot fail the boundary that is already closing a popup.
+      }
     },
     resized: (columns, rows) => {
       fitsTerminal = popupFits(columns, rows);

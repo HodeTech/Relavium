@@ -499,9 +499,10 @@ export function reviewUnavailableText(why: {
     return 'Review unavailable — the tool identity does not fit; enlarge terminal.';
   if (why.commandTooLarge)
     return 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.';
-  // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
+  // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it. `[p]` is the full view's key
+  // (it turns the Unicode code points on or off there) and does nothing on the card, so the card's sentence does not offer it.
   return why.onCard
-    ? `Review unavailable — enlarge terminal, narrow change, or ${keyToken('v')} full view / ${keyToken('p')} code points.`
+    ? `Review unavailable — enlarge terminal, narrow change, or ${keyToken('v')} full view.`
     : `Review unavailable — enlarge terminal, narrow change, or ${keyToken('p')} code points.`;
 }
 

@@ -66,6 +66,21 @@ describe('opening', () => {
     expect(fake.calls).toEqual(['load']);
   });
 
+  it('a model in force that cannot be used or is not listed has no row to stand on: it opens on the refresh row, and a bare Enter opens no model’s second step', () => {
+    const noKey = model(GRADED, 'anthropic', { available: false, unavailableReason: 'no-key' });
+    for (const entries of [
+      [noKey, model(OPENAI, 'openai')], // in force, but its provider's key is gone
+      [model(OPENAI, 'openai'), model(BUDGET, 'anthropic')], // in force, but not in the catalog at all
+    ]) {
+      const rig = modelsRig(fakeModels({ entries }).member);
+      expect(rig.open().opened).toBe(true);
+      rig.settle();
+      expect(rig.step()?.highlighted).toBe(MODELS_REFRESH_ROW);
+      rig.press('', ENTER);
+      expect(rig.step()?.index, 'no model was opened').toBe(0);
+    }
+  });
+
   it('opens on the alias of a dated pin in force', () => {
     const fake = fakeModels({
       entries: [model(OPENAI, 'openai'), model('claude-sonnet-4-5', 'anthropic')],

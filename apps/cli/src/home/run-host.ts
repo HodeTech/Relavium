@@ -24,7 +24,7 @@ import type { RunJobControl } from '../render/run-job-control.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { noticeSurfaceOf } from '../render/surface.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { finishLeg, type LegKind } from '../run-core/finish-leg.js';
+import { finishLeg, READ_RUN_IN_HOME, type LegKind } from '../run-core/finish-leg.js';
 import {
   prepareRun,
   type PrepareRunDeps,
@@ -450,7 +450,7 @@ function unexpectedTerminal(runId: string): HostedRunTerminal {
     disposition: 'failed',
     safety: undefined,
     headline: `Run ${id} ended unexpectedly.`,
-    remedy: 'Read the run in /workflows (History tab).',
+    remedy: `Read ${READ_RUN_IN_HOME}.`,
     shellRemedy: `Read ${relaviumRunCommand('logs', runId)}.`,
   });
 }

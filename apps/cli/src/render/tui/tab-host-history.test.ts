@@ -317,7 +317,7 @@ describe('the rows say what they are, in a glyph and a word', () => {
 
   it('says so when there is nothing to list, and when the tab cannot be read', () => {
     expect(rig({ total: 0 }).text()).toContain(
-      'No finished run in this project yet. Start one with /run or from /workflows.',
+      'No finished run in this project yet. Start one from the Home.',
     );
     const none = enterTab(freshTabMemory('history'), 'history', { now: 0 });
     const drawn = tabHostLines(none, { columns: 80, terminalRows: 24 }).map((l) => l.text);

@@ -1026,7 +1026,7 @@ function emptyText(read: HistoryRead): string {
   if (read.hasNext) return HISTORY_EMPTY_PAGE;
   if (status !== undefined) return `No ${status} run here. ${keyToken('f')} changes the filter.`;
   return scope === 'project'
-    ? 'No finished run in this project yet. Start one with /run or from /workflows.'
+    ? 'No finished run in this project yet. Start one from the Home.'
     : 'No finished run yet.';
 }
 

@@ -49,6 +49,45 @@ describe('RunApp terminal projection', () => {
     expect(frame).not.toContain('\x1b');
   });
 
+  it('spreads a model line’s tabs to the terminal’s stops and blanks the host’s marker glyphs in it', async () => {
+    const state = reduceRunEvent(initialRunViewState(), {
+      type: 'agent:reasoning',
+      runId: 'run-1',
+      nodeId: 'thinker',
+      model: 'reasoner',
+      timestamp: '2026-10-16T00:00:00.000Z',
+      sequenceNumber: 1,
+      text: 'col\tstop › marked ▸ again ⇄ swap',
+    });
+    const { lastFrame } = render(<RunApp store={staticStore(state)} />);
+    await waitFor(() => (lastFrame() ?? '').includes('stop'));
+    const frame = lastFrame() ?? '';
+    // `col` is three columns, so its tab runs to column 8: five spaces, never the tab character the terminal would stretch by its own stops.
+    expect(frame).toContain('col     stop');
+    expect(frame).not.toContain('\t');
+    for (const marker of ['›', '▸', '⇄']) expect(frame).not.toContain(marker);
+    expect(frame).toContain('marked');
+  });
+
+  it('keeps the live footer on one row however long the run id is', async () => {
+    const runId = `run-${'x'.repeat(300)}`;
+    const state = reduceRunEvent(initialRunViewState(), {
+      type: 'run:started',
+      runId,
+      timestamp: '2026-10-16T00:00:00.000Z',
+      sequenceNumber: 1,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    });
+    const { lastFrame } = render(<RunApp store={staticStore(state)} />);
+    await waitFor(() => (lastFrame() ?? '').includes('run run-xxxx'));
+    const rows = (lastFrame() ?? '').split('\n').filter((row) => row.includes('xxxx'));
+    expect(rows).toHaveLength(1);
+    // ink-testing-library draws at 100 columns: a footer that wrapped would be one row per hundred characters of id.
+    expect([...(rows[0] ?? '')].length).toBeLessThanOrEqual(100);
+  });
+
   it('shows the run id in the live footer once the run has started (MVP-A2)', async () => {
     const state = reduceRunEvent(initialRunViewState(), {
       type: 'run:started',

@@ -231,7 +231,7 @@ describe('the disposition card', () => {
       glyph: '✗',
       word: 'failed',
       // The card is drawn inside the Home, so its remedy is the Home's own browser, not a shell command (MVP-11 OD-20).
-      says: '/workflows (History tab)',
+      says: '/workflows, then [h]',
     },
     {
       disposition: 'cancelled',

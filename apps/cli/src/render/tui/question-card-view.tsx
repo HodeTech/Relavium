@@ -97,6 +97,10 @@ export function QuestionCardHost(
         !stdout.destroyed &&
         !stdout.writableEnded &&
         !stdout.errored,
+      // The settle before a choosing key counts from the moment the exact frame is known to be flushed, not from when it was minted.
+      onAcknowledge: (frame) => {
+        if (frame !== undefined) latest.current.store.acknowledgeQuestionFrame(frame);
+      },
     }),
   );
   useEffect(() => {

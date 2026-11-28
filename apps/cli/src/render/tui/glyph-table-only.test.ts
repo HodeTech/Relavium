@@ -69,6 +69,12 @@ const ALLOWED: readonly Allowance[] = [
       'the frames of the animated spinner: a mark that is not a table glyph and carries no state',
   },
   {
+    characters: /\u2800/u,
+    files: ['render/tui/legend.ts'],
+    reason:
+      'the braille blank, named in a PATTERN: it draws as an empty cell in a terminal, so the legend\u2019s separator check reads it as a space (review of PR #103, B14); nothing draws it',
+  },
+  {
     characters: /[│└]/u,
     files: [
       'render/tui/home-app.tsx',

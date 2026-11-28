@@ -69,7 +69,7 @@ describe('the disposition of a departed hosted leg', () => {
     expect(card).toMatchObject({ disposition: 'failed', safety: undefined });
     expect(card.headline).toBe('Run run-hosted-1 failed.');
     // The card is inside the TUI: the action is the Home's own browser, never a shell command (ADR-0146 §6, MVP-11 OD-20).
-    expect(card.remedy).toBe('Read the run in /workflows (History tab) for the cause.');
+    expect(card.remedy).toBe('Read the run in /workflows, then [h] for the cause.');
     // The line the shell receives after the Home has closed has no `/workflows` to open, so it keeps the command.
     expect(card.shellRemedy).toBe('Read `relavium logs run-hosted-1` for the cause.');
   });
@@ -143,9 +143,7 @@ describe('the disposition of a departed hosted leg', () => {
     const card = describeHostedRunTerminal(leg({ outcome: undefined, durability: 'uncertain' }));
     expect(card).toMatchObject({ disposition: 'taken_over', safety: 6 });
     expect(card.headline).toContain('taken over by another process');
-    expect(card.remedy).toBe(
-      'Read the run in /workflows (History tab) for what actually happened.',
-    );
+    expect(card.remedy).toBe('Read the run in /workflows, then [h] for what actually happened.');
     expect(card.shellRemedy).toBe('Read `relavium logs run-hosted-1` for what actually happened.');
   });
 

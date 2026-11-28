@@ -1063,7 +1063,7 @@ describe('nothing reaches the Home`s terminal', () => {
     const notice = s.host.notices.snapshot().join('\n');
     expect(notice).toContain('was taken over by another process');
     // Inside the TUI the run is read in the Home's own browser, never with a shell command (MVP-11 Step 2 review round 2, N2).
-    expect(notice).toContain('read the run in /workflows (History tab) for what actually happened');
+    expect(notice).toContain('read the run in /workflows, then [h] for what actually happened');
     expect(notice).not.toMatch(/\brelavium\s+[a-z]/u);
     expect(s.homeIo.err()).toBe('');
   });

@@ -87,6 +87,11 @@ export interface FramedStepOptions {
    * now` on the first step of the automatic first run, whose step back is the skip). Default `back`. A PRODUCT constant, as `enterVerb` is.
    */
   readonly escapeVerb?: string;
+  /**
+   * The steps the flow passed WITHOUT doing them, drawn as not done (`○`) on THIS step's rail, as {@link FramedDone.skipped} draws them on the Done
+   * step (`/pricing`'s clear never asks for rates, so its confirmation must not read `✓ Rates`). Absent ⇒ every step before it was done.
+   */
+  readonly skipped?: readonly number[];
 }
 
 /** What the persistent last step says. */
@@ -463,6 +468,7 @@ export function framedFlow(
         exitLabel: stepOptions?.exitLabel,
         enterVerb: stepOptions?.enterVerb,
         escapeVerb: stepOptions?.escapeVerb,
+        skipped: stepOptions?.skipped,
       }),
     done: (done) => doneStep(flow, rail, done),
     fail: (step, message, reason, failOptions) =>

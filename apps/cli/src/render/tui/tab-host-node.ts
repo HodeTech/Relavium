@@ -15,8 +15,9 @@ import { EMPTY_OUTPUT, NOT_RECORDED, NO_OUTPUT, SKIPPED, UNAVAILABLE } from '../
 import { sanitizeInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
 import { formatDuration } from '../notation.js';
-import { glyph, statusCell } from './glyphs.js';
+import { blankHostGlyphs, glyph, statusCell } from './glyphs.js';
 import { exitKey, keyToken, type LegendItem, type LegendKey } from './legend.js';
+import { screenText } from './screen-text.js';
 import {
   clipLine,
   flushRow,
@@ -155,9 +156,12 @@ function wrapText(text: string, width: number): readonly string[] {
   return rows;
 }
 
-/** Each line of `text` (split at its line breaks, tabs spread) as indented rows, wrapped. */
+/**
+ * Each line of `text` (split at its line breaks, tabs spread) as indented rows, wrapped. The text is untrusted (a node's output, an error's
+ * message), so it passes the screen's filter BEFORE it is laid out ({@link screenText}: a rewrite can change the width the layout measures).
+ */
 function textRows(text: string, indent: string): readonly NodeLine[] {
-  return text
+  return screenText(text)
     .split('\n')
     .flatMap((line) => wrapText(line.replaceAll('\t', '  '), NODE_WRAP_COLUMNS))
     .map((left): NodeLine => ({ kind: 'text', left: `${indent}${left}` }));
@@ -215,7 +219,8 @@ function errorLines(model: NodeDetailModel): readonly NodeLine[] {
   return [
     heading,
     ...code,
-    ...(error.message === undefined ? [] : textRows(error.message, INDENT)),
+    // The error's message is text from the history file, drawn inside a host section: a glyph of the host's own in it is blanked.
+    ...(error.message === undefined ? [] : textRows(blankHostGlyphs(error.message), INDENT)),
     ...where,
   ];
 }

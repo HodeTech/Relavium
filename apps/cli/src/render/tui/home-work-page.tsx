@@ -79,10 +79,15 @@ import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 const ROW_INDENT_COLUMNS = 4;
 
 /**
- * Where the rows a `▼` counts are when `↓` cannot reach them (they were not loaded): the runs in `/workflows` (its Active and History tabs), the
- * conversations in `/resume`, the agents in `/agents` (an agent row is never focusable, so its marker always says where).
+ * Where the rows a `▼` counts are when `↓` cannot reach them (they were not loaded): the runs in the Runs screen (its Active and History tabs),
+ * which `/workflows` opens with `[h]` (there is no command of its own), the conversations in `/resume`, the agents in `/agents` (an agent row
+ * is never focusable, so its marker always says where).
  */
-const ELSEWHERE = { runs: '/workflows', sessions: '/resume', agents: '/agents' } as const;
+const ELSEWHERE = {
+  runs: '/workflows, then [h]',
+  sessions: '/resume',
+  agents: '/agents',
+} as const;
 
 /** One line of a section: a row (its durable key, its words, whether it is the focused row, its tint on an Attention row) or a marker. */
 type SectionLine =

@@ -102,6 +102,13 @@ const PLAIN_KEYS: ReadonlySet<string> = new Set([
 const KEY_TOKEN_LOOKALIKE = /\[(?:[\p{L}\p{N}]|[^\]\n+]{1,10}\+[^\]\n]{1,16})\]/gu;
 
 /**
+ * What a terminal draws as a blank cell although it is not whitespace: the Braille blank (U+2800) and the Hangul fillers (U+115F, U+1160, and U+3164
+ * and U+FFA0, which the compatibility fold reads as U+1160). They are not `\p{Cf}`, so the folded view keeps them, and beside the dot they read as
+ * the spaces of the separator (`a\u3164·\u3164b` draws `a · b`): the lookarounds below count them as whitespace.
+ */
+const BLANK_CELLS = String.raw`\s\u2800\u115F\u1160\u3164\uFFA0`;
+
+/**
  * The separator as it can be forged: a lookalike of the middle dot (U+00B7; the bullet and dot operators U+2219 and U+22C5, the hyphenation
  * point U+2027 and the katakana middle dot U+30FB; the Greek ano teleia U+0387 and the halfwidth katakana middle dot U+FF65 fold to the first
  * and the last of these, so the {@link foldedView} reads them as those; and, since a model id a project's agent file chooses reached the status
@@ -109,8 +116,10 @@ const KEY_TOKEN_LOOKALIKE = /\[(?:[\p{L}\p{N}]|[^\]\n+]{1,10}\+[^\]\n]{1,16})\]/
  * U+2E33 and the bullet U+2022, with the bullets of the same class: U+2023, U+2043, U+25E6, U+2981 and U+25CF) with a whitespace character of
  * any kind (a no-break or a thin space too) on each side. The whitespace is looked at and left, so two dots in a row (`a · · b`) are both found.
  */
-const SEPARATOR_LOOKALIKE =
-  /(?<=\s)[\u00B7\u2219\u22C5\u2027\u30FB\u2E31\uA78F\u16EB\u2E33\u2022\u2023\u2043\u25E6\u2981\u25CF](?=\s)/gu;
+const SEPARATOR_LOOKALIKE = new RegExp(
+  `(?<=[${BLANK_CELLS}])[\\u00B7\\u2219\\u22C5\\u2027\\u30FB\\u2E31\\uA78F\\u16EB\\u2E33\\u2022\\u2023\\u2043\\u25E6\\u2981\\u25CF](?=[${BLANK_CELLS}])`,
+  'gu',
+);
 
 /** The characters that draw nothing (the zero-width and joining characters, the soft hyphen, the byte-order mark, the bidi marks): dropped from the view a forgery is looked for in. */
 const INVISIBLE = /^\p{Cf}$/u;

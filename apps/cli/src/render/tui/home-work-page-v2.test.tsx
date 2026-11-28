@@ -222,14 +222,14 @@ describe('the (5, 5, 5) page as drawn', () => {
 });
 
 describe('the marker counts the TRUE total and says where the rest are only where `↓` cannot reach them', () => {
-  it('rows the store counted but did not load: `▼ N more · /workflows` (runs) and `· /resume` (sessions); loaded rows: only `▼ N more`', () => {
+  it('rows the store counted but did not load: `▼ N more · /workflows, then [h]` (runs) and `· /resume` (sessions); loaded rows: only `▼ N more`', () => {
     const many: HomeSnapshot = { ...FIVE, totals: { attention: 32, sessions: 40, runs: 77 } };
     const list = listOf(frame({ snapshot: many, cols: 80, rows: 24 }).rows).map((row) =>
       row.trim(),
     );
-    expect(list).toContain('v 28 more · /workflows');
+    expect(list).toContain('v 28 more · /workflows, then [h]');
     expect(list).toContain('v 37 more · /resume');
-    expect(list).toContain('v 74 more · /workflows');
+    expect(list).toContain('v 74 more · /workflows, then [h]');
     // the rows shown + N = the total, section by section
     const attention = list.filter((row) => row.startsWith('||') || row.startsWith('x ')).length;
     expect(attention + 28).toBe(32);

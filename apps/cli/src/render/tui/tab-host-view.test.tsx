@@ -90,6 +90,14 @@ describe('TabHostView sanitizes at draw time', () => {
     expect(drawn).toContain('beforeafter');
   });
 
+  it('draws a line through the screen filter too: a character a terminal draws two columns wide and the layout counts as none is dropped', () => {
+    // U+115F (a Hangul filler) is default-ignorable: tmux draws it two columns, the layout none, so a row cut to fit would reach the edge.
+    const filler = String.fromCodePoint(0x115f);
+    const drawn = plain(frame(withHistoryNote(historyHost(), `before${filler}after`), false));
+    expect(drawn).not.toContain(filler);
+    expect(drawn).toContain('beforeafter');
+  });
+
   it('leaves a line it has nothing to remove from exactly as the model drew it', () => {
     const drawn = text(historyHost());
     expect(drawn).toContain('› ? missing');

@@ -113,8 +113,11 @@ export const ACTIVE_KEYS = {
 
 export const ACTIVE_LOADING = 'Reading the active runs…';
 export const ACTIVE_UNREADABLE = 'The active runs could not be read.';
-/** What the tab says when this directory has no active run: where a run is started, and where the other directories' are. */
-export const ACTIVE_EMPTY = `No run is active here. /run starts one; ${keyToken('a')} lists every project’s.`;
+/**
+ * What the tab says when this directory has no active run: where a run is started, and where the other directories' are. The Runs screen has no
+ * prompt, so `/run` is not typed here: a run is started from the Home.
+ */
+export const ACTIVE_EMPTY = `No run is active here. Start one from the Home; ${keyToken('a')} lists every project’s.`;
 /** The same when every project is listed. */
 export const ACTIVE_EMPTY_ALL = 'No run is active in any project.';
 /** What the hint under the list says of what is listed, by scope; the list is as of each node boundary. */

@@ -274,6 +274,11 @@ export interface ChatStoreController extends ChatStore {
   requestQuestion: (request: AskUserRequest, signal?: AbortSignalLike) => Promise<AskUserAnswer>;
   /** Insert a bracketed paste into the open question's own-answer field; `true` when a question is open (the paste is consumed). */
   pasteIntoQuestion: (text: string) => boolean;
+  /**
+   * A paste reached the chat: it is typing, so it is a foreign key for the guards (a `Ctrl+Y` or `Ctrl+G` within the next second and a half is
+   * not an answer), exactly as a typed key is when no card owns it. The paste itself goes wherever the host sends it.
+   */
+  noteForeignInput: () => void;
   /** Bind whether the question card's exact frame has been acknowledged visible (the host component owns the measurement). */
   bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
   /**
@@ -290,6 +295,11 @@ export interface ChatStoreController extends ChatStore {
   bindCheckpointVisibility: (visible: (() => boolean) | undefined) => void;
   /** The host flushed the checkpoint card's exact `frame`: from now the dwell before `Ctrl+Y` counts. A stale frame is ignored. */
   acknowledgeCheckpointFrame: (frame: object) => void;
+  /**
+   * The host's report that the open question's frame is on screen: the settle before a choosing key counts runs from here (ADR-0132 §3).
+   * A frame that is not the current one (a stale acknowledgement) is ignored.
+   */
+  acknowledgeQuestionFrame: (frame: object) => void;
 }
 
 /**
@@ -374,13 +384,19 @@ export function createChatStore(
   // When the current question frame was minted, on the MONOTONIC clock like every other guard: a wall clock stepped back would refuse every
   // choosing key for as long as it was stepped, one stepped forward would skip the settle (ADR-0147 §2; unit 8 fix wave, S-5).
   let questionFrameAt = 0;
+  // When the host acknowledged the current frame as flushed, on the same clock; unset until it does. The settle counts from there, as the
+  // checkpoint card's dwell does, so a slow flush leaves the person the whole time to read; a host that never reports one is judged from
+  // the mint (a test's stub of the visibility).
+  let questionShownAt: number | undefined;
   const mintQuestionFrame = (): void => {
     questionFrame = {};
     questionFrameAt = performance.now();
+    questionShownAt = undefined;
   };
   // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
   const questionAcceptsKeys = (): boolean =>
-    questionVisible?.() === true && performance.now() - questionFrameAt >= QUESTION_SETTLE_MS;
+    questionVisible?.() === true &&
+    performance.now() - (questionShownAt ?? questionFrameAt) >= QUESTION_SETTLE_MS;
   // The open continue-checkpoint card and the settle pair of its pending promise (ADR-0136).
   let checkpoint: CheckpointCardState | undefined;
   let pendingCheckpoint:
@@ -1237,6 +1253,9 @@ export function createChatStore(
         state = approvalOpened(state, Date.now());
         flush();
       }),
+    noteForeignInput: () => {
+      keyHistory.lastForeignKeyAt = performance.now();
+    },
     pasteIntoQuestion: (text) => {
       if (question === undefined) return false;
       const next = pasteIntoQuestion(question, text, questionAcceptsKeys());
@@ -1301,6 +1320,11 @@ export function createChatStore(
       if (checkpoint === undefined || frame !== checkpointFrame || checkpointShownAt !== undefined)
         return;
       checkpointShownAt = performance.now();
+    },
+    acknowledgeQuestionFrame: (frame) => {
+      if (question === undefined || frame !== questionFrame || questionShownAt !== undefined)
+        return;
+      questionShownAt = performance.now();
     },
   };
 }

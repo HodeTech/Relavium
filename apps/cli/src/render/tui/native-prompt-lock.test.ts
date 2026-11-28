@@ -344,6 +344,24 @@ describe('a guarded select: locked from the moment it appears; only the guarded 
     expect(r.ui.lock.read()).toBe(true);
     expect(r.time.due()).toEqual([1500 + APPROVAL_LOCKOUT_MS]);
   });
+
+  it('text delivered in one chunk with its return ("xyz\\r") is typing, not an Enter: the guarded option does not answer, a lone Enter later does', async () => {
+    const r = rig();
+    r.flow.begin();
+    const answer = r.flow.select({ message: 'Use ANTHROPIC_API_KEY?', options: CONSENT_OPTIONS });
+    r.ack();
+    r.time.advance(APPROVAL_LOCKOUT_MS);
+    expect(r.ui.lock.read()).toBe(false);
+    // The same chunk as one Enter would answer, had the text not come with it.
+    r.ui.input('xyz\r', NONE);
+    expect(await settledWith(answer)).toBe(PENDING);
+    // The refused chunk restarts the lockout, as a refused early Enter does; once it has run out a lone Enter answers (the frame is the
+    // same one, so its dwell is not restarted).
+    r.time.advance(APPROVAL_LOCKOUT_MS);
+    expect(r.ui.lock.read()).toBe(false);
+    r.ui.input('', ENTER);
+    expect(await answer).toBe('use');
+  });
 });
 
 describe('a prompt that holds nothing runs no timer and is never locked', () => {

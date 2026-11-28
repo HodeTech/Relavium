@@ -297,6 +297,26 @@ describe('a question must be on screen long enough to read before a key counts (
     expect(await outcome(pending)).toMatchObject({ ok: true });
   });
 
+  it('counts the settle from the frame the host acknowledged, not from the mint: a slow flush leaves the whole window to read', async () => {
+    const store = newStore();
+    const pending = store.requestQuestion(REQUEST);
+    store.bindQuestionVisibility(() => true);
+    // The flush was slow: the frame was minted a long time ago and has been on screen for none of it.
+    vi.advanceTimersByTime(QUESTION_SETTLE_MS * 4);
+    const frame = store.getSnapshot().questionFrame;
+    expect(frame).toBeDefined();
+    if (frame === undefined) return;
+    store.acknowledgeQuestionFrame(frame);
+    store.handleReviewInput('1', {}); // a held key flushed with the frame
+    expect(store.getSnapshot().question).toBeDefined();
+    vi.advanceTimersByTime(QUESTION_SETTLE_MS - 1);
+    store.handleReviewInput('1', {});
+    expect(store.getSnapshot().question).toBeDefined();
+    vi.advanceTimersByTime(1);
+    store.handleReviewInput('1', {});
+    expect(await outcome(pending)).toMatchObject({ ok: true });
+  });
+
   it('the stop keys never wait', () => {
     const store = newStore();
     void store.requestQuestion(REQUEST);

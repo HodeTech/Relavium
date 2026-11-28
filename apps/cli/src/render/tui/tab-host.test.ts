@@ -274,7 +274,7 @@ describe('what is drawn', () => {
       .map((line) => line.text)
       .join('\n');
     expect(text).toContain(ACTIVE_EMPTY);
-    expect(text).toContain('/run starts one');
+    expect(text).toContain('Start one from the Home');
     expect(text).toContain('[a] lists every project’s');
   });
 

@@ -327,7 +327,7 @@ describe('finishLeg — a run another process took over', () => {
     const run = harness('start', 'paused', { handle: FENCED(), noticeSurface: 'tui' });
     expect(await run.finish()).toBe(EXIT_CODES.runOwnedElsewhere);
     expect(run.err()).toBe(
-      `run ${RUN_ID} was taken over by another process; this one stopped without recording an outcome — read the run in /workflows (History tab) for what actually happened\n`,
+      `run ${RUN_ID} was taken over by another process; this one stopped without recording an outcome — read the run in /workflows, then [h] for what actually happened\n`,
     );
     expect(run.err()).not.toContain('relavium');
     expect(run.out()).toBe('');

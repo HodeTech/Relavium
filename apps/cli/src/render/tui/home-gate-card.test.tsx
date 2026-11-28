@@ -499,7 +499,9 @@ describe('opening the card', () => {
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
     expect(m.controller.getSnapshot().notice).toContain('No gate to decide here');
-    expect(m.controller.getSnapshot().notice).toContain('see what it waits for in /workflows');
+    expect(m.controller.getSnapshot().notice).toContain(
+      'see what it waits for in /workflows, then [h]',
+    );
     expect(m.controller.getSnapshot().notice).not.toContain('relavium status');
     expect(m.controller.getSnapshot().notice).toContain('(run run-0001)');
   });

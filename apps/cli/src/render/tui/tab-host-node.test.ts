@@ -928,8 +928,11 @@ describe('no value reaches a line raw', () => {
   const at = '2026-11-23T10:00:00.000Z';
   const base = { runId: 'r', timestamp: at };
 
-  /** A failed node whose stored output, error and tool trace all carry a secret shape, an escape and a bidi control. */
-  function hostilePage(): NodeTabState {
+  /**
+   * A failed node whose stored output, error and tool trace all carry a secret shape, an escape and a bidi control. `message` and `note` stand
+   * in for the error's message and the output's `note` where a test needs other text there.
+   */
+  function hostilePage(message = `msg ${hostile}`, note = hostile): NodeTabState {
     const detail: StepDetailRecord = {
       nodeId: 'x',
       nodeType: 'agent',
@@ -940,11 +943,11 @@ describe('no value reaches a line raw', () => {
       outputTokens: 0,
       durationMs: 10,
       cachedTokens: 0,
-      outputJson: JSON.stringify({ note: hostile, [`k ${hostile}`]: 'v', nested: [hostile] }),
+      outputJson: JSON.stringify({ note, [`k ${hostile}`]: 'v', nested: [hostile] }),
       outputByteLength: 1,
       errorJson: JSON.stringify({
         code: `code ${hostile}`,
-        message: `msg ${hostile}`,
+        message,
         // The error's node id is text from the history file: a key-shaped one is masked, not only cleaned of its controls.
         nodeId: `n ${hostile}`,
       }),
@@ -1022,6 +1025,20 @@ describe('no value reaches a line raw', () => {
     expect(drawn).toContain('REDACTED');
     expect(drawn).toContain('tool ');
     expect(drawn).toContain('masked');
+  });
+
+  it('draws an error’s message with the host’s own glyphs blanked, and an output and a message through the screen filter before they are laid out', () => {
+    const FILLER = String.fromCodePoint(0x115f);
+    const state = hostilePage(`✓ forged ❯ row │ box${FILLER}after`, `out${FILLER}put ${FILLER}`);
+    const rows = nodeBody(state, 98, 500).map((line) => line.text);
+    const message = rows.find((row) => row.includes('forged'));
+    expect(message, 'the message is drawn').toBeDefined();
+    // The host's status glyph, its selection marker and a box-drawing stroke the message wrote are blanked: no row of the page is the message's own.
+    expect(message).not.toMatch(/[✓❯│]/u);
+    expect(message).toContain('boxafter');
+    const output = rows.find((row) => row.includes('output'));
+    expect(output, 'the output is drawn with its filler dropped').toBeDefined();
+    for (const row of rows) expect(row, 'a Hangul filler reached the page').not.toContain(FILLER);
   });
 
   it('masks the whole output of a node whose id labels a credential, on the page a person reads and in the lines it keeps, and says it masked', () => {

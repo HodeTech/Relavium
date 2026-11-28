@@ -2078,7 +2078,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     } catch {
       notParked(
         runId,
-        `The Active tab of /workflows shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
+        `The Active tab of /workflows, then [h], shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
         back,
         from,
       );
@@ -2100,7 +2100,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else
         notParked(
           runId,
-          `No gate to decide here: see what it waits for in /workflows (run ${sanitizeInline(runId)}).`,
+          `No gate to decide here: see what it waits for in /workflows, then [h] (run ${sanitizeInline(runId)}).`,
           back,
           from,
         );
@@ -2674,7 +2674,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (ask === undefined) {
       notParked(
         runId,
-        `Continuing a run is unavailable in this session: see what it waits for in /workflows (run ${sanitizeInline(runId)}).`,
+        `Continuing a run is unavailable in this session: see what it waits for in /workflows, then [h] (run ${sanitizeInline(runId)}).`,
         back,
         from,
       );

@@ -55,6 +55,32 @@ export function promptEditorRows(frameRows: number | undefined): number | undefi
 }
 
 /**
+ * The transcript rows a RUNNING turn leaves above its live region at the least: the turn is what the person watches, but the conversation does not
+ * vanish. One row is what the reasoning panel at its tallest (its header and up to 14 body rows, counted as the screen draws them) and the busy line
+ * already left at 80×24, so a panel alone is drawn as it was; what the budget changes is the SUM of the parts.
+ */
+export const LIVE_REGION_MIN_TRANSCRIPT_ROWS = 1;
+
+/**
+ * The rows the live region of a running turn may take in a frame of `frameRows` rows, ALL its parts together (the tool calls, the reasoning panel,
+ * the streamed answer or the busy line, the interrupt note): what the frame leaves after the header, the rest of the prompt block (the leading row,
+ * the rule, the status line and the hint) and {@link LIVE_REGION_MIN_TRANSCRIPT_ROWS} of the transcript. Each part is bounded on its own (the tool
+ * calls, the reasoning body, a third of the frame for the answer), but together they could stand taller than the frame, and the rule, the status
+ * line and the hint, the person's way to stop the turn, were pushed out of it (review of PR #103, B1). The answer and the interrupt note keep
+ * their rows; the reasoning body gives up its oldest rows first, then the oldest tool calls. At the supported 80×24 (a frame of 23 rows) the
+ * budget is 16. `undefined` for a host that does not know its height (the inline renderer grows its live region and the terminal scrolls it).
+ */
+export function liveRegionRows(frameRows: number | undefined): number | undefined {
+  if (frameRows === undefined || !Number.isFinite(frameRows)) return undefined;
+  const room =
+    Math.floor(frameRows) -
+    CHAT_HEADER_ROWS -
+    (PROMPT_BLOCK_ROWS - 1) -
+    LIVE_REGION_MIN_TRANSCRIPT_ROWS;
+  return Math.max(1, room);
+}
+
+/**
  * The editor's bound for a host that has either the full-screen frame's rows (`viewportRows`, already one short of the terminal) or only the
  * terminal's (`terminalRows`, the inline renderer's: the frame it would have is {@link chatFrameRows} of it): the first that is known, else none.
  */

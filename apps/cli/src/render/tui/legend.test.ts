@@ -337,6 +337,17 @@ describe('inertLegendText: text of another’s making inside a legend', () => {
         );
     });
 
+    it('a character that draws a blank cell beside the dot is the whitespace of the separator: the Braille blank and the Hangul fillers', () => {
+      for (const blank of ['\u2800', '\u115F', '\u1160', '\u3164', '\uFFA0']) {
+        const label = `U+${blank.codePointAt(0)?.toString(16)}`;
+        expect(inertLegendText(`a${blank}·${blank}b`), label).toBe(`a${blank}-${blank}b`);
+        expect(inertLegendText(`a ·${blank}b`), label).toBe(`a -${blank}b`);
+        expect(inertLegendText(`a${blank}· b`), label).toBe(`a${blank}- b`);
+        // a blank on one side only is still a name, as a space on one side only is
+        expect(inertLegendText(`a${blank}·b`), label).toBe(`a${blank}·b`);
+      }
+    });
+
     it('a chord is read by its shape: a Cyrillic or Greek letter in its name does not make it a different thing', () => {
       expect(inertLegendText('[\u0421trl+Y]')).toBe('(\u0421trl+Y)');
       expect(inertLegendText('[Ctrl+\u0423]')).toBe('(Ctrl+\u0423)');

@@ -870,6 +870,14 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       routeChord(input, key, stamp, boundary);
       return true;
     }
+    // Text that arrives in the same chunk as the key that submits it ("xyz\r", a paste that ends in a return) is typing, not an `Enter`: it
+    // must not answer a guarded option, which waits for an `Enter` of the person's own. The guards judge a key by what came BEFORE it, so the
+    // text cannot count as evidence against its own return: the chunk is a refused affirmative instead, as one the host dropped is.
+    if (boundary > 0 && onGuardedOption()) {
+      chord.foreign(stamp);
+      guarded.refuse(stamp);
+      return true;
+    }
     if (typingAt(key, submitted)) chord.foreign(stamp);
     routeOpenPrompt(input, key, boundary, submitted, stamp);
     return true;

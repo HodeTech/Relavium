@@ -106,9 +106,11 @@ describe('reviewUnavailableText — why a review cannot be shown, said once', ()
   });
 
   it('offers the full view only on the card, where [v] opens it; on the full view it does nothing', () => {
+    // `[p]` (code points) is the full view's key: on the card it does nothing, so the card's sentence never names it.
     expect(reviewUnavailableText(none)).toBe(
-      `Review unavailable ${DASH} enlarge terminal, narrow change, or [v] full view / [p] code points.`,
+      `Review unavailable ${DASH} enlarge terminal, narrow change, or [v] full view.`,
     );
+    expect(reviewUnavailableText(none)).not.toContain('[p]');
     expect(reviewUnavailableText({ ...none, onCard: false })).toBe(
       `Review unavailable ${DASH} enlarge terminal, narrow change, or [p] code points.`,
     );

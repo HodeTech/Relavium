@@ -576,7 +576,9 @@ async function confirmAndCommit(
   say: (reason: string) => string,
 ): Promise<string | undefined> {
   const text = pricingCardText(prepared.offer);
-  const answer = await flow.at(RAIL.confirm).chord({ ...text, escape: 'cancel', signal });
+  const answer = await flow
+    .at(RAIL.confirm, passedBy(prepared.offer.kind))
+    .chord({ ...text, escape: 'cancel', signal });
   if (answer !== 'allow') return PRICING_NOT_RECORDED;
   const attempt = prepared.commit();
   if (attempt.ok) await flow.done(pricingDoneText(prepared.offer, attempt.written));

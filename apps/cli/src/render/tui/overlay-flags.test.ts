@@ -88,7 +88,7 @@ const OPEN: Gates = {
   custodyRevoked: false,
 };
 
-/** What the three submodes share: the palette adds the landing's two gates (it is the one that opens on the landing). */
+/** What the three submodes share: the palette adds the landing's own prompt gate (it is the one that opens on the landing). */
 const SUBMODE: Gates = {
   ...OPEN,
   screenSlot: true,
@@ -98,12 +98,15 @@ const SUBMODE: Gates = {
   interrupt: true,
   stripPause: true,
   promptHidden: true,
+  noticePaging: true,
 };
 
 /**
  * THE TABLE. One row per flag; a flag with no row (or a row with no flag) does not compile.
  *
  * The cells that disagree with their neighbours, and why they are kept (the nine disagreements are the table in `overlay-flags.ts`):
+ * - the three submodes close the notice paging (`PgUp`/`PgDn` belong to the `@` picker, the search list or the palette, never to the notice under
+ *   them); only the palette also hides the landing's prompt.
  * - `screen` pauses the strip and the notice paging, but is not a slot gate (a screen REPLACES the slot) and is never open in a chat.
  * - `exitGuard` is a slot gate, a strip gate and an Active-poll gate, but not a scroll, pointer or interrupt one (it is routed first).
  * - `nativePrompt` closes the pointer, the scroll keys, the mouse capture and the custody, and does NOT pause the strip
@@ -117,7 +120,7 @@ const SUBMODE: Gates = {
  *   answers every key, and `approval` and `review` close the paste through `pasteFlagsFrom` (`approvalPending`).
  */
 const EXPECTED = {
-  palette: { ...SUBMODE, landingPromptHidden: true, noticePaging: true },
+  palette: { ...SUBMODE, landingPromptHidden: true },
   search: SUBMODE,
   mention: SUBMODE,
   screen: { ...OPEN, stripPause: true, noticePaging: true },

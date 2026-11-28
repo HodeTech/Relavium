@@ -21,6 +21,7 @@ import {
   refusedOpenText,
   type PopupContext,
   type PopupHandlers,
+  type PopupHost,
   type PopupHostOptions,
 } from './popup-host.js';
 import { currentStep, type PopupSpec, type PopupStep } from './popup-reducer.js';
@@ -720,6 +721,33 @@ describe('a stack of depth two closes as one (ADR-0148 §2, §5; cannot arise in
     r.host.fail(new Error('x'));
     expect(r.host.getSnapshot().open).toBe(false);
     expect(r.closed).toEqual(['child:error', 'parent:error']);
+  });
+
+  it('a popup that throws hands its cause to the owner, after the stack is closed, and a hook that throws changes nothing', () => {
+    const cause = new Error('boom');
+    const seen: { readonly cause: unknown; readonly open: boolean }[] = [];
+    const holder: { host?: PopupHost } = {};
+    const r = rig({
+      onFault: (given) =>
+        seen.push({ cause: given, open: holder.host?.getSnapshot().open ?? true }),
+    });
+    holder.host = r.host;
+    r.host.openForUser(spec());
+    r.host.fail(cause);
+    expect(seen).toEqual([{ cause, open: false }]);
+    expect(r.host.getSnapshot().open).toBe(false);
+    // With no popup open there is nothing to report: the boundary says nothing twice.
+    r.host.fail(new Error('late'));
+    expect(seen).toHaveLength(1);
+
+    const throwing = rig({
+      onFault: () => {
+        throw new Error('the hook failed');
+      },
+    });
+    throwing.host.openForUser(spec());
+    expect(() => throwing.host.fail(cause)).not.toThrow();
+    expect(throwing.host.getSnapshot().open).toBe(false);
   });
 
   it('the opener closing itself (its own context) takes its child with it', () => {

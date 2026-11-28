@@ -1054,7 +1054,7 @@ describe('a card that cannot open says why, and keeps the remedy on the row at 8
       (): RunGates | undefined => {
         throw new Error('PRIVATE');
       },
-      'The Active tab of /workflows shows what the run waits for.',
+      'The Active tab of /workflows, then [h], shows what the run waits for.',
     ],
     [
       'is gone',
@@ -1064,7 +1064,7 @@ describe('a card that cannot open says why, and keeps the remedy on the row at 8
     [
       'has no gate to decide',
       (): RunGates | undefined => ({ ...GATE_RUN, runId: LONG, gates: [] }),
-      'No gate to decide here: see what it waits for in /workflows (run ',
+      'No gate to decide here: see what it waits for in /workflows, then [h] (run ',
     ],
   ])(
     '%s: the sentence starts with what to do, and the id is what a clip takes',

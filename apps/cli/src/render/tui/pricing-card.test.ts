@@ -1237,6 +1237,8 @@ describe('the rail of a last step draws what was never reached as not done (OB-3
     });
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
     await r.cardUp();
+    // the confirmation itself already says so: a CLEAR never asked for a rate, so `Rates` is not `✓` on the step before Done (PR #103 review, C13)
+    expect(r.ui.getSnapshot().popup?.skipped, 'the confirmation rail').toEqual([RATES_STEP]);
     r.ui.input('y', ctrl);
     const done = await r.done();
     expect(done.tone).toBe('ok');
