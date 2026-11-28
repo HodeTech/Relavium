@@ -343,7 +343,15 @@ describe.each(VARIANTS)('the Home’s flows that write, $renderer at 80×24', (v
         await m.until(() => recorded.shown.length > 0 || recorded.mostQueued > 0, 2000);
         // One notification on the Home's channel. The `/workflows` popup is closed while its export is: nothing draws its legend, so the channel holds it until the
         // screen is left (`notifications.ts`), and it waits there rather than showing.
-        expect(recorded.shown.length === 0 ? recorded.mostQueued : recorded.shown.length).toBe(1);
+        expect(
+          recorded.shown.length === 0 ? recorded.mostQueued : recorded.shown.length,
+          // What was on screen and in the channel when it was not there: the one place a slow runner's failure can be read from.
+          `${name}: no notification; card ${String(m.channel?.ui.getSnapshot().kind)}, busy ${String(
+            m.controller.getSnapshot().nativeActionBusy,
+          )}, channel ${JSON.stringify(m.notifications.getSnapshot())}, recorded ${JSON.stringify(
+            recorded,
+          )}, frame tail ${JSON.stringify(m.text().split('\n').slice(-8))}`,
+        ).toBe(1);
         for (const text of recorded.shown)
           expect(text).toMatch(/^(Nothing was written\.|Project initialization cancelled\.)$/u);
       } finally {
