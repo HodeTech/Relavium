@@ -237,9 +237,10 @@ export const GlobalConfigSchema = z
         // copied elsewhere. `/copy` still copies the whole transcript on demand. Meaningless without `mouse`, and
         // ignored when it is off: there is no selection to copy.
         copy_on_select: z.boolean().optional(),
-        // The branded Home BANNER (2.6.F Step 5g, ADR-0068). `true` ⇒ always shown, `false` ⇒ never.
-        // ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue) — an empty Home is the
-        // "first opens" signal the ADR wanted, without a durable counter. Cosmetic: it gates no feature.
+        // The branded Home BANNER (2.6.F Step 5g, ADR-0068; meaning revised by ADR-0146 §1 and §3). `true` or ABSENT ⇒
+        // the landing's block (wordmark, rail, taglines) on page 1 of the Home, in both states of the Home. `false` ⇒ the
+        // one-line spaced wordmark in its place, whatever the Home holds. (Before MVP-11 an ABSENT key showed the banner
+        // only while the Home was empty, and `false` meant never.) Cosmetic: it gates no feature.
         show_banner: z.boolean().optional(),
         // The operator's base for the four chat limits (ADR-0136 §1): what a repository's `[chat]` values may not exceed.
         // The same four keys as `[chat]`, hand-edited (no typed writer), each bounded by `CHAT_LIMITS`.

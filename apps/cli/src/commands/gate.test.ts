@@ -1737,6 +1737,22 @@ describe('resolveSaveToRoot (save_to scope root on resume)', () => {
     }
   });
 
+  it('falls back to the resumer cwd, and does not throw, when the persisted root cannot be stat-ed for a reason other than ENOENT (ENOTDIR: a path under a file)', () => {
+    // `throwIfNoEntry: false` hides only ENOENT: a root that sits UNDER a regular file raises ENOTDIR (EACCES, ENAMETOOLONG and EIO
+    // take the same path), and a resume must fall back to the resumer's directory instead of dying on it.
+    const parent = mkdtempSync(join(tmpdir(), 'relavium-notdir-'));
+    const filePath = join(parent, 'not-a-dir');
+    writeFileSync(filePath, 'x');
+    try {
+      expect(resolveSaveToRoot(join(filePath, 'inner'), '/resumer/cwd')).toBe('/resumer/cwd');
+      expect(resolveSaveToRoot(join(parent, 'x'.repeat(5_000)), '/resumer/cwd')).toBe(
+        '/resumer/cwd',
+      );
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {
     expect(resolveSaveToRoot(null, '/resumer/cwd')).toBe('/resumer/cwd');
   });

@@ -108,6 +108,31 @@ describe('saveDefaultModel: what a write came to, never a rejection', () => {
     expect(failure).toHaveBeenCalledTimes(3);
   });
 
+  it('only the dedicated cancel marker is a cancel: any other invalid_invocation is a failure the owner hears of', async () => {
+    const failure = vi.fn();
+    const refused = async (cause: unknown) =>
+      saveDefaultModel(
+        {
+          ...base,
+          failure,
+          write: () => {
+            throw cause;
+          },
+        },
+        CHOICE,
+      );
+    for (const message of ['The chat is closing.', 'Something else was refused.', ''])
+      await expect(refused(new CliError('invalid_invocation', message)), message).resolves.toEqual({
+        kind: 'refused',
+        reason: 'failed',
+      });
+    // the marker's text under another code is not the cancel either
+    await expect(
+      refused(new CliError('internal', 'Default model change cancelled.')),
+    ).resolves.toEqual({ kind: 'refused', reason: 'failed' });
+    expect(failure).toHaveBeenCalledTimes(4);
+  });
+
   it('nothing is said while the host is closing, whatever the writer did', async () => {
     const closing = (): boolean => true;
     await expect(

@@ -162,6 +162,12 @@ export interface HomeSnapshot {
    * snapshot read. Empty on the healthy path.
    */
   readonly unreadableRuns: readonly HomeUnreadableRun[];
+  /**
+   * How many of the sessions this snapshot tried to list were skipped because their row does not parse (a damaged `context_json` or
+   * `agent_snapshot`): the sessions' counterpart of {@link HomeSnapshot.unreadableRuns}, as a number, because no row of theirs can be
+   * drawn (a row that cannot be read names nothing). Absent on the healthy path. {@link HomeTotals.sessions} does not count them.
+   */
+  readonly unreadableSessions?: number;
   /** This directory's true totals ({@link HomeTotals}). */
   readonly totals: HomeTotals;
   /** True when this directory has NOTHING to show (every total is zero) — the Home has no work page, and its landing says so (no `↓`). */
@@ -417,7 +423,16 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     ...usage,
   });
 
-  const recentSessionRecords = deps.sessions.listSessions({ limit, workingDir });
+  // One session row that does not parse must not throw the whole Home read out (the runs have their unreadable lane for the same reason): it
+  // is skipped and counted.
+  let unreadableSessions = 0;
+  const recentSessionRecords = deps.sessions.listSessions({
+    limit,
+    workingDir,
+    onUnreadable: () => {
+      unreadableSessions += 1;
+    },
+  });
   const recentSessions = recentSessionRecords.map((session) => {
     const costs = deps.sessions.loadSessionCostBreakdown(session.id);
     return {
@@ -441,7 +456,8 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const everyRun = deps.runs.countRunSummaries({ projectRoot });
   const totals: HomeTotals = {
     attention: paused + failedInWindow + moved,
-    sessions: deps.sessions.countSessions({ workingDir }),
+    // The sessions a row of which could not be read are not in the list, so they are not in its total either (rows shown + `N more` = total).
+    sessions: Math.max(0, deps.sessions.countSessions({ workingDir }) - unreadableSessions),
     runs: Math.max(0, everyRun - paused - failedInWindow - moved),
   };
 
@@ -453,6 +469,7 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     recentRuns,
     recentAgents: deriveRecentAgents(recentSessionRecords),
     unreadableRuns: unreadable.map(({ run, reason }) => toUnreadableRun(run, slugById, reason)),
+    ...(unreadableSessions === 0 ? {} : { unreadableSessions }),
     totals,
     // Nothing counted AND nothing listed: a Home whose only content is a damaged run is not a fresh install (#W15-15), and a row read in a
     // race with a count never leaves a Home that holds it reading as empty.

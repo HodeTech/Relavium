@@ -10,7 +10,7 @@ import type { GatePrompter } from './prompter.js';
 import { budgetIdentifier, budgetPromptDetails, type BudgetPromptContext } from './budget.js';
 import { formatUsdExact } from '../render/notation.js';
 import { glyphOf } from '../render/tui/glyphs.js';
-import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrusted } from '../render/sanitize.js';
 
 /**
  * The `@clack/prompts`-backed {@link GatePrompter} (2.G, [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md))
@@ -117,7 +117,8 @@ const GATE_TITLE: Record<HumanGatePausedEvent['gateType'], string> = {
 
 /** The boxed card body shown above the prompt — the gate message, plus the deadline when the gate has one. */
 function cardBody(event: HumanGatePausedEvent): string {
-  const message = stripTerminalControls(event.message);
+  // The message is upstream node output: the untrusted-text floor (secrets masked, then controls stripped), with its line breaks kept for the card.
+  const message = sanitizeUntrusted(event.message);
   const lines = [message.trim() === '' ? '(no message)' : message];
   if (event.expiresAt !== undefined) {
     lines.push('', `Expires at ${sanitizeInline(event.expiresAt)} — ${onTimeout(event)}`);

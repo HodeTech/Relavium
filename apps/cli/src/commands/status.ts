@@ -24,7 +24,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
-import { sanitizeInline } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { glyph, withGlyphForm } from '../render/tui/glyphs.js';
 import { batchedStateEvents } from '../history/batched-state-events.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
@@ -375,8 +375,11 @@ function renderPendingGates(io: CliIo, status: ActiveRunStatus): void {
     // The SAME `human_gate:paused.message` the interactive prompt sanitizes (`clack-prompter.ts`), and it is
     // `resolveTemplate(node.message_template, …)` — i.e. interpolated upstream NODE OUTPUT, the most
     // model-controlled string in the product. The TUI leaf was hardened; this command leaf was not, so a
-    // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class).
-    const message = gate.message === '' ? '' : ` — "${sanitizeInline(gate.message)}"`;
+    // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class). It also carries
+    // what an upstream node printed, so it goes through the same untrusted-text floor the TUI card uses
+    // (`sanitizeUntrustedInline`: secrets masked, then controls stripped), not the controls-only `sanitizeInline`.
+    // The `--json` record keeps the message as stored: that is the machine contract (ADR-0049).
+    const message = gate.message === '' ? '' : ` — "${sanitizeUntrustedInline(gate.message)}"`;
     io.writeOut(
       `  ${glyph('paused')} pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
     );

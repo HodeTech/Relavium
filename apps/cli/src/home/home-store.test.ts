@@ -438,6 +438,44 @@ describe('buildHomeSnapshot (2.5.B Home aggregation; MVP-11 unit 7: this directo
     expect(snapshot.totals).toEqual({ attention: 2, sessions: 0, runs: 0 });
   });
 
+  describe('a session whose row does not parse', () => {
+    /** Three sessions in this directory, the middle one damaged the way a hand edit would: its `context_json` is not JSON. */
+    const seedWithOneDamaged = (): void => {
+      const sessions = createSessionStore(client.db);
+      sessions.createSession(session({ id: 's-old', updatedAt: ISO(T0 + 1_000) }));
+      sessions.createSession(session({ id: 's-bad', updatedAt: ISO(T0 + 2_000) }));
+      sessions.createSession(session({ id: 's-new', updatedAt: ISO(T0 + 3_000) }));
+      client.sqlite
+        .prepare("UPDATE agent_sessions SET context_json = 'not json' WHERE id = ?")
+        .run('s-bad');
+    };
+
+    it('does not throw the Home read out: the row is skipped, counted as unreadable, and the others are listed', () => {
+      seedWithOneDamaged();
+      const snapshot = buildHomeSnapshot(deps);
+      expect(snapshot.recentSessions.map((row) => row.sessionId)).toEqual(['s-new', 's-old']);
+      expect(snapshot.unreadableSessions).toBe(1);
+      // the total follows the list (rows shown + `N more` = total), and the agents are derived from what could be read
+      expect(snapshot.totals.sessions).toBe(2);
+      expect(snapshot.isEmpty).toBe(false);
+      expect(createHomeStore(deps).read().unreadableSessions).toBe(1);
+    });
+
+    it('names nothing on the healthy path (the field is absent, not zero)', () => {
+      createSessionStore(client.db).createSession(session({ id: 's-ok' }));
+      expect(buildHomeSnapshot(deps)).not.toHaveProperty('unreadableSessions');
+    });
+
+    it('a directory whose only session is damaged reads as empty, with the damage counted', () => {
+      createSessionStore(client.db).createSession(session({ id: 's-bad' }));
+      client.sqlite.prepare("UPDATE agent_sessions SET context_json = 'not json'").run();
+      const snapshot = buildHomeSnapshot(deps);
+      expect(snapshot.recentSessions).toEqual([]);
+      expect(snapshot.unreadableSessions).toBe(1);
+      expect(snapshot.totals.sessions).toBe(0);
+    });
+  });
+
   describe('this directory only (the maintainer’s ruling: what belongs here is shown, the unrelated is not)', () => {
     it('a run of another project, a run with no project and a session of another directory are in no list and no count', async () => {
       await seed({ slug: 'wf', runId: 'mine', state: 'completed', atMs: T0 + 1 });

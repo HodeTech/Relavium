@@ -68,7 +68,7 @@ export const SessionRecordSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('cost_release'),
-      microcents: nonNegativeInt,
+      microcents: nonNegativeInt.max(Number.MAX_SAFE_INTEGER),
     })
     .strict(),
 ]);

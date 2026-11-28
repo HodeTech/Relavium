@@ -50,10 +50,13 @@ export interface DefaultModelSaveOptions {
   readonly failure?: ((cause: unknown) => void) | undefined;
 }
 
-/** The kind of a writer's refusal: a symbolic-link config, a card the person cancelled (the writers throw `invalid_invocation`), or a failure. */
+/**
+ * The kind of a writer's refusal: a symbolic-link config, a card the person cancelled (the one {@link isDefaultModelCancelled} marker), or a
+ * failure. Any other `invalid_invocation` (a writer refused for another reason, such as a chat that is closing) is a failure, not a cancel.
+ */
 function refusalOf(cause: unknown): 'symlink' | 'cancelled' | 'failed' {
   if (cause instanceof ConfigWriteRefusedError) return 'symlink';
-  if (cause instanceof CliError && cause.code === 'invalid_invocation') return 'cancelled';
+  if (isDefaultModelCancelled(cause)) return 'cancelled';
   return 'failed';
 }
 

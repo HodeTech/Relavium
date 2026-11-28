@@ -500,10 +500,16 @@ export interface SessionStore {
    * - {@link listSessionPage} (the `/resume` picker): the VALUE decides. `workingDir` undefined, absent or present, is every directory
    *   (the picker's "all directories" omits it); an empty or non-string one is refused;
    * - {@link countSessions} (the Home's total): REQUIRED. There is no count of every directory.
+   *
+   * A row that does not parse (a hand-edited or damaged `context_json` / `agent_snapshot`, a value the record schema refuses) throws out of
+   * the read, as before, so `chat-list` never prints a half list as the whole one. A reader that must outlive one bad row (the Home) passes
+   * `onUnreadable`: the row is then SKIPPED, its id is handed to the callback (the raw column, never a parsed field) and the rest are
+   * returned. A skipped row still takes its place in `limit`.
    */
   listSessions: (opts?: {
     readonly limit?: number;
     readonly workingDir?: string;
+    readonly onUnreadable?: (sessionId: string) => void;
   }) => AgentSessionRecord[];
   listSessionPage: (opts?: SessionPageOptions) => SessionPage;
   /**
@@ -634,6 +640,7 @@ export function createSessionStore(db: Db): SessionStore {
   const listSessions = (opts?: {
     readonly limit?: number;
     readonly workingDir?: string;
+    readonly onUnreadable?: (sessionId: string) => void;
   }): AgentSessionRecord[] => {
     // This ORDER BY is index-served (idx_agent_sessions_updated, no filesort; with a directory,
     // idx_agent_sessions_working_dir_updated); both plans are pinned by apps/cli/src/harness/perf-budget.e2e.test.ts
@@ -659,7 +666,18 @@ export function createSessionStore(db: Db): SessionStore {
       limit !== undefined && Number.isInteger(limit) && limit > 0
         ? query.limit(limit).all()
         : query.all();
-    return rows.map(fromAgentSessionRow);
+    const onUnreadable = opts?.onUnreadable;
+    if (onUnreadable === undefined) return rows.map(fromAgentSessionRow);
+    // Per-row isolation: one row that does not parse is reported and skipped, never the read of every other row.
+    const readable: AgentSessionRecord[] = [];
+    for (const row of rows) {
+      try {
+        readable.push(fromAgentSessionRow(row));
+      } catch {
+        onUnreadable(row.id);
+      }
+    }
+    return readable;
   };
 
   const loadMessages = (sessionId: string): SessionMessage[] =>

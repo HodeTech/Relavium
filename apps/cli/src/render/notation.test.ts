@@ -446,6 +446,19 @@ describe('shortId', () => {
     expect(shortId('x'.repeat(5_000_000))).toBe('x'.repeat(8));
   });
 
+  it('never ends on half a surrogate pair, even where the 16-unit read window cuts a pair in two', () => {
+    // seven pairs and a BMP letter fill 15 units, so the ninth code point's high surrogate is the last unit the window reads
+    const straddling = `${'😀'.repeat(7)}a😀😀`;
+    expect(shortId(straddling)).toBe(`${'😀'.repeat(7)}a`);
+    // the same id without the cut: eight whole pairs use the window exactly
+    expect(shortId('😀'.repeat(9))).toBe('😀'.repeat(8));
+    for (const id of [straddling, `a${'😀'.repeat(20)}`, `${'😀'.repeat(7)}ab`]) {
+      const cut = shortId(id);
+      expect(() => encodeURIComponent(cut), 'no lone surrogate').not.toThrow();
+      expect(Array.from(cut)).toHaveLength(8);
+    }
+  });
+
   it('reads at most the code points it keeps (twice over, for a surrogate pair) of a 5 MB id: counted through the string iterator', () => {
     const huge = 'x'.repeat(5_000_000);
     const original = String.prototype[Symbol.iterator];

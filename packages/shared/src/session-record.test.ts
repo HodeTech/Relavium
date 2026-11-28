@@ -109,6 +109,11 @@ describe('the record schema', () => {
     ['a release naming a mode', record({ kind: 'cost_release', microcents: 1, from: 'ask' })],
     ['a negative amount', record({ kind: 'cost_release', microcents: -1 })],
     ['a non-integer amount', record({ kind: 'cost_release', microcents: 1.5 })],
+    [
+      'an amount past the safe-integer range',
+      record({ kind: 'cost_release', microcents: Number.MAX_SAFE_INTEGER + 1 }),
+    ],
+    ['a non-finite amount', record({ kind: 'cost_release', microcents: Infinity })],
     ['a textual amount', record({ kind: 'cost_release', microcents: '5' })],
     ['a release with no amount', record({ kind: 'cost_release' })],
     ['an unknown kind', record({ kind: 'grant', from: 'ask', to: 'auto' })],

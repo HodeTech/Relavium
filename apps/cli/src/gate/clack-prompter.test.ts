@@ -70,6 +70,19 @@ describe('createClackGatePrompter', () => {
     expect(title).not.toContain('\n'); // a title cannot forge another terminal row
   });
 
+  it('masks a secret-shaped upstream message on the card, keeping its line breaks', async () => {
+    const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note })).prompt(
+      gate({ message: `first line\nuse ${key} now\nthird line` }),
+    );
+    const body = note.mock.calls[0]?.[0] ?? '';
+    expect(body).not.toContain('0123456789xyz');
+    expect(body).toContain('[REDACTED]');
+    expect(body).toContain('first line\n');
+    expect(body).toContain('third line');
+  });
+
   it('uses the no-message fallback after controls are stripped (not before)', async () => {
     const note = vi.fn<(message: string, title: string) => void>();
     await createClackGatePrompter(deps({ note })).prompt(

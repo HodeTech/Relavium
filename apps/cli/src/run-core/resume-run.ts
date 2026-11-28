@@ -103,7 +103,7 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed'
  * The `save_to` scope root for a resumed run: the ORIGINAL run's persisted `runs.project_root` when it still
  * exists on THIS machine AS A DIRECTORY — so a run started in dir A and resumed from B writes its deliverables
  * under A — else the resumer's cwd. The directory check (`statSync` with `throwIfNoEntry: false`, then
- * `isDirectory`) keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
+ * `isDirectory`; any other stat failure counts as "not a directory") keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
  * file (a non-dir would only fail the downstream `mkdir`/write with an opaque ENOTDIR) from being used as the jail
  * root; each falls back gracefully, as does a `null` (pre-column run). Known benign window: the dir is checked
  * here but `realpath`'d again at write time (media-write.ts), so a symlink-target swap in between changes only the
@@ -118,8 +118,20 @@ export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string
   // A run records its directory's canonical spelling. A resumer standing in that very directory keeps its own spelling of it, the one its
   // filesystem floor was admitted with (a lexical spelling only ever adds views to the floor, ADR-0105), as the run's first leg did.
   if (projectRootOf(resumerCwd) === recorded) return resumerCwd;
-  if (statSync(recorded, { throwIfNoEntry: false })?.isDirectory() === true) return recorded;
-  return resumerCwd;
+  return isExistingDirectory(recorded) ? recorded : resumerCwd;
+}
+
+/**
+ * Whether `path` is a directory on this machine. `throwIfNoEntry: false` hides only ENOENT; a recorded root under a file (ENOTDIR), behind an
+ * unreadable parent (EACCES), too long (ENAMETOOLONG) or on a lost mount (EIO) still throws, and a resume must not die on it: any failure to
+ * stat the root means this machine cannot use it, which is the same answer as "not there".
+ */
+function isExistingDirectory(path: string): boolean {
+  try {
+    return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
